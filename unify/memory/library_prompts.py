@@ -372,12 +372,8 @@ class Limits:
     check_floor_s: float
     cells_per_turn: int | None = None
     readers_per_turn: int | None = None
-    #: finish's refusals of a manifest that does not parse before the final check judges it instead (None: no cap)
-    finish_refusals: int | None = None
-    #: repair rounds after the first refused `finish` (None: no set number; only the other limits end them)
-    repair_rounds: int | None = None
-    #: with no set number of rounds: the consecutive rounds after which a refusal repeated for the same item and
-    #: reason gets no further round (repair.STUCK_REPEATS; None: not stated)
+    #: the consecutive rounds after which a refusal repeated for the same item and reason gets no further round (there
+    #: is no set number of rounds; repair.STUCK_REPEATS; None: not stated)
     stuck_repeats: int | None = None
     #: what the episode-end fork (and each helper call) can stage: files and bytes
     stage_files: int | None = None
@@ -452,9 +448,8 @@ def _opened(agent: str, flags: frozenset[str], limits: Limits, brief: str) -> st
     return in_code_opening(agent, frozenset(flags), cell_s=limits.cell_s) + "\n\n" + brief
 
 
-def limits_now(cell_s: float | None = None, finish_capped: bool = False) -> Limits:
-    """The limits from the constants that enforce them (imported here: they import this module's callers).
-    *finish_capped*: finish's manifest refusals are capped."""
+def limits_now(cell_s: float | None = None) -> Limits:
+    """The limits from the constants that enforce them (imported here: they import this module's callers)."""
     from . import repair as _repair
     from . import views, writer_pass
     from .integration import fork_worker
@@ -469,11 +464,8 @@ def limits_now(cell_s: float | None = None, finish_capped: bool = False) -> Limi
         check_floor_s=writer_pass.CHECK_FLOOR_S,
         cells_per_turn=getattr(writer_pass, "_MAX_CELLS_PER_TURN", None),
         readers_per_turn=getattr(writer_pass, "READERS_PER_TURN", None),
-        finish_refusals=writer_pass.FINISH_G1_REFUSALS if finish_capped else None,
-        # a capped pass also caps its repair rounds (repair.may_repair); repair_message states the same count
-        repair_rounds=_repair.REPAIR_ROUNDS if finish_capped else None,
-        # an uncapped pass stops offering rounds for a refusal repeated this many rounds in a row
-        stuck_repeats=None if finish_capped else _repair.STUCK_REPEATS,
+        # the pass stops offering rounds for a refusal repeated this many rounds in a row
+        stuck_repeats=_repair.STUCK_REPEATS,
         stage_files=fork_worker.QUOTA_FILES,
         stage_bytes=fork_worker.QUOTA_BYTES,
     )
@@ -489,15 +481,14 @@ def write_brief_now(
     cell_s: float | None = None,
     helper: bool = False,
     similar: bool = False,
-    finish_capped: bool = False,
 ) -> str:
     """The WRITE brief from the constants that enforce each number and the tools registered for the role (*helper*:
-    a helper lane exists; *similar*: the pass has a similar-code index; *finish_capped*: the pass has a USD cap)."""
+    a helper lane exists; *similar*: the pass has a similar-code index)."""
     from . import code_lint
 
     flags = tool_flags(helper, similar)
     return write_brief(
-        limits=limits_now(cell_s, finish_capped=finish_capped),
+        limits=limits_now(cell_s),
         lint_min=code_lint.LINT_MIN,
         pytest_env=WRITER_PYTEST_ENV,
         tool_names=_tool_names("writer", flags),
@@ -546,7 +537,7 @@ _LIMITS_IN_CODE = (
     "and <<entries>> files and directories; a breach refuses the pass. The pass ends at its wall clock (its length "
     "in seconds is in the first message<<helper_time>>) or after <<step_guard>> model and check calls, whichever "
     "comes first, and a `tools.check` starts only while at least <<check_floor>> s of the wall clock remain."
-    "<<repair_cap>><<finish_cap>>\n"
+    " There is no set number of repair rounds; only these limits end them.\n"
 )
 
 
@@ -568,19 +559,6 @@ def _limits_text_in_code(limits: Limits, helper_time: bool) -> str:
             ),
             "step_guard": limits.step_guard,
             "check_floor": _num(limits.check_floor_s),
-            "repair_cap": (
-                f" At most {limits.repair_rounds} repair rounds follow the first refused `tools.finish` in this "
-                "pass."
-                if limits.repair_rounds is not None
-                else " There is no set number of repair rounds; only these limits end them."
-            ),
-            "finish_cap": (
-                " While /memory/.pass/manifest.json is missing or does not parse, `tools.finish` is refused with the "
-                f"reason up to {limits.finish_refusals} times in a pass; after that, `tools.finish` ends the pass and "
-                "the final check refuses the manifest by name."
-                if limits.finish_refusals is not None
-                else ""
-            ),
         },
     )
 

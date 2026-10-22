@@ -400,7 +400,9 @@ REMOVED_TOOLS = {
         "not_written", "reserved",
     ],
 }  # fmt: skip
-REMOVED_FORMS = {"send": ["unknown_name"]}
+#: Forms of the base commit removed since, put back before the hash. ``*``: the general check and reader-call limits,
+#: removed with the per-pass caps in rev 2.1 (a pass has neither).
+REMOVED_FORMS = {"send": ["unknown_name"], "*": ["check_limit", "reads_limit"]}
 #: The base commit's order of the codes' tools (the hash is of ``json.dumps`` in that order).
 BASE_ORDER = (
     "read", "grep", "overview", "read_episode", "pool", "fixture", "replay", "execute_code", "check", "finish",

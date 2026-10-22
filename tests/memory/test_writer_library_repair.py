@@ -8,7 +8,6 @@ a key-shaped string or a file the layout has no place for (:mod:`tests.memory.wr
 import asyncio
 import json
 import time
-from decimal import Decimal
 
 from unify.memory.blobs import BlobStore
 from unify.memory.drafts import draft_states
@@ -101,7 +100,7 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
     result = read[len(wl.STOPPED):]
     assert result.startswith("# Gate result: pass p1, round 0, check (not merged)"), result
     repair_msgs = [
-        m for m in model.seen if m.get("role") == "user" and "repair round 1 of 2" in m["content"]
+        m for m in model.seen if m.get("role") == "user" and "This is repair round 1." in m["content"]
     ]
     assert len(repair_msgs) == 1 and "/inputs/gate/result-0.md" in repair_msgs[0]["content"]
     # one commit on the parent: the refused round never enters main's history
@@ -119,40 +118,6 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
     assert full.startswith(result.split("\n[… shown bytes ")[0])
     assert f"G6: key-shaped string in {wl.MODULE}" in full and wl.KEY not in full
     assert "## Test output" not in full  # the gate runs no test (rev 2.1): there is no output to keep
-
-
-@needs_bwrap
-def test_budget_cut_skips_the_check_and_merges_once(tmp_path):
-    model = Turns(
-        [
-            _call("w", "execute_code", {"code": MISPLACED_CODE}),
-            _call("f", "finish", {"summary": "s"}),
-        ],
-        usd="0.30",
-    )
-    mem, ev, writer = _writer(
-        tmp_path,
-        model,
-        max_usd=Decimal("0.70"),
-    )
-    calls = _count(writer.gate)
-    out = _run(writer)
-    # round 0 cost 0.60 of the 0.70 cap: the 0.10 left cannot hold a round, so no check runs
-    assert calls == {"check": 0, "merge": 1}
-    assert out.rounds == 1 and out.round_results == []
-    assert (
-        # d39a434ac: the first repair round is priced on round 0's write phase, not its reading
-        "repair: no round 1: 0.10 USD left, below the round reserve of 0.30 USD"
-        in out.reasons
-    )
-    # the gate refuses the misplaced file in the one merge, and the patch is a draft
-    assert not out.passed and wl.MISPLACED_REASON in out.reasons
-    (row,) = ev.pass_rounds()
-    assert row["rounds"] == 1 and row["patch_blob"] is not None
-    assert draft_states(ev.pass_rounds()) == {"px": "open"}
-    final = writer.gate.blobs.get(row["gate_blob"]).decode()
-    assert final.startswith("# Gate result: pass px, round 0, final (merge)")
-    assert "repair: no round 1: 0.10 USD left" in final  # the pass's own notes are in the final result
 
 
 @needs_bwrap
@@ -268,11 +233,8 @@ def test_next_pass_sees_open_drafts_and_the_last_full_result(tmp_path):
         ],
         usd="0.30",
     )
-    mem, ev, writer = _writer(
-        tmp_path,
-        first,
-        max_usd=Decimal("0.70"),
-    )
+    # its two calls are all it has, so no repair round follows the refused check: round 0 is the final merge
+    mem, ev, writer = _writer(tmp_path, first, max_calls=2)
     assert not _run(writer, "p1").passed  # refused at the one merge: a draft
     probe = (
         "import json, os\n"

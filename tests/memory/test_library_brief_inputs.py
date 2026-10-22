@@ -170,8 +170,7 @@ def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
     )
     assert "/inputs/s0" not in full  # the writer's path has no miner input
     plain = _brief_of(tmp_path / "b")
-    # the default configuration caps the pass's spend, so finish's refusal cap is stated
-    assert plain == pv.write_brief_now(finish_capped=True)
+    assert plain == pv.write_brief_now()
     # rev 2 always stages the forks' output and always has the pool: the brief is the same with or without a
     # staging root (its inputs are pinned as evaluated: test_writer_prompt_surface)
     assert plain == full

@@ -29,10 +29,9 @@ def _finishing_pass(tmp_path, **cfg):
 
 def test_library_system_message_is_the_write_brief(tmp_path):
     writer = _finishing_pass(tmp_path)
-    # the default configuration caps the pass's spend, so finish's refusal cap is stated
     assert writer.messages[0] == {
         "role": "system",
-        "content": pv.write_brief_now(finish_capped=True),
+        "content": pv.write_brief_now(),
     }
     assert "Manifest rules for consolidators" not in writer.messages[0]["content"]
 

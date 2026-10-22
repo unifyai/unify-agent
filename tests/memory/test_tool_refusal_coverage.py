@@ -154,11 +154,9 @@ COVERAGE: dict[tuple[str, str], str] = {
     ("*", "bad_arguments"): R,
     ("*", "readers_per_turn"): R,
     ("*", "cells_per_turn"): R,
-    ("*", "reads_limit"): R,
     ("*", "stopped"): R,
     ("*", "pass_finished"): R,
     ("*", "task_done"): R,
-    ("*", "check_limit"): R,
     ("*", "call_limit"): R,
 }
 
@@ -460,7 +458,6 @@ def test_every_reachable_form_is_answered_and_nothing_leaks(tmp_path, monkeypatc
                 _cell("c4", [("check", {"manifest": "{x"})] * 3),
             ],
             max_calls=5,
-            max_reads=20,
         ),
     )
 

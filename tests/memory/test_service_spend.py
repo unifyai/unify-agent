@@ -19,6 +19,7 @@ from tests.memory.test_writer_pass import Turns, _call, _run, _writer, needs_bwr
 from unify.memory import attention, writer_pass
 from unify.memory import writer_service as ws
 from unify.memory.call_bounds import call_worst_case_usd
+from unify.memory.writer_pass import STEP_GUARD
 
 
 #: The default writer model's bound in the pinned catalogue
@@ -62,7 +63,6 @@ def test_a_service_pass_stops_before_a_call_that_could_take_it_past_its_room(tmp
     _mem, _ev, writer = _writer(
         tmp_path,
         model,
-        max_usd=None,
         deadline_s=300.0,
         usd_limit="14.00",
         usd_call_worst=str(W),
@@ -78,7 +78,7 @@ def test_without_a_room_an_uncapped_pass_is_as_built(tmp_path):
         [_call(f"c{i}", "execute_code", {"code": f"print({i})"}) for i in range(5)],
         usd="0.30",
     )
-    _mem, _ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
+    _mem, _ev, writer = _writer(tmp_path, model, max_calls=STEP_GUARD, deadline_s=300.0)
     out = _run(writer)
     assert Decimal(out.usd) > Decimal("1.00")  # every scripted cell ran: no USD stop
     assert not any("room of" in r for r in out.reasons)
@@ -178,9 +178,7 @@ def test_a_service_pass_is_bounded_by_the_room_and_settles_the_helpers_lane(tmp_
     assert Decimal(cfg.usd_limit) == Decimal(23) and not hasattr(cfg, "usd_call_reserve")
     # rev 2.1: no per-pass USD or call cap, with no writer lane as with one: the run's spend cap (its room, above), the
     # wall clock and the operational step guard bound the pass
-    from unify.memory.writer_pass import STEP_GUARD
-
-    assert cfg.max_usd is None and cfg.max_calls == STEP_GUARD
+    assert not hasattr(cfg, "max_usd") and cfg.max_calls == STEP_GUARD
     assert Decimal(report.settle_usd) == Decimal("0.02") + Decimal("0.35") + W
     assert report.usd_known == "0.37" and report.unknown_calls == 1
     assert report.helper_usd_known == "0.35" and report.helper_unknown_calls == 1
@@ -529,7 +527,7 @@ def test_a_writer_call_refused_while_another_is_in_flight_is_tried_again_and_the
     scripted = Turns([_call(f"c{i}", "execute_code", {"code": f"print({i})"}) for i in range(3)], usd="0.30")
     model = RefusedFirst(scripted)
     _mem, _ev, writer = _writer(
-        tmp_path, model, max_usd=None, deadline_s=300.0, usd_limit="100.00", usd_call_worst=str(W)
+        tmp_path, model, max_calls=STEP_GUARD, deadline_s=300.0, usd_limit="100.00", usd_call_worst=str(W)
     )
     out = _run(writer)
     assert model.refused == 1 and model.answered >= 4  # the three scripted calls and the finish, after the refusal

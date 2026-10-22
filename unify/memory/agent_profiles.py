@@ -557,8 +557,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
         ],
         "limits": [
             {"limit": "time left for a check", "value": 60, "unit": "s"},
-            # only in a pass with a spend cap; an uncapped pass has no set number (repair.may_repair)
-            {"limit": "repair rounds (capped pass)", "value": 2, "unit": "rounds"},
         ],
         "inlined": [
             {"what": "repair message (names the result file)", "bound": _INLINE_BOUND},

@@ -80,7 +80,6 @@ from ..trigger import PassRequest
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
 from .switch import (
-    PASS_MAX_READS,
     PASS_WALL_S,
     WRITER_BASE_URL,
     WriterRouteRefused,
@@ -1001,7 +1000,6 @@ async def run_attention_pass(
         # wall clock and the operational step guard bound the pass
         max_calls=STEP_GUARD,
         deadline_s=supervise.pass_deadline_s,
-        max_usd=None,
         # the service's room for this pass (its cap less what its other passes committed, less a resumed pass's lost
         # calls): no writer or helper call starts past it, whatever the pass's own limits
         usd_limit=None if room is None else _usd(room),
@@ -1009,7 +1007,6 @@ async def run_attention_pass(
         staging_root=str(Path(paths.state_dir) / "memory-staging"),
         pass_record_root=str(Path(paths.state_dir) / "passes"),
         similar_index=str(_similar.index_dir(paths.state_dir)),
-        max_reads=PASS_MAX_READS,
         # the pass's agents join the run record, the writer's row held by the service
         run_home=str(home),
         attention_home=str(home),

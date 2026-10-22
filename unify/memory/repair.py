@@ -2,22 +2,19 @@
 
 After the writer's accepted ``finish``, :class:`.writer_pass.WriterPass` runs :meth:`.gate.Gate.check` (the whole
 gate, no merge) on the round's candidate. A refusal is written in full to ``/inputs/gate/result-<n>.md`` and the
-writer gets another round, at most :data:`REPAIR_ROUNDS`, while the pass's budget holds one more round
-(:func:`may_repair`). Only the final candidate goes to :meth:`.gate.Gate.merge`, so per-item admission decides
-what lands. Nothing here calls a model, git or the jail.
+writer gets another round while the pass's time and step guard hold one more (:func:`may_repair`); there is no round
+count. Only the final candidate goes to :meth:`.gate.Gate.merge`, so per-item admission decides what lands. Nothing
+here calls a model, git or the jail.
 
-Stuck refusals (uncapped passes, which have no round count): when the gate refuses the same item under the same
-check for the same reason in :data:`STUCK_REPEATS` consecutive rounds (:class:`StuckRefusals`), no further round is
+Stuck refusals: when the gate refuses the same item under the same check for the same reason in :data:`STUCK_REPEATS` consecutive rounds (:class:`StuckRefusals`), no further round is
 offered for it; once every refusal of a round is stuck, no round opens and the pass goes to its final merge, whose
 per-item admission lands the items that pass. A round whose candidate (its tree and manifest) did not change since
 the last check repeats every refusal by construction.
 
-Budget (stated once, here): round 0 runs from the pass's start to the writer's first accepted ``finish``; round k >= 1
-from the repair message that opens it to the next accepted ``finish``. A round's USD is the change in the
-pass's charge (known spend plus ``cap / max_calls`` per unpriced call); its seconds are its wall time plus the
-gate check that ends it. ``ROUND_RESERVE`` is the calibrated constant when given, else the median USD of the
-pass's completed rounds. The time reserve is the median of their seconds plus the last gate check's seconds,
-because the final :meth:`.gate.Gate.merge` runs the whole gate once more.
+Time (stated once, here): round 0 runs from the pass's start to the writer's first accepted ``finish``; round k >= 1
+from the repair message that opens it to the next accepted ``finish``. A round's seconds are its wall time plus the
+gate check that ends it. The time a next round needs is the median of the completed rounds' seconds plus the last
+gate check's seconds, because the final :meth:`.gate.Gate.merge` runs the whole gate once more.
 """
 
 from __future__ import annotations
@@ -25,41 +22,22 @@ from __future__ import annotations
 import re
 import statistics
 from dataclasses import dataclass, field
-from decimal import Decimal
 from typing import Iterable, Sequence
 
 from .gate import GateResult
 from .redact import redact_error
 
-#: Repair rounds after the first finish, at most.
-REPAIR_ROUNDS = 2
 #: A refusal repeated in this many consecutive rounds is stuck: the first refusal, then two repair rounds that
 #: ended with the same item refused for the same reason. A further round for it would most likely spend time and
 #: money on the same result, so the pass stops offering one and the final merge keeps the item as a draft.
 STUCK_REPEATS = 3
 #: The item of a refusal no manifest item owns (it refuses the whole pass).
 PASS_WIDE = "(pass-wide)"
-def _money(value: Decimal) -> str:
-    return format(value, "f")
-
-
-def round_reserve(round_usd: list[Decimal], fixed: Decimal | None = None) -> Decimal:
-    """``ROUND_RESERVE``: *fixed* when calibrated, else the median USD of the completed rounds."""
-    if fixed is not None:
-        return Decimal(fixed)
-    if not round_usd:
-        raise ValueError("no completed round to take a reserve from")
-    return Decimal(statistics.median(round_usd))
-
-
 def may_repair(
     done: int,
-    remaining_usd: Decimal | None,
     remaining_s: float,
     calls_left: int,
-    round_usd: list[Decimal],
     round_s: list[float],
-    fixed_usd: Decimal | None = None,
     last_check_s: float = 0.0,
 ) -> str | None:
     """None when repair round ``done + 1`` may start; else why not, as one note line.
@@ -68,19 +46,8 @@ def may_repair(
     check's seconds, which the final merge spends again.
     """
     nxt = done + 1
-    uncapped = (
-        remaining_usd is None
-    )  # no USD left to track: no round count and no USD reserve; time still applies
-    if not uncapped and done >= REPAIR_ROUNDS:
-        return f"repair: no round {nxt}: at most {REPAIR_ROUNDS} repair rounds per pass"
     if calls_left < 1:
         return f"repair: no round {nxt}: the pass's call cap is reached"
-    need = None if uncapped else round_reserve(round_usd, fixed_usd)
-    if need is not None and remaining_usd < need:
-        return (
-            f"repair: no round {nxt}: {_money(remaining_usd)} USD left, "
-            f"below the round reserve of {_money(need)} USD"
-        )
     seconds = (float(statistics.median(round_s)) if round_s else 0.0) + max(
         0.0,
         float(last_check_s),
@@ -156,13 +123,11 @@ def repair_message(
     n: int,
     path: str,
     res: GateResult,
-    limit: int | None = REPAIR_ROUNDS,
     stuck: Sequence[tuple[str, str, str]] = (),
     repeats: int = STUCK_REPEATS,
 ) -> str:
-    """The writer's message opening repair round *n* (>= 1) after round ``n - 1``'s refused check. *limit* is the
-    number of repair rounds the pass allows; None when no such limit exists (only the deadline and step guard end
-    the pass), and then no round count is stated. *stuck* lists the refusals (check, item, reason) no further
+    """The writer's message opening repair round *n* (>= 1) after round ``n - 1``'s refused check. No round count is
+    stated: only the deadline and the step guard end the pass. *stuck* lists the refusals (check, item, reason) no further
     round is offered for (:class:`StuckRefusals`); the message names them and says why."""
     items = (
         ", ".join(
@@ -180,13 +145,8 @@ def repair_message(
         f"{items}). Its full result, with every check line, every failing test's output and every note, is "
         f"{path}; read it with {read}. Fix what it refused in /memory, keep /memory/.pass/manifest.json up to "
         f"date, then call {finish} again. "
-        + (
-            f"This is repair round {n} of {limit}. After the last round the items that pass land and the rest are "
-            "kept as a draft for the next pass."
-            if limit is not None
-            else f"This is repair round {n}. When the pass ends, the items that pass land and the rest are kept as "
-            "a draft for the next pass."
-        )
+        + f"This is repair round {n}. When the pass ends, the items that pass land and the rest are kept as a draft "
+        "for the next pass."
         + (
             f" No further repair round is offered for {_pairs(stuck)}: the gate refused "
             f"{'it' if len(stuck) == 1 else 'each'} for the same reason in {repeats} rounds in a row ("

@@ -129,7 +129,7 @@ def role_texts() -> dict[str, list[str]]:
         "teammate": [_opening("teammate"), _actor_core(), *_actor_memory_sections(), tool_text],
         "writer": [
             lp.write_brief_now(),
-            lp.write_brief_now(**full, finish_capped=True),
+            lp.write_brief_now(**full),
             tool_text,
         ],
         "helper": [helpers.helper_brief(True), helpers.helper_brief(False), tool_text],

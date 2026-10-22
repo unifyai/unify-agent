@@ -480,7 +480,7 @@ class Counter:
         if threading.get_ident() != self.loop_thread:
             self.off_loop += 1
         if self.used >= self.limit:
-            return general("reads_limit", limit=self.limit)
+            return general("readers_per_turn", limit=self.limit)
         self.used += 1
         return None
 
@@ -510,7 +510,7 @@ def test_a_parallel_flood_across_channels_never_passes_a_counter_limit():
     oks = [o for o in outs if o == "ok"]
     assert len(oks) == 7 and len(ran) == 7 and counter.used == 7
     assert counter.off_loop == 0
-    assert all(getattr(o, "form", None) == "reads_limit" for o in outs if o != "ok")
+    assert all(getattr(o, "form", None) == "readers_per_turn" for o in outs if o != "ok")
 
 
 # --- validation and client --------------------------------------------------------------------------------------------

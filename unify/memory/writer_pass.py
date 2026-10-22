@@ -4,10 +4,9 @@ The pass copies the memory library's ``main`` into a plain directory, creates an
 folder there for every memory channel of the pass's recorded actions, and gives the writer three tools:
 ``execute_code`` (the code as a read-only file run in :func:`.sandbox_run.run_confined`, with the copy
 read-write at ``/memory`` and the pass's inputs read-only at ``/inputs``), ``check`` (the gate's cheap,
-read-only checks of a manifest against the current copy, host-side; :meth:`.gate.Gate.preview`; at most
-:data:`MAX_CHECKS` per pass, each counted as a call) and ``finish``. It ends on
-``finish``, ``max_calls``, the USD cap, the pass deadline or a breach of the write quota (which refuses the
-pass without a commit). The harness then reads ``/memory/.pass/manifest.json`` without following
+read-only checks of a manifest against the current copy, host-side; :meth:`.gate.Gate.preview`; each counted as a
+call) and ``finish``. It ends on ``finish``, the operational step guard (``max_calls``), the run's spend room for the
+pass (``usd_limit``), the pass deadline or a breach of the write quota (which refuses the pass without a commit). The harness then reads ``/memory/.pass/manifest.json`` without following
 links, mirrors the copy into a git checkout (dropping ``.pass``, nested ``.git`` entries and caches),
 commits with ``Pass``/``Episode``/``Evidence`` trailers and hands the commit to :meth:`.gate.Gate.merge`,
 which records the pass. A missing manifest is recorded here as failed with the reason ``no manifest``.
@@ -77,10 +76,8 @@ CELL_FSIZE_BYTES = 2 * QUOTA_FILE_BYTES
 EXPORT_BLOB_BYTES = QUOTA_FILE_BYTES
 EXPORT_TOTAL_BYTES = 32 * 1024**2
 
-# check calls per pass (each also counts against PassConfig.max_calls); a reply lists at most this many reasons
-MAX_CHECKS = 5
-# library mode: a pass with no USD cap (PassConfig.max_usd None) has no count limits either; this many model
-# and check calls end a runaway pass, labelled operational (a safety stop), never a design budget
+# a pass has no USD cap of its own and no count limits: this many model and check calls end a runaway pass, labelled
+# operational (a safety stop), never a design budget
 STEP_GUARD = 500
 _CHECK_REASONS = 20
 _CHECK_REASON_CHARS = 200
@@ -98,9 +95,6 @@ def _thought_only_reply() -> str:
     from unify.common.tool_registry import THOUGHT_ONLY_REPLY
 
     return THOUGHT_ONLY_REPLY
-
-# finish refuses an unparseable manifest at most this many times in a pass
-FINISH_G1_REFUSALS = 2
 
 
 #: the memory agents (the writer, the curator, each helper) compact their conversation
@@ -441,7 +435,7 @@ CODE_OVER_QUOTA = "over_quota"
 CODE_DEADLINE = "deadline"
 CODE_PASS_CAP = "pass_cap"
 CODE_STEP_GUARD = (
-    "operational_step_guard"  # an uncapped library-mode pass reached STEP_GUARD
+    "operational_step_guard"  # a pass reached its step guard (max_calls, STEP_GUARD in production)
 )
 CODE_WRITER_ERROR = "writer_error"
 # a writer call found the writer's declared route not in effect
@@ -467,16 +461,11 @@ class PassConfig:
     run_home: str
     model: str = "openai/gpt-6-sol"
     effort: str = "low"
-    max_calls: int = 40
-    # None (a pass on the writer's lane): no USD cap and no count limits; STEP_GUARD and the deadline end a runaway
-    max_usd: Decimal | None = Decimal("1.00")
+    # the operational step guard: model and check calls that end a runaway pass (no USD cap of its own; the run's
+    # spend room is usd_limit)
+    max_calls: int = STEP_GUARD
     cell_timeout_s: float = 60.0
     deadline_s: float = 900.0
-    # reader calls (read, grep, overview, read_episode, pool) count here, never against max_calls
-    max_reads: int = 400
-    # a fixed reserve per repair round, once offline replay calibrates it; None: the pass's own median
-    # round cost (repair.round_reserve)
-    round_reserve_usd: Decimal | None = None
     # where the fork leaves staging (<state>/memory-staging; None: a scratch dir in the pass); writer-launched
     # helpers write beside it (<state>/memory-helpers, helpers.py)
     staging_root: str | None = None
@@ -488,8 +477,7 @@ class PassConfig:
     # the memory home whose attention ledger the pass reads and decides (attention.py, attention_tools.py)
     attention_home: str | None = None
     # the writer service's room for this pass (its cap less what its other passes committed, less what a resumed pass
-    # already lost), a decimal string: a hard USD stop that leaves the pass's other limits as they are (an uncapped
-    # library pass stays uncapped). No model call, the writer's or a helper's, starts unless the pass's spend so far,
+    # already lost), a decimal string: a hard USD stop that leaves the pass's other limits as they are. No model call, the writer's or a helper's, starts unless the pass's spend so far,
     # with its unpriced calls and every call in flight and the new one each at usd_call_worst, stays within it
     # (usd_room). None: no such stop, as built
     usd_limit: str | None = None
@@ -599,7 +587,7 @@ class PassOutcome:
     # model's context window as the compaction trigger reads it (None: unknown, so it never compacts)
     max_prompt_tokens: int | None = None
     context_window: int | None = None
-    # library mode, uncapped: the refusals the gate repeated for the same reason in repair.STUCK_REPEATS consecutive
+    # library mode: the refusals the gate repeated for the same reason in repair.STUCK_REPEATS consecutive
     # rounds, so no further round was offered for them (repair.StuckRefusals.report: "repeats", "stopped" (every
     # refusal of a round was stuck, so repair ended there) and one {"check", "item", "reason", "rounds"} row each);
     # None when none became stuck
@@ -1574,10 +1562,10 @@ class _KeepOnCancel:
 
 
 class WriterPass:
-    """One consolidation pass, bounded by ``max_calls``, ``max_usd`` (a Decimal) and ``deadline_s``.
+    """One consolidation pass, bounded by its step guard ``max_calls``, the run's room ``usd_limit`` and ``deadline_s``.
 
-    Each model call's reported cost is added to the spend; an unknown (or unreadable) cost is counted and
-    reserves ``max_usd / max_calls`` against the cap, so unpriced calls cannot run away. Money is a pure
+    Each model call's reported cost is added to the spend; an unknown (or unreadable) cost is counted, and the room
+    books it at ``usd_call_worst``, so unpriced calls cannot run away. Money is a pure
     decimal string (never exponent notation): the recorded and returned USD is the known spend
     only, and the count of unpriced calls is recorded as the reason ``note: N unpriced calls`` and in
     :attr:`PassOutcome.unknown_cost_calls`. The pass's own notes follow the gate's reasons in the row.
@@ -3034,11 +3022,9 @@ class WriterPass:
         tmp: Path,
         roots: dict[str, Path],
         parent: str,
-        uncapped: bool,
         max_calls: int,
         remaining: Any,
         cause: Any,
-        writing: Any,
         check_file: Any,
         phase: dict,
         notes: list,
@@ -3064,12 +3050,9 @@ class WriterPass:
             tmp=tmp,
             roots=roots,
             parent=parent,
-            uncapped=uncapped,
             max_calls=max_calls,
-            max_reads=int(self.cfg.max_reads),
             remaining=remaining,
             cause=cause,
-            writing=writing,
             check_file=check_file,
             phase=phase,
             notes=notes,
@@ -3292,13 +3275,11 @@ class WriterPass:
         return write_brief_now(**self._write_inputs())
 
     def _write_inputs(self) -> dict:
-        """The WRITE brief's inputs, constant per run: a helper lane, a similar-code index, and finish's refusal cap
-        when the pass is capped."""
+        """The WRITE brief's inputs, constant per run: a helper lane and a similar-code index."""
         return {
             "cell_s": float(self.cfg.cell_timeout_s),
             "helper": self.helper_turn is not None,
             "similar": bool(self.cfg.similar_index),
-            "finish_capped": self.cfg.max_usd is not None,
         }
 
     def _keep_cancelled_work(
@@ -3441,14 +3422,9 @@ class WriterPass:
         parent: str,
         spend: _Spend,
     ) -> PassOutcome:
-        # library mode with max_usd None is uncapped: no USD stop, no unpriced reserve (the run-level guard books those
-        # at worst case), no count limits; STEP_GUARD and the deadline end a runaway, labelled operational
-        uncapped = self.cfg.max_usd is None
-        cap = None if uncapped else Decimal(self.cfg.max_usd)
-        max_calls = STEP_GUARD if uncapped else int(self.cfg.max_calls)
-        reserve = (
-            Decimal(0) if uncapped else (cap / max_calls if max_calls > 0 else cap)
-        )
+        # no USD stop of its own and no count limits: the run's room (usd_limit), the step guard and the deadline end a
+        # pass; unpriced calls are booked at their worst case by the run-level guard
+        max_calls = int(self.cfg.max_calls)
         deadline = time.monotonic() + float(self.cfg.deadline_s)
         # the pass on the run record, for its agent and every helper it starts (messaging.py)
         self._pass_record = _messaging.PassRecord(
@@ -3459,15 +3435,10 @@ class WriterPass:
             held_by_service=True,
         )
         calls, checks, summary = 0, 0, ""
-        # repair rounds (repair.py states the budget rule)
+        # repair rounds (repair.py states when one may open)
         round_no = 0  # the round the writer is in: 0 until its first accepted finish
-        round_usd: list[Decimal] = []  # each completed round's charge
-        # library mode: the charge when the writer first wrote (a cell, a check or a fixture), round 0's charge
-        # from then on (what a repair round is priced on), finish's G1 refusals, and the last accepted finish
+        # library mode: the last accepted finish
         phase: dict[str, Any] = {
-            "write_mark": None,
-            "round0_write": None,
-            "g1_refusals": 0,
             "finish_accepted": False,
             "nothing_to_store": False,
         }
@@ -3476,12 +3447,9 @@ class WriterPass:
         )  # each completed round's seconds, its gate check included
         round_paths: list[str] = []  # /inputs/gate/result-<n>.md written for the writer
         round_blobs: list[str] = []  # the same texts in the blob store
-        # uncapped passes: the refusals repeated round to round (repair.py states the stuck rule)
+        # the refusals repeated round to round (repair.py states the stuck rule)
         stuck = _repair.StuckRefusals()
-        mark = [
-            Decimal("0"),
-            time.monotonic(),
-        ]  # the current round's start: charge, clock
+        mark = [time.monotonic()]  # the current round's start
         # the last checked candidate, which the merge lands itself when the box is unchanged since
         check_files = [
             0,
@@ -3500,7 +3468,7 @@ class WriterPass:
         over_quota: str | None = None
         causes: list[str] = []  # PassOutcome.codes, set where each cause arises
         errored = False
-        reads = 0  # library_mode reader calls, against cfg.max_reads
+        reads = 0  # library_mode reader calls, counted
         self._exported_bytes = None
         self._temp_kept = None
         # tools in code: one JSON tool, the rest called from cells
@@ -3735,13 +3703,6 @@ class WriterPass:
             self._tools_json = list(tools)
             finished = False
 
-            def charged() -> Decimal:
-                return spend.usd + spend.unknown * reserve
-
-            def writing() -> None:
-                """The charge when the writer first wrote: round 0's reading ends there."""
-                if phase["write_mark"] is None:
-                    phase["write_mark"] = charged()
 
             def commit_and_check(
                 manifest: object,
@@ -3856,29 +3817,14 @@ class WriterPass:
                 False ends the pass: its final candidate then goes to the one merge (per-item admission).
                 """
                 nonlocal round_no, stop, over_quota
-                round_usd.append(charged() - mark[0])
-                round_s.append(time.monotonic() - mark[1])
-                if round_no == 0:
-                    # price a repair round on the write phase, not on round 0's reading
-                    wm = phase["write_mark"]
-                    phase["round0_write"] = (
-                        charged() - wm if wm is not None else round_usd[0]
-                    )
-                priced = (
-                    [phase["round0_write"]] + round_usd[1:]
-                    if phase["round0_write"] is not None
-                    else round_usd
-                )
+                round_s.append(time.monotonic() - mark[0])
 
                 def refused_round(check_s: float) -> str | None:
                     return _repair.may_repair(
                         round_no,
-                        None if cap is None else cap - charged(),
                         remaining(),
                         max_calls - calls,
-                        priced,
                         round_s,
-                        self.cfg.round_reserve_usd,
                         last_check_s=check_s,
                     )
 
@@ -3934,21 +3880,19 @@ class WriterPass:
                 store = getattr(self.gate, "blobs", None)
                 if isinstance(store, BlobStore):
                     round_blobs.append(store.put(text.encode()))
-                held: list[tuple[str, str, str]] = []
-                if uncapped:
-                    # no round count here: a refusal repeated round to round is stuck instead (repair.py)
-                    was = set(stuck.rows)
-                    held = stuck.update(res, self._candidate_key(candidate, manifest))
-                    fresh = [h for h in held if (h[0], h[1]) not in was]
-                    if fresh:
-                        notes.append(_repair.stuck_note(fresh, stuck.repeats))
+                # no round count: a refusal repeated round to round is stuck instead (repair.py)
+                was = set(stuck.rows)
+                held = stuck.update(res, self._candidate_key(candidate, manifest))
+                fresh = [h for h in held if (h[0], h[1]) not in was]
+                if fresh:
+                    notes.append(_repair.stuck_note(fresh, stuck.repeats))
                 why = refused_round(
                     check_s,
                 )  # after the check, with its time: this one decides
                 if why is not None:
                     notes.append(why)
                     return False
-                if uncapped and stuck.all_stuck():
+                if stuck.all_stuck():
                     stuck.stopped = True
                     notes.append(_repair.stopped_note(round_no + 1, held, stuck.repeats))
                     return False
@@ -3961,13 +3905,12 @@ class WriterPass:
                             round_no,
                             vpath,
                             res,
-                            None if uncapped else _repair.REPAIR_ROUNDS,
                             stuck=held,
                             repeats=stuck.repeats,
                         ),
                     },
                 )
-                mark[0], mark[1] = charged(), time.monotonic()
+                mark[0] = time.monotonic()
                 return True
 
             ic: Any = None  # tools in code: the handlers' pass state and the interpreter session
@@ -3979,11 +3922,9 @@ class WriterPass:
                 tmp=Path(tmp),
                 roots=roots,
                 parent=parent,
-                uncapped=uncapped,
                 max_calls=max_calls,
                 remaining=remaining,
                 cause=cause,
-                writing=writing,
                 check_file=check_file,
                 phase=phase,
                 notes=notes,
@@ -4002,7 +3943,6 @@ class WriterPass:
                 not finished
                 and stop is None
                 and calls < max_calls
-                and (cap is None or spend.usd + spend.unknown * reserve < cap)
             ):
                 if remaining() <= 0:
                     stop = f"pass deadline of {self.cfg.deadline_s} s reached"
@@ -4053,9 +3993,7 @@ class WriterPass:
                         if comp.restart is not None:
                             self._archived += compaction_archive(comp, list(messages))
                             messages[:] = comp.restart
-                    if calls >= max_calls or (
-                        cap is not None and spend.usd + spend.unknown * reserve >= cap
-                    ):
+                    if calls >= max_calls:
                         continue  # the summary call took the last call the pass had
                     calls += 1
                 pr_run = self._pass_record
@@ -4088,9 +4026,8 @@ class WriterPass:
                         one_call,
                         book_unpriced=book_unpriced,
                         remaining=remaining,
-                        # the pass's room and its own cap, as before the first attempt
-                        room=lambda: usd_room(self.cfg, spend)
-                        and (cap is None or spend.usd + spend.unknown * reserve < cap),
+                        # the pass's room, as before the first attempt
+                        room=lambda: usd_room(self.cfg, spend),
                         note=lambda text: notes.append(_redact(text)[:300]),
                     )
                 except TimeoutError:
@@ -4187,7 +4124,6 @@ class WriterPass:
                         reply = _wt.general("stopped", reason=stop)
                     else:
                         ran += 1
-                        writing()
                         timeout = max(
                             1.0,
                             min(float(self.cfg.cell_timeout_s), remaining()),
@@ -4360,13 +4296,10 @@ class WriterPass:
                 not finished
                 and stop is None
                 and not errored
-                and (
-                    calls >= max_calls
-                    or (cap is not None and spend.usd + spend.unknown * reserve >= cap)
-                )
+                and calls >= max_calls
             ):
-                # the call cap or the USD cap ended the pass; uncapped: the operational step guard
-                cause(CODE_STEP_GUARD if uncapped else CODE_PASS_CAP)
+                # the operational step guard ended the pass
+                cause(CODE_STEP_GUARD)
             if stop is not None and over_quota is None:
                 notes.append(stop)
             summary = _redact(summary)
@@ -4933,7 +4866,7 @@ def unillm_turn(
     * Credentials: unillm reads the provider key from the controller's environment. It never enters argv,
       logs, the box (whose environment is cleared) or anything this module writes.
 
-    Verifying a real call (the first paid pass, under ``PassConfig.max_usd``): with the key in the
+    Verifying a real call (the first paid pass, under ``PassConfig.usd_limit``): with the key in the
     environment, run one pass on a recorded episode with a small ``max_calls``; check that the ``passes`` row
     holds a decimal USD string and no ``note: N unpriced calls`` reason, that it matches the provider's billed amount for origin
     ``memory.writer``, and that the unillm log shows ``reasoning_effort`` as configured. No test makes this

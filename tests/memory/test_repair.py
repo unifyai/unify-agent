@@ -1,59 +1,24 @@
-from decimal import Decimal
-
-import pytest
 
 from unify.memory.gate import GateResult
 from unify.memory.repair import (
-    REPAIR_ROUNDS,
     may_repair,
     render_result,
     repair_message,
-    round_reserve,
 )
 
 KEY = "sk-or-v1-" + "ab" * 32  # pragma: allowlist secret
 
 
-def test_round_reserve_is_the_median_of_the_pass_s_own_rounds():
-    # the first repair round: what the pass spent from its start to the first finish
-    assert round_reserve([Decimal("0.30")]) == Decimal("0.30")
-    assert round_reserve([Decimal("0.30"), Decimal("0.10")]) == Decimal("0.20")
-    assert round_reserve(
-        [Decimal("0.30"), Decimal("0.10"), Decimal("0.12")],
-    ) == Decimal("0.12")
-    # once offline replay has calibrated ROUND_RESERVE the constant is used
-    assert round_reserve([Decimal("0.30")], Decimal("0.05")) == Decimal("0.05")
-    with pytest.raises(ValueError):
-        round_reserve([])
-
-
-def test_may_repair_reserve_rule():
-    one = [Decimal("0.30")]
-    assert REPAIR_ROUNDS == 2
-    # remaining exactly the reserve: the round starts; a cent less: it does not
-    assert may_repair(0, Decimal("0.30"), 100.0, 5, one, [10.0]) is None
-    assert may_repair(0, Decimal("0.29"), 100.0, 5, one, [10.0]) == (
-        "repair: no round 1: 0.29 USD left, below the round reserve of 0.30 USD"
-    )
-    # the second repair round's reserve is the median of rounds 0 and 1
-    assert may_repair(
-        1,
-        Decimal("0.19"),
-        100.0,
-        5,
-        [Decimal("0.30"), Decimal("0.10")],
-        [10.0, 4.0],
-    ) == ("repair: no round 2: 0.19 USD left, below the round reserve of 0.20 USD")
+def test_may_repair_time_and_step_rule():
+    # no round count: time and the step guard alone
+    assert may_repair(5, 600.0, 10, [1.0]) is None
     # time: the median seconds of the completed rounds, gate checks included
-    assert may_repair(0, Decimal("1"), 9.9, 5, one, [10.0]) == (
+    assert may_repair(0, 9.9, 5, [10.0]) == (
         "repair: no round 1: 9.9 s left, below the round time reserve of 10.0 s (a round and the final merge's "
         "gate run)"
     )
-    assert may_repair(1, Decimal("1"), 7.0, 5, one * 2, [10.0, 4.0]) is None
-    assert may_repair(2, Decimal("9"), 1e9, 5, one * 3, [1.0] * 3) == (
-        "repair: no round 3: at most 2 repair rounds per pass"
-    )
-    assert may_repair(0, Decimal("9"), 1e9, 0, one, [1.0]) == (
+    assert may_repair(1, 7.0, 5, [10.0, 4.0]) is None
+    assert may_repair(0, 1e9, 0, [1.0]) == (
         "repair: no round 1: the pass's call cap is reached"
     )
 
@@ -102,19 +67,18 @@ def test_repair_message_points_at_the_full_result():
     msg = repair_message(1, "/inputs/gate/result-0.md", res)
     assert "/inputs/gate/result-0.md" in msg and "env/venmo:me (G3)" in msg
     # rev 2 names the calls as the writer makes them, from code
-    assert "repair round 1 of 2" in msg and "call tools.finish(summary) again" in msg
+    assert "repair round 1." in msg and "call tools.finish(summary) again" in msg
     assert "read it with tools.read(path)" in msg
 
 
 def test_the_time_reserve_covers_the_final_merge():
     """Amendment A: the final merge runs the whole gate again, so a round needs its median time plus the last
     check's seconds; a round is refused when only the median round fits."""
-    one = [Decimal("0.30")]
-    assert may_repair(0, Decimal("1"), 15.0, 5, one, [10.0], last_check_s=4.0) is None
-    assert may_repair(0, Decimal("1"), 12.0, 5, one, [10.0], last_check_s=4.0) == (
+    assert may_repair(0, 15.0, 5, [10.0], last_check_s=4.0) is None
+    assert may_repair(0, 12.0, 5, [10.0], last_check_s=4.0) == (
         "repair: no round 1: 12.0 s left, below the round time reserve of 14.0 s (a round and the final merge's "
         "gate run)"
     )
     assert (
-        may_repair(0, Decimal("1"), 12.0, 5, one, [10.0]) is None
+        may_repair(0, 12.0, 5, [10.0]) is None
     )  # without a check time, the median alone

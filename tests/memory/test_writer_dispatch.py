@@ -291,7 +291,18 @@ def _ended_with(writer, out, status):
     assert out.helpers[0]["files"] == 1
 
 
-def test_finishing_ends_a_helper_still_running_and_keeps_what_it_staged(tmp_path):
+def test_finishing_ends_a_helper_still_running_and_keeps_what_it_staged(tmp_path, monkeypatch):
+    from unify.memory.writer_pass import WriterPass
+
+    # the first two finishes are refused and the third is accepted, so the slow helper has staged its note by then
+    # (a pass has no finish cap: a finish with no manifest would be refused every time)
+    seen = []
+
+    def manifest_problem(self, box):
+        seen.append(box)
+        return ("G1: no manifest", False) if len(seen) <= 2 else (None, False)
+
+    monkeypatch.setattr(WriterPass, "_finish_manifest_problem", manifest_problem)
     lane = Slow()
     turns = [
         _call("d", "delegate", {"task": "area", "episodes": []}),

@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import shutil
-from decimal import Decimal
 
 import pytest
 
@@ -147,16 +146,16 @@ class Costs:
 @pytest.mark.parametrize(
     "costs, calls, usd, unknown",
     [
-        # each unknown call reserves max_usd / max_calls = 0.10: 0.40 + 6 x 0.10 reaches the cap
-        (["0.40"] + ["unknown"] * 50, 7, "0.40", 6),
-        (["0.60"] * 50, 2, "1.20", 0),
+        # no USD cap of its own: every pass runs to its step guard; unpriced calls are counted apart
+        (["0.40"] + ["unknown"] * 50, 10, "0.40", 9),
+        (["0.60"] * 50, 10, "6.00", 0),
         (["unknown"] * 50, 10, "0", 10),
         (["not money"] * 50, 10, "0", 10),
         # never exponent notation (str(Decimal("1E-7")) is "1E-7")
         (["1E-7"] * 50, 10, "0.0000010", 0),
     ],
 )
-def test_spend_cap_reserves_budget_for_unknown_costs(
+def test_spend_counts_known_costs_and_unpriced_calls_apart(
     tmp_path,
     costs,
     calls,
@@ -172,7 +171,7 @@ def test_spend_cap_reserves_budget_for_unknown_costs(
         ev,
         load=_never,
         model_turn=Costs(costs),
-        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10, max_usd=Decimal("1.00")),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
     )
     out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p3"))
     assert out.calls == calls and not out.passed
@@ -852,7 +851,7 @@ def _checks(cid, manifests):
     return {"role": "assistant", "tool_calls": calls}
 
 
-def test_check_calls_are_bounded_per_pass_and_count_against_the_call_cap(tmp_path):
+def test_check_calls_count_against_the_call_cap_and_have_no_limit_of_their_own(tmp_path):
     # rev 2: finish needs a manifest, so the scripted writer writes one that lists nothing after its checks
     model = Turns(
         [
@@ -868,10 +867,10 @@ def test_check_calls_are_bounded_per_pass_and_count_against_the_call_cap(tmp_pat
     ]
     from tests.memory.writer_library_items import CHECK_OK
 
-    assert [model.outputs[f"k{n}"] for n in range(2, 6)] == [CHECK_OK] * 4
-    assert model.outputs["k6"] == "not run: at most 5 check calls per pass"
-    # two model calls, five checks run (a check is a call), and the manifest cell; the empty manifest stores nothing
-    assert out.calls == 2 + 5 + 1 and out.nothing_to_store
+    # no check limit: every check runs
+    assert [model.outputs[f"k{n}"] for n in range(2, 7)] == [CHECK_OK] * 5
+    # two model calls, six checks run (a check is a call), and the manifest cell; the empty manifest stores nothing
+    assert out.calls == 2 + 6 + 1 and out.nothing_to_store
     # a check is a call: the cap stops checks too
     model = Turns([_checks("c", ["{}"] * 4)])
     mem, ev, writer = _writer(tmp_path / "capped", model, max_calls=3)

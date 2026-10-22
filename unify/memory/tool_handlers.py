@@ -51,12 +51,9 @@ class WriterCalls:
     tmp: Path
     roots: dict[str, Path]
     parent: str
-    uncapped: bool
     max_calls: int
-    max_reads: int
     remaining: Callable[[], float]
     cause: Callable[[str], None]
-    writing: Callable[[], None]
     check_file: Callable[..., Any]
     phase: dict
     notes: list
@@ -87,7 +84,7 @@ class WriterCalls:
     def admit(self, tool: str, kind: str | None, args: dict) -> "_wt.Reply | None":
         """The counters, checked and incremented on the event loop before the handler runs (today's order and
         texts); a refusal or None."""
-        from .writer_pass import CHECK_FLOOR_S, MAX_CHECKS
+        from .writer_pass import CHECK_FLOOR_S
 
         if self.finished:
             return _wt.general("pass_finished")
@@ -96,25 +93,19 @@ class WriterCalls:
         if tool == "check":
             if self.stop is not None:
                 return _wt.general("stopped", reason=self.stop)
-            if not self.uncapped and self.checks >= MAX_CHECKS:
-                return _wt.general("check_limit", limit=MAX_CHECKS)
             if self.calls >= self.max_calls:
                 return _wt.general("call_limit")
             if self.remaining() < CHECK_FLOOR_S:
                 return _wt.refused("check", "too_late")
             self.checks += 1
             self.calls += 1  # a check is a call against max_calls
-            self.writing()
             return None
         if tool in ("fixture", "land_capture", "test"):
             self.calls += 1  # a writer action, against the step guard
-            self.writing()
             return None
         if tool in ("read", "grep", "overview", "read_episode", "pool"):
             if self.readers >= _wt.READERS_PER_TURN:
                 return _wt.general("readers_per_turn")
-            if not self.uncapped and self.reads >= int(self.max_reads):
-                return _wt.general("reads_limit", limit=int(self.max_reads))
             self.readers += 1
             self.reads += 1
         return None
@@ -392,18 +383,14 @@ async def check(ctx: Any, args: dict) -> "_wt.Reply":
 async def finish(ctx: Any, args: dict) -> "_wt.Reply":
     """The ``finish`` tool: the box is killed first (nothing writes /memory while it is judged), then today's finish
     logic; an accepted finish ends every helper and waits for every handler thread of the pass."""
-    from .writer_pass import FINISH_G1_REFUSALS, _accepted_manifest
+    from .writer_pass import _accepted_manifest
 
     st: WriterCalls = ctx.state
     if st.kill_box is not None:
         await st.kill_box()
-    if st.uncapped or st.phase["g1_refusals"] < FINISH_G1_REFUSALS:
-        g1, empty = await in_thread(_locked, st, st.writer._finish_manifest_problem, st.box)
-    else:
-        g1, empty = None, False
+    g1, empty = await in_thread(_locked, st, st.writer._finish_manifest_problem, st.box)
     manifest_path = ({"path": _MANIFEST_SHOWN, "mode": "read"},)
     if g1 is not None:
-        st.phase["g1_refusals"] += 1  # bounded: past it the final check refuses by name
         content = _wt.refusal("finish", "manifest_problem", reason=g1)
         reply = _wt.Reply(content, "refused", "manifest_problem", manifest_path)
     else:

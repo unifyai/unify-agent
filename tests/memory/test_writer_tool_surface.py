@@ -221,7 +221,7 @@ def test_an_existing_events_file_is_never_written_over(tmp_path):
 
 
 def test_the_profile_limits_are_the_enforcing_constants_and_the_texts_state_them():
-    from unify.memory import helpers, repair
+    from unify.memory import helpers
     from unify.memory.integration import fork, fork_worker
 
     def limits(agent):
@@ -250,7 +250,7 @@ def test_the_profile_limits_are_the_enforcing_constants_and_the_texts_state_them
     )
     assert f["staged files per episode"] == fork_worker.QUOTA_FILES
     assert f["staged bytes per episode"] == fork_worker.QUOTA_BYTES
-    assert limits("gate")["repair rounds (capped pass)"] == repair.REPAIR_ROUNDS
+    assert "repair rounds (capped pass)" not in limits("gate")
     text = fork.fork_instruction()
     for stated in (
         f"{fork_worker.QUOTA_FILES} files",

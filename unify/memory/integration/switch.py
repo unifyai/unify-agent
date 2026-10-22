@@ -178,8 +178,6 @@ def memory_cap_usd(settings: Any) -> Decimal:
 
 # --- fixed values -----------------------------------------------------------------------------------------------
 
-#: The writer's reader calls per pass.
-PASS_MAX_READS = 1000
 #: One pass's wall-clock bound, in seconds.
 PASS_WALL_S = 2700
 

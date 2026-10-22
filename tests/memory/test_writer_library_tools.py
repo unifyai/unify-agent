@@ -147,20 +147,6 @@ def _calls(*calls):
     return {"role": "assistant", "tool_calls": [c["tool_calls"][0] for c in calls]}
 
 
-def test_reader_calls_use_their_own_budget_not_max_calls(tmp_path):
-    read = lambda cid: _call(
-        cid,
-        "read_episode",
-        {"episode": "e2", "part": "request"},
-    )  # noqa: E731
-    turns = [read("a"), read("b"), read("c")]
-    out, model = _pass(tmp_path, turns, max_calls=6, max_reads=2)
-    assert model.outputs["a"] == '== request ==\n"req"'
-    assert model.outputs["b"] == '== request ==\n"req"'
-    assert model.outputs["c"] == "not run: the pass's reader-call limit (2) is reached"
-    assert out.reads == 2
-
-
 def test_at_most_8_cells_per_turn(tmp_path):
     """Rev 2: every call is made from a cell, and the per-turn bound is on cells (tool_registry.CELLS_PER_TURN)."""
     many = [_call(f"r{i}", "read", {"path": "/inputs"}) for i in range(9)]

@@ -3,7 +3,6 @@ the gate's own parser (the repair-reserve pricing is a known issue: KNOWN-ISSUES
 test_writer_library_tools' helpers."""
 
 from unify.memory import writer_pass
-from unify.memory.writer_pass import FINISH_G1_REFUSALS
 from tests.memory import writer_library_items as wl
 from tests.memory.test_writer_pass import _call
 from tests.memory.test_writer_library_tools import EPS, _episode, _pass
@@ -85,21 +84,6 @@ def test_a_part_shown_only_in_part_earns_no_identical_credit(tmp_path):
 
 
 # --- finish validates the manifest ------------------------------------------------------------------------
-
-
-def test_finish_refuses_a_missing_manifest_a_bounded_number_of_times(tmp_path):
-    out, model = _pass(tmp_path, [], eids=("e2",), max_calls=10)
-    refusal = wl.FINISH_CELL + "not finished: G1: no manifest: write /memory/.pass/manifest.json, then finish"
-    refused = [
-        m
-        for m in model.seen
-        if m.get("role") == "tool"
-        # each refused finish cell ends its interpreter, so the next one opens with that notice
-        and m["content"] in (refusal, wl.STOPPED + refusal)
-    ]
-    assert len(refused) == FINISH_G1_REFUSALS
-    # past the bound finish is accepted, and the final check refuses by name
-    assert out.finished and not out.nothing_to_store and not out.passed
 
 
 def test_finish_names_the_gates_parse_error(tmp_path, monkeypatch):

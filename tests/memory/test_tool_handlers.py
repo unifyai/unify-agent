@@ -264,9 +264,9 @@ def test_every_request_carries_only_execute_code_and_the_tools_answer_from_cells
     assert text.splitlines()[-1].startswith("not finished: ")
     # a JSON call of an in-code tool is an unknown tool
     assert model.outputs["j1"].startswith("refused: unknown tool 'read'")
-    # c1's finish was refused (no manifest); the scripted model's closing finish is the second refused finish, and
-    # rev 2 ends the pass there (FINISH_G1_REFUSALS), unfinished in substance: nothing landed
-    assert out.finished is True and not out.passed and "no manifest" in out.reasons
+    # c1's finish was refused (no manifest), and so is every later one: a pass has no finish cap, so it ends when its
+    # turns run out, with nothing landed
+    assert out.finished is False and not out.passed and "no manifest" in out.reasons
 
 
 def test_the_event_file_has_the_base_fields_plus_the_additive_ones(tmp_path):

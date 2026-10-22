@@ -5,9 +5,7 @@ round limit and never mark a refusal stuck.
 """
 
 import time
-from decimal import Decimal
 
-from unify.memory import repair
 from unify.memory.drafts import draft_states
 from unify.memory.gate import RED_TEST_HINT, GateResult
 from unify.memory.repair import (
@@ -23,6 +21,7 @@ from tests.memory import writer_library_items as wl
 from tests.memory.test_writer_library_repair import FILES_CODE
 from tests.memory.test_writer_pass import Turns, _call, _run, _write, _writer, needs_bwrap
 from tests.memory import prompt_guards as guards
+from unify.memory.writer_pass import STEP_GUARD
 
 ME, OTHER = wl.ITEM_ID, "memory.acct.users:other"
 TEST_PATH = f"/memory/{wl.TEST_FILE}"
@@ -120,10 +119,10 @@ def test_an_unchanged_candidate_repeats_every_refusal():
 
 def test_the_repair_message_names_the_stuck_items_and_why():
     res = _refused({ME: NOT_RED, OTHER: f"G2: {OTHER} covers no recorded action"})
-    plain = repair_message(4, "/inputs/gate/result-3.md", res, None)
+    plain = repair_message(4, "/inputs/gate/result-3.md", res)
     assert plain.endswith("the items that pass land and the rest are kept as a draft for the next pass.")
     held = [("G3", ME, refusals(res)[("G3", ME)])]
-    msg = repair_message(4, "/inputs/gate/result-3.md", res, None, stuck=held)
+    msg = repair_message(4, "/inputs/gate/result-3.md", res, stuck=held)
     assert msg.startswith(plain)
     assert f"No further repair round is offered for {ME} (G3)" in msg
     assert f"in {STUCK_REPEATS} rounds in a row" in msg and f"listed test {wl.TEST_FILE} is not in the candidate" in msg
@@ -158,7 +157,7 @@ def test_the_end_event_carries_the_stuck_refusals(tmp_path):
 @needs_bwrap
 def test_a_repeated_refusal_stops_repair_and_the_rest_of_the_manifest_lands(tmp_path):
     model = Turns(_edits(12))
-    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_calls=STEP_GUARD, deadline_s=300.0)
     checked: list[str] = []
 
     def check(parent, candidate, manifest, **kwargs):
@@ -214,7 +213,7 @@ def test_a_repeated_refusal_stops_repair_and_the_rest_of_the_manifest_lands(tmp_
 @needs_bwrap
 def test_refusals_that_differ_each_round_keep_getting_rounds_until_time(tmp_path):
     model = Turns(_edits(80))
-    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=20.0)
+    mem, ev, writer = _writer(tmp_path, model, max_calls=STEP_GUARD, deadline_s=20.0)
     n = [0]
 
     def check(parent, candidate, manifest, **kwargs):
@@ -235,7 +234,7 @@ def test_refusals_that_differ_each_round_keep_getting_rounds_until_time(tmp_path
 def test_an_unchanged_candidate_counts_as_a_repeat_in_the_pass(tmp_path):
     # after round 0 the writer only calls finish: every later candidate is the same tree and manifest
     model = Turns([_call("w0", "execute_code", {"code": FILES_CODE}), _call("f0", "finish", {"summary": "s"})])
-    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_calls=STEP_GUARD, deadline_s=300.0)
     words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
     seen: list[str] = []
 
@@ -257,28 +256,6 @@ def test_an_unchanged_candidate_counts_as_a_repeat_in_the_pass(tmp_path):
     assert not out.passed and draft_states(ev.pass_rounds()) == {"px": "open"}
 
 
-@needs_bwrap
-def test_a_capped_pass_keeps_its_round_limit_and_marks_nothing_stuck(tmp_path):
-    model = Turns(_edits(6))
-    mem, ev, writer = _writer(tmp_path, model, max_usd=Decimal("10"), max_calls=40)
-    n = [0]
-
-    def check(parent, candidate, manifest, **kwargs):
-        n[0] += 1
-        return _refused({ME: NOT_RED})
-
-    writer.gate.check = check
-    out = _run(writer)
-    # rounds 0 and 1 are checked; the last round goes to the final merge unchecked, as before
-    assert n[0] == repair.REPAIR_ROUNDS and out.rounds == repair.REPAIR_ROUNDS + 1, out.reasons
-    assert f"repair: no round {repair.REPAIR_ROUNDS + 1}: at most {repair.REPAIR_ROUNDS} repair rounds per pass" in (
-        out.reasons
-    )
-    assert out.repair_stuck is None and not any("stuck" in r for r in out.reasons)
-    msgs = [m["content"] for m in model.seen if m.get("role") == "user" and "This is repair round" in m["content"]]
-    assert len(msgs) == repair.REPAIR_ROUNDS and not any("No further repair round" in m for m in msgs)
-
-
 def test_the_uncapped_brief_states_the_stuck_rule_as_information():
     from unify.memory import library_prompts
 
@@ -287,5 +264,4 @@ def test_the_uncapped_brief_states_the_stuck_rule_as_information():
     # message that names it (test_the_repair_message_names_the_stuck_items_and_why), not from the brief
     assert "There is no set number of repair rounds" in text
     assert library_prompts.limits_now().stuck_repeats == STUCK_REPEATS
-    assert library_prompts.limits_now(finish_capped=True).stuck_repeats is None
     assert guards.example_checks(text) == [] and guards.benchmark_words(text) == []

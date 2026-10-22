@@ -16,6 +16,7 @@ from tests.memory.test_writer_pass import Turns, _call, _run, _writer, needs_bwr
 from unify.common._async_tool.loop_stop import MEMORY_K
 from unify.memory.gate import GateResult
 from unify.memory.writer_pass import CODE_OK, PassOutcome
+from unify.memory.writer_pass import STEP_GUARD
 
 # ── ASSUMED NAMES (the integrator adapts them here, in one place) ────────────────────────────────────────────────
 #: The reason code of a pass the no-progress stop ended.
@@ -101,7 +102,7 @@ def test_a_writer_pass_the_stop_ended_reports_the_code(tmp_path):
         [_call("w0", "execute_code", {"code": FILES_CODE})]
         + [_call(f"n{i}", "execute_code", {"code": NOOP}) for i in range(loops)],
     )
-    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_calls=STEP_GUARD, deadline_s=300.0)
     merged: list = []
     writer.gate.check = lambda *a, **k: GateResult(True, {}, [], [])
     writer.gate.merge = _admit(writer, merged)
@@ -123,7 +124,7 @@ def test_a_writer_never_stopped_carries_no_code(tmp_path):
         [_call("w0", "execute_code", {"code": FILES_CODE})]
         + [_call(f"n{i}", "execute_code", {"code": COUNTER}) for i in range(loops)],
     )
-    mem, ev, writer = _writer(tmp_path, model, max_usd=None, deadline_s=300.0)
+    mem, ev, writer = _writer(tmp_path, model, max_calls=STEP_GUARD, deadline_s=300.0)
     writer.gate.check = lambda *a, **k: GateResult(True, {}, [], [])
     writer.gate.merge = _admit(writer, [])
     out = _run(writer)

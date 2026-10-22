@@ -1845,11 +1845,9 @@ GENERAL_REFUSALS: dict[str, str] = {
     "bad_arguments": "{reason}",
     "readers_per_turn": "not run: at most {limit} reader calls run per model turn; send it again",
     "cells_per_turn": "not run: at most {limit} cells run per model turn; send it again",
-    "reads_limit": "not run: the pass's reader-call limit ({limit}) is reached",
     "stopped": "not run: {reason}",
     "pass_finished": "not run: pass finished",
     "task_done": "not run: task done",
-    "check_limit": "not run: at most {limit} check calls per pass",
     "call_limit": "not run: the pass's call cap is reached",
 }
 

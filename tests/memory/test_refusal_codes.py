@@ -1,20 +1,19 @@
 """Refusal form codes: every refusal text a memory tool returns is rendered from a spec's refusal forms, the codes
 are listed by tool and written at a pass's start, the briefs state the operational limits from their constants,
-the pass keeps the manifest of its last accepted finish, and an uncapped repair message states no round count.
+the pass keeps the manifest of its last accepted finish, and a repair message states no round count.
 """
 
 import asyncio
 import json
 import re
 import string
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from unify.memory import helpers, library_prompts, tool_spec, views, writer_pass
 from unify.memory.gate import GateResult
-from unify.memory.repair import REPAIR_ROUNDS, repair_message
+from unify.memory.repair import repair_message
 from unify.memory.trigger import PassRequest
 from tests.memory.test_writer_library_tools import EPS
 from tests.memory.test_writer_pass import Turns, _call, _write, _writer, needs_bwrap
@@ -137,32 +136,11 @@ def test_the_briefs_state_the_operational_limits_from_their_constants():
     """Rev 2's in-code brief states the limits from their constants; the fork's staging quota is the fork's text
     (test_writer_tool_surface) and the compaction is stated by the note that follows a restart
     (``writer_pass.RESTART_POINTER``), so neither is in the writer's brief."""
-    finish_cap = f"up to {writer_pass.FINISH_G1_REFUSALS} times in a pass"
-    capped_rounds = f"At most {REPAIR_ROUNDS} repair rounds follow the first refused `tools.finish`"
-    uncapped_rounds = "There is no set number of repair rounds"
-    full = library_prompts.write_brief_now(finish_capped=True)
-    for sentence in (finish_cap, capped_rounds):
-        assert full.count(sentence) == 1, sentence
-    assert uncapped_rounds not in full
-    # an uncapped pass: neither cap is stated
+    # a pass has no round count and no finish cap: the brief says there is no set number of repair rounds
     plain = library_prompts.write_brief_now()
-    assert plain.count(uncapped_rounds) == 1
-    assert finish_cap not in plain and capped_rounds not in plain
-    for text in (full, plain):
-        assert "budget" not in text.lower() and "<<" not in text
-
-
-def test_the_pass_states_the_finish_cap_as_it_is_configured(tmp_path):
-    _, _, writer = _writer(
-        tmp_path,
-        Turns([]),
-        max_usd=Decimal("1"),
-    )
-    # rev 2 always compacts, so the brief's inputs carry no compaction flag
-    assert "compact" not in writer._write_inputs()
-    assert writer._write_inputs()["finish_capped"] is True
-    _, _, uncapped = _writer(tmp_path / "u", Turns([]), max_usd=None)
-    assert uncapped._write_inputs()["finish_capped"] is False
+    assert plain.count("There is no set number of repair rounds") == 1
+    assert "repair rounds follow the first refused" not in plain and "times in a pass" not in plain
+    assert "budget" not in plain.lower() and "<<" not in plain
 
 
 def test_accepted_manifest_is_the_raw_dict_or_none(tmp_path):
@@ -201,7 +179,7 @@ def test_final_manifest_is_set_by_an_accepted_finish_only(tmp_path):
     assert writer.final_manifest == manifest
 
 
-def test_an_uncapped_repair_message_states_no_round_count():
+def test_a_repair_message_states_no_round_count():
     res = GateResult(
         False,
         {},
@@ -209,11 +187,9 @@ def test_an_uncapped_repair_message_states_no_round_count():
         ["G3"],
         items_refused={"memory.a.b:f": ["G3"]},
     )
-    capped = repair_message(1, "/inputs/gate/result-0.md", res, REPAIR_ROUNDS)
-    assert f"repair round 1 of {REPAIR_ROUNDS}" in capped
-    uncapped = repair_message(1, "/inputs/gate/result-0.md", res, None)
-    assert "repair round 1." in uncapped
-    assert not re.search(r"round \d+ of \d+", uncapped)
+    msg = repair_message(1, "/inputs/gate/result-0.md", res)
+    assert "repair round 1." in msg
+    assert not re.search(r"round \d+ of \d+", msg)
 
 
 def test_a_refusal_survives_copy_and_pickle_as_a_model_call_copies_its_messages():

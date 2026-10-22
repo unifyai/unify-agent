@@ -207,7 +207,7 @@ def _rendered(monkeypatch) -> dict[str, str]:
             out[f"rendered:help:{agent}:{name}"] = R.help_text(name, agent)
     out["rendered:refusals"] = json.dumps(R.refusal_codes()) + json.dumps(R.GENERAL_REFUSALS)
     out["rendered:common_section"] = R.COMMON_SECTION
-    names = ("helper", "similar", "finish_capped")
+    names = ("helper", "similar")
     for values in itertools.product((False, True), repeat=len(names)):
         out[f"rendered:write:{values}"] = lp.write_brief_now(**dict(zip(names, values)))
     for similar in (False, True):

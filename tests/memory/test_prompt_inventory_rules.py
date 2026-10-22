@@ -139,7 +139,6 @@ RULES: tuple[tuple[str, str, str], ...] = (
     ("B152", "writer", "G6, safety"),
     ("B157", "writer", "a breach refuses the pass"),
     ("B158", "writer", "model and check calls"),
-    ("B162", "writer", "is refused with the reason up to"),
     ("T58", "writer", "a fixture that did not come through `tools.fixture` unchanged"),
     ("B247", "helper", "a `tools.done` without them is refused"),
     ("B268", "fork", "at most 200 files and 4 MiB in all are kept"),
@@ -177,7 +176,7 @@ def _writer_briefs() -> dict[str, tuple[str, frozenset[str]]]:
     return {
         "writer base": (lp.write_brief_now(), frozenset()),
         "writer full": (
-            lp.write_brief_now(**full, finish_capped=True),
+            lp.write_brief_now(**full),
             frozenset({"helper", "similar"}),
         ),
     }
