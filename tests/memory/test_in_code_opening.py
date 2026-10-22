@@ -76,7 +76,8 @@ def test_every_memory_agent_starts_with_the_shared_opening(monkeypatch, planted)
         assert "UNIFY_" not in opening, name
         for mount in agent_profiles.profile(agent)["mounts"]:
             assert mount["path"] in opening, f"{name}: {mount['path']}"
-        assert "cell time: 60 s" in opening and "stated in the first message" in opening, name
+        # rev 2's opening states the pass's wall clock as a number beside the cell time
+        assert "cell time: 60 s" in opening and re.search(r"pass wall clock: [0-9]+ s", opening), name
         report.append(f"{name}: {text[:300]!r}")
     warnings.warn("FIRST 300 ON\n" + "\n".join(report), stacklevel=1)
 

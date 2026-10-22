@@ -165,10 +165,11 @@ def test_the_replacement_matches_where_the_withdrawn_capture_would_have(tmp_path
 # --- the request ------------------------------------------------------------------------------------------------------
 
 
-def test_the_request_withdraws_only_under_its_switch_and_records_what_it_did():
-    # the copy is written by _export_copy (at the request's open, and at each re-pin under UNIFY_MEMORY_IN_EPISODE)
+def test_the_request_always_withdraws_closed_captures_and_records_what_it_did():
+    # the copy is written by _export_copy (at the request's open, and at each re-pin under UNIFY_MEMORY=in_episode);
+    # rev 2 has no withdrawal switch: closed captures are always withdrawn
     opening = inspect.getsource(RequestRun._export_copy)
-    assert "if library_withdraw_closed_captures(SETTINGS):" in opening
+    assert "library_withdraw_closed_captures" not in opening
     assert "withdrawn = withdrawn_captures(Repo(paths.memory))" in opening
     assert "withdrawn=withdrawn," in opening and '"offered_in_place": sorted(' in opening
     assert opening.index("withdrawn_captures(Repo(paths.memory))") < opening.index("export_actor_library_mode(")

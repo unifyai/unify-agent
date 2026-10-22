@@ -42,7 +42,7 @@ def _visible(source, label, regime):
 
 def test_hidden_checker_and_no_signal_regime_count_nothing():
     fail = [_visible("checker", "fail", "dense")]
-    assert lc.counted_signals(fail, "dense") == (False, False)
+    # (the bed's checker-visible switch went in 74b1a0a58, and with it this pair's "not visible" case)
     assert lc.counted_signals(fail, "dense") == (False, True)
     ok = [_visible("checker", "pass", "sparse")]
     assert lc.counted_signals(ok, "sparse") == (True, False)

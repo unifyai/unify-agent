@@ -127,7 +127,7 @@ def test_an_actor_episode_matches_and_runs_a_captured_procedure_with_no_import_l
         cell_status=dict(run.cell_status),
         runtime_calls=run.runtime_calls,
         cell_errors=dict(run.cell_errors),
-        memory_bound=run.library_mode and run.memory_bound,
+        memory_bound=run.memory_bound,  # as the request's finish passes it (rev 2: always the library layout)
     )
     ep = dataclasses.replace(ep, memory_use=use)
     repo = Repo.init_bare(tmp_path / "episodes.git")

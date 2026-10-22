@@ -270,11 +270,11 @@ def test_a_worked_example_is_read_never_called_or_matched(tmp_path):
 # --- the request ------------------------------------------------------------------------------------------------------
 
 
-def test_the_request_marks_worked_examples_only_under_its_switch_and_counts_them():
-    # the copy is written by _export_copy (at the request's open, and at each re-pin under UNIFY_MEMORY_IN_EPISODE)
+def test_the_request_always_marks_worked_examples_and_counts_them():
+    # the copy is written by _export_copy (at the request's open, and at each re-pin under UNIFY_MEMORY=in_episode)
     opening = inspect.getsource(RequestRun._export_copy)
-    # rev 2: the trace contract offers constants as examples too (switch.constant_captures_as_examples)
-    assert "examples=constant_captures_as_examples(SETTINGS)" in opening
+    # rev 2: constants are always offered as worked examples (the switch is gone)
+    assert "withdrawn=withdrawn, examples=True)" in opening
     assert '"worked_examples": examples' in opening
     assert '{"type": "capture_serving", "episode_id": self.episode_id, **self.capture_serving}' in inspect.getsource(
         RequestRun._open,

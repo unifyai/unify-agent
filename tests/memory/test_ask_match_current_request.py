@@ -341,11 +341,13 @@ async def test_the_host_gives_the_acts_request_and_refuses_when_none_is_known(tm
     assert "current_request" not in text.allow and "current_request" not in text.stub
     assert json.loads(ask(text).text) == {"text": "Total the table, please.", "data": []}
     # exactly what the first user message shows: never a field of the request it does not show
+    # rev 2: act() takes the request as text (071805608); a value that is not text shows the model no text, so it is
+    # refused, and none of its fields reaches the box
     structured = session({"task": "total", "rows": [[1, 2]], "task_id": "arc-0451"}, "b")
-    assert ask(structured).status == "refused"  # an object with no message text shows the model no text
+    assert ask(structured).status == "refused"
     shown_request = {"role": "user", "content": "Total the table.", "task_id": "arc-0451", "label": "x"}
     shown = session(shown_request, "e")
-    assert json.loads(ask(shown).text) == {"text": "Total the table.", "data": []}
+    assert ask(shown).status == "refused"
     assert "arc-0451" not in ask(shown).text and "label" not in ask(shown).text
     grid = '{"train": [{"input": [[1, 2]], "output": [[2, 1]]}], "test": [{"input": [[3, 4]]}]}'
     arc = session(grid, "f")  # a request that is all JSON: its one value is the data, read from the text shown
@@ -355,7 +357,7 @@ async def test_the_host_gives_the_acts_request_and_refuses_when_none_is_known(tm
     mixed = session(prose, "g")
     assert json.loads(ask(mixed).text) == {"text": prose, "data": [{"rows": [[1, 2]]}, [3, 4]]}
     message = session([{"role": "user", "content": "first"}, {"role": "user", "content": "the latest"}], "c")
-    assert json.loads(ask(message).text) == {"text": "the latest", "data": []}
+    assert ask(message).status == "refused" and "the latest" not in ask(message).text
     nothing = session(None, "d")
     refused = ask(nothing)
     assert refused.status == "refused" and refused.form == "unavailable"

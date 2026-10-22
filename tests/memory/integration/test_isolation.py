@@ -246,6 +246,16 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
             context=ctx,
         )
     assert started, f"the request started no writer service (progress: {progress})"
+    # the episode-end fork, settled as a fork leaves it (here no fork lane exists, so a stand-in writes what a fork
+    # writes), gives the ledger the episode's entry for the service's pass
+    from unify.memory.integration.paths import Paths
+
+    fork_dir = Paths.under(home).state_dir / "memory-staging" / run.episode_id
+    fork_dir.mkdir(parents=True, exist_ok=True)
+    (fork_dir / "summary.md").write_text("## Asked\nPay Ada back.\n## Approach\n- read pay.csv\n")
+    (fork_dir / "fork.json").write_text(
+        json.dumps({"episode": run.episode_id, "status": "ok", "files": ["summary.md"]}),
+    )
     stepped = ws.step(home, settings=SETTINGS)
 
     assert (
@@ -258,8 +268,12 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
     assert not any(SENTINEL.encode() in b for b in staged)
     assert SENTINEL not in json.dumps(emitted)
     assert SENTINEL not in " ".join(progress)
-    # the verdict itself did land, as pass/fail only
+    # rev 2 infers the regime from the signals the actor saw: with none, the regime is "none" and the hidden grader's
+    # verdict decides nothing, so it is not posted at all (its text never could be)
     signals = os.popen(
         f"git --git-dir {home / 'episodes.git'} log --format=%N --notes=signals main",
     ).read()
-    assert "fail" in signals and SENTINEL not in signals
+    assert SENTINEL not in signals and "fail" not in signals
+    from unify.memory.evidence import EvidenceStore
+
+    assert EvidenceStore(Paths.under(home).evidence).regime_record(run.episode_id) == ("none", "nothing")

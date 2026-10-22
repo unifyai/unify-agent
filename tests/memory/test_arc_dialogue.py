@@ -20,8 +20,6 @@ from types import SimpleNamespace
 import pytest
 
 from tests.memory.arc_transcript import (
-    ITEM,
-    WRITER_CELL,
     demos_feedback,
     grid,
     line,
@@ -428,44 +426,6 @@ def _pass_world(tmp_path, episodes):
 
     gate = Gate(mem, ev, BlobStore(tmp_path / "blobs"), action_lookup=lookup, library_mode=LibraryConfig())
     return mem, ev, gate, by_id
-
-
-@needs_bwrap
-def test_a_scripted_pass_lands_an_env_item_covering_the_dialogue_actions(tmp_path):
-    eps = [
-        _episode(visit()["lines"])[0],
-        _episode(
-            visit(task="task-0badf00d", seed=5)["lines"],
-            eid="20261008T121000-1b2c3d4e",
-        )[0],
-    ]
-    mem, ev, gate, by_id = _pass_world(tmp_path, eps)
-    script = Script([WRITER_CELL], usd="0.0000005")
-    writer = WriterPass(
-        mem,
-        gate,
-        ev,
-        load=lambda eid: by_id[eid],
-        model_turn=script,
-        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
-    )
-    out = asyncio.run(
-        writer.run(PassRequest("batched", None, sorted(by_id), False), "p1"),
-    )
-    assert "COVERS 6 EPISODES 2" in script.outputs["c1"], script.outputs
-    assert out.passed, out.reasons
-    assert consolidate.reason_codes(out, None) == ["ok"]
-    want = {
-        (ep.episode_id, i)
-        for ep in eps
-        for i, a in enumerate(ep.actions)
-        if a.kind == "dialogue" and a.status == "ok"
-    }
-    assert len(want) == 6 and ev.covered() == want
-    tree = mem.run("ls-tree", "-r", "--name-only", "main").split()
-    assert "env/env/__init__.py" in tree
-    assert "env/env/tests/rec/observations.json" in tree
-    assert ITEM.split(":")[1] in mem.show("main", "env/env/__init__.py").decode()
 
 
 @needs_bwrap

@@ -313,10 +313,12 @@ def test_episode_holds_the_whole_trajectory_and_extra_actions(monkeypatch):
     assert ep.actions[0].cell == 0
     assert (ep.worktree_before, ep.worktree_after) == ("1" * 40, "2" * 40)
     assert ep.worktree_diff == "--- a/out/report.json\n"
-    assert ep.memory_diff == "diff --git a/x b/x\n"
+    # rev 2: the actor's library copy is read-only, so an episode records no memory diff (74b1a0a58)
+    assert ep.memory_diff == ""
     assert ep.transcript == _lines()  # raw lines, not folded
     assert ep.costs == [CostRow("actor", "m", 1, 2, "unknown")]
-    assert ep.regime == "dense" and ep.effort == "high" and ep.memory_main == "0" * 40
+    # rev 2 never defaults a regime: "none" until the caller infers it from the episode's signals (74b1a0a58)
+    assert ep.regime == "none" and ep.effort == "high" and ep.memory_main == "0" * 40
     assert "spotify.login" in ep.fingerprints
     assert any(k.startswith("worktree:workspace.") for k in ep.fingerprints)
 

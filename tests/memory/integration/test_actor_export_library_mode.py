@@ -119,11 +119,7 @@ def test_hooks_bind_the_library_export_read_only(monkeypatch, tmp_path):
     assert hooks.worker_paths() == [
         str(paths.checkout),
     ]  # the copy's root: the parent of memory/
-    monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(index="", paths=paths))
-    assert (
-        hooks.worker_mounts() == [paths.checkout]
-        and hooks.worker_readonly_mounts() == []
-    )
+    # (rev 2 has one layout: the v2 read-write export half went with it)
 
 
 @needs_bwrap

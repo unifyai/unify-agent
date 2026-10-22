@@ -30,9 +30,15 @@ def _fix(cause: str) -> str:
 
 
 def test_the_pool_text_gives_no_second_episode_reason_to_defer():
+    from unify.common import tool_registry
+
     brief = lp.write_brief_now()
     assert "lacks only another episode" not in brief
-    assert "`retired` closes an entry for good: it is wrong or not reusable" in brief
+    # rev 2: the decisions are stated by the pool tool's own help, which the brief points to
+    assert 'tools.help("pool")' in brief
+    pool_help = tool_registry.registry()["pool"].description
+    assert "'retired' (reason; closes the entry for good: it is wrong or not reusable)" in pool_help
+    assert "lacks only another episode" not in pool_help
 
 
 def test_a_function_with_examples_from_one_episode_says_so_in_the_index():

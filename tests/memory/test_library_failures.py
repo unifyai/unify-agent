@@ -130,7 +130,7 @@ def test_a_failure_whose_cell_never_reported_is_listed_without_a_cell():
     assert [e["cell"] for e in listed] == [None, None]
 
 
-def test_the_run_settles_its_cells_and_the_use_record_lists_them_in_library_mode_only():
+def test_the_run_settles_its_cells_and_the_use_record_lists_them():
     run = RequestRun("r", None)
     run.note_calls(_failing_cell())
     run.note_result("call-b", {"error": None, "session_id": 0})
@@ -151,11 +151,3 @@ def test_the_run_settles_its_cells_and_the_use_record_lists_them_in_library_mode
     assert rec["library_calls_failed"] == 2
     text = json.dumps(rec)
     assert PLANTED_SECRET not in text and "Traceback" not in text
-    off = memory_use(ep, [PARSE_DATE], runtime_calls=run.runtime_calls, failures=run.failures)
-    assert "library_failures" not in off and "library_failures_dropped" not in off
-    # outside library mode the run keeps nothing
-    other = RequestRun("r", None)
-    other.note_calls(_failing_cell())
-    other.note_result("call-b", {"error": None, "session_id": 0})
-    assert other.failures == library_failures_empty()
-    assert runtime_calls_empty()["cells"] == 0

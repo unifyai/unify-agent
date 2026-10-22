@@ -193,9 +193,6 @@ def test_a_side_effect_only_episode_is_captured_with_no_value_and_its_calls(tmp_
     assert row["effects_seen"] == {"read": 0, "write": 1, "unknown": 0}
     rec = json.loads((store / row["capture_id"] / "record.json").read_text())
     assert rec["outcome"] == "positive" and not cp.negative(rec)
-    # the old contract would have refused it: no value and no work-tree change is not a completed attempt
-    old = cp.capture_trace_step(_staging(tmp_path / "old", "e1", {"procedure.py": VALUE_PROC}), _ep(), cp.store_dir(tmp_path / "old"))  # fmt: skip
-    assert old["safety"] == "not a completed attempt: nothing was handed back"
 
 
 def test_a_contrary_signal_makes_negative_knowledge_and_nothing_runs(tmp_path):
