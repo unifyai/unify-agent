@@ -94,3 +94,5 @@ FINISH_CELL = (
     "(no output)\n(the interpreter exited during the cell; the interpreter was restarted: variables are gone, files "
     "remain)\n"
 )
+#: ``tools.check``'s reply when the gate passes the candidate (rev 2: labels never refuse, so it says what it ran).
+CHECK_OK = "ok: the static checks, the items' own tests and the gate's drawn inputs pass"

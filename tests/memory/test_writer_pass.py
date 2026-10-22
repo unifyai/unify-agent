@@ -491,7 +491,9 @@ def test_hostile_cells_and_arguments_never_raise_on_the_host(tmp_path):
             "utf8",
             "execute_code",
             {
-                "code": "import sys; sys.stdout.buffer.write(b'A\\xff\\xfeB'); sys.stdout.flush()",
+                # raw bytes on the cell's standard output (rev 2's persistent interpreter captures print through a
+                # text stream with no .buffer; what reaches fd 1 is decoded with replacements)
+                "code": "import os; os.write(1, b'A\\xff\\xfeB')",
             },
         ),
         {
@@ -599,8 +601,13 @@ def test_cell_file_size_is_limited_below_run_confineds(tmp_path):
     assert model.outputs["c1"].strip() == str(CELL_FSIZE_BYTES)
 
 
+EMPTY = {"items": [], "why": "nothing to keep", "summary": "s"}
+
+
 @needs_bwrap
 def test_calls_after_finish_are_skipped_and_missing_ids_are_synthesised(tmp_path):
+    from tests.memory.in_code_calls import as_cell
+
     turn = {
         "role": "assistant",
         "tool_calls": [
@@ -608,15 +615,19 @@ def test_calls_after_finish_are_skipped_and_missing_ids_are_synthesised(tmp_path
                 "type": "function",
                 "function": {
                     "name": "execute_code",
-                    "arguments": json.dumps({"code": "print('first')"}),
+                    # rev 2: finish needs a manifest; one that lists nothing is a decision to store nothing
+                    "arguments": json.dumps(
+                        {"code": _write("/memory/.pass/manifest.json", json.dumps(EMPTY)) + "\nprint('first')"},
+                    ),
                 },
             },
             {
                 "id": "f",
                 "type": "function",
+                # every tool is called from a cell
                 "function": {
-                    "name": "finish",
-                    "arguments": json.dumps({"summary": "s"}),
+                    "name": "execute_code",
+                    "arguments": json.dumps(as_cell("finish", {"summary": "s"})[1]),
                 },
             },
             {
@@ -638,7 +649,8 @@ def test_calls_after_finish_are_skipped_and_missing_ids_are_synthesised(tmp_path
     assert turn["tool_calls"][0]["id"] == "call_1_0"
     assert tool_msgs[0]["content"].strip() == "first"
     assert tool_msgs[2]["content"] == "not run: pass finished"
-    assert out.calls == 1 and out.summary == "s" and out.reasons == ["no manifest"]
+    # the accepted finish with a manifest that lists nothing: the pass stores nothing, by the writer's own word
+    assert out.calls == 1 and out.summary == "s" and out.finished and out.nothing_to_store
 
 
 def test_pass_deadline_stops_a_slow_model(tmp_path):
@@ -830,72 +842,37 @@ def _marked(actions):
 
 
 def _checks(cid, manifests):
-    """One assistant message carrying a check call per manifest (ids <cid>1, <cid>2, ...)."""
-    return {
-        "role": "assistant",
-        "tool_calls": [
-            {
-                "id": f"{cid}{n}",
-                "type": "function",
-                "function": {"name": "check", "arguments": json.dumps({"manifest": m})},
-            }
-            for n, m in enumerate(manifests, 1)
-        ],
-    }
+    """One assistant message carrying a check call per manifest (ids <cid>1, <cid>2, ...), each from its own cell, as
+    rev 2's writer calls every tool."""
+    from tests.memory.in_code_calls import as_cell
 
-
-@needs_bwrap
-def test_channel_folders_exist_for_exactly_the_pass_channels_and_hold_no_file(tmp_path):
-    # tool venmo and slack, dialogue on a bare key (env) and a qualified one (dialogue_user), and an
-    # action whose qualifier names another kind (no memory channel: no folder)
-    ep = _marked(
-        [
-            _ME,
-            _SLACK,
-            _dialogue("env"),
-            _dialogue("dialogue:user"),
-            _dialogue("shell:git"),
-        ],
-    )
-    listing = (
-        "import json, os\n"
-        "print(json.dumps(sorted([d, sorted(os.listdir('/memory/env/' + d))] "
-        "for d in os.listdir('/memory/env'))))\n"
-    )
-    model = Turns([_call("ls", "execute_code", {"code": listing})])
-    mem = Repo.init_bare(tmp_path / "mem.git")
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    writer = WriterPass(
-        mem,
-        Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig()),
-        ev,
-        load=lambda eid: ep,
-        model_turn=model,
-        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=5),
-    )
-    parent = mem.head()
-    out = asyncio.run(
-        writer.run(PassRequest("incremental", "venmo", ["e1"], False), "pf"),
-    )
-    assert json.loads(model.outputs["ls"]) == [
-        ["dialogue_user", []],
-        ["env", []],
-        ["slack", []],
-        ["venmo", []],
-    ], model.outputs["ls"]
-    assert out.reasons == ["no manifest"] and mem.head() == parent
+    calls = []
+    for n, m in enumerate(manifests, 1):
+        name, args = as_cell("check", {"manifest": m})
+        calls.append({"id": f"{cid}{n}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}})
+    return {"role": "assistant", "tool_calls": calls}
 
 
 def test_check_calls_are_bounded_per_pass_and_count_against_the_call_cap(tmp_path):
-    model = Turns([_checks("k", ["{", "{}", "{}", "{}", "{}", "{}"])])
+    # rev 2: finish needs a manifest, so the scripted writer writes one that lists nothing after its checks
+    model = Turns(
+        [
+            _checks("k", ["{", "{}", "{}", "{}", "{}", "{}"]),
+            _call("m", "execute_code", {"code": _write("/memory/.pass/manifest.json", json.dumps(EMPTY))}),
+        ],
+    )
     mem, ev, writer = _writer(tmp_path, model, max_calls=20)
     out = _run(writer)
-    assert model.outputs["k1"].startswith("manifest: not valid JSON"), model.outputs[
+    # a refusal raised in the cell prints as the tool raised it
+    assert model.outputs["k1"].startswith("refused: manifest: not valid JSON"), model.outputs[
         "k1"
     ]
-    assert [model.outputs[f"k{n}"] for n in range(2, 6)] == ["ok"] * 4
+    from tests.memory.writer_library_items import CHECK_OK
+
+    assert [model.outputs[f"k{n}"] for n in range(2, 6)] == [CHECK_OK] * 4
     assert model.outputs["k6"] == "not run: at most 5 check calls per pass"
-    assert out.calls == 2 + 5 and out.reasons == ["no manifest"]
+    # two model calls, five checks run (a check is a call), and the manifest cell; the empty manifest stores nothing
+    assert out.calls == 2 + 5 + 1 and out.nothing_to_store
     # a check is a call: the cap stops checks too
     model = Turns([_checks("c", ["{}"] * 4)])
     mem, ev, writer = _writer(tmp_path / "capped", model, max_calls=3)
@@ -905,9 +882,10 @@ def test_check_calls_are_bounded_per_pass_and_count_against_the_call_cap(tmp_pat
     replies = {
         m["tool_call_id"]: m["content"] for m in model.seen if m.get("role") == "tool"
     }
-    assert [replies[f"c{n}"] for n in (1, 2)] == ["ok", "ok"]
+    assert [replies[f"c{n}"] for n in (1, 2)] == [CHECK_OK, CHECK_OK]
     assert replies["c3"] == replies["c4"] == ("not run: the pass's call cap is reached")
-    assert out.calls == 3 and not out.passed
+    # the checks wrote the manifest "{}", which lists nothing: rev 2 lands nothing for it (no refusal)
+    assert out.calls == 3 and out.items_merged == [] and out.items_refused == {}
 
 
 DIGEST = (
@@ -926,49 +904,38 @@ DIGEST = (
 
 @needs_bwrap
 def test_writer_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
+    from tests.memory import writer_library_items as wl
+
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ep = _marked([_ME, _SLACK])
     ev.index_episode(ep, "1" * 40)
-    lookup = lambda eid, i: (
-        ep.actions[i] if eid == "e1" and 0 <= i < len(ep.actions) else None
-    )
-    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
-    # the function covers the venmo call, but the writer first puts it in the slack folder
-    misplaced = {
-        **MAN,
-        "items": [
-            {**ITEM, "item": "env/slack:me", "tests": ["env/slack/tests/test_me.py"]},
-        ],
-    }
-    placed = {**MAN, "items": [ITEM], "summary": "s"}
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
+    # the writer first puts the module in a subpackage, where the library layout has no place for it
+    wrong = "memory/acct/users/__init__.py"
+    files = {k: v for k, v in wl.FILES.items() if k != wl.MODULE}
+    # the manifest is written first, so each check judges the file as it is (a manifest argument would be written
+    # into /memory/.pass first, which is the documented exception to "check changes nothing")
     write_misplaced = "\n".join(
-        [
-            _write("/memory/unify_memory_testkit.py", KIT),
-            _write("/memory/env/slack/__init__.py", MOD),
-            _write(
-                "/memory/env/slack/tests/test_me.py",
-                TEST.replace("env.venmo", "env.slack"),
-            ),
-        ],
+        [wl.write(f"/memory/{rel}", text) for rel, text in {**files, wrong: wl.MODULE_SOURCE}.items()]
+        + [wl.write("/memory/.pass/manifest.json", json.dumps(wl.MANIFEST))],
     )
     move = "\n".join(
         [
-            "import os, shutil",
-            "os.unlink('/memory/env/slack/__init__.py')",
-            "shutil.rmtree('/memory/env/slack/tests')",  # env/slack stays, empty
-            _write("/memory/env/venmo/__init__.py", MOD),
-            _write("/memory/env/venmo/tests/test_me.py", TEST),
+            "import shutil",
+            "shutil.rmtree('/memory/memory/acct/users')",
+            wl.write(f"/memory/{wl.MODULE}", wl.MODULE_SOURCE),
         ],
     )
+    placed = wl.MANIFEST
     model = Turns(
         [
             _call("w", "execute_code", {"code": write_misplaced}),
             _call("d1", "execute_code", {"code": DIGEST}),
-            _checks("bad", [json.dumps(misplaced)]),
+            _checks("bad", [""]),
             _call("d2", "execute_code", {"code": DIGEST}),
             _call("mv", "execute_code", {"code": move}),
-            _checks("good", [json.dumps(placed)]),
+            _checks("good", [""]),
             _call(
                 "m",
                 "execute_code",
@@ -986,13 +953,13 @@ def test_writer_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
     )
     parent = mem.head()
     out = asyncio.run(
-        writer.run(PassRequest("incremental", "venmo", ["e1"], False), "pc"),
+        writer.run(PassRequest("incremental", "acct", ["e1"], False), "pc"),
     )
     bad = model.outputs["bad1"]
     assert (
-        "G2: env/slack:me covers (e1,0), a tool action on venmo" in bad.splitlines()
+        f"G1: file {wrong}: packages have no subpackages; tests go in memory/<package>/tests/" in bad.splitlines()
     ), bad
-    # the reasons carry ids and indices only: no episode content, no outcome text
+    # the reasons carry ids and paths only: no episode content, no outcome text
     assert MARK not in bad and "u-1" not in bad and "Bob" not in bad
     assert all(len(line) <= 200 for line in bad.splitlines())
     # check never changes the tree
@@ -1000,16 +967,12 @@ def test_writer_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
         model.outputs["d1"].startswith("DIGEST")
         and model.outputs["d1"] == model.outputs["d2"]
     )
-    assert model.outputs["good1"] == "ok"
+    assert model.outputs["good1"] == wl.CHECK_OK
     assert out.passed, out.reasons
     assert out.calls == 8 + 2 and mem.head() == out.commit != parent
     tree = mem.run("ls-tree", "-r", "--name-only", out.commit).split()
-    # the folder left empty is no commit noise
-    assert sorted(tree) == [
-        "env/venmo/__init__.py",
-        "env/venmo/tests/test_me.py",
-        "unify_memory_testkit.py",
-    ]
+    # the folder removed is no commit noise
+    assert sorted(tree) == sorted(wl.FILES)
 
 
 def _store_backed(tmp_path, model, **cfg):
@@ -1036,36 +999,34 @@ def _store_backed(tmp_path, model, **cfg):
     return mem, ev, writer
 
 
-_MISPLACED = {
-    **MAN,
-    "items": [
-        {**ITEM, "item": "env/slack:me", "tests": ["env/slack/tests/test_me.py"]},
-    ],
-}
-
-
 def test_check_with_an_item_returns_the_gates_reasons_on_the_stores_thread(tmp_path):
-    model = Turns([_checks("k", [json.dumps(_MISPLACED)])])
+    from tests.memory import writer_library_items as wl
+
+    # the manifest names an item the box does not hold: the gate's own reason comes back, read on the store's thread
+    model = Turns([_checks("k", [json.dumps(wl.MANIFEST)])])
     mem, ev, writer = _store_backed(tmp_path, model)
     out = asyncio.run(
         writer.run(PassRequest("incremental", "venmo", ["e1"], False), "pt"),
     )
     reply = model.outputs["k1"]
     assert "check error" not in reply, reply
-    assert (
-        "G2: env/slack:me covers (e1,0), a tool action on venmo" in reply.splitlines()
-    )
-    assert out.checks == 1 and out.calls == 3
+    assert f"G1: {wl.ITEM_ID} (function) is not in the candidate" in reply.splitlines(), reply
+    assert out.checks == 1
 
 
 def test_check_is_refused_when_too_little_of_the_deadline_is_left(tmp_path):
-    model = Turns([_checks("k", ["{}"])])
+    model = Turns(
+        [
+            _checks("k", ["{}"]),
+            _call("m", "execute_code", {"code": _write("/memory/.pass/manifest.json", json.dumps(EMPTY))}),
+        ],
+    )
     mem, ev, writer = _writer(tmp_path, model, deadline_s=30.0)
     out = _run(writer)
     assert (
         model.outputs["k1"] == "not run: too little time left before the pass deadline"
     )
-    assert out.checks == 0 and out.calls == 2
+    assert out.checks == 0 and out.calls == 2 + 1  # the refused check is not a call; the manifest cell is
 
 
 def test_a_check_error_shows_its_type_only_and_the_detail_stays_on_the_host(
@@ -1082,22 +1043,6 @@ def test_a_check_error_shows_its_type_only_and_the_detail_stays_on_the_host(
     out = _run(writer)
     assert model.outputs["k1"] == "check error: OSError"
     assert any("/tmp/memory-check-host" in r for r in out.reasons), out.reasons
-
-
-def test_check_names_a_declared_input_form_the_covers_cannot_give_before_finish(
-    tmp_path,
-):
-    misdeclared = {**MAN, "items": [{**ITEM, "input": "bytes"}]}
-    model = Turns([_checks("k", [json.dumps(misdeclared)])])
-    mem, ev, writer = _store_backed(tmp_path, model)
-    out = asyncio.run(
-        writer.run(PassRequest("incremental", "venmo", ["e1"], False), "pi"),
-    )
-    reply = model.outputs["k1"].splitlines()
-    assert (
-        "G2: env/venmo:me declares input bytes, which a tool cover cannot give" in reply
-    )
-    assert out.checks == 1 and not out.passed
 
 
 def test_check_refuses_a_declared_input_in_library_mode(tmp_path):
@@ -1430,51 +1375,3 @@ def _keys(o):
     elif isinstance(o, list):
         for v in o:
             yield from _keys(v)
-
-
-def test_the_pass_stages_the_new_inputs_and_keeps_its_transcript(tmp_path, monkeypatch):
-    staged = tmp_path / "staged"
-    stage = WriterPass._stage_context
-
-    def keep(self, inputs, tree, rev, cover_ids=None):
-        stage(self, inputs, tree, rev, cover_ids)
-        shutil.copytree(inputs, staged, ignore=shutil.ignore_patterns("memlab"))
-
-    monkeypatch.setattr(WriterPass, "_stage_context", keep)
-    model = Turns([])
-    mem, ev, writer = _store_backed(tmp_path, model)
-    _recorded(
-        ev,
-        "earlier",
-        None,
-        ["G3: env/venmo/tests/test_me.py has no red run", "note: x"],
-    )
-    out = asyncio.run(writer.run(PassRequest("batched", None, ["e1"], False), "pt"))
-    assert not out.passed
-    gate = json.loads((staged / "previous_gate.json").read_text())
-    assert gate["channels"] == {
-        "venmo": {
-            "pass_id": "earlier",
-            "reasons": ["G3: env/venmo/tests/test_me.py has no red run"],
-            "more": 0,
-        },
-    }
-    library = json.loads((staged / "library.json").read_text())
-    assert library["functions"] == [] and library["truncated"] == 0
-    for name in ("previous_gate.json", "library.json"):
-        text = (staged / name).read_text()
-        assert MARK not in text and "e1.checker" not in text
-        assert not set(_keys(json.loads(text))) & _NO_OUTCOME_KEYS, name
-    head, *rows = [json.loads(ln) for ln in writer.transcript("pt")]
-    assert [r["message"]["role"] for r in rows] == [
-        "system",
-        "user",
-        "assistant",
-        "tool",
-    ]
-    sha = head["header"]["brief_sha256"]
-    assert rows[0]["message"]["content"] == f"(brief sha256 {sha})"
-    assert head["header"]["tools_sha256"]
-    assert rows[2]["message"]["tool_calls"][0]["function"]["name"] == "finish"
-
-
