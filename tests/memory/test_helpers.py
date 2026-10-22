@@ -45,11 +45,21 @@ def _msg(*calls):
     return {"role": "assistant", "content": "", "tool_calls": list(calls)}
 
 
+#: How long a turn waits for another live helper's turn under ``Script(turn_taking=True)``.
+TURN_WAIT_S = 5.0
+
+
 class Script:
     """A fresh scripted helper model per delegate call, chosen by the task text in the first user message."""
 
-    def __init__(self, scripts, usd="0.001", gap=0.0):
+    def __init__(self, scripts, usd="0.001", gap=0.0, turn_taking=False):
         self.scripts, self.usd, self.gap = scripts, usd, gap
+        #: turn_taking: a helper's turn waits (at most TURN_WAIT_S) while the previous turn was its own and another
+        #: helper still has turns, and stays in flight until another helper's turn is in flight too, so live helpers
+        #: alternate and overlap whatever the host's load; helpers that are not live at once can do neither (their
+        #: turns come out in runs, one in flight at a time).
+        self.turn_taking = turn_taking
+        self.remaining = {k: len(v) for k, v in scripts.items()}
         self.order: list[str] = []
         self.outputs: dict[str, str] = {}
         self.in_flight = self.max_in_flight = 0
@@ -66,10 +76,29 @@ class Script:
             for m in messages:
                 if m.get("role") == "tool":
                     self.outputs[m["tool_call_id"]] = m["content"]
+            if self.turn_taking:
+                end = time.monotonic() + TURN_WAIT_S
+                while (
+                    self.order
+                    and self.order[-1] == key
+                    and any(n > 0 for k, n in self.remaining.items() if k != key)
+                    and time.monotonic() < end
+                ):
+                    await asyncio.sleep(0.001)
+            self.remaining[key] -= 1
             self.order.append(key)
             self.in_flight += 1
             self.max_in_flight = max(self.max_in_flight, self.in_flight)
             try:
+                if self.turn_taking:
+                    # held in flight until another helper's turn is in flight too (or none has turns left)
+                    end = time.monotonic() + TURN_WAIT_S
+                    while (
+                        self.in_flight < 2
+                        and any(n > 0 for k, n in self.remaining.items() if k != key)
+                        and time.monotonic() < end
+                    ):
+                        await asyncio.sleep(0.001)
                 await asyncio.sleep(self.gap)
             finally:
                 self.in_flight -= 1
@@ -257,7 +286,7 @@ def test_helpers_run_concurrently_and_so_do_their_model_calls(
             _msg(_tc(f"{key}d", "done", {"summary": key, "claims": []})),
         ]
 
-    script = Script({"A": two("A"), "B": two("B")}, gap=0.01)
+    script = Script({"A": two("A"), "B": two("B")}, gap=0.01, turn_taking=True)
     ctx = _ctx(tmp_path, script)
 
     async def go():
