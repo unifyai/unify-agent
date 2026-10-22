@@ -38,6 +38,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _CURRENT: Any = None
+#: The memory homes whose run this process has begun (:func:`..writer_service.begin_run`): one run per process.
+_RUNS_BEGUN: set[str] = set()
 
 #: The reasoning effort the actor's client gets when nothing sets one (unify/common/llm_client.py
 #: ``_build_llm_client``'s ``reasoning_effort`` default).
@@ -1054,7 +1056,7 @@ class RequestRun:
         from . import consolidate, cost, worktree_capture
         from .async_pass import apply_results
         from ..memory_writer import served_head
-        from ..writer_service import ensure_service
+        from ..writer_service import begin_run, ensure_service
         from .state import State
 
         paths = self.paths
@@ -1067,7 +1069,11 @@ class RequestRun:
         # the served head, whose item records are already written
         self.pin = served_head(self.stores.memory)
         self._open_library(consolidate)
-        # the writer service: up at every request's start (never waited for; it never fails the request)
+        # this process's run, once (memory's spend cap counts from it, whatever service restarts follow), then the
+        # writer service: up at every request's start (never waited for; it never fails the request)
+        if str(paths.home) not in _RUNS_BEGUN:
+            _RUNS_BEGUN.add(str(paths.home))
+            begin_run(paths.home)
         self.service = ensure_service(paths.home, settings=SETTINGS, wait_s=0.0)
         # under the request lock, before this request's own journal exists
         self._recover_journals()

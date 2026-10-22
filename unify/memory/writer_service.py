@@ -45,8 +45,8 @@ Shutdown (:func:`.integration.async_pass.drain`) stops the service and returns o
 the model-call lanes are stopped.
 
 Files, under ``<home>/memory-state/memory-service/`` (harness-only; no box binds them): ``service.lock``,
-``service.json``, ``service.stop``, ``service-events.jsonl``, ``spend.jsonl`` (a ``run`` row at each start, then
-reserve and settle rows), and
+``service.json``, ``service.stop``, ``service-events.jsonl``, ``spend.jsonl`` (a ``run`` row at each run's start,
+written by its controller, then reserve and settle rows; a service restart within the run writes none), and
 ``turns/<pass_id>/`` (``pass.json`` and one file per model turn).
 """
 
@@ -518,10 +518,19 @@ def _decimal(value: Any) -> Optional[Decimal]:
     return d if d.is_finite() and d >= 0 else None
 
 
+def begin_run(home: Path | str) -> None:
+    """Mark the start of a run in ``spend.jsonl`` (a ``run`` row): memory's spend cap counts from here. The run is the
+    controller's (one ``unify act``), written once per controller process at its first memory request
+    (:meth:`.integration.request.RequestRun`), never by the service: a service restarted within the run (its lifetime
+    end, a crash, a takeover, a suspend and start) reads the same rows and keeps the run's total."""
+    _append(service_dir(home) / SPEND_FILE, {"v": 1, "op": "run", "pid": os.getpid(), "at": stamp(_now())})
+
+
 def spend_totals(home: Path | str, *, without: Optional[str] = None) -> tuple[Decimal, Decimal]:
     """``(committed, settled)`` USD of this run (the rows of ``spend.jsonl`` after the last ``run`` row, which the
-    service writes when it starts): a settled pass counts its settled amount, a pass only reserved (it never settled:
-    running, or killed) its whole reservation; *without* leaves one pass out. Decimal throughout."""
+    run's controller writes when it starts, :func:`begin_run`): a settled pass counts its settled amount, a pass only
+    reserved (it never settled: running, or killed) its whole reservation; *without* leaves one pass out. Decimal
+    throughout."""
     reserved: dict[str, Decimal] = {}
     settled: dict[str, Decimal] = {}
     for row in _rows(service_dir(home) / SPEND_FILE):
@@ -1894,8 +1903,8 @@ async def _serve(
     event(
         home, "start", cap_usd=_format(service.cap)
     )
-    # a new run: memory's spend cap counts from here (spend_totals)
-    _append(service_dir(home) / SPEND_FILE, {"v": 1, "op": "run", "pid": os.getpid(), "at": stamp(_now())})
+    # a service start is no new run: memory's spend cap counts from the run's own start (begin_run), so a restart (its
+    # lifetime, a crash, a takeover) keeps the run's total
     ledger = Ledger(home)
     resumable = pending_passes(home)
     ledger.return_orphans(live_pass_ids=resumable)

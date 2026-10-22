@@ -1197,3 +1197,23 @@ def test_without_the_writers_route_the_service_environment_is_unchanged(monkeypa
     monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
     env, fds = ws._token_pipes()
     assert fds == [] and env["OPENROUTER_API_KEY"] == "placeholder-not-a-key"
+
+
+def test_a_service_restart_within_a_run_keeps_the_runs_spend_total(svc, monkeypatch):
+    """Memory's spend cap counts from the run's start (its controller's run row), not from a service start: a service
+    that ends (its lifetime, a crash, a takeover) and starts again within the run reads the same total, so the cap is
+    the run's. A new run (a new controller) counts from zero."""
+    home = svc.home
+    spend = ws.service_dir(home) / ws.SPEND_FILE
+    ws.begin_run(home)
+    for row in ({"op": "reserve", "pass_id": "p1", "usd": "3"}, {"op": "settle", "pass_id": "p1", "usd": "2.5"},
+                {"op": "reserve", "pass_id": "p2", "usd": "1"}):  # fmt: skip
+        ws._append(spend, {"v": 1, **row})
+    before = ws.spend_totals(home)
+    assert before == (Decimal("3.5"), Decimal("2.5"))  # p2 never settled (killed): its whole reservation counts
+    for _ in range(2):  # the service ends and starts again, twice, within the run
+        assert _in_process(home, Recording(), monkeypatch) == "idle-exit"
+    assert ws.spend_totals(home) == before
+    assert sum(1 for r in ws._rows(spend) if r.get("op") == "run") == 1
+    ws.begin_run(home)  # the next run's controller
+    assert ws.spend_totals(home) == (Decimal(0), Decimal(0))

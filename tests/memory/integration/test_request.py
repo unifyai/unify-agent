@@ -305,6 +305,19 @@ def test_a_missing_transcript_is_logged_not_raised(mv2):
     _left_nothing(mv2.paths)
 
 
+def test_one_process_begins_one_run_for_memorys_spend_cap(mv2, monkeypatch):
+    """The run's start (the spend cap's count) is written once per controller process, at its first memory request,
+    never at each request or by the service."""
+    from unify.memory import writer_service as ws
+
+    monkeypatch.setattr(request_mod, "_RUNS_BEGUN", set())
+    for text in ("one", "two"):
+        run = _begin(mv2, text)
+        _abort(mv2, run)
+    rows = ws._rows(ws.service_dir(mv2.home) / ws.SPEND_FILE)
+    assert [r["op"] for r in rows if r.get("op") == "run"] == ["run"]
+
+
 def test_abort_records_nothing(mv2):
     run = _begin(mv2, "hi")
     head = os.popen(f"git --git-dir {mv2.paths.episodes} rev-parse main").read()
