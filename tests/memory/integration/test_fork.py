@@ -1,6 +1,7 @@
-"""The episode-end fork. It runs only under UNIFY_MEMORY_LIBRARY_FORK=on, after the episode is recorded, through the
-key proxy's fork lane, in a box whose only writable mount is the episode's staging dir. Nothing flows back, off is
-off, and the worker stages only the allowed files, from text and tool-call replies, executing nothing.
+"""The episode-end fork. It runs whenever memory is on (rev 2 has no fork switch), after the episode is recorded,
+through the key proxy's fork lane, started by the run record's relay in a box whose only writable mount is the
+episode's staging dir. Nothing flows back, and the worker stages only the allowed files, from text and tool-call
+replies, executing nothing.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ import pytest
 
 from unify.memory.integration import fork as fork_mod
 from unify.memory.integration import fork_worker as fw
-from unify.settings import SETTINGS
 from tests.memory.integration.test_request import (  # noqa: F401
     _begin,
     _finish,
@@ -58,9 +58,6 @@ def lane(monkeypatch):
     return TOKEN
 
 
-ON = SimpleNamespace(
-    UNIFY_MEMORY_LIBRARY_WAIT_SLOT="on",
-)
 CODE = 'def double(x):\n    """Twice x."""\n    return 2 * x\n'
 
 
@@ -98,15 +95,18 @@ class _Pipe(io.BytesIO):
 
 
 class _Proc:
-    """A fake boxed worker: on wait, it runs the real worker logic in-process against a scripted proxy."""
+    """A fake fork relay: on wait, it does what the relay does with its start file (the box's argv and the fork's
+    request), running the real worker logic in-process against a scripted proxy on the box's staging bind."""
 
     def __init__(self, argv, replies, seen, **kw):
         self.argv, self.kw, self.replies, self.seen = argv, kw, list(replies), seen
         self.stdin, self.pid, self.returncode = _Pipe(), 4242, None
 
     def wait(self, timeout=None):
-        host = Path(self.argv[self.argv.index("--bind") + 1])
-        req = json.loads(self.stdin.getvalue().decode())
+        self.spec = json.loads(self.stdin.getvalue().decode())
+        box = self.spec["argv"]
+        host = Path(box[box.index("--bind") + 1])
+        req = self.spec["doc"]
 
         def post(url, headers, body):
             self.seen.append((url, headers, body))
@@ -402,7 +402,12 @@ def test_the_worker_imports_only_the_standard_library():
 def _started(mv2, monkeypatch, replies, source=None):  # noqa: F811
     run = _begin(mv2, "Double 21.")
     _transcript(run)
-    _finish(mv2, run)  # recorded with the fork off
+    with monkeypatch.context() as m:
+        # recorded with no fork (rev 2 starts one at every finish): the test starts it itself
+        m.setattr(fork_mod, "reserve", lambda *a, **k: None)
+        m.setattr(fork_mod, "start", lambda *a, **k: None)
+        _finish(mv2, run)
+    assert not fork_mod.staging_dir(mv2.paths, run.episode_id).exists()
     eid = run.episode_id
     import unify.actor.code_act_actor as caa
 
@@ -438,18 +443,21 @@ def test_f1_the_request_goes_through_a_pipe_with_a_bare_environment(
         eid,
         popen=popen,
     )
-    fork_mod.finish(f, ON)
+    fork_mod.finish(f)
     (p,) = made
-    assert (
-        p.kw["env"] == {"PATH": "/usr/bin:/bin"}
-        and p.kw["close_fds"]
-        and p.kw["start_new_session"]
-    )
+    # the relay: run by path with -I, a fixed PATH, its own empty HOME and the locale names only
+    assert p.argv == fork_mod.relay_argv()
+    home = Path(p.kw["env"]["HOME"])
+    assert home.name == fork_mod.RELAY_HOME and Path(mv2.paths.state_dir) in home.parents
+    assert p.kw["env"]["PATH"] == "/usr/bin:/bin"
+    assert set(p.kw["env"]) <= {"PATH", "HOME", *fork_mod.RELAY_ENV_NAMES}
+    assert p.kw["close_fds"] and p.kw["start_new_session"]
     assert (
         len(p.kw["pass_fds"]) == 1
     )  # only the staging dir's lock, never a token descriptor
-    blob = " ".join(p.argv)
+    blob = " ".join([*p.argv, *p.kw["env"].values(), *p.spec["argv"]])
     assert TOKEN not in blob and "18080" not in blob and "Double 21" not in blob
+    assert p.spec["argv"][-1] == "--comms"  # the relay answers the box's comms calls from the run record
     url, headers, body = seen[0]
     assert url == BASE + "/chat/completions"
     assert (
@@ -459,10 +467,9 @@ def test_f1_the_request_goes_through_a_pipe_with_a_bare_environment(
         headers["x-unify-session"] == f"fork.{eid}"
         and headers["x-unify-call-kind"] == "actor_fork"
     )
-    assert (
-        body["messages"][:-1] == src["sent_messages"]
-        and body["messages"][-1]["content"] == fork_mod.INSTRUCTION
-    )
+    assert body["messages"][:-1] == src["sent_messages"]
+    # the instruction, then the fork's lines of the run record (rev 2: every agent is on the record)
+    assert body["messages"][-1]["content"].startswith(fork_mod.INSTRUCTION + "\n\n")
     assert body["tools"] == src["tools"] and body["tool_choice"] == "auto"
     assert body["model"] == "openai/gpt-6-luna" and body["reasoning_effort"] == "low"
     assert (
@@ -496,8 +503,18 @@ def test_f3_nothing_flows_back_to_the_record_the_transcript_or_the_client(
         eid,
         popen=popen,
     )
-    fork_mod.finish(f, ON)
-    assert _home_bytes(mv2.home) == before
+    fork_mod.finish(f)
+    after = _home_bytes(mv2.home)
+    # rev 2: the fork joins the run record (its roster, the roster's lock and the record's log); nothing else
+    # outside its staging dir changes
+    changed = {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
+    assert changed == {
+        "memory-state/agents/roster.json",
+        "memory-state/agents/roster.lock",
+        "memory-state/agents/run-record.jsonl",
+    }, changed
+    (p,) = made
+    assert p.spec["name"].startswith("fork-") and p.spec["name"] in (mv2.home / "memory-state/agents/roster.json").read_text()
     assert json.dumps(src["sent_messages"]) == client_before
     staged = fork_mod.staging_dir(mv2.paths, eid)
     assert sorted(p.name for p in staged.rglob("*") if p.is_file()) == [
@@ -516,7 +533,7 @@ def test_finish_starts_the_fork_after_the_episode_is_recorded(
 ):  # noqa: F811
     calls, reserved = [], []
 
-    def start(paths, handle, eid, settings, **kw):
+    def start(paths, handle, eid, **kw):
         calls.append((eid, handle, (Path(paths.home) / "episodes.git").exists()))
         res = kw.get("reservation")
         reserved.append((res.eid, res.staging.is_dir()) if res is not None else None)
@@ -539,7 +556,7 @@ def test_finish_gives_the_fork_the_recorded_episodes_part_list(
     monkeypatch.setattr(
         fork_mod,
         "start",
-        lambda paths, handle, eid, settings, **kw: given.append(kw.get("parts")),
+        lambda paths, handle, eid, **kw: given.append(kw.get("parts")),
     )
     run = _begin(mv2, "Double 21.")
     _transcript(run)
@@ -549,32 +566,6 @@ def test_finish_gives_the_fork_the_recorded_episodes_part_list(
     # the list the fork reads names the recorded parts, the request first with its first line
     assert lines[0] == fork_mod.PARTS_HEAD
     assert lines[1].startswith("- `request`: ") and "Double 21." in lines[1]
-
-
-def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY_FORK", "off")
-    spawned = []
-    real_start = (
-        fork_mod.start
-    )  # the spy below replaces it for the request; the real one is checked after
-    monkeypatch.setattr(fork_mod, "start", lambda *a, **k: spawned.append(a))
-    run = _begin(mv2, "Double 21.")
-    _transcript(run)
-    _finish(mv2, run)
-    assert spawned == []
-    assert not (Path(mv2.paths.state_dir) / "memory-staging").exists()
-    off = SimpleNamespace(UNIFY_MEMORY_LIBRARY_FORK="off")
-    assert (
-        real_start(
-            mv2.paths,
-            None,
-            "e",
-            off,
-            popen=lambda *a, **k: spawned.append(a),
-        )
-        is None
-    )
-    assert spawned == [] and not (Path(mv2.paths.state_dir) / "memory-staging").exists()
 
 
 def test_a_session_that_cannot_be_forked_is_recorded_never_forced(

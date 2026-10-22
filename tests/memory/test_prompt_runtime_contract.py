@@ -82,6 +82,9 @@ NAMES = {
     "id": f"{PD!r}",
     "item": f"{PD!r}",
     "package": "'text'",
+    # rev 2's writer brief shows tools.land_capture(capture_id, package, name): a capture id is 16 hex digits (the
+    # fixture store holds none, so the host refuses it, which passes: the call reached the host with a valid shape)
+    "capture_id": "'0123456789abcdef'",
 }
 #: Calls written with ``...`` that are not registered tools: the call each stands for.
 ELLIPSIS = {
@@ -579,7 +582,8 @@ def test_the_fork_names_no_pre_bound_name():
     from unify.memory.integration import fork
 
     text = fork.fork_instruction()
-    assert "Do not call" in text
+    # rev 2: the fork calls only the run record's tools, and its instruction says so
+    assert fork.RECORD_CALLS_ONLY in text
     assert not said_bound(text) and "already bound" not in text
 
 
@@ -724,13 +728,11 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
             helper=[Always(turn)],
             query_llm=Always(reply("ok")),
         )
+    # rev 2: the actor owns nothing past a request; its in-code tools and slot close with the result
     actor = CodeActActor()
-    try:
-        with scripted(model):
-            handle = await actor.act("Run every call your instructions show.", persist=False)
-            await asyncio.wait_for(handle.result(), 700)
-    finally:
-        await actor.close()
+    with scripted(model):
+        handle = await actor.act("Run every call your instructions show.", persist=False)
+        await asyncio.wait_for(handle.result(), 700)
     assert state["cells"], state["texts"][:1]
     # the library guide names the library's calls without arguments (their help holds those): none is a shown call,
     # and each is one of the library's calls

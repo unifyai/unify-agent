@@ -1,5 +1,5 @@
-"""The writer's tool surface: tool JSON rendered from the one spec through the agent profiles, the curator's own
-tool set, the pool tool, structured tool events and the removed reading rule."""
+"""The writer's tool surface: tool JSON rendered from the one spec through the agent profiles, the pool tool,
+structured tool events and the removed reading rule (rev 2: no curator; every call is a cell)."""
 
 import asyncio
 import json
@@ -11,25 +11,6 @@ from unify.memory.trigger import PassRequest
 from tests.memory.test_writer_pass import Turns, _call, _writer
 from tests.memory.test_writer_library_tools import EPS
 
-CURATE_TOOLS = {
-    "read",
-    "grep",
-    "overview",
-    "read_episode",
-    "fixture",
-    "execute_code",
-    "check",
-    "finish",
-    # every agent on the pass's record
-    "send",
-    "messages",
-    "wait",
-    "who",
-    "reply",
-    "stop",
-}
-
-
 def test_every_hand_off_has_a_producer_and_a_consumer():
     rows = agent_profiles.AGENT_PROFILES
     agents = {r["agent"] for r in rows}
@@ -40,14 +21,15 @@ def test_every_hand_off_has_a_producer_and_a_consumer():
 
 
 def test_the_call_record_is_a_gate_internal_hand_off():
-    """The gate's test runs write the call record in its box; the gate consumes it, the tests the writer and the
-    curator wrote produce it, and no model-facing agent is handed it."""
+    """The gate's test runs write the call record in its box; the gate consumes it, the tests the writer wrote produce
+    it (rev 2 has no curator), and no model-facing agent is handed it."""
     from unify.memory import example_calls
 
     rows = {r["agent"]: r for r in agent_profiles.AGENT_PROFILES}
     record = {"artifact": "call record", "path": example_calls.CALLS_OUT}
     assert record in rows["gate"]["consumes"]
-    for agent in ("writer", "curator"):
+    assert "curator" not in rows
+    for agent in ("writer",):
         assert {**record, "consumer": "gate"} in rows[agent]["produces"], agent
     for agent, row in rows.items():
         if agent != "gate":
@@ -60,8 +42,8 @@ def test_the_call_record_is_a_gate_internal_hand_off():
     mounts = {m["path"]: m["mode"] for m in rows["gate"]["mounts"]}
     assert mounts[example_calls.CALLS_DIR] == "ro"
     assert mounts[example_calls.CALLS_OUT.rsplit("/", 1)[0]] == "rw"
-    # the writer's and curator's own boxes are unchanged: they never see the record
-    for agent in ("writer", "curator"):
+    # the writer's own box is unchanged: it never sees the record
+    for agent in ("writer",):
         assert not any(
             m["path"] in (example_calls.CALLS_DIR, "/calls")
             for m in rows[agent]["mounts"]
@@ -164,6 +146,8 @@ def test_pool_decide_writes_the_manifest_block_and_open_undoes_it(tmp_path):
 
 
 def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
+    """Rev 2: every model call is an execute_code cell (one ``via: model`` row, with the turn's usage on its first
+    call), and each tool call a cell makes is a ``via: channel`` row naming that cell, with its status and paths."""
     turns = [
         {
             "role": "assistant",
@@ -189,14 +173,10 @@ def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
     writer.load = EPS.__getitem__
     asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
     rows = writer.tool_events
-    by_call = {i: r for i, r in enumerate(rows)}
     assert [r["call"] for r in rows] == list(range(len(rows)))
-    a, b, c, d, e = (by_call[i] for i in range(5))
-    assert (a["tool"], a["status"], a["paths"]) == (
-        "read",
-        "ok",
-        [{"path": "/inputs/batch_map.json", "mode": "read"}],
-    )
+    cells = [r for r in rows if r["via"] == "model"]
+    assert all(r["tool"] == "execute_code" and r["cell"] is None for r in cells)
+    a, b, c, d, e = cells[:5]
     assert (
         a["usage"]["input"] == 100
         and a["usage"]["output"] == 7
@@ -206,14 +186,19 @@ def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
     assert (
         b["usage"] is None and c["usage"] is None
     )  # usage is on the first call of a turn only
-    assert b["paths"] == [
-        {"path": "/inputs", "mode": "search"},
-    ]  # grep's default scope, resolved
-    assert c["status"] == "refused" and c["refusal"]["form"] == "unknown_tool"
-    assert c["refusal"]["text_bytes"] == len(model.outputs["c"].encode())
-    assert "your tools: read, grep, overview, read_episode" in model.outputs["c"]
-    assert d["paths"] == [{"path": "/episodes/e1/request", "mode": "read"}]
-    assert e["status"] == "refused" and e["refusal"]["form"] == "unknown_episode"
+
+    def made_by(cell):
+        return [(r["tool"], r["status"], r["paths"]) for r in rows if r["via"] == "channel" and r["cell"] == cell["call"]]
+
+    assert made_by(a) == [("read", "ok", [{"path": "/inputs/batch_map.json", "mode": "read"}])]
+    assert made_by(b) == [("grep", "ok", [{"path": "/inputs", "mode": "search"}])]  # grep's default scope, resolved
+    # a tool the writer does not have is no call: the cell's own error says how to list them
+    assert made_by(c) == []
+    assert "tools has no attribute 'dismiss'" in model.outputs["c"] and "tools.list() lists yours" in model.outputs["c"]
+    assert made_by(d) == [("read_episode", "ok", [{"path": "/episodes/e1/request", "mode": "read"}])]
+    [refused] = [r for r in rows if r["via"] == "channel" and r["cell"] == e["call"]]
+    assert refused["status"] == "refused" and refused["refusal"]["form"] == "unknown_episode"
+    assert refused["refusal"]["text_bytes"] == len(model.outputs["e"].encode())
     for r in rows:
         assert (
             r["event"] == "tool_call"
@@ -227,12 +212,14 @@ def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
         .read_text()
         .splitlines()
     ]
-    # the tool calls, then the pass's end (its helpers_closed: here none were started)
-    assert written[:-1] == rows
+    # the tool calls, then the pass's end (its helpers_closed: here none were started); a cell's own calls are
+    # written as they are made, before the cell's row, so the file holds the same rows in the order written
+    assert sorted(written[:-1], key=lambda r: r["call"]) == rows
     assert written[-1]["event"] == "pass_end" and written[-1]["helpers_closed"] == {}
 
 
 def test_the_empty_turn_nudge_names_the_real_tools(tmp_path):
+    """Rev 2: the writer's one model-API tool is execute_code, and the nudge names it and how the pass ends."""
     model = Turns([{"role": "assistant", "content": "thinking"}])
     _, _, writer = _writer(tmp_path, model, max_calls=3)
     writer.load = EPS.__getitem__
@@ -243,8 +230,7 @@ def test_the_empty_turn_nudge_names_the_real_tools(tmp_path):
         if m.get("role") == "user"
         and str(m.get("content", "")).startswith("Use your tools: ")
     ]
-    assert nudges and "read_episode" in nudges[0] and "fixture" in nudges[0]
-    assert "dismiss" not in nudges[0]
+    assert nudges and nudges[0] == "Use your tools: execute_code; finish ends the pass."
 
 
 def test_an_existing_events_file_is_never_written_over(tmp_path):
@@ -261,7 +247,7 @@ def test_an_existing_events_file_is_never_written_over(tmp_path):
     writer.load = EPS.__getitem__
     asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
     assert (folder / "tool-events.jsonl").read_text() == "earlier\n"
-    assert writer.tool_events and writer.tool_events[0]["tool"] == "read"
+    assert [r["tool"] for r in writer.tool_events[:2]] == ["execute_code", "read"]
 
 
 def test_the_profile_limits_are_the_enforcing_constants_and_the_texts_state_them():
@@ -299,7 +285,6 @@ def test_the_profile_limits_are_the_enforcing_constants_and_the_texts_state_them
     for stated in (
         f"{fork_worker.QUOTA_FILES} files",
         "4 MiB",
-        "900 s",
         f"{fork_worker.TURN_GUARD} turns",
     ):
         assert stated in text, stated

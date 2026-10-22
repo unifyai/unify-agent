@@ -19,6 +19,7 @@ from __future__ import annotations
 import itertools
 import json
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -103,6 +104,7 @@ def _completion(message: dict, usd: str, model: str) -> dict:
     return {
         "id": f"chatcmpl-fake-{next(_IDS)}",
         "object": "chat.completion",
+        "created": int(time.time()),
         "model": model,
         "choices": [{"index": 0, "message": message, "finish_reason": finish}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": usd},
@@ -117,11 +119,12 @@ def _stream(message: dict, usd: str, model: str) -> list[bytes]:
     if message.get("tool_calls"):
         delta["tool_calls"] = [{**c, "index": i} for i, c in enumerate(message["tool_calls"])]
     finish = "tool_calls" if message.get("tool_calls") else "stop"
+    # every chunk carries ``created``, as a provider's does (LiteLLM's OpenRouter stream reader requires it)
+    head = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()), "model": model}
     frames = [
-        {"id": cid, "object": "chat.completion.chunk", "model": model, "choices": [{"index": 0, "delta": delta}]},
-        {"id": cid, "object": "chat.completion.chunk", "model": model,
-         "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
-        {"id": cid, "object": "chat.completion.chunk", "model": model, "choices": [],
+        {**head, "choices": [{"index": 0, "delta": delta}]},
+        {**head, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
+        {**head, "choices": [],
          "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": usd}},
     ]
     return [f"data: {json.dumps(f)}\n\n".encode() for f in frames] + [b"data: [DONE]\n\n"]

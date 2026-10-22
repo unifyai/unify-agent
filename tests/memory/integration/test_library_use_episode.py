@@ -59,13 +59,11 @@ def test_a_request_that_uses_the_library_as_the_guide_says_records_it(core_world
     async def episode():
         run = request_mod.RequestRun.begin(REQUEST)
         try:
+            # rev 2: the actor owns nothing past a request; its in-code tools and slot close with the result
             actor = CodeActActor()
-            try:
-                with scripted(model):
-                    handle = await actor.act(REQUEST, persist=False)
-                    await asyncio.wait_for(handle.result(), 300)
-            finally:
-                await actor.close()
+            with scripted(model):
+                handle = await actor.act(REQUEST, persist=False)
+                await asyncio.wait_for(handle.result(), 300)
         except BaseException:
             run.abort()
             raise

@@ -76,9 +76,11 @@ def librarian_answer(answer: dict) -> str:
 
 
 def librarian_brief() -> str:
+    """The brief a request's librarian gets: rev 2 serves the items' evidence with every copy (the request's
+    ``_serving``), so it is the evidence brief."""
     from unify.memory import librarian
 
-    return librarian.BRIEF
+    return librarian.BRIEF_EVIDENCE
 
 
 def scripted(answer) -> ScriptedModel:
@@ -231,12 +233,10 @@ async def _ask_act(env: dict, script: Script) -> tuple[str, ScriptedModel, list[
 
     model = scripted(script)
     with transport(model) as sent:
+        # rev 2: the actor owns nothing past a request; its in-code tools and slot close with the result
         actor = CodeActActor()
-        try:
-            handle = await actor.act(ACTOR_MARK, persist=False)
-            result = await asyncio.wait_for(handle.result(), 480)
-        finally:
-            await actor.close()
+        handle = await actor.act(ACTOR_MARK, persist=False)
+        result = await asyncio.wait_for(handle.result(), 480)
     return result, model, sent
 
 

@@ -23,8 +23,9 @@ vocabulary in what the memory agents were sent, the coverage guarantee, metering
   a compaction) starts a segment fork, whose experience is an entry, or an occurrence of the entry with the same
   capture; a commit landed while the episode runs is served from the next cell with one notice;
 * serving on evidence (surfaces 2, 4): served items carry their evidence; an item the writer retires leaves every listing;
-* inferred regimes (surfaces 1, 2, 4): each episode's regime is inferred from its own signals (``none`` with none, ``sparse`` with
-  a verdict on the whole episode, changed and logged by a late one), never defaulted; a hidden grader decides nothing.
+* inferred regimes (surfaces 1, 2, 4): each episode's regime is inferred from its own signals (``none`` with none, ``dense``
+  with a verdict that names the answer it judged, changed and logged by a late one), never defaulted; a hidden grader
+  decides nothing.
 """
 
 from __future__ import annotations
@@ -227,20 +228,27 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
     facts = H.check_run(home, lanes, actor_model=model, own_texts=[first, shown, "Anything new in the inbox?"])
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     stores = _stores(home)
-    # one verdict the actor saw, on the episode as a whole: sparse, from its signals; the hidden one is posted
-    # unseen and decides nothing
-    assert stores.evidence.regime_record(s.episode_id) == ("sparse", "signals")
+    # one verdict the actor saw, right after its answer: rev 2 records the answers as dialogue actions on the env
+    # channel (the redesign arms' UNIFY_MEMORY_DIALOGUE=env, now fixed), so the pairing is certain and the verdict
+    # names the action it judged, which makes the regime dense, from its signals; the hidden one is posted unseen
+    # and decides nothing
+    assert stores.evidence.regime_record(s.episode_id) == ("dense", "signals")
     sigs = stores.evidence.signals_for(s.episode_id)
     assert {(x.visible_to_actor, x.label, x.timing) for x in sigs} == {(True, "pass", "in_episode"),
                                                                      (False, "pass", "in_episode")}
-    # the capture records what the episode did, with no value (none was handed back), no own check (rev 2: a
-    # capture is never run to classify it), and its outcome from the signals only
+    [shown_verdict] = [x for x in sigs if x.visible_to_actor]
+    assert str(shown_verdict.refers_to).startswith(f"{s.episode_id}/actions/"), shown_verdict
+    # the capture records what the episode did, with the value it handed back (rev 2 records each answered reply
+    # as a dialogue action, so the answer is the handed-back value), no own check (rev 2: a capture is never run to
+    # classify it), and its outcome from the signals only
     caps = [d.get("record") or {} for d in C.load(C.store_dir(paths.state_dir)).values()]
     case = next(c for r in caps for c in r.get("cases") or [] if c.get("episode") == s.episode_id)
-    assert case["form"] == "state_env" and case["value"] == {"present": False}
+    assert case["form"] == "state_env" and case["value"]["present"] is True and ID16.fullmatch(case["value"]["digest"])
     assert case["own_check"] == {"ran": False, "why": "a capture is never run to classify it"}
-    assert case["effects_seen"] == {"read": 1, "write": 1, "unknown": 0}
-    assert case["outcome"] == "positive" and "action:0..1" in case["trace"]["parts"]
+    # the file's read and write, and the answer, a dialogue action whose effect is not known
+    assert case["effects_seen"] == {"read": 1, "write": 1, "unknown": 1}
+    # its trace names the two file actions and the answer (action 2)
+    assert case["outcome"] == "positive" and "action:0..2" in case["trace"]["parts"]
     # the note the writer landed from the episode is served to the next request, with evidence served
     assert seen and SX.NOTE_ID in seen[0]["items"] and seen[0]["evidence"] is not None
     landed = [p for p in H._jsonl(paths.state_dir / "pass-results.jsonl") if (p.get("items") or {}).get("landed")]
@@ -315,8 +323,8 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
             reply(calls=[cell("print('checked')")]),
             reply("Sorted, totalled and checked."),
         ],
+        # rev 2: over the compaction point the loop compacts before the next call, with no forced turn
         compression_fork=Always(reply(SX.SUMMARY)),
-        compress_turn=Always(reply(calls=[("compress_context", {})])),
     )
     first = "Sort the rows of inbox.csv by id, then total the amounts."
     s = await H.cli_session(core_world, monkeypatch, model, first, H.replies())
@@ -417,110 +425,3 @@ async def test_surface_4_an_outcome_that_arrives_two_requests_later(core_world, 
     assert seen[0]["withdrawn"]["items"][SX.NOTE_ID]["status"] == "retired", seen
     assert listed and "sort-rows" not in listed[0] and "[" in listed[0], listed
     _check_ids_on_calls(lanes)
-
-
-# --- frozen memory (held-out evaluation) -----------------------------------------------------------------------------
-
-
-def _memory_fingerprint(home: Path) -> dict:
-    """What serving reads, as it stands: the memory repo's and the episodes repo's refs, every row of every evidence
-    table, the capture store's files, the run's pass results and the attention ledger's entries."""
-    import hashlib
-    import sqlite3
-
-    from unify.memory.gitio import Repo
-    from unify.memory.integration.paths import Paths
-
-    paths = Paths.under(home)
-    db = sqlite3.connect(f"file:{paths.evidence}?mode=ro", uri=True)
-    try:
-        tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-        rows = {t: sorted(map(repr, db.execute(f"SELECT * FROM {t}").fetchall())) for t in tables}
-    finally:
-        db.close()
-    caps = paths.captures
-    files = {str(p.relative_to(caps)): hashlib.sha256(p.read_bytes()).hexdigest()
-             for p in sorted(caps.rglob("*")) if p.is_file()} if caps.is_dir() else {}
-    return {
-        "memory_refs": Repo(paths.memory).run("for-each-ref").strip(),
-        "episodes_refs": Repo(paths.episodes).run("for-each-ref").strip(),
-        "evidence": rows,
-        "captures": files,
-        "pass_results": H._jsonl(paths.state_dir / "pass-results.jsonl"),
-        "entries": sorted(H.ledger(home).entries()),
-    }
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(1200)
-async def test_frozen_memory_serves_what_it_holds_and_changes_nothing(core_world, monkeypatch, lanes):  # noqa: F811
-    """The held-out mode (``UNIFY_MEMORY_FROZEN=on``): after a request that lands a note, the kit stops the service
-    (the drain) and freezes memory. Two frozen requests are served the same library and evidence, start no writer,
-    fork or service, record nothing (their uses and verdicts reach no store), and a message to the writer is
-    answered "not available: memory is frozen"."""
-    from unify.memory import writer_service as ws
-    from unify.memory.integration.paths import Paths
-
-    home = Path(core_world["state"])
-    paths = Paths.under(home)
-    (Path(core_world["workspace"]) / "inbox.csv").write_text(SX.INBOX)
-    _forever(lanes, "fork", SX.fork_by_request(SX.TOOL_FORK_REPLY, when="inbox.csv"))
-    _forever(lanes, "writer", SX.writer_policy())
-    code = ("import csv\n"
-            "rows = sorted(csv.DictReader(open('inbox.csv')), key=lambda r: int(r['id']))\n"
-            "w = csv.DictWriter(open('sorted.csv', 'w', newline=''), fieldnames=['id', 'amount'])\n"
-            "w.writeheader(); w.writerows(rows)\nprint(len(rows))\n")
-    texts = ["Sort the rows of inbox.csv by id into sorted.csv.", "Sort the rows of inbox.csv again.",
-             "And once more, please."]
-    a = await H.cli_session(core_world, monkeypatch, ScriptedModel(actor=[reply(calls=[cell(code)]), reply("Sorted.")]),
-                            texts[0], H.replies())
-    assert a.code == 0 and a.episode_id
-    H.wait_until_settled(home)
-    # the kit's freeze: the service stopped (verified), then the setting on for every later request
-    H.check_terminated(H.drain(home), home)
-    before = _memory_fingerprint(home)
-    assert SX.NOTE_ID in json.dumps(before["pass_results"]), "the training request landed nothing"
-    calls_before = {lane: len(lanes.of(lane)) for lane in ("fork", "writer", "helper")}
-    events_before = len(ws.events(home))
-    H.apply_settings(monkeypatch, {"UNIFY_MEMORY_FROZEN": "on"})
-    seen: list = []
-    said: list = []
-
-    def frozen_turn(call):
-        return reply(calls=[cell(code + "for step in (lambda: tools.send('@writer the ids are text here as well'),\n"
-                                 "             lambda: tools.checkpoint(note='sorted')):\n"
-                                 "    try:\n"
-                                 "        print(step())\n"
-                                 "    except Exception as exc:\n"
-                                 "        print(type(exc).__name__, exc)\n")])
-
-    def after(call):
-        said.append(json.dumps([m.get("content") for m in call.messages if m.get("role") == "tool"][-1:]))
-        return _served(home, seen, "Sorted again.")(call)
-
-    sessions = []
-    for text in texts[1:]:
-        s = await H.cli_session(core_world, monkeypatch, ScriptedModel(actor=[frozen_turn, after]), text,
-                                H.replies([{"checker": {"label": "fail"}}, {"quit": True}]))
-        assert s.code == 0, s.lines[-5:]
-        sessions.append(s)
-    after_fp = _memory_fingerprint(home)
-    # nothing that serving reads changed: no episode, signal, use, capture, pass or entry was added
-    assert after_fp == before, {k: (before[k] == after_fp[k]) for k in before}
-    # both frozen requests were served the same library and evidence, the landed note among it
-    assert len(seen) == 2 and seen[0] == seen[1] and SX.NOTE_ID in seen[0]["items"], seen
-    # no writer, fork or helper call, and no service started
-    assert {lane: len(lanes.of(lane)) for lane in ("fork", "writer", "helper")} == calls_before
-    assert len(ws.events(home)) == events_before, ws.events(home)[events_before:]
-    # the writer is not available on the record; a pause is not taken: rev 2's main profile has no in-episode memory,
-    # so the role has no checkpoint at all (the frozen refusal of a checkpoint is test_frozen_memory's)
-    assert all("not available: memory is frozen" in x for x in said), said
-    assert all("tools.checkpoint isn't available in your role" in x for x in said), said
-    frozen_rows = [e for e in H._jsonl(paths.state_dir / "events.jsonl") if e.get("phase") == "frozen"]
-    assert sorted(e["episode_id"] for e in frozen_rows) == sorted(s.episode_id for s in sessions), frozen_rows
-    from unify.agents import run_record as rr
-
-    assert not [r for r in rr.read_entries(home) if "writer" in (r.get("mentions") or []) and r.get("episode") in
-                {s.episode_id for s in sessions}]
-    H.check_terminated(H.drain(home), home)
