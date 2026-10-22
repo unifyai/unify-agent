@@ -448,8 +448,8 @@ def check_answer(
         entry = recipes.get(f["id"])
         if entry and entry not in f["call"]:
             return None, (
-                f"fit {i}: {f['id']!r} has a recipe that does its whole job on the current request; give its call "
-                f"as written: {entry}"
+                f"fit {i}: {f['id']!r} has a recipe, the one call that applies it to the current request; give "
+                f"that call as written: {entry}"
             )
     if len({f["id"] for f in fits}) != len(fits):
         return None, "an id is listed twice among the fits"

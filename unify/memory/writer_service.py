@@ -108,7 +108,7 @@ StopBy = Literal["drain", "suspend", "operator", "cap"]
 STOP_BY = ("drain", "suspend", "operator", "cap")
 #: What the entries the service could not reach are marked with, by why it stopped. A ``suspend`` (the end of one
 #: stage of a run that goes on) marks nothing: every entry still owed stays owed, and the next start hands it again
-#: (entries a stopped pass held go back with ``service_restart``, no miss).
+#: (entries a stopped pass held go back with ``suspend``, no miss).
 NOT_REACHED_BY = {
     "drain": "run_ended",
     "operator": "service_stopped",

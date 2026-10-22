@@ -335,6 +335,10 @@ def test_an_unread_entry_comes_back_then_goes_alone_then_is_unreadable(tmp_path)
     led2.hand("p2", 4)
     assert led2.return_orphans(live_pass_ids=["p9"]) == [e.entry]
     assert led2.get(e.entry).why == "service_restart" and led2.get(e.entry).misses == 0
+    # a pass the service was asked to stop during (a suspend or a drain) returns its entries as "suspend", no miss
+    led2.hand("p3", 4)
+    assert led2.return_unread("p3", stopped=True) == [e.entry]
+    assert led2.get(e.entry).why == "suspend" and led2.get(e.entry).misses == 0
 
 
 def test_hand_order_is_bad_news_first_oldest_first_and_k_entries(tmp_path):

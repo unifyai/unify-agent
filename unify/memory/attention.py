@@ -37,7 +37,8 @@ the evidence. Read but undecided, it goes back without a miss. :meth:`Ledger.mar
 not reach (``spend_cap``, ``run_ended``, ``service_stopped``, ``lifetime``). The guarantee: at run end every entry is
 ``closed``, ``unreadable`` or ``not_reached``; :meth:`Ledger.report` says so per kind, with the creation-to-read delay.
 The end of one stage of a run that goes on (a ``suspend``) is not the run's end: nothing is marked then, and the next
-start hands every entry still owed again (those a stopped pass held go back with ``service_restart``, no miss).
+start hands every entry still owed again (those a stopped pass held go back with ``suspend``, no miss; those a pass
+the service did not end held, found at the next start, with ``service_restart``).
 
 **Waiting for an episode.** An entry is handed only when every episode it names can be read (:func:`episode_resolver`):
 an episode is readable once it is recorded (indexed), and a running one through its latest in-episode segment record
@@ -91,7 +92,7 @@ Kind = Literal[
 State = Literal["open", "handed", "read", "closed", "unreadable", "not_reached"]
 Decision = Literal["new_item", "changed_item", "merged_into", "note", "retire", "nothing_to_keep", "defer"]
 NotReached = Literal["spend_cap", "run_ended", "service_stopped", "lifetime"]
-ReturnWhy = Literal["handed_not_read", "read_not_decided", "service_restart"]
+ReturnWhy = Literal["handed_not_read", "read_not_decided", "suspend", "service_restart"]
 
 KINDS: tuple[str, ...] = get_args(Kind)
 STATES: tuple[str, ...] = get_args(State)
@@ -1482,8 +1483,8 @@ class Ledger:
         ``unreadable`` with the pass's read evidence named after the third). Read but undecided: the same bound on its
         own count (alone after two such passes, ``unreadable`` after the third, its evidence saying it was read and never
         decided), so an entry no pass decides costs at most three passes. A pass the service was asked to stop during
-        (*stopped*: a stop marker was set while it ran) had no fair turn: its entries go back with ``service_restart``,
-        no miss, as a stopped pass's do at the next start. Returns the ids returned or made unreadable."""
+        (*stopped*: a stop marker was set while it ran) had no fair turn: its entries go back with ``suspend``, no miss.
+        Returns the ids returned or made unreadable."""
         with self.locked():
             state = self.entries()
             rows, out = [], []
@@ -1493,7 +1494,7 @@ class Ledger:
                     continue
                 out.append(e.entry)
                 if stopped:
-                    rows.append({"op": "return", "entry": e.entry, "pass_id": pass_id, "why": "service_restart", "at": at})
+                    rows.append({"op": "return", "entry": e.entry, "pass_id": pass_id, "why": "suspend", "at": at})
                 elif e.state == "read" and e.undecided + 1 >= UNREADABLE_AFTER_MISSES:
                     rows.append({"op": "unreadable", "entry": e.entry, "pass_id": pass_id,
                                  "evidence": f"read and not decided in {e.undecided + 1} passes, the last pass:{pass_id}",

@@ -119,6 +119,15 @@ def test_an_extra_tool_call_a_helper_or_a_form_changes_the_shape():
     # the same run with a different helper never folds: the whole module counts
     helper = "def norm(x):\n    return x.strip()\n\n\ndef run(state):\n    return norm(state.last)\n"
     assert cs.shape_of(helper)["shape"] != cs.shape_of(helper.replace("x.strip()", "x.lower()"))["shape"]
+    # a helper the tool namespace is handed to counts, by position or keyword and under any name, and is what the
+    # catalogue's effects read too (one source)
+    via = (
+        "def save(tools_, path):\n    tools_.files.write(path, 'x')\n\n\n"
+        "def check(*, ns):\n    return ns.files.read('a.txt')\n\n\n"
+        "def run(state, env):\n    save(env, 'out.txt')\n    return check(ns=env)\n"
+    )
+    assert cs.shape_of(via)["env_calls"] == ["env.files.read", "env.files.write"] == cs.entry_env_chains(via)
+    assert cs.entry_env_chains("def run(state, env):\n    unrelated(state)\n") == []
     # the form and the parameter count
     one = "def run(state):\n    return state.last\n"
     two = "def run(state, env):\n    return state.last\n"

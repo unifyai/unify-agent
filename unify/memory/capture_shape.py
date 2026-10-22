@@ -11,7 +11,8 @@ an occurrence of the first, its raw bytes kept beside it as evidence, nothing de
    a name the module or the builtins give, an attribute and a keyword stay as written;
 3. every literal kept as written, so two procedures that differ in one constant never fold;
 4. the entry form and the number of ``run``'s parameters (:func:`.capture_trace.entry_point`), and the sorted
-   ``<env>.<channel>.<method>`` chains ``run``'s tool namespace parameter names.
+   ``<env>.<channel>.<method>`` chains the procedure's tool namespace names, in its entry function and in every helper
+   it hands the namespace to (:func:`entry_env_chains`, the same source the catalogue's ``effects`` read).
 
 Nothing is run, imported or evaluated, and no world name, word, task id or value is read: the address is a function of
 the procedure's syntax only. A procedure that does not parse has no address (it is not captured anyway).
@@ -164,20 +165,59 @@ class _Nested(ast.NodeTransformer):
         return self._function(node)
 
 
-def _chains(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
-    """The ``<env>.<channel>.<method>`` chains rooted at *fn*'s second positional parameter (its tool namespace), as
-    ``env.<channel>.<method>``."""
-    params = [a.arg for a in (*fn.args.posonlyargs, *fn.args.args)]
-    if len(params) < 2:
-        return []
-    env = params[1]
+def _positional(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    return [a.arg for a in (*fn.args.posonlyargs, *fn.args.args)]
+
+
+def _chains(fn: ast.FunctionDef | ast.AsyncFunctionDef, env: str) -> set[str]:
+    """The ``<env>.<channel>.<method>`` chains rooted at the name *env* in *fn*, as ``env.<channel>.<method>``."""
     out = set()
     for node in ast.walk(fn):
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute):
             inner = node.value
             if isinstance(inner.value, ast.Name) and inner.value.id == env:
                 out.add(f"env.{inner.attr}.{node.attr}")
-    return sorted(out)
+    return out
+
+
+def _with_env(tree: ast.Module) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]]:
+    """The functions of *tree* that hold the tool namespace, each with the name it has there: the entry function
+    (:func:`.fixed_answer._entry`) by its second positional parameter, then every module-level function it, or one of
+    these, passes that name to (by position or keyword), by the parameter it arrives in."""
+    from .fixed_answer import _entry
+
+    entry = _entry(tree)
+    if entry is None or len(_positional(entry)) < 2:
+        return []
+    fns = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    out: list = []
+    seen: set[tuple[str, str]] = set()
+    todo = [(entry, _positional(entry)[1])]
+    while todo:
+        fn, env = todo.pop()
+        if (fn.name, env) in seen:
+            continue
+        seen.add((fn.name, env))
+        out.append((fn, env))
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in fns):
+                continue
+            helper = fns[node.func.id]
+            params = _positional(helper)
+            names = {a.arg for a in (*helper.args.posonlyargs, *helper.args.args, *helper.args.kwonlyargs)}
+            for i, arg in enumerate(node.args):
+                if isinstance(arg, ast.Name) and arg.id == env and i < len(params):
+                    todo.append((helper, params[i]))
+            for kw in node.keywords:
+                if isinstance(kw.value, ast.Name) and kw.value.id == env and kw.arg in names:
+                    todo.append((helper, kw.arg))
+    return out
+
+
+def _env_chains(tree: ast.Module) -> list[str]:
+    """The tool calls a procedure makes (:func:`_with_env`: its entry function and every helper it hands the tool
+    namespace to)."""
+    return sorted(set().union(*(_chains(fn, env) for fn, env in _with_env(tree))))
 
 
 def call_sequence(source: Any) -> list[str]:
@@ -213,25 +253,15 @@ def call_sequence(source: Any) -> list[str]:
     return out
 
 
-def _env_chains(tree: ast.Module) -> list[str]:
-    """The tool calls ``run`` names (:func:`_chains`)."""
-    run = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "run"),
-               None)  # fmt: skip
-    return _chains(run) if run is not None else []
-
-
 def entry_env_chains(source: Any) -> list[str]:
-    """The tool calls a procedure's entry function names (``run``; else ``main``; else its only function; else its
-    first public one, as :mod:`.fixed_answer` reads the entry), from its syntax; [] when it does not parse."""
-    from .fixed_answer import _entry
-
+    """The tool calls a procedure makes (:func:`_env_chains`), from its syntax; [] when it does not parse. The one
+    source of a procedure's effects, for its shape address and the catalogue alike."""
     if not isinstance(source, str):
         return []
     try:
-        fn = _entry(ast.parse(source))
+        return _env_chains(ast.parse(source))
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return []
-    return _chains(fn) if fn is not None else []
 
 
 def shape_of(source: Any) -> dict | None:

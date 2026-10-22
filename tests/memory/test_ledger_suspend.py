@@ -2,7 +2,7 @@
 
 A ``final`` drain marks every attention entry still owed ``not_reached: run_ended`` (every entry ends closed or listed as not reached, at the run's end);
 a ``suspend`` drain stops the service the same verified way and marks nothing: the entries stay owed, the suspend's stop
-marker is set aside, and the next start hands them again (those a stopped pass held going back with ``service_restart``,
+marker is set aside, and the next start hands them again (those a stopped pass held going back with ``suspend``,
 no miss). The default stays ``final``. The process tests run :mod:`tests.memory.service_driver` (the real service loop,
 a scripted pass); no model, network or key.
 """
@@ -144,7 +144,7 @@ def test_after_a_suspend_the_next_start_hands_the_same_entries_again_without_a_m
     assert all(entries[i].state == "closed" for i in ids)
     # an entry the stopped pass held went back without a miss
     assert all(entries[i].misses == 0 for i in held)
-    assert {r.get("why") for r in _ops(svc.home, "return") if r["entry"] in held} <= {"service_restart"}
+    assert {r.get("why") for r in _ops(svc.home, "return") if r["entry"] in held} <= {"suspend"}
     assert _ops(svc.home, "not_reached") == []
 
 

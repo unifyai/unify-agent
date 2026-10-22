@@ -12,7 +12,7 @@ An :class:`Item` is a frozen record of one function or note: ``id``, ``kind``, `
 ``print(item)`` shows its card; ``item.fits(inputs)`` is its own applicability check (a :class:`Fit`); a function
 item is called directly, ``item(*args)``: the call is tracked, and what the function raises reaches the caller
 unchanged; calling a note raises an error that says what to do instead. A procedure with a recipe (one function
-that does its whole job on a request) shows on its card the one call that applies it to the current request,
+that applies it to a request where one call can do the job) shows on its card the one call that applies it to the current request,
 ``memory.get(<recipe id>)(memory.request())``; nothing runs it until that call is made. Every call checks its arguments' types
 first, and every error of the package's own names the call as written, what was expected with an example call,
 and the nearest valid targets or the right call. The whole typed contract is ``memory/__init__.pyi`` beside this

@@ -815,7 +815,8 @@ def catalogue_text(
 
 def _code_facts(source: str | None, applies_source: str | None) -> dict:
     """What a procedure's code says of itself, from its syntax alone (nothing run): the ``env.<channel>.<method>``
-    chains its entry function's tool namespace names (``effects``), whether its entry reads its input
+    chains its tool namespace names in its entry function and in every helper it hands the namespace to
+    (``effects``, :func:`.capture_shape.entry_env_chains`, as its shape address reads them), whether its entry reads its input
     (``reads_input``) and whether it gives a fixed answer (``constant``, :func:`.fixed_answer.fixed_answer`), and its
     ``applies`` source as written (``applies_text``)."""
     from .capture_shape import entry_env_chains
