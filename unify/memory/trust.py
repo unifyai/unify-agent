@@ -29,11 +29,12 @@ verdicts (:func:`signal_outcome`).
   basis is ``verdicts`` when one does, else ``implicit``; an ``implicit`` basis never claims correctness;
 * ``on-trial`` otherwise. An ``adopted`` item stays adopted until the retirement rule fires; one episode never decides.
 
-**Evidence levels.** The gate sets ``unchecked`` and ``reproduces-its-case`` (for a capture, the harness's own
-reproduction of its recorded case does). Outcomes only move the top of the scale (:func:`apply_outcome`, the one
-decider, which :func:`.lifecycle.decide_status` delegates to): an item adopted on the basis of verdicts is raised to
-``confirmed-by-outcomes``, and one that is retired, or no longer adopted on verdicts, drops back to
-``reproduces-its-case``. Outcomes in the ``implicit`` and ``none`` regimes never confirm.
+**Evidence levels.** The gate sets ``unchecked``: it runs no code (rev 2.1), so nothing shows an item reproducing its
+case, and ``reproduces-its-case`` is read only on records written before. Outcomes only move the top of the scale
+(:func:`apply_outcome`, the one decider, which :func:`.lifecycle.decide_status` delegates to): an item adopted on the
+basis of verdicts is raised to ``confirmed-by-outcomes``, and one that is retired, or no longer adopted on verdicts,
+drops back to ``unchecked``: nothing else has shown more. Outcomes in the ``implicit`` and ``none`` regimes never
+confirm.
 
 The status and level names are defined here, in one place, until the shared constants module lands; the mapping from
 the lifecycle's statuses is :data:`FROM_LIFECYCLE`.
@@ -54,10 +55,10 @@ from .item_states import (  # noqa: E402
     CONFIRMED_BY_OUTCOMES,
     FROM_LIFECYCLE,  # noqa: F401 - read as trust.FROM_LIFECYCLE
     ON_TRIAL,
-    REPRODUCES_ITS_CASE,
+    REPRODUCES_ITS_CASE,  # noqa: F401 - read as trust.REPRODUCES_ITS_CASE (records from before rev 2.1)
     RETIRED,
     STATUSES,  # noqa: F401 - read as trust.STATUSES
-    UNCHECKED,  # noqa: F401 - read as trust.UNCHECKED
+    UNCHECKED,
 )
 
 #: What an adoption rests on.
@@ -343,16 +344,17 @@ class Outcome:
 
 def apply_outcome(level: str | None, prior: str | None, uses: Iterable[Use]) -> Outcome:
     """The one decider of what outcomes do to a procedure (a library item or a capture): its status from its uses
-    (:func:`decide`) and its evidence level. *level* is the level the gate (or the capture's reproduction) set; this
-    never recomputes it. Outcomes only raise it to ``confirmed-by-outcomes`` (adopted on the basis of verdicts) and
-    lower ``confirmed-by-outcomes`` back to ``reproduces-its-case`` when the item is retired or is no longer adopted
-    on verdicts. Outcomes in the ``implicit`` and ``none`` regimes never confirm."""
+    (:func:`decide`) and its evidence level. *level* is the level its record holds; this never recomputes the gate's
+    part of it. Outcomes only raise it to ``confirmed-by-outcomes`` (adopted on the basis of verdicts) and lower
+    ``confirmed-by-outcomes`` back to ``unchecked`` when the item is retired or is no longer adopted on verdicts: no
+    check ran that showed more (the gate runs no code), so the card never claims a reproduction that did not happen.
+    Outcomes in the ``implicit`` and ``none`` regimes never confirm."""
     d = decide(uses, prior)
     new = level
     if d.status == ADOPTED and d.basis == BASIS_VERDICTS:
         new = CONFIRMED_BY_OUTCOMES
     elif level == CONFIRMED_BY_OUTCOMES:
-        new = REPRODUCES_ITS_CASE  # outcomes no longer confirm it: the reproduction alone stands
+        new = UNCHECKED  # outcomes no longer confirm it, and nothing else showed more
     return Outcome(d.status, new, d.basis, d.rule, d.reason, d.episodes)
 
 

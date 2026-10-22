@@ -130,7 +130,11 @@ def test_an_adopted_item_stays_until_retirement_fires_and_then_loses_its_confirm
     assert kept.status == tr.ADOPTED  # one episode never decides
     two_bad = one_bad + [_use("e10", "dense", answered=True, verdict="rejected")]
     out = tr.apply_outcome(tr.CONFIRMED_BY_OUTCOMES, tr.ADOPTED, two_bad)
-    assert (out.status, out.level) == (tr.RETIRED, tr.REPRODUCES_ITS_CASE)
+    # rev 2.1: back to unchecked, never to a reproduction no check showed (the gate runs no code)
+    assert (out.status, out.level) == (tr.RETIRED, tr.UNCHECKED)
+    # no longer adopted on verdicts without being retired: the same
+    quiet = [_use("e11", "implicit")]
+    assert tr.apply_outcome(tr.CONFIRMED_BY_OUTCOMES, None, quiet).level == tr.UNCHECKED
 
 
 def test_signal_outcome_reads_only_what_the_regime_and_the_actor_could_see():

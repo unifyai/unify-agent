@@ -1721,7 +1721,8 @@ class Item:
         kind: ``'function'`` or ``'note'``.
         summary: one line.
         applies: when it applies, written from the request alone ('' when none is recorded).
-        evidence: ``'unchecked'``, ``'reproduces-its-case'`` or ``'confirmed-by-outcomes'`` (a note is unchecked).
+        evidence: ``'unchecked'`` (nothing has shown more), ``'confirmed-by-outcomes'`` (outcomes after use confirm it)
+            or, on a record from before rev 2.1, ``'reproduces-its-case'``; a note is unchecked.
         status: ``'on-trial'``, ``'adopted'`` or ``'retired'``.
         example: one recorded call, for a function ('' when none is shown).
         text: a note's text, or a function's source with its docstring.

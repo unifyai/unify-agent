@@ -5,11 +5,10 @@
 - ``unchecked``: the item passed every integrity and safety check, and at least one example call of it returns on a
   value from a recorded episode (in any recorded form), but some evidence check did not hold; the findings that set
   the level are kept with the item (``level_reasons``). A capture or a pool draft is also ``unchecked``.
-- ``reproduces-its-case``: its example calls reproduce their recorded cases under every evidence check of the gate
-  (structured arguments from fixtures or through a stored reader, the check with unseen values, the literal and
-  rule checks, an exact assertion, and, for a procedure, its recorded result reproduced).
+- ``reproduces-its-case``: its example calls reproduced their recorded cases under every evidence check of the gate.
+  Only records written before rev 2.1 hold it: the gate now runs no code, so it gives ``unchecked``.
 - ``confirmed-by-outcomes``: outcomes after use confirm it. The gate never gives this level; outcome tracking does,
-  and outcome tracking alone raises an item to it, lowers it again and changes statuses.
+  and outcome tracking alone raises an item to it, lowers it again (to ``unchecked``) and changes statuses.
 
 **Status**: where the item is in its life, from what happens after it is stored. ``on-trial`` (every new or changed
 item), ``adopted`` (used cleanly), ``retired`` (failed in use, depends on a failed item, or retired by the curator).
