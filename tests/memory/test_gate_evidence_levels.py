@@ -2,10 +2,10 @@
 safety refuse (library mode, writer role, in the jail).
 
 Structured and unstructured recorded inputs are treated alike. A function whose recorded input is text lands
-whether its test parses the text inline (the lowest level, ``unchecked``) or loads a fixture parsed from the
-recorded text by a stored reader (the same level as a structured fixture). An item the check with unseen values
-flags lands at the lowest level, and the flag is shown. G6, a malformed manifest, a regression and the reserved
-paths still refuse.
+whether its test parses the text inline or loads a fixture parsed from the recorded text by a stored reader. Rev 2:
+re-deriving a parsed fixture runs its reader, so the gate does not, and an unverified parsed fixture grounds nothing:
+both land at the lowest level (``unchecked``). A function with no call on a recorded value and a regression are
+labels. G6, a malformed manifest and the reserved paths still refuse.
 """
 
 from __future__ import annotations
@@ -210,10 +210,6 @@ def test_refuses_a_response_without_a_user_id():
         user_id({"name": "Ada"})
 """
 
-SPECIAL_CASED = w.MODULE_SOURCE.replace(
-    '    return response["user_id"]\n',
-    '    return {"u-1": "u-1", "u-2": "u-2"}[response["user_id"]]\n',
-)
 KEY = "sk-or-v1-" + "ab" * 32  # pragma: allowlist secret
 
 
@@ -270,10 +266,6 @@ def _merge(world, files, man, pass_id="p1"):
     )
 
 
-def _refusal_lines(res) -> list[str]:
-    return [r for r in res.reasons if not r.startswith("note:")]
-
-
 # --- levels -----------------------------------------------------------------------------------------------------
 
 
@@ -303,9 +295,11 @@ def test_a_text_input_parsed_inline_in_the_test_lands_at_the_lowest_level(text_w
     assert not res.item_reasons.get(w.ITEM_ID), res.item_reasons
 
 
-def test_a_text_input_grounded_through_a_stored_reader_lands_at_the_full_level(text_world):
+def test_a_text_input_through_a_stored_reader_lands_at_the_lowest_level(text_world):
     """The recorded text goes through a stored reader into a parsed fixture; the function takes the parsed value as
-    it would take a structured one, and reaches the same level. The reader lands with it."""
+    it would take a structured one. Rev 2: the gate does not re-derive the parsed fixtures (that runs the reader),
+    so they ground nothing and the function lands at the lowest level, its label saying what was not run. The
+    reader lands with it."""
     _, _, blobs, _ = text_world
     files, fixtures = _copies(blobs.get, TEXT_FIXTURES, READER_ID)
     for dest, ep in zip(w.FIXTURE_PATHS, (T1, T2)):
@@ -338,63 +332,16 @@ def test_a_text_input_grounded_through_a_stored_reader_lands_at_the_full_level(t
     res = _merge(text_world, files, man)
     assert res.passed, res.reasons
     assert set(res.items_merged) >= {READER_ID, w.ITEM_ID}
-    assert level_of(res, w.ITEM_ID) == FULL, level_reasons_of(res, w.ITEM_ID)
-    assert level_reasons_of(res, w.ITEM_ID) == []
+    assert level_of(res, w.ITEM_ID) == LOWEST, level_reasons_of(res, w.ITEM_ID)
+    assert any("[examples:episodes]" in r for r in level_reasons_of(res, w.ITEM_ID)), level_reasons_of(res, w.ITEM_ID)
     assert level_of(res, READER_ID) in (LOWEST, FULL)
+    for dest in (*w.FIXTURE_PATHS, w.INPUTS_PATH):
+        not_run = f"not run: G1 parsed fixture {dest}: re-deriving it would run its reader"
+        assert not_run in res.verification[w.ITEM_ID]["label_findings"], res.verification[w.ITEM_ID]
 
 
-def test_a_parsed_fixture_that_does_not_re_derive_is_refused(text_world):
-    """Integrity: a parsed fixture whose bytes differ from what the stored reader makes of the recorded text."""
-    _, _, blobs, _ = text_world
-    files, fixtures = _copies(blobs.get, TEXT_FIXTURES, READER_ID)
-    for dest, ep in zip(w.FIXTURE_PATHS, (T1, T2)):
-        data, entry = make_parsed(ep, dest, blobs.get)
-        files[dest], fixtures[dest] = data.decode(), entry
-    lines, entry = b"", None
-    for ep in (T1, T2):
-        line, entry = make_parsed(ep, w.INPUTS_PATH, blobs.get, append=True, existing=entry)
-        lines += line
-    files[w.INPUTS_PATH], fixtures[w.INPUTS_PATH] = lines.decode(), entry
-    files[w.FIXTURE_PATHS[0]] = files[w.FIXTURE_PATHS[0]].replace("u-1", "u-7")
-    files.update(
-        {
-            w.PACKAGE_INIT: '"""Accounts."""\n',
-            w.MODULE: w.MODULE_SOURCE,
-            w.TEST_FILE: w.TEST_SOURCE.replace('"u-1"', '"u-7"'),
-            READER_MODULE: READER_SOURCE,
-            READER_TEST: READER_TEST_SOURCE,
-        },
-    )
-    reader = {
-        "item": READER_ID,
-        "kind": "function",
-        "source_episodes": ["t1", "t2"],
-        "tests": [READER_TEST],
-        "covers": [],
-    }
-    man = w.manifest(fixtures, reader, w.item(source_episodes=["t1", "t2"]))
-    res = _check(text_world, files, man)
-    assert not res.passed and "G1" in res.refused, res.reasons
-    assert any(w.FIXTURE_PATHS[0] in r for r in res.reasons if r.startswith("G1:")), res.reasons
-
-
-def test_an_item_the_unseen_value_check_flags_lands_at_the_lowest_level_with_the_flag_shown(
-    text_world,
-):
-    _, _, blobs, _ = text_world
-    files, fixtures = w.files_and_fixtures(blobs.get, module=SPECIAL_CASED)
-    res = _merge(text_world, files, w.manifest(fixtures))
-    assert res.passed and w.ITEM_ID in res.items_merged, res.reasons
-    assert level_of(res, w.ITEM_ID) == LOWEST
-    capped = level_reasons_of(res, w.ITEM_ID)
-    assert any("[examples:special-cased]" in r for r in capped), capped
-    # the writer sees the flag in the gate's reply, as a note, never as a refusal
-    shown = [r for r in res.reasons if "[examples:special-cased]" in r]
-    assert shown and all(r.startswith("note:") for r in shown), res.reasons
-    assert not res.item_reasons.get(w.ITEM_ID), res.item_reasons
-
-
-def test_a_function_with_no_example_on_a_recorded_value_is_not_landed(text_world):
+def test_a_function_with_no_example_on_a_recorded_value_lands_labelled(text_world):
+    """Rev 2: the grounding finding is a label on the item, never a refusal; the item lands at the lowest level."""
     _, _, blobs, _ = text_world
     files = {
         w.PACKAGE_INIT: '"""Accounts."""\n',
@@ -402,7 +349,10 @@ def test_a_function_with_no_example_on_a_recorded_value_is_not_landed(text_world
         w.TEST_FILE: LITERAL_ONLY_TEST,
     }
     res = _merge(text_world, files, w.manifest({}))
-    assert w.ITEM_ID not in res.items_merged, res.reasons
+    assert res.passed and w.ITEM_ID in res.items_merged, res.reasons
+    found = res.verification[w.ITEM_ID]["label_findings"]
+    assert any(r.startswith(f"G2: [examples:grounded] {w.ITEM_ID}") for r in found), found
+    assert level_of(res, w.ITEM_ID) == LOWEST
 
 
 # --- the safety and integrity checks still refuse ----------------------------------------------------------------
@@ -432,8 +382,8 @@ def test_a_malformed_manifest_still_refuses(text_world, bad):
     assert not res.passed and not res.checks.get("G1", True), res.reasons
 
 
-def test_a_regression_still_refuses(text_world):
-    """The parent's tests fail against the candidate's library: refused even though the edit has its red test."""
+def test_a_regression_is_a_label(text_world):
+    """The parent's tests fail against the candidate's library. Rev 2: a label on the pass, never a refusal."""
     mem, _, blobs, _ = text_world
     files, fixtures = w.files_and_fixtures(blobs.get)
     assert _merge(text_world, files, w.manifest(fixtures), "p0").passed
@@ -449,8 +399,11 @@ def test_a_regression_still_refuses(text_world):
     )
     man = w.manifest({}, w.item(tests=[w.TEST_FILE, red]))
     res = _check(text_world, {w.MODULE: upper, red: red_source}, man)
-    assert not res.passed and "G3" in res.refused, res.reasons
-    assert any("parent's tests" in r or "new failures" in r for r in _refusal_lines(res)), res.reasons
+    assert res.passed and not res.refused, res.reasons
+    assert any(
+        r.startswith("note: label: the pass: G3: the parent's tests no longer pass against the candidate's library: ")
+        for r in res.reasons
+    ), res.reasons
 
 
 @pytest.mark.parametrize(

@@ -14,3 +14,15 @@ writes can find no repair round fits in what is left, even though the reading wa
 
 Proposed fix, to evaluate in a later run: start the write phase only when a cell changes the writer's box or makes a
 writer action (`check`, `fixture`, `test`, `land_capture`), as a tool call did before tools moved into code.
+
+## A parsed fixture's bytes are not checked against its reader
+
+A parsed fixture (`fixture(..., parser=...)`) is a recorded text block parsed by a stored reader. Before rev 2 the gate
+re-derived it: it ran the reader confined on the recorded text and refused a fixture whose bytes differed. In rev 2
+the gate runs no reader to check a fixture (`library_checks`: "re-deriving it would run its reader"), so it labels
+the fixture's owners `not run` and leaves the bytes unverified. An unverified parsed fixture grounds no argument, so
+the most it can do is leave its item at the lowest evidence level; it cannot raise an item's level. A writer can still
+store a parsed fixture whose bytes its reader would not produce, and readers of the library see it as recorded data.
+
+Proposed fix, to evaluate in a later run: re-derive a parsed fixture when its reader is statically pure
+(`gate_policy.purity`), as the gate already runs a pure item's own tests, and keep the `not run` label otherwise.

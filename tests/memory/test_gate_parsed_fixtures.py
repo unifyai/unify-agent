@@ -1,5 +1,6 @@
 """Evidence in any recorded form: evidence findings set an item's evidence level, and only integrity and safety
-checks refuse; text reaches a function through a stored reader (a parsed fixture), which the gate re-derives.
+checks refuse; text reaches a function through a stored reader (a parsed fixture). Rev 2: re-deriving a parsed fixture runs its
+reader, so the gate does not, and an unverified parsed fixture grounds nothing.
 
 The pure parts (parsed fixtures with a stand-in reader, the fixture tool) need no box; the gate's cases run in the
 jail (bubblewrap) and are skipped without it.
@@ -22,7 +23,7 @@ from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
-from unify.memory.item_states import REPRODUCES_ITS_CASE, UNCHECKED
+from unify.memory.item_states import UNCHECKED
 from unify.memory.library_checks import LibraryConfig
 
 needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
@@ -294,67 +295,29 @@ def test_text_parsed_inline_lands_at_the_lowest_level(text_world):
 
 
 @needs_bwrap
-def test_text_grounded_through_a_stored_reader_reaches_the_grounding(text_world):
+def test_a_parsed_fixture_is_not_re_derived_and_grounds_nothing(text_world):
+    """Rev 2: re-deriving a parsed fixture would run its reader, and the gate runs none. The fixture's owners carry
+    ``not run`` on their labels, and a fixture whose bytes the gate has not verified grounds no argument, so the
+    function that takes it lands at the lowest evidence level."""
     mem, ev, blobs, gate = text_world
     files, entries = _text_files(blobs, USERS_TEST_PARSED, parsed_bytes=b"")
     res = gate().check(mem.head(), lw.candidate(mem, files), _manifest(entries, _items([USERS_TEST])))
     assert res.passed, res.reasons
-    # the gate ran the reader confined on the recorded bytes and got the fixture's bytes again
-    assert res.parsed[PARSED_FIXTURE]["rederived"] is True and res.parsed[PARSED_FIXTURE]["parser"] == [READER]
-    # the mapping now comes from a fixture: no grounding finding, whatever else its evidence shows
-    assert not any("[examples:grounded]" in r for r in res.level_reasons.get(USER_OF, [])), res.level_reasons
-    assert res.levels[USER_OF] in (UNCHECKED, REPRODUCES_ITS_CASE)
-    assert res.verification[READER]["reads_for"] == [PARSED_FIXTURE]
-    assert res.verification[USER_OF]["readers"] == [READER]
+    not_run = f"not run: G1 parsed fixture {PARSED_FIXTURE}: re-deriving it would run its reader"
+    for item in (READER, USER_OF):
+        assert not_run in res.verification[item]["label_findings"], res.verification[item]
+    assert PARSED_FIXTURE not in res.parsed and "reads_for" not in res.verification[READER]
+    assert any(
+        f"fixture {PARSED_FIXTURE} has no recorded provenance" in r and "it grounds no argument" in r
+        for r in res.reasons
+    ), res.reasons
+    assert res.levels[USER_OF] == UNCHECKED
+    assert any("[examples:episodes]" in r for r in res.level_reasons[USER_OF]), res.level_reasons
 
 
 @needs_bwrap
-def test_a_parsed_fixture_that_differs_from_its_reader_is_refused(text_world):
-    mem, ev, blobs, gate = text_world
-    data, _ = fx.make(T1, "request:0", PARSED_FIXTURE, blob=blobs.get, parser=READER, parse=_parse_like_the_reader)
-    files, entries = _text_files(blobs, USERS_TEST_PARSED, parsed_bytes=data.replace(b"u-7", b"u-8"))
-    res = gate().check(mem.head(), lw.candidate(mem, files), _manifest(entries, _items([USERS_TEST])))
-    assert not res.passed and "G1" in res.refused
-    assert any(PARSED_FIXTURE in r and fx.REMAKE in r for r in res.reasons), res.reasons
-
-
-@pytest.mark.parametrize(
-    "reader_source, why",
-    [
-        (
-            READ_SOURCE.replace("def fields(text: str) -> dict:", "def fields(text: str, strict: bool) -> dict:"),
-            "does not take one positional text parameter",
-        ),
-        (
-            READ_SOURCE.replace("    return out\n", "    _SEEN.append(1)\n    out['seen'] = len(_SEEN)\n    return out\n")
-            + "\n_SEEN = []\n",
-            "gives different results on two runs",
-        ),
-    ],
-)
-@needs_bwrap
-def test_a_reader_that_breaks_its_conditions_is_refused(text_world, reader_source, why):
-    mem, ev, blobs, gate = text_world
-    files, entries = _text_files(blobs, USERS_TEST_PARSED, parsed_bytes=b"")
-    files[READ_MODULE] = reader_source
-    res = gate().check(mem.head(), lw.candidate(mem, files), _manifest(entries, _items([USERS_TEST])))
-    assert not res.passed and "G1" in res.refused
-    assert any(why in r for r in res.reasons), res.reasons
-
-
-@needs_bwrap
-def test_a_reader_neither_listed_nor_stored_is_refused(text_world):
-    mem, ev, blobs, gate = text_world
-    files, entries = _text_files(blobs, USERS_TEST_PARSED, parsed_bytes=b"")
-    users_only = [it for it in _items([USERS_TEST]) if it["item"] == USER_OF]
-    files.pop(READ_TEST)
-    res = gate().check(mem.head(), lw.candidate(mem, files), _manifest(entries, users_only))
-    assert not res.passed
-    assert any("neither listed in this pass's manifest nor stored" in r for r in res.reasons), res.reasons
-
-
-@needs_bwrap
-def test_a_function_with_no_call_on_any_recorded_value_is_still_refused(library_example_world):
+def test_a_function_with_no_call_on_any_recorded_value_is_labelled(library_example_world):
+    """Rev 2: the grounding finding is a label on the item, never a refusal."""
     mem, ev, blobs, gate = library_example_world
     literal_only = lw.TEST_SOURCE.replace('user_id(load("me_1.json"))', 'user_id({"user_id": "u-1"})').replace(
         'user_id(load("me_2.json"))',
@@ -364,10 +327,14 @@ def test_a_function_with_no_call_on_any_recorded_value_is_still_refused(library_
         "INPUTS = [json.loads(x) for x in (DATA / \"users.user_id.inputs.jsonl\").read_text().splitlines() if x]",
         "INPUTS = []",
     )
+    assert "INPUTS = []" in literal_only
     files, fixtures = lw.files_and_fixtures(blobs.get, test=literal_only)
     res = gate().check(mem.head(), lw.candidate(mem, files), lw.manifest(fixtures))
-    assert not res.passed
-    assert any(r.startswith(f"G2: [examples:grounded] {lw.ITEM_ID}") for r in res.reasons), res.reasons
+    assert res.passed, res.reasons
+    found = res.verification[lw.ITEM_ID]["label_findings"]
+    assert any(r.startswith(f"G2: [examples:grounded] {lw.ITEM_ID}") for r in found), found
+    assert any(r.startswith(f"note: label: {lw.ITEM_ID}: G2: [examples:grounded] ") for r in res.reasons), res.reasons
+    assert res.levels[lw.ITEM_ID] == UNCHECKED
 
 
 # --- safety and integrity still refuse ----------------------------------------------------------------------------
@@ -392,15 +359,34 @@ def test_safety_and_integrity_findings_still_refuse(library_example_world):
     # a reserved path the harness generates
     res = gate().check(mem.head(), lw.candidate(mem, {**files, "INDEX.md": "# mine\n"}), man)
     assert not res.passed and "G1" in res.refused, res.reasons
-    # an example call that raises something other than MemoryInputError
+
+
+@needs_bwrap
+def test_a_raising_example_and_a_regression_are_labels(library_example_world):
+    """Rev 2: an example call that raises something other than MemoryInputError, and a regression (the parent's
+    tests fail against the candidate's library), label the item or the pass and refuse nothing."""
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = lw.files_and_fixtures(blobs.get)
+    man = lw.manifest(fixtures)
     raising = lw.MODULE_SOURCE.replace(
         '        raise MemoryInputError("an acct.me response with a user_id field is needed")\n',
         '        raise KeyError("user_id")\n',
     )
+    assert raising != lw.MODULE_SOURCE
     res = gate().check(mem.head(), lw.candidate(mem, {**files, lw.MODULE: raising}), man)
-    assert not res.passed, res.reasons
+    assert res.passed, res.reasons
+    found = res.verification[lw.ITEM_ID]["label_findings"]
+    assert any(
+        r.startswith(f"G2: [examples:raised] {lw.ITEM_ID} raises KeyError on its example call at {lw.TEST_FILE}:")
+        for r in found
+    ), found
     # a regression: the parent's tests fail against the candidate's library
     assert gate().merge(mem.head(), lw.candidate(mem, files), man, "base", "write", None, "0").passed
     upper = lw.MODULE_SOURCE.replace('    return response["user_id"]\n', '    return response["user_id"].upper()\n')
+    assert upper != lw.MODULE_SOURCE
     res = gate().check(mem.head(), lw.candidate(mem, {lw.MODULE: upper}), lw.manifest({}, lw.item()))
-    assert not res.passed and "G3" in res.refused, res.reasons
+    assert res.passed and not res.refused, res.reasons
+    assert any(
+        r.startswith("note: label: the pass: G3: the parent's tests no longer pass against the candidate's library: ")
+        for r in res.reasons
+    ), res.reasons

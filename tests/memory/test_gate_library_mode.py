@@ -48,14 +48,14 @@ def test_library_gate_passes_and_records_verification(library_example_world):
     # every evidence check holds: the function lands at the level the gate gives for that
     assert res.levels == {w.ITEM_ID: "reproduces-its-case"} and res.level_reasons == {w.ITEM_ID: []}
     assert rec["level"] == "reproduces-its-case" and rec["level_reasons"] == []
-    assert (
-        rec["mutation"]["total"] > 0
-        and rec["mutation"]["killed"] == rec["mutation"]["total"]
-    )
-    assert rec["guard"] == {"killed": 1, "total": 1}
     assert rec["exact_assertions"] >= 2 and rec["tests"] == [w.TEST_FILE]
-    # e3's acct.me response is of the fixtures' family and copied by none: stage 5 draws it
-    assert rec["drawn_inputs"] >= 1 and rec["drawn_inputs_read"] == rec["drawn_inputs"]
+    # rev 2: stage 5's dynamic checks (mutation score, guard, drawn inputs) and the perturbed reruns replay recorded
+    # task data, so they do not run; the gate says so
+    assert not {"mutation", "guard", "drawn_inputs", "drawn_inputs_read"} & set(rec), sorted(rec)
+    assert "note: stage 5 dynamic checks not run: recorded replays are off (rev 2)" in res.reasons, res.reasons
+    assert (
+        f"note: G2 examples: {w.ITEM_ID}: perturbed reruns not run: recorded replays are off (rev 2)"
+    ) in res.reasons, res.reasons
     examples = rec["examples"]
     assert (
         examples["calls"],
@@ -65,10 +65,7 @@ def test_library_gate_passes_and_records_verification(library_example_world):
     ) == (5, 4, 1, 0)
     assert examples["grounded_calls"] == 4 and examples["episodes"] == ["e1", "e2"]
     assert examples["fixtures"] == sorted([*w.FIXTURE_PATHS, w.INPUTS_PATH])
-    assert (
-        examples["perturbation"]["judged"] > 0
-        and examples["perturbation"]["unstable"] == 0
-    )
+    assert examples["perturbation"]["runs"] == 0 and examples["perturbation"]["judged"] == 0
     first = w.recorded_calls(blobs.get)[0]
     assert examples["example"] == {
         "test": w.EXAMPLE_TEST,
@@ -151,55 +148,11 @@ def test_a_function_whose_parameters_are_all_required_passes_the_gate(
     assert not any("unbound" in r or "default" in r for r in res.reasons)
 
 
-def test_curate_due_is_a_note_not_a_refusal(library_example_world):
-    mem, ev, blobs, gate = library_example_world
-    files, fixtures = w.files_and_fixtures(blobs.get)
-    res = gate(index_tokens=1).check(
-        mem.head(),
-        w.candidate(mem, files),
-        w.manifest(fixtures),
-    )
-    assert res.passed, res.reasons
-    assert res.curate_due and any("G4 CURATE due" in r for r in res.reasons)
-
-
-def test_write_may_not_remove_an_item(library_example_world):
-    mem, ev, blobs, gate = library_example_world
-    files, fixtures = w.files_and_fixtures(blobs.get)
-    assert _merge(library_example_world, files, w.manifest(fixtures)).passed
-    gone = {w.MODULE: None, w.TEST_FILE: None}
-    man = {
-        "items": [],
-        "deleted": [w.ITEM_ID],
-        "deleted_tests": [w.TEST_FILE],
-        "unlisted": [],
-        "support": [],
-        "tests_changed": {w.TEST_FILE: "the function is retired"},
-    }
-    res = gate().check(mem.head(), w.candidate(mem, gone), man)
-    assert not res.passed and any(
-        "removals and merges belong to CURATE" in r for r in res.reasons
-    )
-
-
-SPECIAL_CASED = w.MODULE_SOURCE.replace(
-    '    return response["user_id"]\n',
-    '    return {"u-1": "u-1", "u-2": "u-2"}[response["user_id"]]\n',
-)
-SPECIAL = re.compile(
-    rf"G2: \[examples:special-cased\] {re.escape(w.ITEM_ID)} handles (?P<fixture>\S+) only for its recorded "
-    r"values: with (?P<field>\S+) replaced by an unseen value of its type, its call at "
-    r"(?P<file>[^:]+):(?P<line>\d+) raises KeyError where it returned before\Z",
-)
-
-
-def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_lands_unchecked(
+def test_a_function_grounded_on_one_episode_passes(
     library_example_world,
 ):
     """One recorded episode is enough evidence for a function: the same request shape gets a reusable function even
-    if no other request is served by it. The check with unseen values still runs, so a function that only handles its
-    recorded values on that same single episode is flagged: it lands at the lowest evidence level with the flag.
-    """
+    if no other request is served by it."""
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get, sources=(w.E1, w.E1))
     man = w.manifest(fixtures, w.item(source_episodes=["e1"]))
@@ -208,24 +161,6 @@ def test_a_function_grounded_on_one_episode_passes_and_a_memorising_one_lands_un
     assert not any("[examples:episodes]" in r for r in res.reasons)
     assert res.verification[w.ITEM_ID]["examples"]["episodes"] == ["e1"]
     assert res.levels[w.ITEM_ID] == "reproduces-its-case", res.level_reasons
-    files, fixtures = w.files_and_fixtures(
-        blobs.get,
-        sources=(w.E1, w.E1),
-        module=SPECIAL_CASED,
-    )
-    res = gate().check(
-        mem.head(),
-        w.candidate(mem, files),
-        w.manifest(fixtures, w.item(source_episodes=["e1"])),
-    )
-    # the check with unseen values flags it: it lands at the lowest level, the flag kept for the agent and writer
-    assert res.passed, res.reasons
-    assert res.levels[w.ITEM_ID] == "unchecked"
-    # both fixtures hold the one episode's values, so the reason names the candidates together ("one of ...")
-    assert any(
-        r.startswith(f"G2: [examples:special-cased] {w.ITEM_ID} handles ")
-        for r in res.level_reasons[w.ITEM_ID]
-    ), res.level_reasons
 
 
 #: user_id with a decision rule: a value computed from the input, replaced by a constant under a condition
@@ -233,20 +168,12 @@ RULE_MODULE = w.MODULE_SOURCE.replace(
     '    return response["user_id"]\n',
     '    uid = response["user_id"]\n    if uid == "":\n        uid = "unknown"\n    return uid\n',
 )
-#: the same rule, memorising its recorded outputs instead of reading them
-RULE_MEMORISED = RULE_MODULE.replace(
-    '    uid = response["user_id"]\n',
-    '    uid = {"u-1": "u-1", "u-2": "u-2"}[response["user_id"]]\n',
-)
 
 
-def test_a_decision_rule_grounded_on_one_episode_passes_and_one_that_memorises_lands_unchecked(
+def test_a_decision_rule_grounded_on_one_episode_passes(
     library_example_world,
 ):
-    """A function that encodes a decision rule needs examples from one recorded episode, like every function; the
-    check with unseen values, run for every function, flags one that only reproduces its recorded outputs, which
-    lands at the lowest evidence level.
-    """
+    """A function that encodes a decision rule needs examples from one recorded episode, like every function."""
     from unify.memory.analysis.overrides import find_overrides
     import ast
 
@@ -271,49 +198,9 @@ def test_a_decision_rule_grounded_on_one_episode_passes_and_one_that_memorises_l
     )
     assert res.passed, res.reasons
     assert not any("encodes such a rule" in r for r in res.reasons)
-    files, fixtures = w.files_and_fixtures(
-        blobs.get,
-        sources=(w.E1, w.E1),
-        module=RULE_MEMORISED,
-    )
-    res = gate().check(
-        mem.head(),
-        w.candidate(mem, files),
-        w.manifest(fixtures, w.item(source_episodes=["e1"])),
-    )
-    assert res.passed, res.reasons
-    assert res.levels[w.ITEM_ID] == "unchecked"
-    assert any(
-        r.startswith(f"G2: [examples:special-cased] {w.ITEM_ID} handles ")
-        for r in res.level_reasons[w.ITEM_ID]
-    ), res.level_reasons
 
 
-def test_a_function_that_handles_only_its_recorded_values_lands_at_the_lowest_level(
-    library_example_world,
-):
-    """Replaces test_cross_episode_text_input_that_crashes_is_refused (with the one-episode test above). The rule
-    that replaces running a function on another episode's input: the gate replaces the fixture values its tests
-    load with unseen values of the same type, and a call that returned before and raises now is flagged
-    (special-cased); the flag sets the lowest evidence level instead of refusing.
-    """
-    mem, ev, blobs, gate = library_example_world
-    assert SPECIAL_CASED != w.MODULE_SOURCE
-    files, fixtures = w.files_and_fixtures(blobs.get, module=SPECIAL_CASED)
-    res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
-    # a flag of the check with unseen values sets the lowest evidence level; it refuses nothing
-    assert res.passed, res.reasons
-    assert res.levels[w.ITEM_ID] == "unchecked"
-    found = [m for m in map(SPECIAL.match, res.level_reasons[w.ITEM_ID]) if m]
-    assert found, res.level_reasons
-    lines = {c.line for c in w.recorded_calls(blobs.get) if c.outcome == "returned"}
-    for m in found:
-        assert m["fixture"] in {*w.FIXTURE_PATHS, w.INPUTS_PATH}
-        assert m["field"].endswith("user_id")
-        assert m["file"] == w.TEST_FILE and int(m["line"]) in lines
-
-
-def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(
+def test_a_deleted_package_test_is_labelled_unless_a_reason_is_stated(
     library_example_world,
 ):
     mem, ev, blobs, gate = library_example_world
@@ -327,24 +214,29 @@ def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(
         "support": [],
     }
     lost = "no longer passes the parent's tests"
-    res = gate(role="curate").check(
+    unstated = "is deleted without a stated reason"
+    res = gate().check(
         mem.head(),
         w.candidate(mem, {w.TEST_FILE: None}),
         man,
     )
-    assert not res.passed and any(
-        f"suite memory/acct/tests {lost}" in r for r in res.reasons
-    )
+    # rev 2: a weakened suite is a label on the pass, never a refusal
+    assert res.passed and not res.refused, res.reasons
+    assert any(
+        r.startswith("note: label: the pass: G3: ") and f"suite memory/acct/tests {lost}" in r for r in res.reasons
+    ), res.reasons
+    assert any(r.startswith("note: label: the pass: G3: ") and unstated in r for r in res.reasons), res.reasons
     stated = {
         **man,
         "tests_changed": {w.TEST_FILE: "the function is covered by test_accounts.py"},
     }
-    res = gate(role="curate").check(
+    res = gate().check(
         mem.head(),
         w.candidate(mem, {w.TEST_FILE: None}),
         stated,
     )
     assert not any(lost in r for r in res.reasons), res.reasons
+    assert not any(unstated in r for r in res.reasons), res.reasons
 
 
 def test_a_tests_init_file_is_refused_with_the_rule_it_breaks(library_example_world):
