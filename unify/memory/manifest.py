@@ -542,7 +542,6 @@ LIBRARY_ITEM_FIELDS: tuple[str, ...] = (
     "covers",
     "field_types",
     "adopts",
-    "replaces",
     "role",
     "reader",
     "recipe",

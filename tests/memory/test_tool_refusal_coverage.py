@@ -80,7 +80,6 @@ COVERAGE: dict[tuple[str, str], str] = {
     ("fixture", "bad_fixture"): R,
     ("fixture", "link"): R,
     ("fixture", "not_input_lines"): R,
-    ("replay", "not_run"): R,
     ("land_capture", "unknown_capture"): R,
     ("land_capture", "bad_name"): R,
     ("land_capture", "failed_capture"): (
@@ -272,7 +271,6 @@ WRITER_CELL = [
         "fixture",
         {"episode": "e1", "dest": "memory/pkg/tests/data/in.jsonl", "source": "request:0", "append": True},
     ),
-    ("replay", {"item": "nothing"}),
     ("land_capture", {"capture_id": "nope", "package": "pkg", "name": "proc"}),
     ("land_capture", {"capture_id": "0123456789abcdef", "package": "Bad-Pkg", "name": "proc"}),
     ("__setup__", {"input": ["pool/openone/entry.json", json.dumps({"id": "openone", "status": "open"})]}),

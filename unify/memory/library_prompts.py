@@ -1249,7 +1249,6 @@ WRITE_ONLY = (
     "/inputs/helpers",
     "`delegate`",
     "`similar`",
-    "`replay`",
     "`pool`",
 )
 WRITER_ONLY = ("manifest", "the gate", "finish(")

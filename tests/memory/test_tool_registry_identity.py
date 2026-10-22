@@ -392,6 +392,8 @@ ADDED_TOOLS = (
 #: still proves every other code is the base's): a cell writes files, so the write and edit tools are gone; the run
 #: record lists names that match no agent in the reply, so send no longer refuses an unknown name.
 REMOVED_TOOLS = {
+    # rev 2.1: the writer's replay tool re-ran recorded actor cells, a re-execution of a capture, which no mechanism may do
+    "replay": ["not_run"],
     "write": ["bad_content", "bad_path", "link", "not_directory", "not_regular", "not_written", "reserved"],
     "edit": [
         "bad_old", "bad_path", "link", "match_count", "not_directory", "not_found", "not_regular", "not_text",

@@ -382,21 +382,6 @@ FIXTURE = RegisteredTool(
     summary="copy recorded bytes of an episode into a test fixture; its provenance is kept in the files.",
 )
 
-REPLAY = RegisteredTool(
-    name="replay",
-    description=(
-        "Verify a function item by replaying the recorded code it replaces. In the item's manifest entry, "
-        'list "replaces": [{"episode", "cell", "lines": [first, last], "call": "<one statement calling the '
-        'function, e.g. result = name(args)>"}]. Each instance is replayed with those lines replaced by the '
-        "call; it is verified when everything the original code left behind is the same. The verified "
-        "instances become a test file under memory/<package>/tests/, which you add to the item's tests."
-    ),
-    parameters=_obj({"item": {"type": "string"}}, ["item"]),
-    roles=(_W,),
-    refusals={"not_run": "not run: {reason}"},
-    summary="verify an item by replaying the recorded code it replaces; writes the verified cases as a test.",
-)
-
 LAND_CAPTURE = RegisteredTool(
     name="land_capture",
     description=(
@@ -1415,16 +1400,6 @@ _IN_CODE: dict[str, dict] = {
         deadline_s=120.0,
         blocking=False,
     ),
-    "replay": dict(
-        returns="the instances that replayed and the test file written, or why an instance did not verify.",
-        examples=('print(tools.replay("pkg.module.function"))',),
-        when=(
-            "A function lifted from the working model's cells can be verified by listing in its manifest entry the "
-            "code it `replaces` and calling `replay`: the instances that replay become its test."
-        ),
-        kind="action",
-        blocking=False,
-    ),
     "land_capture": dict(
         returns="the files written and the manifest entries added, or why nothing was landed.",
         examples=('print(tools.land_capture("0123456789abcdef", "tables", "column_totals"))',),
@@ -1622,7 +1597,6 @@ OVERVIEW = _complete(OVERVIEW)
 READ_EPISODE = _complete(READ_EPISODE)
 POOL = _complete(POOL)
 FIXTURE = _complete(FIXTURE)
-REPLAY = _complete(REPLAY)
 LAND_CAPTURE = _complete(LAND_CAPTURE)
 CHECK = _complete(CHECK)
 FINISH = _complete(FINISH)
@@ -1801,7 +1775,6 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     READ_EPISODE,
     POOL,
     FIXTURE,
-    REPLAY,
     LAND_CAPTURE,
     EXECUTE_CODE,
     CHECK,

@@ -434,30 +434,6 @@ def read_in(root: str | os.PathLike, rel: str, limit: int | None = None) -> byte
         os.close(fd)
 
 
-def link_in(root: str | os.PathLike, rel: str) -> bool:
-    """Whether a link (or an unopenable entry) stands on the way to *rel* under *root*, or at *rel* itself; checked
-    from *root*'s descriptor. A missing part is no link."""
-    try:
-        parts = rel_parts(rel)
-        fd = os.open(root, DIR_FLAGS)
-    except OSError:
-        return True
-    try:
-        try:
-            dfd = walk_dirs(fd, parts[:-1])
-        except Missing:
-            return False
-        except OSError:
-            return True
-        try:
-            st = lstat_at(dfd, parts[-1]) if parts else None
-        finally:
-            os.close(dfd)
-        return st is not None and stat.S_ISLNK(st.st_mode)
-    finally:
-        os.close(fd)
-
-
 def iter_files(
     roots: Roots,
     vpath: object,

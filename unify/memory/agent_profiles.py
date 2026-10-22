@@ -274,7 +274,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "similar",
             "pool",
             "fixture",
-            "replay",
             "land_capture",
             "delegate",
             *_RECORD_TOOLS,

@@ -30,7 +30,6 @@ TOOL_MODULES = (
     "similar.py",
     "views.py",
     "fixtures.py",
-    "replay_verify.py",
     "pool.py",
     "batch_map.py",
     "staging.py",

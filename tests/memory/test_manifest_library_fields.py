@@ -7,7 +7,6 @@ import ast
 import dataclasses
 import inspect
 import textwrap
-from pathlib import Path
 
 import pytest
 
@@ -57,7 +56,7 @@ def test_an_action_cover_is_refused_and_typed_covers_are_kept():
 def test_an_unknown_item_field_is_refused():
     assert _refusal({"items": [_item(examples=["memory/acct/tests/test_users.py::test_one"])]}) == (
         "memory.acct.users:user_id: unknown field 'examples'; an item takes item, kind, source_episodes, tests, "
-        "covers, field_types, adopts, replaces, role, reader, recipe, cases"
+        "covers, field_types, adopts, role, reader, recipe, cases"
     )
 
 
@@ -135,13 +134,9 @@ def _item_keys_read() -> set[str]:
 
 
 def test_the_field_constants_cover_every_key_the_harness_reads():
-    import unify.memory as pkg
-
     read = _item_keys_read()
     assert {"item", "kind", "tests", "covers", "field_types", "adopts", "source_episodes"} <= read
-    writer_pass = (Path(pkg.__file__).parent / "writer_pass.py").read_text()
-    assert '.get("replaces")' in writer_pass  # the replay call reads an item's replaces
-    assert read | {"replaces"} <= set(LIBRARY_ITEM_FIELDS)
+    assert read <= set(LIBRARY_ITEM_FIELDS)
     assert "input" not in LIBRARY_ITEM_FIELDS
     parsed_top = {f.name for f in dataclasses.fields(Manifest)}
     assert parsed_top | set(READ_ELSEWHERE) | {"fixtures", "items"} <= set(LIBRARY_MANIFEST_FIELDS)

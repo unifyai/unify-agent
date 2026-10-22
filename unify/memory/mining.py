@@ -263,9 +263,3 @@ def units(cell: Cell, stop: Callable[[], bool] | None = None) -> list[_Unit]:
     return out
 
 
-def helper_env() -> dict[str, str]:
-    """The whole environment of every helper process the memory passes start (git, tar, the replay box's bwrap):
-    ``PATH`` and a scratch ``HOME`` only. They run under the pass worker, whose environment holds the writer's model
-    route; nothing of it may reach a helper.
-    """
-    return {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"}

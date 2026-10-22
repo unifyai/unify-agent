@@ -390,7 +390,6 @@ WRITER_REFUSALS = [
     ("read_episode", {"episode": "e1", "parts": ["nope"]}),
     ("read_episode", {"episode": "e1", "nope": 1}),
     ("fixture", {"episode": "e999", "dest": "memory/x/tests/fixtures/a.json"}),
-    ("replay", {"item": "nothing"}),
     ("check", {"manifest": "{not json"}),
     ("send", {"text": ""}),
     ("reply", {"agent": "nobody", "text": "hi"}),

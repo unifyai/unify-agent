@@ -1041,9 +1041,7 @@ async def run_attention_pass(
         usd_call_worst=_usd(worst),
         staging_root=str(Path(paths.state_dir) / "memory-staging"),
         pass_record_root=str(Path(paths.state_dir) / "passes"),
-        trees_cache=str(Path(paths.state_dir) / "memory-workspace-trees"),
         similar_index=str(_similar.index_dir(paths.state_dir)),
-        worktree_git=str(paths.worktree_git) if Path(paths.worktree_git).is_dir() else None,
         max_reads=PASS_MAX_READS,
         # the pass's agents join the run record, the writer's row held by the service
         run_home=str(home),

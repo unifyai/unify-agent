@@ -515,10 +515,6 @@ class PassConfig:
     # where the fork leaves staging (<state>/memory-staging; None: a scratch dir in the pass); writer-launched
     # helpers write beside it (<state>/memory-helpers, helpers.py)
     staging_root: str | None = None
-    # the run's worktree repo and the folder its recorded office workspaces are exported to, once each, for
-    # replay (workspace_trees.py; None: replays run without a recorded workspace)
-    worktree_git: str | None = None
-    trees_cache: str | None = None
     # the ``similar`` tool's index folder (similar.index_dir; None: the tool has no index to search)
     similar_index: str | None = None
     # where the pass's structured records go: <pass_record_root>/<pass id>/tool-events.jsonl (None: kept in memory
@@ -1420,14 +1416,6 @@ def _layout_refusal(found: list[str]) -> str:
 #: How :func:`_mirror` opens what it copies: never through a link, so an entry swapped while it walks is not followed
 _MIRROR_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _MIRROR_FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-
-
-def _write_in_box(box: Path, rel: str, data: bytes) -> None:
-    """Write *data* to ``box/rel`` from the host without following a link: every directory is opened from the box's
-    descriptor (missing ones are made), a link or non-regular file at the leaf is refused, and the bytes replace the
-    leaf by a rename (:func:`.safe_paths.write_in`). Box code may change the box meanwhile; nothing is followed.
-    Raises ``OSError`` (a :class:`.safe_paths.LinkFound` for a link)."""
-    _safe.write_in(box, rel, data)
 
 
 def _mirror(
@@ -2442,108 +2430,6 @@ class WriterPass:
             },
         )
 
-
-    def _replay_call(self, args: dict, box: Path, tmp: Path) -> str:
-        """Verify one manifest item's ``replaces`` by replay (:mod:`.replay_verify`); write the verified instances
-        as the item's harness-written test. Never raises: problems are the reply.
-        """
-        from . import replay_verify as _rv
-        from . import workspace_trees as _workspace_trees
-
-        item = str(args.get("item", ""))
-        found, manifest, problem = _read_manifest(box)
-        if not found or problem is not None or not isinstance(manifest, dict):
-            return _wt.refusal("replay", "not_run", reason=problem or "no manifest")
-        entry = next(
-            (
-                i
-                for i in manifest.get("items") or []
-                if isinstance(i, dict) and i.get("item") == item
-            ),
-            None,
-        )
-        if entry is None or not entry.get("replaces"):
-            return _wt.refusal(
-                "replay",
-                "not_run",
-                reason=f"the manifest lists no item {item!r} with replaces",
-            )
-        replaces = entry["replaces"] if isinstance(entry["replaces"], list) else []
-        try:
-            # each named episode's recorded office workspace, exported once (none without a worktree repo)
-            trees = _workspace_trees.trees_for(
-                self.load,
-                [i.get("episode") for i in replaces if isinstance(i, dict)],
-                self.cfg.worktree_git,
-                Path(self.cfg.trees_cache) if self.cfg.trees_cache else None,
-            )
-            got = _rv.verify(
-                self.load,
-                item,
-                entry["replaces"],
-                box,
-                trees=trees,
-                scratch=tmp,
-            )
-        except (
-            Exception
-        ) as exc:  # noqa: BLE001 - a replay failure is the reply, never a crash
-            return f"replay error: {type(exc).__name__}"
-        cases = [
-            {
-                **g["case"],
-                "at": f"{g.get('episode')}:{g.get('cell')}:{g.get('lines')}",
-                "episode": g.get("episode"),
-                "cell": g.get("cell"),
-                "lines": g.get("lines"),
-            }
-            for g in got
-            if g.get("verdict") == "verified"
-        ]
-        lines = [
-            f"- {g.get('episode')} cell {g.get('cell')} lines {g.get('lines')}: {g['verdict']}"
-            + (f" (in its {g['differs_in']})" if g.get("differs_in") else "")
-            + (
-                "; its printed output differs, which the rewrite may not reproduce"
-                if g.get("stdout_differs")
-                else ""
-            )
-            for g in got
-        ]
-        if not cases:
-            return "\n".join(lines + ["No instance verified: no test written."])
-        rel, src = _rv.test_source(item, cases)
-        data_rel, data = _rv.case_file(item, cases)
-        # both files go into the writer's box, which its cells write: neither is written through a link
-        for target in (rel, data_rel):
-            if _safe.link_in(box, target):
-                return _wt.refusal(
-                    "replay",
-                    "not_run",
-                    reason=f"a link is on the way to {target}",
-                )
-        for target, content in ((rel, src.encode("utf-8")), (data_rel, data)):
-            try:
-                _write_in_box(box, target, content)
-            except _safe.LinkFound:  # planted after the check above: still never followed
-                return _wt.refusal(
-                    "replay",
-                    "not_run",
-                    reason=f"a link is on the way to {target}",
-                )
-            except OSError as exc:
-                return _wt.refusal(
-                    "replay",
-                    "not_run",
-                    reason=f"cannot write {target} ({_safe.errno_name(exc)})",
-                )
-        return "\n".join(
-            lines
-            + [
-                f"Test written: {rel} ({len(cases)} case(s)), reading its inputs from {data_rel}; add the test to "
-                "the item's tests.",
-            ],
-        )
 
     def _pool_update(self, req: PassRequest, pass_id: str, out: PassOutcome) -> dict:
         """The candidate pool after this pass: the writer's status changes (merged / superseded when the gate landed

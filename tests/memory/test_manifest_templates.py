@@ -134,7 +134,7 @@ def _round_trip(name: str) -> None:
             parse_manifest({"items": [{**item, extra: []}]})
         assert str(exc.value) == (
             f"memory.acct.users:user_id: unknown field {extra!r}; an item takes item, kind, source_episodes, "
-            "tests, covers, field_types, adopts, replaces, role, reader, recipe, cases"
+            "tests, covers, field_types, adopts, role, reader, recipe, cases"
         )
 
 

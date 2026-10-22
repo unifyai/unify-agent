@@ -117,3 +117,22 @@ def test_an_effect_comes_from_episode_covers_only():
 
 def test_a_dialogue_procedure_reads():
     assert derive_effect([Cover("d", "episode", runner="dialogue", action=0)], lambda eid: None) == "read"
+
+
+def test_the_writer_has_no_tool_that_re_runs_recorded_cells():
+    """Rev 2.1: the writer's replay tool re-ran an episode's recorded cells with a candidate in place, a re-execution of
+    a capture, which no mechanism may do. It is gone, with the manifest's ``replaces`` field it read; the writer still
+    runs code of its own in its box while it writes."""
+    from unify.common import tool_registry
+    from unify.memory import agent_profiles, manifest, tool_handlers
+
+    assert "replay" not in tool_registry.registry()
+    assert "replay" not in tool_handlers.HANDLED
+    writer = next(p for p in agent_profiles.AGENT_PROFILES if p["agent"] == "writer" and p["mode"] == "write")
+    assert "replay" not in writer["in_code"]
+    assert "replaces" not in manifest.LIBRARY_ITEM_FIELDS
+    with pytest.raises(manifest.ManifestError):
+        manifest.parse_manifest(
+            {"items": [{"item": "memory.a.b:f", "kind": "function", "source_episodes": ["e1"],
+                        "tests": ["memory/a/tests/test_b.py"], "replaces": []}]},  # fmt: skip
+        )

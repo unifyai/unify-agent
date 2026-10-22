@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from unify.memory import similar, workspace_trees
+from unify.memory import similar
 from unify.memory.episodes import Cell
 from unify.memory.redact import Redactor
 
@@ -285,43 +285,3 @@ def _git(*args, cwd):
     )  # fmt: skip
 
 
-def test_office_workspaces_are_exported_once_from_the_worktree_repo(tmp_path):
-    repo = tmp_path / "wt"
-    repo.mkdir()
-    _git("init", "-q", cwd=repo)
-    (repo / "claims.csv").write_text("a,1\nb,2\n")
-    _git("add", "claims.csv", cwd=repo)
-    _git("commit", "-q", "-m", "before", cwd=repo)
-    sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    eps = {
-        "o1": SimpleNamespace(worktree_before=sha),
-        "o2": SimpleNamespace(worktree_before=None),
-    }
-
-    def load(eid):
-        return eps[eid]
-
-    cache = tmp_path / "trees"
-    got = workspace_trees.trees_for(
-        load,
-        ["o1", "o2", "missing", "../o1"],
-        str(repo / ".git"),
-        cache,
-    )
-    assert (
-        list(got) == ["o1"] and (got["o1"] / "claims.csv").read_text() == "a,1\nb,2\n"
-    )
-    (got["o1"] / "marker").write_text("kept")  # a second request reuses the export
-    again = workspace_trees.trees_for(load, ["o1"], str(repo / ".git"), cache)
-    assert (again["o1"] / "marker").exists()
-    assert workspace_trees.trees_for(load, ["o1"], None, cache) == {}
-    assert (
-        workspace_trees.export_tree(str(repo / ".git"), "0" * 40, cache / "bad") is None
-    )
-    assert not (cache / "bad").exists() and not (cache / "bad.part").exists()

@@ -64,8 +64,6 @@ from .quality import (
 )
 from .testkit import imports_kit
 
-# a function's replay case file under tests/data/ (fixtures.REPLAY_SUFFIX), verified by replay, not by its bytes
-REPLAY_SUFFIX = ".replay.jsonl"
 def _no_episode(eid: str) -> Episode | None:
     return None
 
@@ -309,7 +307,6 @@ class LibraryChecks:
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         entries = raw.get("fixtures") if isinstance(raw.get("fixtures"), dict) else {}
         index: HashIndex | None = None
-        replays: list[str] = []
         for p in run.changed:
             if (
                 p not in run.c_files
@@ -332,10 +329,6 @@ class LibraryChecks:
                 # re-deriving a parsed fixture would run its reader: the gate runs no code
                 run.not_run(owners, f"G1 parsed fixture {p}: re-deriving it would run its reader; {NOT_RUN_GATE}")
                 continue
-            if p.endswith(REPLAY_SUFFIX):
-                # a replay case file is verified by replaying its instances, which runs recorded code
-                replays.append(p)
-                continue
             problem = verify(p, data, entries.get(p), self.ep, self.gate._blob)
             if problem is None:
                 if isinstance(entries.get(p), dict):
@@ -355,9 +348,6 @@ class LibraryChecks:
                 if hits:
                     problem += f" (its bytes equal source {hits[0][1]} of {hits[0][0]}: make it with fixture())"
             run.fail("G1", f"fixture provenance: {problem}", owners)
-        if replays:
-            owners = sorted({o for p in replays for o in (self._owners(p) or [])})
-            run.not_run(owners or None, f"G1 replay case files: {NOT_RUN_GATE}")
 
     # -- G2 -------------------------------------------------------------------------------------------------
     def effects(self) -> None:

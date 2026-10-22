@@ -27,7 +27,7 @@ BRIEF_HEADINGS = {
     ],
 }
 ENV = {"PYTHONPATH": "/memory"}
-OPTIONAL_TOOLS = frozenset({"pool", "similar", "delegate", "replay"})
+OPTIONAL_TOOLS = frozenset({"pool", "similar", "delegate"})
 
 
 def _limits(**over):

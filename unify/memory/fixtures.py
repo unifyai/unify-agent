@@ -63,11 +63,7 @@ DATA_PATH = re.compile(
     r"(?:[A-Za-z0-9_][A-Za-z0-9._-]*/)*[A-Za-z0-9_][A-Za-z0-9._-]*\Z",
 )
 INPUTS_SUFFIX = ".inputs.jsonl"
-#: A function's replay case file (``tests/data/<function>.replay.jsonl``): the inputs of the recorded instances its
-#: replay verified, re-verified by replay rather than by bytes (:mod:`.replay_verify`).
-REPLAY_SUFFIX = ".replay.jsonl"
-_REPLAY_SOURCE = re.compile(r"replay:(\d{1,9}):(\d{1,9})-(\d{1,9})\Z")
-DRAWN_DIR = "_drawn/"  # reserved under tests/data/ for the gate's appended drawn inputs
+DRAWN_DIR = "_drawn/"  # a reserved folder under tests/data/: no fixture is made or accepted there
 #: A case file (``tests/data/<name>.case.json``): an input with its known output (:func:`make_case`).
 CASE_SUFFIX = ".case.json"
 #: The expected-output source naming the value the episode handed back (:func:`.captures.handed_back`).
@@ -95,12 +91,6 @@ def inputs_file(item: str) -> str:
     """The function's recorded-inputs file, e.g. ``memory/office/tests/data/payroll.export.inputs.jsonl``."""
     module, name = item.split(":", 1)
     return f"{package_dir(item)}/tests/data/{module.rsplit('.', 1)[1]}.{name}{INPUTS_SUFFIX}"
-
-
-def replay_source(source: object) -> tuple[int, int, int] | None:
-    """``replay:<cell>:<a>-<b>`` as ``(cell, a, b)``; None for any other source."""
-    m = _REPLAY_SOURCE.match(str(source))
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
 def canonical(value: Any) -> str:
@@ -136,7 +126,7 @@ def sources_of(ep: Episode) -> list[str]:
 
 
 def trust_of(source: str) -> int:
-    return 2 if str(source).startswith(("args:", "cell:", "replay:")) else 1
+    return 2 if str(source).startswith(("args:", "cell:")) else 1
 
 
 def _index(text: str, n: int, what: str) -> int:
@@ -635,8 +625,6 @@ def verify(
         return f"{path}: {exc}"
     except (UnicodeDecodeError, ValueError) as exc:
         return f"{path} cannot be read as recorded lines ({type(exc).__name__})"
-    if isinstance(entry, dict) and entry.get("kind") == "replay":
-        return f"{path} is a replay case file; it is verified by replaying its cases, not by its bytes"
     return f"{path} has an unknown provenance kind"
 
 
@@ -670,10 +658,7 @@ def assembled_entry(data: bytes) -> dict | None:
         )
     if not rows:
         return None
-    replay = [replay_source(r.get("source")) is not None for r in rows]
-    if all(replay):
-        return {"kind": "replay", "lines": rows}
-    return {"kind": "assembled", "lines": rows} if not any(replay) else None
+    return {"kind": "assembled", "lines": rows}
 
 
 def _read_plain(path, limit: int | None = None) -> bytes | None:
