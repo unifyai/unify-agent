@@ -107,7 +107,9 @@ def test_repair_message_points_at_the_full_result():
     )
     msg = repair_message(1, "/inputs/gate/result-0.md", res)
     assert "/inputs/gate/result-0.md" in msg and "env/venmo:me (G3)" in msg
-    assert "repair round 1 of 2" in msg and "call finish again" in msg
+    # rev 2 names the calls as the writer makes them, from code
+    assert "repair round 1 of 2" in msg and "call tools.finish(summary) again" in msg
+    assert "read it with tools.read(path)" in msg
 
 
 def test_the_time_reserve_covers_the_final_merge():

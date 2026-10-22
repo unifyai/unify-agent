@@ -11,17 +11,18 @@ from unify.common._async_tool.loop_stop import MEMORY_K, AgentNoProgress, termin
 from unify.memory.drafts import draft_states
 from unify.memory.gate import GateResult
 from tests.memory.test_helpers import helper_boxes  # noqa: F401 - the helpers' scripted box
+from tests.memory import writer_library_items as wl
 from tests.memory.test_writer_library_repair import FILES_CODE
 from tests.memory.test_writer_pass import Turns, _call, _run, _writer, needs_bwrap
 
-ME, OTHER = "env/venmo:me", "env/venmo:other"
+ME, OTHER = wl.ITEM_ID, "memory.acct.users:other"
 NOTICE = f"You have repeated this call {MEMORY_K} times with the same result"
 
 # the recorded loop: it replaces a line of a test file with the same line, writes the file back unchanged and prints
 # a constant
 NOOP = (
     "import pathlib\n"
-    "p = pathlib.Path('/memory/env/venmo/tests/test_me.py')\n"
+    f"p = pathlib.Path('/memory/{wl.TEST_FILE}')\n"
     "t = p.read_text()\n"
     "p.write_text(t.replace('u-1', 'u-1'))\n"
     "print('none')\n"
@@ -136,7 +137,7 @@ def _admit(writer, merged):
         res = GateResult(
             True,
             {},
-            ["item refused: G2: env/venmo:other covers no recorded action"],
+            [f"item refused: G2: {OTHER} covers no recorded action"],
             [],
             merged=parent,
             items_merged=[ME],
@@ -192,7 +193,7 @@ def _refuse(writer, merged):
 
     def merge(parent, candidate, manifest, pass_id, kind, channel, usd, **kwargs):
         merged.append(candidate)
-        res = GateResult(False, {"G2": False}, ["G2: env/venmo:me covers no recorded action"], ["G2"])
+        res = GateResult(False, {"G2": False}, [f"G2: {ME} covers no recorded action"], ["G2"])
         writer.gate._record(parent, candidate, pass_id, kind, channel, usd, res)
         return res
 
