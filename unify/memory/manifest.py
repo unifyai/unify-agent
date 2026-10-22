@@ -1,90 +1,19 @@
-"""The pass manifest and the memory repo's layout policy, as the gate enforces them.
+"""The pass manifest and the path policy, as the gate enforces them.
 
-A consolidation pass writes ``.pass/manifest.json`` (never committed)::
+A writer pass writes ``.pass/manifest.json`` (never committed), for example::
 
-    {"items": [{"item": "env/venmo:login", "kind": "env_function", "source_episodes": ["e1"],
-                "tests": ["env/venmo/tests/test_login.py"], "covers": [["e1", 0]]}],
-     "deleted": ["env/venmo:old"], "unlisted": ["env/venmo:rare"],
-     "deleted_tests": ["env/venmo/tests/test_old.py"], "skeleton": ["env/venmo"],
-     "support": ["unify_memory_testkit.py"], "summary": "..."}
+    {"items": [{"item": "memory.<package>.<module>:<name>", "kind": "function", "source_episodes": ["<episode>"],
+                "tests": ["memory/<package>/tests/test_<module>.py"]}],
+     "deleted": [], "unlisted": [], "deleted_tests": [], "tests_changed": {}, "renames": {},
+     "support": [], "why": "...", "summary": "..."}
 
-``deleted`` and ``unlisted`` name item ids; ``deleted_tests`` names parent test files that exercise only
-deleted items; ``skeleton`` names channels whose module skeleton or notes preamble changes; ``support``
-names fixture helpers. Everything here is pure: parsing, and which paths the layout admits.
+The fields an item and a manifest take are :data:`LIBRARY_ITEM_FIELDS` and :data:`LIBRARY_MANIFEST_FIELDS`; the
+writer's brief says what each means (:mod:`.library_prompts`) and the gate checks them (:mod:`.gate`,
+:mod:`.library_checks`). Item ids and paths are the library layout's (:mod:`.layout`): a function is
+``memory.<package>.<module>:<name>``, a note ``notes/<topic>/<slug>.md``.
 
-Manifest rules for consolidators
---------------------------------
-* **Items.** Every function, note section or workflow you add, change or remove appears exactly once, in
-  ``items`` (added or changed), ``deleted`` (removed) or ``unlisted`` (hidden from the index, otherwise
-  untouched). The three lists are exclusive. Ids: ``env/<channel>:<function>``,
-  ``env/<channel>/NOTES.md#<section-slug>``, ``workflows/<slug>.md`` (lower case). A note section's slug
-  is its ``## `` heading lower-cased, every run of characters other than ``a-z`` and ``0-9`` replaced by
-  one ``-``, and leading and trailing ``-`` stripped (``## Login: 2FA!`` is ``login-2fa``).
-* **Environment functions** in ``items`` list ``covers``: recorded actions on their own channel,
-  ``[episode_id, action_index]``, each a real recorded observation of its kind: a tool call with status
-  ``ok`` and a response; a shell command with an output tail; a file read or write (status ``ok``) whose
-  blob was recorded; a dialogue action (status ``ok``) with its next observation; or a recorded
-  rejection (status ``error`` with its error), which lets the function refuse values of that call or
-  path family, and never alone. Scope is shape, not observed values: the gate reruns each function on its
-  covered inputs with unseen values of the same types and refuses it if it raises ``MemoryInputError``
-  on them, unless it covers such a rejection. An item restricts a field's values only by declaring its
-  type in ``field_types`` (``{"<field>": "<type>"}``, a type from the fixed list in the brief; unknown
-  types are refused); the field is a CSV column (``#3`` for the third column of a file without a
-  header), a JSON key path (``a.b``, ``items[]``), a YAML key path or a keyword path, and the gate checks
-  that unseen in-domain values are accepted and out-of-domain values are refused. A new or changed
-  environment function declares the form its first parameter takes in ``input`` (one of the brief's
-  fixed list: {input_forms}) and states the same form in its
-  docstring as a line ``Input: <form>``; the gate refuses an unknown or missing form and a docstring that
-  disagrees, and passes each covered input to the function in that form. An action's channel is
-  its key when the key has no ``:`` (``venmo``), else ``<kind>_<key>`` (``shell:uv`` is ``env/shell_uv``,
-  ``worktree:workspace`` is ``env/worktree_workspace``, ``dialogue:user`` is ``env/dialogue_user``; other
-  characters become ``_``). Only environment functions have covers. Tests must check the function
-  against the covered observations themselves: copy the recorded outputs, file blobs or (action, next
-  observation) pairs they need into data files under ``env/<channel>/tests/`` and list those files in
-  ``support`` (the gate mounts nothing else). A new or changed function lists
-  a new or changed test under ``env/<channel>/tests/test_*.py`` that passes on your commit and fails on
-  the parent's library (or hangs there). Any other new or changed test (one that records what an unchanged
-  function already does, a corrected expected value, or a repair of a parent test file that was already red)
-  needs only pass on your commit; it never stands in for a changed function's red test. A changed function
-  always needs a test that fails on the parent's library. So does any change
-  in what a stored function returns on recorded inputs: for every channel your commit changes (any file
-  under ``env/<channel>/``: a function, a private helper, a constant, an alias, an import), the gate runs
-  every public function the parent's module had, under the same name in yours (a ``def``, ``A = B`` or an
-  import), on both libraries over its recorded covers and the channel's recorded actions in your episodes;
-  a function whose results differ there, or cannot be compared (not JSON, too slow), must be listed in
-  ``items`` with a test that fails on the parent's library and passes on yours. The one exception for a
-  changed function is a change that keeps behaviour in a clean-up pass (no item added; fewer function definitions or less
-  code in them, and no more code anywhere in the channel modules; comments and docstrings do not count):
-  a merge, an alias or a shortening needs no failing test when a parent test that passed on the parent
-  calls the function (importing it is not enough) and the function returns, refuses and calls exactly
-  what its parent version did on every recorded cover of it and on your episodes' recorded actions (the
-  gate runs both versions on them). A repair changes behaviour, so it always needs a failing test. New tests of a clean-up pass need only pass.
-* **Skeleton.** A channel's *skeleton* is its module minus its public functions and a literal
-  ``__all__ = [...]``: the docstring, imports, private helpers and any other module-level statement, plus
-  the preamble of its ``NOTES.md`` (the text before the first ``## `` heading). Changing it, including
-  creating a new channel module that has a docstring or imports, needs ``"skeleton": ["env/<channel>"]``.
-  A skeleton entry declares the channel's ``__init__.py`` and ``NOTES.md`` files, so a preamble-only edit
-  needs nothing else; every function or section you add, change or remove is still listed as an item.
-  A changed module skeleton also needs every public function of that module in ``items``, each with valid
-  covers (unchanged functions need no new test unless their results change; their old tests must keep
-  passing).
-* **Tests are never lost.** Every test that passed on the parent must still pass, both in your commit's
-  suite and with the parent's own tests and test kit against your library. Do not rename or drop tests.
-  Your commit's suite may keep failing only tests that already failed on the parent (no new failures);
-  those are reported as pre-existing notes. If a channel's suite on the parent cannot be read (say, a
-  test file does not import), it protects nothing, and a commit that touches that channel must leave
-  its suite fully green; a channel you do not touch may stay broken, with a note.
-  ``deleted_tests`` retires a parent test file only when your commit removes it and every library name it
-  imports (``from env.<channel> import ...``; ``import env.<channel>`` means the whole channel) is an item
-  this manifest deletes. Every recorded input a deleted function covered (a recorded rejection aside) must
-  stay covered: list it in a remaining function's ``covers``.
-* **Support.** The only root helper is ``unify_memory_testkit.py``; other helpers live under
-  ``env/<channel>/tests/`` and must not be named like tests, like an installed or standard module, ``env``
-  or the test kit. No ``conftest.py``, pytest or packaging configuration, ``.pth`` files, executables,
-  links or submodules anywhere.
-* **Workflows** need YAML front matter (``---`` lines) to be unlistable: unlisting changes only the
-  ``listed: false`` line.
-* **No duplicate definitions**: a public function name is defined once per module.
+Everything here is pure: parsing the manifest, the names refused anywhere (:func:`forbidden`), and the paths that
+must never be extracted or run (:func:`unsafe_path`).
 """
 
 from __future__ import annotations
@@ -112,23 +41,6 @@ SEMANTIC_TYPES: dict[str, tuple[str, int | None, int | None]] = {
     ),  # the ISO 4217 format: three uppercase letters, not a list
 }
 _FIELD_NAME_MAX = 200
-
-# Declared input forms: what an environment function's first parameter takes (``input`` in its manifest item,
-# and an ``Input: <form>`` line in its docstring), as the index shows it. This list grows only by a reviewed code
-# change, never by a pass.
-INPUT_KINDS: dict[str, str] = {
-    "path": "a path to a work-tree file",
-    "text": "the text of a file or of an output",
-    "bytes": "the raw bytes of a file",
-    "observation": "a dialogue or tool observation value, as recorded",
-    "env": "the environment object, such as `apis`",
-}
-# The consolidator rules name the forms from the one constant (they are embedded in the writer's brief verbatim).
-if __doc__:
-    __doc__ = __doc__.replace(
-        "{input_forms}",
-        ", ".join(f"``{name}``" for name in INPUT_KINDS),
-    )
 
 
 def describe_semantic_types() -> str:
@@ -180,7 +92,6 @@ class ManifestItem:
     field_types: dict[str, str] = field(
         default_factory=dict,
     )  # field -> SEMANTIC_TYPES key
-    input: str | None = None  # an INPUT_KINDS key; None: not declared
     # library mode: the typed covers (procedures.Cover: an actor cell, a work-tree diff or an episode procedure)
     typed_covers: list = field(default_factory=list)
     # the proposals this item came from (:func:`adopt_ref`): staged files, helper output or pool entries
@@ -627,7 +538,6 @@ def _parse_library_mode(manifest: dict, labels: bool = False) -> Manifest:
                 tests,
                 [],
                 field_types,
-                None,
                 typed,
                 *_adopts(raw.get("adopts"), item),
                 role=role,

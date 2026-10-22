@@ -1,14 +1,14 @@
-"""The lean docstring standard of environment functions (stage 3), parsed and checked; pure.
+"""The lean docstring standard of library functions, parsed and checked; pure.
 
-A stored function documents itself well enough that the working model never reads its source: ``help(fn)``
-and ``memory.describe(fn)`` show exactly this docstring. The standard, for every new or changed environment
-function (the gate checks it under G1 and runs the examples under G3)::
+A stored function documents itself well enough that the working model never reads its source: ``help(fn)`` and
+its card show exactly this docstring. The standard, for every new or changed function (the gate reads it; it runs
+nothing)::
 
     Read the accounts-payable ledger into rows.          <- Summary: the first line
 
     Args:
-        path: the ledger CSV file (a path).              <- one entry per parameter; the first names its
-        strict: refuse rows with an empty amount.           input form (:data:`.manifest.INPUT_KINDS`)
+        path: the ledger CSV file (a path).              <- one entry per parameter
+        strict: refuse rows with an empty amount.
 
     Returns:
         A list of dicts, one per row, keyed by column.

@@ -217,11 +217,10 @@ def test_library_manifest_parses_function_ids_and_routes_typed_covers():
     }
     man = parse_manifest(raw)
     it = man.items[0]
-    assert (it.path, it.covers, it.typed_covers, it.input) == (
+    assert (it.path, it.covers, it.typed_covers) == (
         "memory/calc/sums.py",
         [],
         [Cover("e1", "cell", index=0)],
-        None,
     )
     assert man.support == ["memory/calc/tests/helpers.py"] and man.deleted == [
         "memory.calc.old:gone",

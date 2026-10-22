@@ -124,7 +124,7 @@ def _round_trip(name: str) -> None:
         got.typed_covers == [parse_cover(c) for c in item["covers"]]
         and got.covers == []
     )
-    assert got.field_types == item["field_types"] and got.input is None
+    assert got.field_types == item["field_types"] and not hasattr(got, "input")
     assert got.stated == {k: LABEL_KEPT[k] for k in labels}
     if "adopts" in item:
         assert got.adopts == ["staging:e2/candidates/fill.py"]

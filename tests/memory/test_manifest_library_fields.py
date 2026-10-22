@@ -74,7 +74,7 @@ def test_an_unknown_manifest_field_is_refused():
 def test_field_types_keys_types_and_kinds_are_checked():
     declared = {f"{DATA}#rows[].month": "month", f"{DATA}##3": "percentage", f"{DATA}#a.b": "hour"}
     got = parse_manifest({"items": [_item(field_types=declared)]}).items[0]
-    assert got.field_types == declared and got.input is None
+    assert got.field_types == declared and not hasattr(got, "input")
     for key in (
         "rows[].month",
         f"{DATA}#",
