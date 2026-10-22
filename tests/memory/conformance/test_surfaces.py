@@ -22,7 +22,8 @@ vocabulary in what the memory agents were sent, the coverage guarantee, metering
 * in-episode memory (surfaces 1, 3, which set the in-episode arm's switch on): every pause (a new message, an actor call,
   a compaction) starts a segment fork, whose experience is an entry, or an occurrence of the entry with the same
   capture; a commit landed while the episode runs is served from the next cell with one notice;
-* serving on evidence (surfaces 2, 4): served items carry their evidence; an item the writer retires leaves every listing;
+* serving on evidence (surfaces 2, 4): served items carry their evidence; an item the writer retires in a pass leaves every
+  listing and stays on record, retired by the writer's decision, its file still in the library;
 * inferred regimes (surfaces 1, 2, 4): each episode's regime is inferred from its own signals (``none`` with none, ``dense``
   with a verdict that names the answer it judged, changed and logged by a late one), never defaulted; a hidden grader
   decides nothing.
@@ -424,6 +425,14 @@ async def test_surface_4_an_outcome_that_arrives_two_requests_later(core_world, 
     (le,) = [e for e in _entries(home) if e.kind == "late_evidence"]
     assert a.episode_id in le.refs.episodes and SX.NOTE_ID in le.refs.items and arrival["signal_id"] in le.refs.signals
     assert le.state == "closed" and le.decision == "retire"
+    # retired through the writer's normal pass, the item stays on record and is never deleted: its file is still in the
+    # library's main, and main's records mark it retired by the writer's decision
+    from unify.memory.item_records import read_records
+
+    head = stores.memory.head()
+    assert stores.memory.show(head, SX.NOTE_ID).strip(), head
+    record = (read_records(stores.memory, head) or {}).get(SX.NOTE_ID) or {}
+    assert (record.get("status"), record.get("status_rule")) == ("retired", "writer"), record
     # the item the writer retired is withdrawn: retired in the copy's records, named in its withdrawn file with
     # the decision, and gone from the actor's listing
     assert seen and SX.NOTE_ID in (seen[0]["withdrawn"] or {}).get("items", {}), seen
