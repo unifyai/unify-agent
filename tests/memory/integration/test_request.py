@@ -316,6 +316,30 @@ def test_one_process_begins_one_run_for_memorys_spend_cap(mv2, monkeypatch):
         _abort(mv2, run)
     rows = ws._rows(ws.service_dir(mv2.home) / ws.SPEND_FILE)
     assert [r["op"] for r in rows if r.get("op") == "run"] == ["run"]
+    # the same home by another spelling (a link to it) is the same run: no second run row resets the count
+    alias = mv2.home.parent / "alias"
+    alias.symlink_to(mv2.home, target_is_directory=True)
+    monkeypatch.setenv("UNIFY_HOME", str(alias))
+    _abort(mv2, _begin(mv2, "three"))
+    rows = ws._rows(ws.service_dir(mv2.home) / ws.SPEND_FILE)
+    assert [r["op"] for r in rows if r.get("op") == "run"] == ["run"]
+
+
+def test_a_run_row_that_cannot_be_written_never_fails_the_request(mv2, monkeypatch):
+    """Fail safe on spend: the request goes on, a warning says so, and the count runs on from the previous run's row
+    (it only counts more)."""
+    from unify.memory import writer_service as ws
+
+    def broken(home):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(request_mod, "_RUNS_BEGUN", set())
+    monkeypatch.setattr(ws, "begin_run", broken)
+    warned: list = []
+    monkeypatch.setattr(request_mod.logger, "warning", lambda msg, *args: warned.append(msg % args))
+    _abort(mv2, _begin(mv2, "hi"))
+    assert any("the run's start was not recorded (OSError)" in w for w in warned), warned
+    assert not [r for r in ws._rows(ws.service_dir(mv2.home) / ws.SPEND_FILE) if r.get("op") == "run"]
 
 
 def test_abort_records_nothing(mv2):
