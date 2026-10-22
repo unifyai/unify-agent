@@ -12,252 +12,27 @@ here), and shows that the gate now refuses it with no test run at all.
 
 Module-level imports are only names 9deefbfd1 already had, so this file also runs against that build (the
 fail-before run); the tests of the new policy function import it where they use it.
+
+The gate-level cases (a candidate refused before anything runs) are on rev 2's library layout in
+``test_gate_library_safety.py``; this file keeps the policy functions' own tests.
 """
 
 import ast
-import json
-import shutil
 from pathlib import Path
 
 import pytest
 
-from unify.memory.blobs import BlobStore
-from unify.memory.evidence import EvidenceStore
-from unify.memory.gate import Gate
-from unify.memory.library_checks import LibraryConfig
-from unify.memory.gitio import Repo
 from unify.memory.manifest import (
     TESTKIT,
     forbidden,
     layout_allowed,
-    support_allowed,
 )
-from tests.memory.test_episodes import _ep
 from tests.memory.test_gate import (
     BASE2,
     FILES,
-    MAN,
     PROBE_BASE,
-    PROBE_ITEM,
-    _lookup,
-    _probe_runner,
 )
 from tests.memory.test_kinds_gate import WT_FILES
-
-needs_bwrap = pytest.mark.skipif(
-    shutil.which("bwrap") is None,
-    reason="bubblewrap required",
-)
-
-# Planted in every refused file: a reason must name the path and the class of problem, never contents.
-MARKER = "I4-CONTENT-MARKER"
-PAYLOAD = b"\x00" + MARKER.encode() + b"\x00print('ran')\n"
-
-
-@pytest.fixture
-def world(tmp_path):
-    """test_gate's store, without its gate: each test builds a gate around a recording runner."""
-    mem = Repo.init_bare(tmp_path / "mem.git")
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    ev.index_episode(_ep(episode_id="e1"), "1" * 40)
-    return mem, ev
-
-
-class _Recorder:
-    """The probe runner, recording each pytest run and whether the planted path was in its tree."""
-
-    def __init__(self, planted: str) -> None:
-        self.planted = planted
-        self.calls: list[tuple[str, bool]] = []
-
-    def __call__(self, target, *, python, ro, rw, cwd, timeout_s=300.0, env=None):
-        (tree,) = ro
-        self.calls.append((target, (Path(tree) / self.planted).exists()))
-        return _probe_runner(
-            target,
-            python=python,
-            ro=ro,
-            rw=rw,
-            cwd=cwd,
-            timeout_s=timeout_s,
-            env=env,
-        )
-
-
-def _gate(tmp_path, mem, ev, runner):
-    return Gate(
-        mem,
-        ev,
-        BlobStore(tmp_path / "lb"),
-        action_lookup=_lookup,
-        pytest_runner=runner,library_mode=LibraryConfig()
-    )
-
-
-def _commit(mem, files):
-    with mem.temp_checkout("main") as wt:
-        for rel, data in files.items():
-            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
-            (wt / rel).write_bytes(data if isinstance(data, bytes) else data.encode())
-        return mem.commit_all(wt, "pass", {"Pass": "p1"})
-
-
-def _refused_early(res, check, reason):
-    assert not res.passed
-    assert res.reasons[0] == f"{check}: {reason}", res.reasons
-    assert MARKER not in "\n".join(res.reasons)
-    # stopped before extraction: every other check is reported as not evaluated
-    others = [c for c in ("G1", "G2", "G3", "G4", "G5", "G6") if c != check]
-    assert all(f"{c}: not evaluated" in res.reasons for c in others), res.reasons
-
-
-# Not declarable (no manifest entry can name them), so 9deefbfd1 refused each only under G1 ("undeclared
-# change"), after G3 had run pytest with the file in /memory. Now: refused before extraction, no run.
-UNDECLARED = [
-    ("json.pyc", "G6", "bytecode or native code file json.pyc"),
-    ("pytest.pyc", "G6", "bytecode or native code file pytest.pyc"),
-    ("sitecustomize.pyc", "G6", "bytecode or native code file sitecustomize.pyc"),
-    ("env/__init__.pyc", "G6", "bytecode or native code file env/__init__.pyc"),
-    ("env/venmo/extra.pyc", "G6", "bytecode or native code file env/venmo/extra.pyc"),
-    (
-        "env/venmo/_fast.cpython-312-x86_64-linux-gnu.so",
-        "G6",
-        "bytecode or native code file env/venmo/_fast.cpython-312-x86_64-linux-gnu.so",
-    ),
-    (
-        "__pycache__/json.cpython-312.pyc",
-        "G6",
-        "bytecode cache path __pycache__/json.cpython-312.pyc",
-    ),
-    (
-        "env/venmo/__pycache__/__init__.cpython-312.pyc",
-        "G6",
-        "bytecode cache path env/venmo/__pycache__/__init__.cpython-312.pyc",
-    ),
-    (
-        "sitecustomize/notes.txt",
-        "G6",
-        "interpreter start-up hook sitecustomize/notes.txt",
-    ),
-    (
-        "json/notes.txt",
-        "G6",
-        "root package json/ (json/notes.txt) shadows the json module",
-    ),
-    (
-        "pytest/notes.txt",
-        "G6",
-        "root package pytest/ (pytest/notes.txt) shadows the pytest module",
-    ),
-    (
-        "notes.txt",
-        "G1",
-        "root entry notes.txt is outside the layout (the root holds only env/, workflows/ and "
-        "unify_memory_testkit.py)",
-    ),
-    (
-        "proposals/a.md",
-        "G1",
-        "root entry proposals/a.md is outside the layout (the root holds only env/, workflows/ and "
-        "unify_memory_testkit.py)",
-    ),
-]
-
-
-@pytest.mark.parametrize("path, check, reason", UNDECLARED)
-def test_undeclarable_code_and_root_entries_are_refused_before_any_run(
-    tmp_path,
-    world,
-    path,
-    check,
-    reason,
-):
-    mem, ev = world
-    # what 9deefbfd1's early refusals checked (unchanged): neither refused this path
-    assert layout_allowed(path) and not forbidden(path)
-    runner = _Recorder(path)
-    gate = _gate(tmp_path, mem, ev, runner)
-    parent = mem.head()
-    cand = _commit(mem, {**PROBE_BASE, path: PAYLOAD})
-    res = gate.check(parent, cand, {"items": [PROBE_ITEM]})
-    _refused_early(res, check, reason)
-    # 9deefbfd1 ran G3's pytest here with the planted file in the tree: runner.calls held (…, True)
-    assert runner.calls == []
-
-
-# Declarable as ``support`` (support_allowed admits a non-``.py`` name under env/<channel>/tests/), so on
-# 9deefbfd1 the probe gate merged each of these exactly as test_gate_support_helper_under_tests_is_admitted
-# merges a ``.py`` helper. Now: refused before extraction, never merged.
-DECLARED = [
-    ("env/venmo/tests/helper.pyc", "bytecode or native code file"),
-    ("env/venmo/tests/helper.pyo", "bytecode or native code file"),
-    ("env/venmo/tests/rows.abi3.so", "bytecode or native code file"),
-    ("env/venmo/tests/rows.pyd", "bytecode or native code file"),
-    ("env/venmo/tests/rows.dll", "bytecode or native code file"),
-    ("env/venmo/tests/rows.dylib", "bytecode or native code file"),
-    ("env/venmo/tests/usercustomize.json", "interpreter start-up hook"),
-]
-
-
-@pytest.mark.parametrize("path, what", DECLARED)
-def test_declared_compiled_support_is_refused_and_never_merged(
-    tmp_path,
-    world,
-    path,
-    what,
-):
-    mem, ev = world
-    assert support_allowed(path) and layout_allowed(path) and not forbidden(path)
-    runner = _Recorder(path)
-    gate = _gate(tmp_path, mem, ev, runner)
-    parent = mem.head()
-    cand = _commit(mem, {**PROBE_BASE, path: PAYLOAD})
-    man = {"items": [PROBE_ITEM], "support": [path]}
-    res = gate.merge(parent, cand, man, "pi4", "incremental", "venmo", "0")
-    _refused_early(res, "G6", f"{what} {path}")
-    assert runner.calls == [] and mem.head() == parent
-    passed, stored = ev.db.execute(
-        "SELECT passed, reasons FROM passes WHERE pass_id='pi4'",
-    ).fetchone()
-    assert passed == 0 and MARKER not in stored
-    assert json.loads(stored)[0] == f"G6: {what} {path}"
-
-
-def test_preview_refuses_sourceless_bytecode_without_running_anything(
-    tmp_path,
-    world,
-    monkeypatch,
-):
-    mem, ev = world
-
-    def boom(*a, **kw):
-        raise AssertionError("nothing may run")
-
-    monkeypatch.setattr("unify.memory.gate.run_plan", boom)
-    gate = _gate(tmp_path, mem, ev, boom)
-    tree = tmp_path / "tree"
-    for rel, data in {**FILES, "env/__init__.pyc": PAYLOAD}.items():
-        (tree / rel).parent.mkdir(parents=True, exist_ok=True)
-        (tree / rel).write_bytes(data if isinstance(data, bytes) else data.encode())
-    reasons = gate.preview(mem.head(), tree, MAN)
-    assert reasons == ["G6: bytecode or native code file env/__init__.pyc"], reasons
-
-
-def test_many_refused_paths_are_listed_up_to_ten(tmp_path, world):
-    mem, ev = world
-    runner = _Recorder("env/venmo/tests/h00.pyc")
-    gate = _gate(tmp_path, mem, ev, runner)
-    parent = mem.head()
-    bad = {f"env/venmo/tests/h{i:02d}.pyc": PAYLOAD for i in range(12)}
-    cand = _commit(mem, {**PROBE_BASE, **bad})
-    res = gate.check(parent, cand, {"items": [PROBE_ITEM], "support": sorted(bad)})
-    g6 = [r for r in res.reasons if r.startswith("G6:")]
-    assert g6[:10] == [
-        f"G6: bytecode or native code file {p}" for p in sorted(bad)[:10]
-    ]
-    assert g6[10:] == ["G6: and 2 more such paths"]
-    assert runner.calls == [] and MARKER not in "\n".join(res.reasons)
-
 
 # --- the policy function itself -------------------------------------------------------------------------
 

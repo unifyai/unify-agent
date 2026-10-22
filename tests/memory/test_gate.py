@@ -1,8 +1,6 @@
 import hashlib
 import os
 import shutil
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -12,9 +10,8 @@ from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import RED_TEST_HINT, Gate
 from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
-from unify.memory.snapshot import blob_id, listing, materialise, tree_listing
+from unify.memory.snapshot import blob_id, tree_listing
 from unify.memory.sandbox_run import PytestOutcome
-from unify.memory.signals import Signal
 from tests.memory.test_episodes import _ep
 from tests.memory.test_overrides import RULE_BODY
 

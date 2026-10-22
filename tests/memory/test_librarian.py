@@ -44,7 +44,7 @@ from unify.memory.episodes import Action
 from unify.memory.item_records import recipe_call
 from unify.memory.layout import RESERVED_INIT, RESERVED_STUB
 from unify.memory.library_index import signature_text
-from unify.settings import SETTINGS, ProductionSettings
+from unify.settings import SETTINGS
 
 needs_box = pytest.mark.skipif(
     shutil.which("bwrap") is None or not os.access(sr.PRLIMIT, os.X_OK),

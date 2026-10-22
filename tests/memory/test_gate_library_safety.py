@@ -216,3 +216,34 @@ def test_preview_judges_an_uncommitted_tree_without_running_or_writing_anything(
     # nothing is written: no git object, no pass row
     assert sorted(p.relative_to(mem.git_dir) for p in (mem.git_dir / "objects").rglob("*")) == objects
     assert mem.head() == parent and ev.db.execute("SELECT COUNT(*) FROM passes").fetchone() == (0,)
+
+
+MARKER = "LIB-CONTENT-MARKER"
+
+
+def test_many_refused_artefacts_are_listed_up_to_ten_and_never_their_contents(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = lw.files_and_fixtures(blobs.get)
+    bad = {f"memory/acct/tests/h{i:02d}.pyc": f"\x00{MARKER}\x00" for i in range(12)}
+    res = gate().check(mem.head(), lw.candidate(mem, {**files, **bad}), lw.manifest(fixtures))
+    g6 = [r for r in res.reasons if r.startswith("G6:")]
+    assert g6[:10] == [f"G6: bytecode or native code file {p}" for p in sorted(bad)[:10]]
+    assert g6[10:] == ["G6: and 2 more such paths"]
+    assert not res.passed and "G3: not evaluated" in res.reasons and MARKER not in "\n".join(res.reasons)
+
+
+def test_compiled_code_declared_as_support_is_refused_and_never_merged(library_example_world):
+    mem, ev, blobs, gate = library_example_world
+    files, fixtures = lw.files_and_fixtures(blobs.get)
+    path = "memory/acct/tests/helper.pyc"
+    parent = mem.head()
+    cand = lw.candidate(mem, {**files, path: f"\x00{MARKER}\x00"})
+    res = gate().merge(parent, cand, lw.manifest(fixtures, support=[path]), "pi4", "write", None, "0")
+    first = (
+        f"G1: malformed manifest: support file {path} is not a test helper under memory/<package>/tests/ or a module "
+        "memory/<package>/<module>.py"
+    )
+    assert not res.passed and res.reasons[0] == first and "G3: not evaluated" in res.reasons, res.reasons
+    assert mem.head() == parent
+    passed, stored = ev.db.execute("SELECT passed, reasons FROM passes WHERE pass_id='pi4'").fetchone()
+    assert passed == 0 and MARKER not in stored

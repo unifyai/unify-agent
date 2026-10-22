@@ -566,7 +566,6 @@ def test_the_request_always_serves_evidence(tmp_path, monkeypatch):
     _record(stores, "e1", 0, errored=1)
     run = RequestRun("x", stores.paths)
     run.stores = stores
-    from unify.settings import SETTINGS
 
     records = {ITEM: dict(empty_record(ITEM, "function"), status="retired")}
     computed = run._serving(
