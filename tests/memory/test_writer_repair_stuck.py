@@ -19,14 +19,15 @@ from unify.memory.repair import (
     repair_message,
 )
 from unify.memory.writer_pass import PassOutcome
-from tests.memory.test_gate import TEST
+from tests.memory import writer_library_items as wl
 from tests.memory.test_writer_library_repair import FILES_CODE
 from tests.memory.test_writer_pass import Turns, _call, _run, _write, _writer, needs_bwrap
 
-ME, OTHER = "env/venmo:me", "env/venmo:other"
-TEST_PATH = "/memory/env/venmo/tests/test_me.py"
+ME, OTHER = wl.ITEM_ID, "memory.acct.users:other"
+TEST_PATH = f"/memory/{wl.TEST_FILE}"
+TEST = wl.TEST_SOURCE
 # a refusal that remains under any-edit landing: an edited function none of whose tests is red on the parent
-NOT_RED = "G3: env/venmo:me is edited, but none of its tests is red on the parent's library. " + RED_TEST_HINT
+NOT_RED = f"G3: {ME} is edited, but none of its tests is red on the parent's library. " + RED_TEST_HINT
 
 
 def _refused(lines: dict[str, str]) -> GateResult:
@@ -73,11 +74,11 @@ def test_the_comparable_reason_ignores_output_timings_ids_and_paths():
 
 
 def test_refusals_are_keyed_by_check_and_item():
-    res = _refused({ME: NOT_RED, OTHER: "G2: env/venmo:other covers no recorded action"})
+    res = _refused({ME: NOT_RED, OTHER: f"G2: {OTHER} covers no recorded action"})
     res.reasons += ["G1: undeclared change memory/x.py", "note: pre-existing: y"]
     got = refusals(res)
     assert set(got) == {("G3", ME), ("G2", OTHER), ("G1", PASS_WIDE)}  # notes are not refusals
-    assert got[("G3", ME)].startswith("env/venmo:me is edited, but none of its tests is red on the parent's library")
+    assert got[("G3", ME)].startswith(f"{ME} is edited, but none of its tests is red on the parent's library")
     # without attributed lines, the lines of each check an item is refused under stand for it
     bare = GateResult(False, {}, ["G2: covers no recorded action"], ["G2"], items_refused={ME: ["G2"]})
     assert refusals(bare) == {("G2", ME): "covers no recorded action"}
@@ -122,7 +123,7 @@ def test_an_unchanged_candidate_repeats_every_refusal():
 
 
 def test_the_repair_message_names_the_stuck_items_and_why():
-    res = _refused({ME: NOT_RED, OTHER: "G2: env/venmo:other covers no recorded action"})
+    res = _refused({ME: NOT_RED, OTHER: f"G2: {OTHER} covers no recorded action"})
     plain = repair_message(4, "/inputs/gate/result-3.md", res, None)
     assert plain.endswith("the items that pass land and the rest are kept as a draft for the next pass.")
     held = [("G3", ME, refusals(res)[("G3", ME)])]
@@ -168,7 +169,7 @@ def test_a_repeated_refusal_stops_repair_and_the_rest_of_the_manifest_lands(tmp_
         k = len(checked)
         checked.append(candidate)
         # the other item is refused differently in rounds 0..3, then passes
-        lines = {ME: NOT_RED} | ({OTHER: f"G2: env/venmo:other covers no recorded action of kind {k}"} if k < 4 else {})
+        lines = {ME: NOT_RED} | ({OTHER: f"G2: {OTHER} covers no recorded action of kind {k}"} if k < 4 else {})
         return _refused(lines)
 
     merged: list[tuple[str, dict]] = []
@@ -201,7 +202,7 @@ def test_a_repeated_refusal_stops_repair_and_the_rest_of_the_manifest_lands(tmp_
     assert out.repair_stuck["stopped"] is True and out.repair_stuck["repeats"] == STUCK_REPEATS
     (row,) = out.repair_stuck["refusals"]
     assert (row["check"], row["item"], row["rounds"]) == ("G3", ME, 5)
-    assert row["reason"].startswith("env/venmo:me is edited, but none of its tests is red on the parent's library")
+    assert row["reason"].startswith(f"{ME} is edited, but none of its tests is red on the parent's library")
     # the writer was told, in the rounds after it became stuck, that the item gets no further round
     msgs = [m["content"] for m in model.seen if m.get("role") == "user" and "This is repair round" in m["content"]]
     assert len(msgs) == 4
@@ -223,7 +224,7 @@ def test_refusals_that_differ_each_round_keep_getting_rounds_until_time(tmp_path
     def check(parent, candidate, manifest, **kwargs):
         n[0] += 1
         time.sleep(0.2)
-        return _refused({ME: f"G2: env/venmo:me covers no recorded action of kind {n[0]}"})
+        return _refused({ME: f"G2: {ME} covers no recorded action of kind {n[0]}"})
 
     writer.gate.check = check
     out = _run(writer)
@@ -245,7 +246,7 @@ def test_an_unchanged_candidate_counts_as_a_repeat_in_the_pass(tmp_path):
     def check(parent, candidate, manifest, **kwargs):
         seen.append(candidate)
         # wording that differs every round, which no normalisation would equate
-        return _refused({ME: f"G2: env/venmo:me refusal {words[(len(seen) - 1) % len(words)]}"})
+        return _refused({ME: f"G2: {ME} refusal {words[(len(seen) - 1) % len(words)]}"})
 
     writer.gate.check = check
     out = _run(writer)
@@ -253,7 +254,7 @@ def test_an_unchanged_candidate_counts_as_a_repeat_in_the_pass(tmp_path):
     assert len({mem.run("rev-parse", f"{c}^{{tree}}").strip() for c in seen}) == 1
     assert out.repair_stuck["stopped"] is True
     assert [(r["check"], r["item"], r["reason"]) for r in out.repair_stuck["refusals"]] == [
-        ("G2", ME, "env/venmo:me refusal gamma"),
+        ("G2", ME, f"{ME} refusal gamma"),
     ]
     assert any(r.startswith(f"repair: no round {STUCK_REPEATS}: every refusal is stuck") for r in out.reasons)
     # the real merge refused the pass: its whole patch is the draft
@@ -286,7 +287,9 @@ def test_the_uncapped_brief_states_the_stuck_rule_as_information():
     from unify.memory import library_prompts
 
     text = library_prompts.write_brief_now()
-    assert f"in {STUCK_REPEATS} rounds in a row gets no further round of its own" in text
+    # rev 2's brief (tools in code) states the uncapped limit; the writer learns of a stuck refusal from the repair
+    # message that names it (test_the_repair_message_names_the_stuck_items_and_why), not from the brief
     assert "There is no set number of repair rounds" in text
+    assert library_prompts.limits_now().stuck_repeats == STUCK_REPEATS
     assert library_prompts.limits_now(finish_capped=True).stuck_repeats is None
     assert library_prompts.example_checks(text) == [] and library_prompts.benchmark_words(text) == []
