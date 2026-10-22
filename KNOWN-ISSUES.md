@@ -37,3 +37,14 @@ value. The default matcher does not list it. A capture saved against the read va
 
 Direction: open. Any fix must be static, with no execution: for example, compare the query with each value of a
 recorded data list, from the shapes alone.
+
+## Heavy forking can reach the relay's cap before the writer's own budget
+
+When `unify act` starts the lane relay, the relay holds one cap, `UNIFY_MEMORY_CAP_USD`, over all of memory's lanes:
+the writer, its helpers, the episode-end fork and embeddings (`unify/lanes/launch.py`). The writer service plans its
+passes against the same cap, but it does not see the fork's and the embedding lane's spend as it happens. A run with
+many episode-end forks can therefore use up the relay's cap while the writer's own accounting still shows room. The
+relay then refuses the writer's next call (a refusal the pass reports as the cap), so memory stops changing for the
+rest of the run. Nothing is spent past the cap: this is an early stop, never an overspend.
+
+Direction: open. A later run can show the writer the relay's remaining room before it plans a pass.

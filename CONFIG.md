@@ -8,6 +8,10 @@ with.
 
 ## The memory switch
 
+Memory is on by default and makes model calls of its own on your provider key, beside the actor's: the writer, its
+helpers, the episode-end fork and embeddings. Together they are capped at `UNIFY_MEMORY_CAP_USD` (default 20.00 USD
+per run). `UNIFY_MEMORY=off` makes none.
+
 | Variable | Values | Default | What it does |
 |---|---|---|---|
 | `UNIFY_MEMORY` | `off`, `on`, `in_episode` | `on` | `on` keeps memory between episodes. `in_episode` adds memory during an episode as well, at about twice the cost per visit. `off` is the no-memory baseline. Any other value is refused, and the error lists the three. See [docs/memory.md](docs/memory.md). |
@@ -29,7 +33,7 @@ with.
 |---|---|---|
 | `UNIFY_MAX_OUTPUT_TOKENS` | `32768` | One turn's output, so a degenerate turn cannot bill a whole output window. |
 | `UNIFY_MAX_TOOL_LOOP_STEPS` | `300` | The steps of one request. |
-| `UNIFY_MEMORY_CAP_USD` | `20.00` | The most memory may spend in one run (one `unify act`, including the writer service it ran), across the writer, its helpers and, when a lane relay holds them, the episode-end forks. It takes a plain decimal string and fails closed: a call without a reported charge counts at its model's worst case, and a call the provider refused before generating counts as 0. Once the cap is reached, the library stops changing for the rest of the run while the actor is still served from it. |
+| `UNIFY_MEMORY_CAP_USD` | `20.00` | The most memory may spend in one run (one `unify act`, including the writer service it ran), across the writer, its helpers and, when a lane relay holds them, the episode-end forks and embeddings. When `unify act` starts the lane relay (memory on and `OPENROUTER_API_KEY` set), this is also the relay's one cap over the writer, helper, fork and embedding lanes. It takes a plain decimal string and fails closed: a call without a reported charge counts at its model's worst case, and a call the provider refused before generating counts as 0. Once the cap is reached, the library stops changing for the rest of the run while the actor is still served from it. |
 
 ## Paths
 

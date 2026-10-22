@@ -57,6 +57,12 @@ Put your key in a `.env` file in the checkout (git ignores it), as
 `OPENROUTER_API_KEY=...`, or export it in your shell. Then give the actor a
 file and a task:
 
+> **Memory spends on your key.** Memory is on by default, and it makes model
+> calls of its own on your provider key, beside the actor's: the writer, its
+> helpers, the episode-end fork and embeddings. Together they are capped at
+> `UNIFY_MEMORY_CAP_USD`, 20.00 USD per run (one `unify act`) by default.
+> Set `UNIFY_MEMORY=off` to make no memory calls at all.
+
 ```bash
 mkdir -p ~/.unify/workspace
 cp data.csv ~/.unify/workspace/
@@ -69,13 +75,16 @@ private `/tmp`, and can write only the last two. Everything the agent keeps
 lives under `~/.unify` (`UNIFY_HOME`); delete that directory to start from
 nothing.
 
-Memory's search needs embeddings, and the harness never sends the provider key
-to a provider for them directly. Either compute them in process (install the
-extra with `uv sync --no-dev --extra local-embeddings` and set
-`UNIFY_LOCAL_EMBEDDINGS=true`), or set `UNIFY_EMBED_URL` to a proxy lane on
-`http://127.0.0.1:<port>/...` that holds the key and forwards OpenRouter-style
-embedding requests. With neither, a search that needs a new embedding is
-refused.
+With memory on and `OPENROUTER_API_KEY` set, `unify act` starts a local lane
+relay that holds the key and gives memory's writer, helpers, fork and
+embeddings their own lanes, all under that one cap; memory's processes never
+hold the key. Memory's search needs embeddings, and the harness never sends the
+provider key to a provider for them directly: they go through the relay's
+embedding lane, or you compute them in process (install the extra with
+`uv sync --no-dev --extra local-embeddings` and set
+`UNIFY_LOCAL_EMBEDDINGS=true`), or you set `UNIFY_EMBED_URL` to a proxy lane of
+your own on `http://127.0.0.1:<port>/...`. With none of these, a search that
+needs a new embedding is refused.
 
 ## What the agent and its memory do
 
