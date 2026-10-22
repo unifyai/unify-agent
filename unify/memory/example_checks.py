@@ -167,8 +167,8 @@ class ExampleChecks:
 
     # -- the record -------------------------------------------------------------------------------------------
     def functions(self) -> list[Any]:
-        """The manifest's functions in the candidate; under rev 2 (``run.policy``) only the statically pure ones,
-        whose tests the gate runs (:mod:`.gate_policy`)."""
+        """The manifest's functions in the candidate whose tests the gate may run; under ``run.policy`` none, since
+        the gate runs no code (:mod:`.gate_policy`, rev 2.1)."""
         found = [
             it
             for it in self.run.man.items

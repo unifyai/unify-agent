@@ -79,10 +79,10 @@ STATUS_LINES_IN_CODE = (
     "code.\n"
     "- `on-trial` items passed the library's checks and have had little use; `adopted` items have also been "
     "used without errors. "
-    "A function's brackets also give its evidence level: `evidence: unchecked` (stored, but some check of its "
-    "evidence did not hold; its record lists which), `evidence: reproduces-its-case` (its tests reproduce its "
-    "recorded cases and every evidence check holds) or `evidence: confirmed-by-outcomes` (outcomes after use "
-    "confirm it).\n"
+    "Every item's brackets also say what it rests on: its kind (a curated item the library's writer made, a "
+    "recorded procedure an earlier attempt captured, or a fixed answer to read), how many episodes it comes "
+    "from, and how many uses had an outcome that confirmed it. An item from one episode may hold only for that "
+    "case.\n"
 )
 #: The opening of every in-code guide: the bound name, the help pointer and that using the library is optional.
 _OPENING_IN_CODE = (
@@ -826,16 +826,15 @@ LABELS_ONLY_GATE = (
     "its label and the item lands with it; a finding about the whole pass is a note. Only these refuse: safety "
     "(G6), a change outside `memory/` and `notes/` or to the generated files, a manifest that does not parse or "
     "leaves a change undeclared, a fixture that did not come through `tools.fixture` unchanged, a cited episode that "
-    "is not recorded, and code that does not parse or import. The gate runs code only for an item that is a pure "
-    "function of its input (it reads its input and calls no tools, no files and no network): its listed tests, its "
-    "recipe on its cases and its own recorded calls. For any other item its label says what was not run and why. "
+    "is not recorded, and code that does not parse or import. The gate runs no code: no item, test or recipe is "
+    "run to check or rank it, so each label says what was not run and why. Running code is a test you state first "
+    "and run yourself with `tools.test`, on whatever item you choose. "
     "Its labels name the check: G1, layout and provenance (the paths, the manifest, the links, the fixtures, each "
     "new or changed function and note's `When to use` section and each changed folder's README.md); G2, evidence "
-    "(each function's listed tests call it, and what those calls show sets its evidence level); G3, tests (plain "
-    "pytest, the tests pass, a behaviour change has a test that fails on the parent, no test is lost or weakened "
-    "without a reason, and an exact assertion against a trusted value on a recorded fixture for each changed "
-    "function, never one that recomputes it); G4, the index (a note when it has outgrown the view the working "
-    "model is shown); G5, items (no fewer items, and a deleted item's recorded jobs kept by a remaining one); G6, "
+    "(each function's listed tests name it; an item's support is the episodes it comes from and the uses whose "
+    "outcomes confirmed it, never a run of the gate's); G3, tests (plain pytest, and no test lost or weakened "
+    "without a reason; the gate runs none of them: they state what the item claims); G4, the index (a note when it has outgrown the view the working "
+    "model is shown); G5, items (no fewer items); G6, "
     "safety (no links, executables, submodules, git, pytest or interpreter configuration files, bytecode or "
     "key-shaped strings).\n"
 )
@@ -864,8 +863,8 @@ def with_labels_only(body: str, recipe_rule: str) -> str:
         body,
         "The gate runs the recipe, confined, on every case and records what each case gave on the procedure's "
         "label; the procedure lands either way. ",
-        "The gate runs the recipe on every case when the procedure is a pure function of its input, and records "
-        "what each case gave on its label; the procedure lands either way. ",
+        "The gate runs no recipe: it records the procedure's cases on its label, and the procedure lands either way; "
+        "run the recipe on a case yourself with `tools.test` to see what it gives. ",
     )
     body = _swap(
         body,

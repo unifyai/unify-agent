@@ -166,7 +166,7 @@ def test_match_lists_procedures_whose_recorded_input_has_the_same_structure(tmp_
         "print(json.dumps(repr(r)))\n"
     )
     rows, failed, text = (json.loads(line) for line in _py(root, code).splitlines())
-    assert _built().records[LANDED]["level"] == "reproduces-its-case"  # the gate's, for a landing that reproduces
+    assert _built().records[LANDED]["level"] == "unchecked"  # rev 2.1: the gate runs no code, so it checks no level
     # rev 2: the landed procedure's signature comes from its trace capture, which never runs read_input, so its input
     # is the request's data (the list of JSON values the request holds: here one, the rows), not the rows the reader
     # would read; the structural query of the same rows does not match it (KNOWN-ISSUES.md), while the capture saved
@@ -267,7 +267,7 @@ def test_run_calls_an_item_and_reports_its_outcome(tmp_path):
     first, failures, text = (json.loads(line) for line in _py(root, code).splitlines())
     # the capture of the same work gives the same result on these rows
     # rev 2.1: the report is the one call: no repeat and no other procedure run beside it
-    assert first == ["returned", {"total": 8}, "reproduces-its-case", "on-trial", False, False]
+    assert first == ["returned", {"total": 8}, "unchecked", "on-trial", False, False]
     assert failures == ["error", "LookupError", "error", "AttributeError"]  # reported, never raised
     assert f"run of {LANDED}: returned" in text and "repeatable" not in text and "agrees" not in text
     for word in ("correct", "verified", "right answer"):

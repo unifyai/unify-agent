@@ -34,7 +34,9 @@ the three. The rest of memory's configuration is in [CONFIG.md](../CONFIG.md); t
      a smaller library.
 
    A gate checks every candidate before it lands. Safety, paths and syntax refuse a candidate. Every other finding
-   is recorded on the item's label. The gate runs code only for an item that is a pure function of its input.
+   is recorded on the item's label. The gate runs no code: the only code that runs is a test the writer states
+   and runs itself (`tools.test`). Every item shows what it rests on: its kind (a curated item, a recorded
+   procedure or a fixed answer), how many episodes it comes from and how many uses confirmed it.
 5. **The next episode is served from the library.** An episode starts with a read-only copy of the library as it is
    then, bound as the Python package `memory` in its cells. The librarian answers questions about it (`memory.ask`).
 

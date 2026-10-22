@@ -352,8 +352,9 @@ def test_items_prints_a_compact_table_page_by_page(tmp_path):
         "memory.items(): 7 item(s), 4 function(s) and 3 note(s). Open one with memory.get(id); call a function "
         "item directly."
     )
-    assert lines[1].split() == ["id", "kind", "evidence", "summary"]
-    assert lines[2].split()[:3] == [FILL, "function", "unchecked"] and lines[2].endswith(
+    # rev 2.1: what each item rests on in place of the evidence level ("-": this library has no item records)
+    assert lines[1].split() == ["id", "kind", "rests", "on", "summary"]
+    assert lines[2].split()[:3] == [FILL, "function", "-"] and lines[2].endswith(
         "Fill every cell of a grid with one value.",
     )
     assert len(lines) == 2 + 3 + 2

@@ -1,4 +1,4 @@
-"""The rev 2 gate: every check labels, and only a statically pure item's own tests run.
+"""The rev 2.1 gate: every check labels, and the gate runs no code at all.
 
 The rules: no capture or function is re-run to classify or test it (that fails for impure items and for worlds that
 cannot be replayed); a write-time quality check labels, never rejects; confinement, security and credential
@@ -10,11 +10,11 @@ The gate's policy:
   pass's declared change set and manifest (G1 findings that no item owns: scope, undeclared or deleted items, the
   manifest itself), the provenance of recorded evidence (fixtures re-derived from the recording, cited episodes),
   and what breaks the library itself (syntax, imports that fail, missing paths, the gate's own kit).
-* **Execution** (:func:`purity`, :func:`test_runnable`): the gate runs code only for an item that is statically pure
-  (its form is a value or a plain function: at most one input besides plain values, no ``env``/``tools`` calls, no
-  I/O, and it reads its input), and only the writer's own tests of it, its recipe on the cases the writer listed, or
-  the replay of its own recorded calls. An impure, state-form or constant item is never run: its label says
-  ``not run: <why>``.
+* **Execution**: none (rev 2.1). No capture or function is executed or re-run to classify, rank or test it, a
+  statically pure one included: an item's tests, its recipe and its recorded calls are not run by the gate, and its
+  label says ``not run: <why>`` (:data:`NOT_RUN_GATE`). Running code is a test the writer chooses: it states what it
+  expects and runs it with ``tools.test`` during its pass. :func:`purity` still says whether an item is statically
+  pure, as a fact on its label, never as a licence to run it.
 * **Recorded replays** (off by default): the episode-cover replays, the
   held-out value reruns, the memorisation reruns (drawn and perturbed inputs) and the history probe replay recorded
   task data; they run only with that switch on, for comparisons.
@@ -38,6 +38,8 @@ _IMPURE_MODULES = frozenset({
 #: Parameter names of the state forms (``run(state)``, ``run(state, env)``) and of a tool namespace.
 _STATE_NAMES = frozenset({"state", "env", "tools"})
 NOT_RUN_REPLAYS = "not run: recorded replays are off (rev 2)"
+#: Why the gate runs no item, test or recipe (rev 2.1).
+NOT_RUN_GATE = "the gate runs no code (rev 2.1); the writer's tests are the ones it states and runs with tools.test"
 
 
 def _function(source: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
@@ -85,34 +87,6 @@ def purity(source: Any) -> tuple[bool, str]:
     return True, ""
 
 
-def test_subjects(source: Any) -> set[str] | None:
-    """The library functions a test module uses (``memory.<pkg>.<mod>:<name>``), from its imports: ``from
-    memory.x.y import f`` gives ``memory.x.y:f``; a module imported whole gives the names used on it. None when it
-    cannot be told from the syntax (it does not parse, or imports with ``*``)."""
-    if not isinstance(source, str):
-        return None
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return None
-    out: set[str] = set()
-    modules: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("memory."):
-            for a in node.names:
-                if a.name == "*":
-                    return None
-                out.add(f"{node.module}:{a.name}")
-        elif isinstance(node, ast.Import):
-            for a in node.names:
-                if a.name.startswith("memory.") and a.asname:
-                    modules[a.asname] = a.name
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in modules:
-            out.add(f"{modules[node.value.id]}:{node.attr}")
-    return out
-
-
 @dataclass
 class Policy:
     """One gate run's execution policy (module docstring): *replays* (recorded task data replayed) is always off;
@@ -123,38 +97,24 @@ class Policy:
     _pure: dict[str, tuple[bool, str]] = field(default_factory=dict)
 
     def item(self, item: str) -> tuple[bool, str]:
-        """Whether *item* may be run (:func:`purity` of its candidate source), and why not."""
+        """Whether *item* may be run: never (:data:`NOT_RUN_GATE`); *why* adds whether it is statically pure
+        (:func:`purity`), as a fact for its label."""
         if item not in self._pure:
-            self._pure[item] = purity(self.bodies.get(item))
+            pure, why = purity(self.bodies.get(item))
+            self._pure[item] = (False, NOT_RUN_GATE + ("" if pure else f"; it is not pure: {why}"))
         return self._pure[item]
 
     def test(self, tree: Path, rel: str) -> tuple[bool, str]:
-        """Whether the test module *rel* of *tree* may be run: every library function it uses is pure."""
-        try:
-            text = (Path(tree) / rel).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return False, f"{rel} cannot be read"
-        subjects = test_subjects(text)
-        if subjects is None:
-            return False, f"what {rel} uses cannot be read from its code"
-        for s in sorted(subjects):
-            if s not in self.bodies:
-                continue  # not a function of the library (a module, a class): judged where it is defined
-            ok, why = self.item(s)
-            if not ok:
-                return False, f"{s} is not run: {why}"
-        return True, ""
+        """Whether the test module *rel* of *tree* may be run: never (:data:`NOT_RUN_GATE`)."""
+        return False, f"{rel}: {NOT_RUN_GATE}"
 
     def suite(self, tree: Path, rel: str) -> tuple[bool, str]:
-        """Whether the test directory *rel* of *tree* may be run: each test module in it may (:meth:`test`)."""
+        """Whether the test directory *rel* of *tree* may be run: never, when it holds a test module
+        (:data:`NOT_RUN_GATE`)."""
         root = Path(tree) / rel
-        if not root.is_dir():
+        if not root.is_dir() or not any(root.rglob("test_*.py")):
             return True, ""
-        for p in sorted(root.rglob("test_*.py")):
-            ok, why = self.test(tree, str(p.relative_to(tree)))
-            if not ok:
-                return False, why
-        return True, ""
+        return False, f"{rel}: {NOT_RUN_GATE}"
 
 
 def hard(check: str, reason: str, owners: Iterable[str]) -> bool:

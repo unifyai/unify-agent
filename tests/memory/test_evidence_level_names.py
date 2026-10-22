@@ -1,7 +1,9 @@
 """The renamed evidence levels and statuses, in the item records, the index line and ``memory.show``.
 
 An item has two separate axes. Its evidence level says how much its evidence shows:
-``unchecked`` -> ``reproduces-its-case`` -> ``confirmed-by-outcomes``. Its status says where it is in its life:
+``unchecked`` -> ``reproduces-its-case`` -> ``confirmed-by-outcomes`` (rev 2.1: the gate runs no code, so only
+outcomes after use move it; the index line and ``memory.show`` show what an item rests on in its place: its kind,
+the episodes it comes from and its confirmed uses). Its status says where it is in its life:
 ``on-trial`` -> ``adopted`` -> ``retired``. The old status names (``experimental``, ``stable``) never reach a record, an
 index line or ``memory.show`` again, but a record stored under an old name still loads, as the new name.
 """
@@ -14,6 +16,7 @@ import re
 from tests.memory.test_layout import _tree
 from tests.memory.test_library_helper import _commit, _py
 from unify.memory import item_records as ir
+from unify.memory import item_states
 from unify.memory import library_export as lx
 from unify.memory import library_index
 from unify.memory import lifecycle as lc
@@ -22,7 +25,7 @@ from unify.memory.gitio import Repo
 
 # --- assumed names (adapt here) ---------------------------------------------------------------------------------
 #: the evidence levels, lowest first, beside STATUSES and EFFECTS
-LEVELS_OF = lambda: library_index.LEVELS  # noqa: E731
+LEVELS_OF = lambda: item_states.LEVELS  # noqa: E731
 LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
 #: the statuses, in an item's life
 ON_TRIAL, ADOPTED, RETIRED = "on-trial", "adopted", "retired"
@@ -30,8 +33,8 @@ ON_TRIAL, ADOPTED, RETIRED = "on-trial", "adopted", "retired"
 OLD_STATUS_LOADS_AS = {"experimental": ON_TRIAL, "stable": ADOPTED}
 #: the record fields the harness writes from the gate run
 LEVEL_FIELD, LEVEL_REASONS_FIELD = "level", "level_reasons"
-#: how a level is shown in the index brackets and in memory.show's first line
-SHOWN_LEVEL = "evidence: {level}"
+#: what the brackets show in its place (rev 2.1): an item whose record names no provenance episode
+SHOWN_SUPPORT = "curated item from 0 episodes"
 #: the level a record stored before evidence levels existed reads as, when nothing in it shows its examples ran on
 #: recorded values: the lowest (a missing level fails closed; decided for this revision)
 KEPT_LEVEL = "unchecked"
@@ -162,7 +165,7 @@ def test_a_record_with_the_new_status_and_a_level_is_written_and_read_back(tmp_p
 # --- what the actor and the writer see ----------------------------------------------------------------------------
 
 
-def test_the_index_line_shows_the_status_and_the_evidence_level_apart(tmp_path):
+def test_the_index_line_shows_the_status_and_the_support_apart(tmp_path):
     records = {
         DATE: _record(
             DATE,
@@ -178,15 +181,15 @@ def test_the_index_line_shows_the_status_and_the_evidence_level_apart(tmp_path):
     root = _library(tmp_path, records)
     date = _brackets(_index_line(root, DATE))
     week = _brackets(_index_line(root, WEEK))
-    assert ON_TRIAL in date and SHOWN_LEVEL.format(level="unchecked") in date
-    assert ADOPTED in week and SHOWN_LEVEL.format(level="reproduces-its-case") in week
+    assert ON_TRIAL in date and SHOWN_SUPPORT in date and "evidence:" not in date
+    assert ADOPTED in week and SHOWN_SUPPORT in week and "evidence:" not in week
     index = (root / "INDEX.md").read_text()
     assert "[experimental" not in index and "[stable" not in index
 
 
-def test_show_gives_the_status_the_level_and_the_flag_that_set_it(tmp_path):
+def test_show_gives_the_status_the_support_and_the_gates_finding(tmp_path):
     """An item the check with unseen values flagged lands at the lowest level; the flag is shown to the agent
-    (``memory.show``) as well as to the writer (the gate's reply)."""
+    (``memory.show``, as a gate finding) as well as to the writer (the gate's reply)."""
     records = {
         DATE: _record(
             DATE,
@@ -200,18 +203,19 @@ def test_show_gives_the_status_the_level_and_the_flag_that_set_it(tmp_path):
     )
     first = out.splitlines()[0]
     assert first.startswith("memory.text.dates:parse_date(")
-    assert ON_TRIAL in first and SHOWN_LEVEL.format(level="unchecked") in first
-    assert "[examples:special-cased]" in out
+    assert ON_TRIAL in first and SHOWN_SUPPORT in first and "evidence:" not in first
+    assert "Gate findings:" in out and "[examples:special-cased]" in out
     assert "experimental" not in out
 
 
 def test_a_record_from_before_levels_reads_as_the_lowest_level(tmp_path):
     """A record with no level, and no verification showing its examples ran on recorded values, fails closed: it
-    shows the lowest level, and its old status under its new name."""
+    reads as the lowest level, and shows its old status under its new name, with what it rests on."""
     old = {"item": WEEK, "kind": "function", "status": "stable"}
+    assert item_states.level_of_record(old.get("verification")) == KEPT_LEVEL
     root = _library(tmp_path, {WEEK: old})
     week = _brackets(_index_line(root, WEEK))
-    assert ADOPTED in week and SHOWN_LEVEL.format(level=KEPT_LEVEL) in week
+    assert ADOPTED in week and SHOWN_SUPPORT in week
     out = json.loads(
         _py(root, f"import json, memory\nprint(json.dumps(memory.show({WEEK!r})))"),
     )

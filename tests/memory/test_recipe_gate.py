@@ -1,5 +1,6 @@
-"""The generalisation gate: a landed procedure carries a recipe, ``apply(request) -> result``, and lands only when the
-recipe, run confined, gives the expected output on every case its episode observed.
+"""The generalisation gate: a landed procedure carries a recipe, ``apply(request) -> result``, with the cases its
+episode observed. Rev 2.1: the gate runs no code, so the recipe is never run on its cases; its label and its record
+say so, and the cases stay, made through the fixture tool, for the writer's own stated tests.
 
 Each world is built by the code that builds it in production (:mod:`tests.memory.gate_records`): the capture step on
 the episode's staged procedure, ``land_capture`` (which writes the recipe, the source case and the shown cases it is
@@ -107,16 +108,13 @@ def test_a_recipe_that_derives_every_value_from_the_request_lands_on_its_source_
     assert proc["recipe"] == RECIPE and proc["cases"] == [SOURCE_FILE, SHOWN_FILE]
     shown = json.loads(built.files[SHOWN_FILE])
     assert (shown["input"], shown["expected"], shown["kind"]) == (EXAMPLE_CALL, 10, "shown")
-    # recorded per item: how many cases, how many passed, of which kinds; the catalogue card shows them
-    assert built.result.verification[PROC]["recipe"] == {
-        "item": RECIPE,
-        "cases": 2,
-        "passed": 2,
-        "kinds": {"source": 1, "shown": 1},
-    }
+    # rev 2.1: the gate runs no recipe; its record says how many cases are listed and why it was not run
+    from unify.memory.gate_policy import NOT_RUN_GATE
     from unify.memory.item_records import recipe_text
 
-    assert recipe_text(built.records[PROC]) == f"{RECIPE}; 2 of 2 cases passed (1 shown, 1 source)"
+    assert built.result.verification[PROC]["recipe"] == {"item": RECIPE, "cases": 2, "ran": False,
+                                                         "why": NOT_RUN_GATE}  # fmt: skip
+    assert recipe_text(built.records[PROC]) == f"{RECIPE}; not run at the gate (2 cases listed)"
 
 
 def _labels(res, item: str) -> list[str]:
@@ -124,28 +122,27 @@ def _labels(res, item: str) -> list[str]:
     return list((res.verification.get(item) or {}).get("label_findings", []))
 
 
-def test_a_recipe_that_hardcodes_a_source_constant_fails_the_shown_case_and_is_labelled(tmp_path):
+def test_a_recipe_that_hardcodes_a_source_constant_is_not_run_and_its_label_says_so(tmp_path):
+    """Rev 2.1: the gate no longer runs a recipe to find that it fails a shown case (execution as a judgement); the
+    label says it was not run, and the writer's stated tests are where a case is checked."""
+    from unify.memory.gate_policy import NOT_RUN_GATE
+
     built = _pricing(HARDCODES, tmp_path=tmp_path)
     res = built.result
     assert res.passed and not res.items_refused, res.reasons
-    assert all(any("does not give the expected output" in r for r in _labels(res, i)) for i in (PROC, RECIPE))
-    (reason,) = [r for r in _labels(res, PROC) if "does not give the expected output" in r]
-    assert SHOWN_FILE in reason and "a shown case of p1" in reason
-    # the difference report names the expected output and the actual one
-    assert "expected: 10" in reason and "actual:   6" in reason
-    assert "the value: expected 10, got 6" in reason
-    assert res.verification[PROC]["recipe"]["passed"] == 1 and res.verification[PROC]["recipe"]["cases"] == 2
+    for item in (PROC, RECIPE):
+        assert any(r.startswith(f"not run: G2 recipe {RECIPE}: {NOT_RUN_GATE}") for r in _labels(res, item))
+        assert not any("does not give the expected output" in r for r in _labels(res, item))
+    assert res.verification[PROC]["recipe"] == {"item": RECIPE, "cases": 2, "ran": False, "why": NOT_RUN_GATE}
 
 
-def test_with_no_reward_signal_and_no_shown_case_the_source_case_alone_lands_it(tmp_path):
+def test_with_no_reward_signal_and_no_shown_case_the_source_case_alone_is_listed(tmp_path):
     built = _pricing(HARDCODES, cases=(), regime="none", tmp_path=tmp_path)
     assert built.result.passed, built.result.reasons
-    assert built.result.verification[PROC]["recipe"] == {
-        "item": RECIPE,
-        "cases": 1,
-        "passed": 1,
-        "kinds": {"source": 1, "shown": 0},
-    }
+    from unify.memory.gate_policy import NOT_RUN_GATE
+
+    assert built.result.verification[PROC]["recipe"] == {"item": RECIPE, "cases": 1, "ran": False,
+                                                         "why": NOT_RUN_GATE}  # fmt: skip
 
 
 def test_a_procedure_from_a_failed_episode_is_labelled(tmp_path):
@@ -221,7 +218,7 @@ def run(value):
 '''
 
 
-def test_a_text_request_with_one_worked_example_lands_when_the_recipe_gives_its_output(tmp_path):
+def test_a_text_request_with_one_worked_example_lands_with_both_cases_listed_and_not_run(tmp_path):
     ep = _episode("t1", INITIALS, "G.B.H.", regime="none")
     shown = {
         "input": {"source": "request:0", "slice": _cut(INITIALS, "Ada Lovelace")},
@@ -230,9 +227,10 @@ def test_a_text_request_with_one_worked_example_lands_when_the_recipe_gives_its_
     landing = gr.Landing("t1", INITIALS_PROC, "## Asked\nInitials.\n", "names", "initials", (shown,))
     built = gr.build(tmp_path, episodes={"t1": ep}, base={}, landings=[landing])
     proc = "memory.names.procedures:initials"
-    assert built.result.verification[proc]["recipe"]["passed"] == 2
-    assert built.result.verification[proc]["recipe"]["kinds"] == {"source": 1, "shown": 1}
+    recipe = built.result.verification[proc]["recipe"]
+    assert recipe["cases"] == 2 and recipe["ran"] is False
     card = built.records[proc]
     from unify.memory.item_records import verification_summary
 
-    assert verification_summary(card)["recipe"].startswith("memory.names.procedures:apply_initials; 2 of 2")
+    want = "memory.names.procedures:apply_initials; not run at the gate (2 cases listed)"
+    assert verification_summary(card)["recipe"] == want

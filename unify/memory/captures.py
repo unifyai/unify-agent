@@ -1128,14 +1128,18 @@ def judge_segments(
 
 
 def listed_record(record: dict, landing: Mapping[str, Any] | None) -> dict:
-    """*record* as a box reads it: with ``listing`` (``{"listed": false, "why"}``) when the capture's *landing* tested
-    its procedure and it is not listed (:func:`.recognition.listing`), so a captured procedure, the same code, is not
-    listed either; *record* itself otherwise."""
+    """*record* as a box reads it: with its ``support`` (:func:`.item_records.support`), and with ``listing``
+    (``{"listed": false, "why"}``) when the capture's *landing* tested its procedure and it is not listed
+    (:func:`.recognition.listing`), so a captured procedure, the same code, is not listed either."""
     from .recognition import listing
+
+    from .item_records import support
 
     rec = landing.get("recognition") if isinstance(landing, Mapping) else None
     listed, why = listing(rec if isinstance(rec, Mapping) else None)
-    return record if listed else {**record, "listing": {"listed": False, "why": why}}
+    # what the capture rests on (its episodes and confirmed uses), as every card shows it (rev 2.1)
+    out = {**record, "support": support(record)}
+    return out if listed else {**out, "listing": {"listed": False, "why": why}}
 
 
 def export_files(

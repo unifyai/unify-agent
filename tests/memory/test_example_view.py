@@ -257,7 +257,7 @@ def test_show_prints_the_example_under_the_signature(tmp_path):
         _py(root, f"import json, memory\nprint(json.dumps(memory.show({PD!r})))"),
     )
     assert out.splitlines()[:3] == [
-        "memory.text.dates:parse_date(s: str) -> str  [on-trial]",
+        "memory.text.dates:parse_date(s: str) -> str  [on-trial, curated item from 0 episodes]",
         f"Example (from {TEST}): {QUOTED}",
         "",
     ]

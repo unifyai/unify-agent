@@ -154,33 +154,36 @@ def test_a_card_shows_what_it_was_saved_against_as_written(tmp_path):
 
 
 @needs_box
-def test_a_card_shows_its_evidence_level_status_reader_applies_and_input_line(tmp_path):
+def test_a_card_shows_its_kind_support_status_reader_applies_and_input_line(tmp_path):
+    from unify.memory.item_records import support, support_text
+
     _, files, _ = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
     recs = w.records()
     card = _card(text, w.TOTAL)
     assert EVIDENCE_LABEL in card.lower()
-    # rev 2's gate is labels only: it runs no reader, so the writer's parsed fixture is not re-derived and the
-    # procedure's calls are not grounded on it; the landed procedure stays unchecked with that finding, and its card
-    # shows the record's level and status and the reader it was landed with
+    # rev 2.1: the gate runs no code, so no item climbs a ladder built on running it; the landed procedure is
+    # unchecked, and its card shows what it rests on (its kind, its episodes, its confirmed uses) in place of a level,
+    # with its status and the reader it was landed with
     assert recs[w.TOTAL]["level"] == "unchecked"
-    assert any("[examples:grounded]" in r for r in recs[w.TOTAL]["level_reasons"])
-    assert f"Evidence: level unchecked; status adopted; reader {w.READ_TOTAL}; applies: yes" in card
+    rests = support_text("curated item", support(recs[w.TOTAL]))
+    assert rests.startswith("curated item from ") and "level" not in card.split("Evidence:", 1)[1].split("\n", 1)[0]
+    assert f"Evidence: {rests}; status adopted; reader {w.READ_TOTAL}; applies: yes" in card
     # its input line: the capture's applicability signature, which its record carries from the landing
     assert f"Input: {signature_text(recs[w.TOTAL]['signature'])}" in card
     ledger = _card(text, w.RECONCILE)
-    assert f"level {recs[w.RECONCILE]['level']}; status on-trial;" in ledger
+    assert f"Evidence: {support_text('curated item', support(recs[w.RECONCILE]))}; status on-trial;" in ledger
     # never landed: no signature, so no input line
     assert recs[w.RECONCILE]["signature"] is None and "Input:" not in ledger
 
 
 @needs_box
-def test_captured_procedures_come_last_at_level_unchecked(tmp_path):
+def test_captured_procedures_come_last_with_their_kind_and_support(tmp_path):
     _, files, caps = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
     for cid in _capture_ids(caps):
         card = _card(text, cid)
-        assert "unchecked" in card, card
+        assert "Evidence: recorded procedure from " in card or "Evidence: fixed answer from " in card, card
     first_capture = min(n for n, _, i in card_heads(text) if i.startswith("capture:"))
     note_line = next(n for n, _, i in card_heads(text) if i == w.NOTE)
     function_lines = [n for n, _, i in card_heads(text) if i in w.FUNCTIONS]

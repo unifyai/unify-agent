@@ -2,8 +2,8 @@
 
 * Purity is read from the syntax: a value or plain function that reads its input and calls no ``env``/``tools``, no
   I/O and no code from text is pure; a state form, an ``env`` call, a constant or I/O is not.
-* The gate runs no code for an impure item: its tests are not run, its label says ``not run: <why>``, and nothing
-  is refused for it.
+* The gate runs no code at all (rev 2.1), a pure item included: its tests are not run, its label says
+  ``not run: <why>`` (with whether it is pure), and nothing is refused for it.
 * A finding about an item is a label, never a refusal; the hard checks (safety, the declared change set, recorded
   provenance, what breaks the library) still refuse.
 * ``land_capture`` runs nothing: no replay of the capture, no reader on empty text, no parsed fixture.
@@ -19,7 +19,7 @@ import subprocess
 
 import pytest
 
-from tests.memory.gate_records import build, needs_box
+from tests.memory.gate_records import build
 from tests.memory.test_capture_end_to_end import recorded_episode
 from tests.memory.test_land_capture import ROWS, _no_blob, _store
 from unify.memory import gate_policy as gp
@@ -55,19 +55,22 @@ def test_purity_is_read_from_the_syntax(src, pure):
     assert (why == "") is pure
 
 
-def test_a_test_module_is_runnable_only_when_everything_it_uses_is_pure(tmp_path):
+def test_the_gate_runs_no_item_and_no_test_module_pure_or_not(tmp_path):
+    """Rev 2.1, fix 9: no capture or function is executed to classify, rank or test it, a statically pure one
+    included; whether an item is pure stays a fact on its label."""
     bodies = {"memory.t.m:double": "def double(value):\n    return value * 2\n",
               "memory.t.m:send": "def send(state, env):\n    env.mail.send(state.last)\n"}  # fmt: skip
     policy = gp.Policy(bodies=bodies)
+    assert policy.item("memory.t.m:double") == (False, gp.NOT_RUN_GATE)
+    ok, why = policy.item("memory.t.m:send")
+    assert not ok and why.startswith(gp.NOT_RUN_GATE) and "state form" in why
     (tmp_path / "memory" / "t" / "tests").mkdir(parents=True)
     (tmp_path / "memory/t/tests/test_a.py").write_text("from memory.t.m import double\n\ndef test_a():\n    assert 1\n")
     (tmp_path / "memory/t/tests/test_b.py").write_text("import memory.t.m as m\n\ndef test_b():\n    m.send\n")
-    assert policy.test(tmp_path, "memory/t/tests/test_a.py") == (True, "")
-    ok, why = policy.test(tmp_path, "memory/t/tests/test_b.py")
-    assert not ok and "memory.t.m:send" in why and "state form" in why
-    assert policy.suite(tmp_path, "memory/t/tests")[0] is False
-    (tmp_path / "memory/t/tests/test_c.py").write_text("from memory.t.m import *\n")
-    assert policy.test(tmp_path, "memory/t/tests/test_c.py")[0] is False
+    for rel in ("memory/t/tests/test_a.py", "memory/t/tests/test_b.py"):
+        assert policy.test(tmp_path, rel) == (False, f"{rel}: {gp.NOT_RUN_GATE}")
+    assert policy.suite(tmp_path, "memory/t/tests") == (False, f"memory/t/tests: {gp.NOT_RUN_GATE}")
+    assert policy.suite(tmp_path, "memory/none") == (True, "")  # nothing there to run
 
 
 def test_the_hard_checks_stay_refusals():
@@ -135,20 +138,23 @@ def test_double_is_wrong_on_purpose():
 '''
 
 
-@needs_box
-@pytest.mark.timeout(600)
-def test_a_failing_test_of_a_pure_item_is_a_label_not_a_refusal(tmp_path):
-    world = dict(
+def test_a_pure_items_test_is_not_run_by_the_gate_and_its_label_says_so(tmp_path, monkeypatch):
+    """Rev 2.1, fix 9: rev 2 ran a pure item's own tests (and labelled this one's failure); the gate now runs none of
+    them, so a test the item lists is a claim, and the writer checks it with tools.test."""
+    monkeypatch.setattr(sandbox_run, "run_confined", _refuse)
+    built = build(
+        tmp_path,
         episodes={"e7": recorded_episode("e7", rows=ROWS)},
         base={},
         files={"memory/calc/ops.py": PURE, "memory/calc/tests/test_ops.py": FAILING_TEST},
         items=_items("memory.calc.ops:double", "memory/calc/tests/test_ops.py"),
+        gate_kwargs={"pytest_runner": _refuse},
+        config_kwargs={"runner": _refuse},
     )
-    # rev 2's gate is labels only (there is no as-built gate to compare with: the switch is gone)
-    rev2 = build(tmp_path / "rev2", **world)
-    assert rev2.result.passed, rev2.result.reasons
-    labels = rev2.result.verification["memory.calc.ops:double"]["label_findings"]
-    assert any("not green on the candidate" in line for line in labels), labels
+    assert built.result.passed, built.result.reasons
+    labels = built.result.verification["memory.calc.ops:double"]["label_findings"]
+    assert any(line.startswith("not run:") and gp.NOT_RUN_GATE in line for line in labels), labels
+    assert not any("not green on the candidate" in line for line in labels), labels
 
 
 # --- land_capture runs nothing ---------------------------------------------------------------------------------------------

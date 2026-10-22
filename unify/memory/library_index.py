@@ -18,7 +18,7 @@ import re
 from collections.abc import Callable
 
 from .catalogue import estimate_tokens
-from .item_states import HIDDEN, LEVELS, ON_TRIAL, STATUSES
+from .item_states import HIDDEN, ON_TRIAL, STATUSES
 from .layout import FUNCTION_ID, NOTE_ID, Library
 from .library_helper import item_count, section_key, split_index
 
@@ -28,8 +28,8 @@ INDEX_VIEW_TOKENS = 4000
 EFFECTS = ("read", "write", "unknown")
 StatusOf = Callable[[str], str]
 EffectOf = Callable[[str], "str | None"]
-#: a function's evidence level (:data:`.item_states.LEVELS`), None for none
-LevelOf = Callable[[str], "str | None"]
+#: an item's support (:func:`.item_records.support`: ``{"episodes", "confirmed_uses"}``), None for none recorded
+SupportOf = Callable[[str], "dict | None"]
 #: an item's example call as the index shows it (:func:`.example_view.example_of`), None for none
 ExampleOf = Callable[[str], "str | None"]
 EpisodesOf = Callable[[str], "int | None"]
@@ -50,7 +50,9 @@ INDEX_HEAD = (
     "status in brackets and the items it links to either way. A function's brackets also give its effect "
     "once the harness has derived it from the recordings the function reproduces: `effect: write` (calling "
     "it changes state: it makes write calls or changes files), `effect: read`, or `effect: unknown` (the "
-    "recording does not say), and its evidence level (`evidence: <level>`). A function's line may be followed by "
+    "recording does not say). Every line's brackets also say what the item rests on: `curated item from <n> "
+    "episodes`, with its confirmed uses (uses whose outcome confirmed it) when it has any. A function's line may "
+    "be followed by "
     "an `e.g.` line: a call of it quoted from one "
     "of its tests, on values that test loads from recorded fixtures, with the test it comes from. "
     '`memory.show("<item>")` shows one in full.\n' + INPUT_LINE_HEAD
@@ -124,9 +126,14 @@ def signature_text(signature: "dict | None") -> str:
     return text
 
 
-def _level(level_of: LevelOf | None, item: str) -> str:
-    lv = level_of(item) if level_of is not None else None
-    return f", evidence: {lv}" if lv in LEVELS else ""
+def _support(support_of: SupportOf | None, item: str) -> str:
+    """``, curated item from <n> episodes[, <m> confirmed uses]`` for *item* (nothing without *support_of*)."""
+    facts = support_of(item) if support_of is not None else None
+    if facts is None:
+        return ""
+    from .item_records import support_text
+
+    return ", " + support_text("curated item", facts)
 
 
 def build_links(lib: Library) -> dict:
@@ -189,16 +196,16 @@ def render_index(
     example_of: ExampleOf | None = None,
     episodes_of: "EpisodesOf | None" = None,
     signature_of: "SignatureOf | None" = None,
-    level_of: LevelOf | None = None,
+    support_of: SupportOf | None = None,
 ) -> str:
     """``INDEX.md``: one section per package that lists a function (heading: its docstring's first sentence)
     and one per notes topic that lists a note. Each function line gives its id with its signature, its summary,
     its status (with its effect from *effect_of*, the item records' ``effect``, when one is recorded) and its
     notes; when *example_of* gives the function's example call (its record's, re-quoted from the tree), a
     second line ``  e.g. `<call>` (<test id>)`` follows; a function whose examples ran on one recorded episode
-    (*episodes_of*) says so in its status, and a function's evidence level (*level_of*, the item records'
-    ``level``; None shows nothing) follows its status as ``evidence: <level>``; when *signature_of* gives a
-    function's applicability signature, a line ``  input: <shape>`` follows (:func:`signature_text`). Each note
+    (*episodes_of*) says so in its status, and every item's support (*support_of*, from the item records: its
+    kind, the episodes it comes from and its confirmed uses; None shows nothing) follows its status; when
+    *signature_of* gives a function's applicability signature, a line ``  input: <shape>`` follows (:func:`signature_text`). Each note
     line gives its path, its description, its status and its functions.
     """
     status = {i: _status(status_of, i) for i in links["items"]}
@@ -210,7 +217,7 @@ def render_index(
         line = (
             f"- `{f.module}:{f.signature}`"
             + (f" — {f.summary}" if f.summary else "")
-            + f" [{status[f.item_id]}{_level(level_of, f.item_id)}{_effect(effect_of, f.item_id)}"
+            + f" [{status[f.item_id]}{_support(support_of, f.item_id)}{_effect(effect_of, f.item_id)}"
             + f"{_breadth(episodes_of, f.item_id)}]"
         )
         notes = _linked(links, f.item_id, "note", shown)
@@ -230,7 +237,7 @@ def render_index(
         about = (
             n.description if not n.error else f"(front matter unreadable: {n.error})"
         )
-        line = f"- `{n.item_id}` — {about} [{status[n.item_id]}]"
+        line = f"- `{n.item_id}` — {about} [{status[n.item_id]}{_support(support_of, n.item_id)}]"
         fns = _linked(links, n.item_id, "function", shown)
         if fns:
             line += "; functions: " + ", ".join(fns)

@@ -105,6 +105,7 @@ def rows(
         in_place_of,
         worked_example,
     )
+    from .item_records import support, support_text
     from .library_index import HIDDEN
 
     tree = Path(tree)
@@ -119,6 +120,7 @@ def rows(
         summary = _one_line(f.summary) or _first_paragraph(doc)
         recipe = recipe_of(records.get(f.item_id) if records else None)
         card = summary + (f" | applies to the current request: {recipe_call(recipe)}" if recipe else "")
+        card += " | " + support_text("curated item", support(records.get(f.item_id) if records else None))
         text = _section_line(wtu.docstring_section(doc)) or _first_paragraph(doc) or summary
         out.append({"id": f.item_id, "kind": "function", "path": f.path, "card": card, "text": text})
     for n in sorted(lib.notes, key=lambda n: n.item_id):
@@ -130,7 +132,8 @@ def rows(
             body = ""
         about = _one_line(n.description) or _one_line(n.title)
         text = _section_line(wtu.note_section(body)) or about
-        out.append({"id": n.item_id, "kind": "note", "path": n.item_id, "card": about, "text": text})
+        card = about + " | " + support_text("curated item", support(records.get(n.item_id) if records else None))
+        out.append({"id": n.item_id, "kind": "note", "path": n.item_id, "card": card, "text": text})
     for cid, doc in _capture_docs(captures).items():
         sig = doc["signature"] if isinstance(doc["signature"], dict) else {}
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
@@ -141,6 +144,7 @@ def rows(
         example = worked_example(rec)
         if example:
             card += f" | a worked example to read, never called: {example.get('why')}"
+        card += " | " + support_text("fixed answer" if example else "recorded procedure", support(rec))
         out.append(
             {
                 "id": CAPTURE_PREFIX + cid,

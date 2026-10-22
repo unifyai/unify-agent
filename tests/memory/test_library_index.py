@@ -184,33 +184,34 @@ def test_a_stale_example_is_never_quoted_in_the_index(tmp_path):
     assert render_index(lib, links, None, None, _example_of(tmp_path)) == EXPECTED_INDEX
 
 
-def test_a_functions_evidence_level_shows_beside_its_status(tmp_path):
-    from unify.memory.item_records import empty_record, level_of
+def test_an_items_support_shows_beside_its_status(tmp_path):
+    """Rev 2.1, fix 9: every index line says what its item rests on (its kind, the episodes it comes from and its
+    confirmed uses) in place of the evidence level the gate used to set by running it."""
+    from unify.memory.item_records import empty_record, support
 
     lib = _lib(tmp_path)
     links = build_links(lib)
     week, tokens = "memory.text.dates:week", "memory.text.parse:tokens"
+    confirmed = {"verdicts": {"accepted": 2, "rejected": 0}, "end_outcomes": {"positive": 1, "contrary": 0}}
     records = {
-        week: {**empty_record(week, "function"), "level": "unchecked"},
-        tokens: {**empty_record(tokens, "function"), "level": "reproduces-its-case"},
-        NOTE_ID: {**empty_record(NOTE_ID, "note")},
+        week: {**empty_record(week, "function"), "provenance": {"episodes": ["e1"]}},
+        tokens: {**empty_record(tokens, "function"), "provenance": {"episodes": ["e1", "e2"]}, "track": confirmed},
+        NOTE_ID: {**empty_record(NOTE_ID, "note"), "provenance": {"episodes": ["e3"]}},
     }
-    index = render_index(
-        lib, links, None, {week: "write"}.get, level_of=level_of(records)
-    )
+
+    def support_of(item):
+        return support(records.get(item)) if item in records else None
+
+    index = render_index(lib, links, None, {week: "write"}.get, support_of=support_of)
     assert (
-        "- `memory.text.dates:week(s)` — The ISO week of a date. [on-trial, evidence: unchecked, effect: write]\n"
-        in index
+        "- `memory.text.dates:week(s)` — The ISO week of a date. "
+        "[on-trial, curated item from 1 episode, effect: write]\n" in index
     )
-    assert "Split text on whitespace. [on-trial, evidence: reproduces-its-case]\n" in index
-    # a function with no record shows no level, nor does a note
+    assert "Split text on whitespace. [on-trial, curated item from 2 episodes, 3 confirmed uses]\n" in index
+    # an item with no record shows nothing it does not know; a note with one shows its support too
     assert "Count the words of a text. [on-trial]\n" in index
-    assert "How dates are written. [on-trial]; " in index
-    assert "evidence: <level>" in INDEX_HEAD  # the head says what the bracket means
-    # no level function, or none known: the index is byte for byte the one without levels
-    assert render_index(lib, links) == render_index(lib, links, level_of=lambda i: None)
-    assert render_index(lib, links, level_of=level_of(records)) == render_index(
-        lib, links, level_of=level_of(records)
-    )
-    # a value outside the known levels is never rendered
-    assert "evidence" not in render_index(lib, links, level_of=lambda i: "bogus").split("\n## ", 1)[1]
+    assert "How dates are written. [on-trial, curated item from 1 episode]; " in index
+    assert "curated item from <n> episodes" in INDEX_HEAD and "evidence:" not in INDEX_HEAD
+    # no support function: the index is byte for byte the one without support
+    assert render_index(lib, links) == render_index(lib, links, support_of=lambda i: None)
+    assert "evidence:" not in render_index(lib, links, support_of=support_of)

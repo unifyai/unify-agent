@@ -159,22 +159,23 @@ def test_the_gates_level_fields_reach_the_record():
     assert (recs[WEEK]["level"], recs[WEEK]["role"], recs[WEEK]["reader"]) == (REPRODUCES_ITS_CASE, None, [PD])
 
 
-def test_a_record_missing_its_level_shows_unchecked_in_the_index_and_show(tmp_path):
+def test_a_record_missing_its_level_shows_its_support_in_the_index_and_show(tmp_path):
+    """Rev 2.1: the index and show give what an item rests on (its kind and episodes), never an evidence level."""
     rec = {k: v for k, v in empty_record(DATE, "function").items() if k != "level"}
     root = _library(tmp_path, records={DATE: rec})
     index = (root / "INDEX.md").read_text()
-    assert "Parse a date written as YYYY-MM-DD. [on-trial, evidence: unchecked]; " in index
+    assert "Parse a date written as YYYY-MM-DD. [on-trial, curated item from 0 episodes]; " in index
     out = json.loads(_py(root, f"import json, memory\nprint(json.dumps(memory.show({DATE!r})))"))
-    assert out.splitlines()[:2] == [
-        "memory.text.dates:parse_date(s: str) -> str  [on-trial, evidence: unchecked]",
-        "Evidence level: unchecked",
-    ]
+    head = "memory.text.dates:parse_date(s: str) -> str  [on-trial, curated item from 0 episodes]"
+    assert out.splitlines()[0] == head
+    assert "Evidence level" not in out
 
 
-def test_the_index_and_show_give_a_level_and_its_findings(tmp_path):
+def test_the_index_and_show_give_the_support_and_the_gates_findings(tmp_path):
     reasons = ["examples: one call returns on a recorded value", "exact assertion: none"]
-    rec = {**empty_record(DATE, "function"), "level": UNCHECKED, "level_reasons": reasons}
+    rec = {**empty_record(DATE, "function"), "level": UNCHECKED, "level_reasons": reasons,
+           "provenance": {"episodes": ["e1", "e2"]}}  # fmt: skip
     root = _library(tmp_path, records={DATE: rec})
-    assert "YYYY-MM-DD. [on-trial, evidence: unchecked]; " in (root / "INDEX.md").read_text()
+    assert "YYYY-MM-DD. [on-trial, curated item from 2 episodes]; " in (root / "INDEX.md").read_text()
     out = json.loads(_py(root, f"import json, memory\nprint(json.dumps(memory.show({DATE!r})))"))
-    assert out.splitlines()[1:4] == ["Evidence level: unchecked, set by:", "  " + reasons[0], "  " + reasons[1]]
+    assert out.splitlines()[1:4] == ["Gate findings:", "  " + reasons[0], "  " + reasons[1]]

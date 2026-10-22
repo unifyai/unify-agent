@@ -974,8 +974,8 @@ class Gate:
         """*library_mode* is the library's checks' configuration (:class:`.library_checks.LibraryConfig`): covers have
         no channel rule (G2), G3's behaviour check and per-item reduction are scoped by the import graph, and the
         library gate checks (:mod:`.library_checks`) and stage 5's static checks run. Every finding but the hard ones
-        is a label on its item, and code runs only for statically pure items (:mod:`.gate_policy`); no recorded task
-        data is replayed. *budget_tokens* is G4's soft budget (a note, never a refusal). *qa* is the stage-5 test
+        is a label on its item, and the gate runs no code (:mod:`.gate_policy`, rev 2.1); no recorded task data is
+        replayed. *budget_tokens* is G4's soft budget (a note, never a refusal). *qa* is the stage-5 test
         checks' configuration (:class:`.qa.QAConfig`). *segments_dir* (``UNIFY_MEMORY=in_episode``):
         the state dir whose segment records (``<episode>.s<n>``) an item may cite as its source while their episode
         is still open; None: only recorded episodes.
@@ -1504,20 +1504,22 @@ class Gate:
 
     @staticmethod
     def _levels(run: _Run) -> None:
-        """Library mode: each manifest function's evidence level, from the findings :meth:`_Run.cap` recorded.
+        """Library mode: each manifest function's evidence level, with the findings :meth:`_Run.cap` recorded.
 
-        A function with a finding is ``unchecked``; one without is ``reproduces-its-case``. Both go in the gate
-        result and in the function's verification record (``level``, ``level_reasons``), from which the item
-        records take them; the gate never gives ``confirmed-by-outcomes``.
+        The gate runs no code (rev 2.1), so it never finds that a function reproduces its case: every function it
+        checks is ``unchecked``, with its findings, or with :data:`.gate_policy.NOT_RUN_GATE` when it has none. Both
+        go in the gate result and in the function's verification record (``level``, ``level_reasons``), from which the
+        item records take them; outcomes after use, never the gate, give ``confirmed-by-outcomes``.
         """
-        from .item_states import REPRODUCES_ITS_CASE, UNCHECKED
+        from .gate_policy import NOT_RUN_GATE
+        from .item_states import UNCHECKED
 
         res = run.res
         for it in run.man.items:
             if it.kind != "function" or it.item not in run.c_bodies:
                 continue
-            found = list(run.level_reasons.get(it.item, []))
-            level = UNCHECKED if found else REPRODUCES_ITS_CASE
+            found = list(run.level_reasons.get(it.item, [])) or [f"not run: {NOT_RUN_GATE}"]
+            level = UNCHECKED
             res.levels[it.item] = level
             res.level_reasons[it.item] = found
             rec = run.verification.setdefault(it.item, {})

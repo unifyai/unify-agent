@@ -719,7 +719,7 @@ class LibraryChecks:
                 if ok:
                     ok, why = policy.item(recipe)
                 if not ok:
-                    # rev 2: an impure procedure's recipe is never run by the gate
+                    # the gate runs no recipe (rev 2.1: no code at all), so its label says why
                     run.not_run(owners, f"G2 recipe {recipe}: {why}")
                     self._record(it.item)["recipe"] = {"item": recipe, "cases": len(it.cases), "ran": False,
                                                        "why": why}  # fmt: skip

@@ -4,9 +4,6 @@ actor	/memory-library
 actor	/workspace
 actor	<episode>/<part>
 actor	await
-actor	evidence: confirmed-by-outcomes
-actor	evidence: reproduces-its-case
-actor	evidence: unchecked
 actor	risky: bool
 actor	schema=
 actor	steps: list[str]
@@ -17,9 +14,6 @@ teammate	/memory-library
 teammate	/workspace
 teammate	<episode>/<part>
 teammate	await
-teammate	evidence: confirmed-by-outcomes
-teammate	evidence: reproduces-its-case
-teammate	evidence: unchecked
 teammate	risky: bool
 teammate	schema=
 teammate	steps: list[str]

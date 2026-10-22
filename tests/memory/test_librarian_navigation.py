@@ -381,7 +381,8 @@ def test_an_answer_naming_a_procedure_carries_its_recipe_call_and_the_card_shows
     # the search card names the same call; the recipe has no row of its own
     text = L.search(_state(copy), {"query": "add up every number of a table"}).text
     line = next(ln for ln in text.splitlines() if f" {T.TOTAL} (function" in ln)
-    assert line.endswith(f"| applies to the current request: {entry}")
+    # the card names the call, then what the item rests on (rev 2.1: its kind and support close every card)
+    assert f"| applies to the current request: {entry} | curated item" in line
     assert f" {T.RECIPE} (" not in text
     # library_helper, the actor's own lookups, shows it on the item's card (the procedure's and the recipe's)
     out = _py(copy, f"import memory\nprint(memory.get({T.TOTAL!r}))\nprint(memory.get({T.RECIPE!r}))\n")

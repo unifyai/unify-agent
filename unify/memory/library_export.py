@@ -56,6 +56,8 @@ from .item_records import (
     recipe_ids,
     recipe_of,
     recipe_text,
+    support,
+    support_text,
     use_totals,
     verification_summary,
 )
@@ -227,6 +229,8 @@ def items_data(
             ),  # why it is out of the index (item record)
             "verification": verification_summary(rec) if rec else None,
             "use": use_totals(rec) if rec else None,
+            # what it rests on: the episodes it comes from and its confirmed uses (rev 2.1, every card shows it)
+            "support": support(rec),
             "history": h[:HISTORY_SHOW],
             "history_more": max(0, len(h) - HISTORY_SHOW),
             # its evidence label (what its effects, tests and uses show; only when recorded)
@@ -417,16 +421,15 @@ def _json_bytes(data: dict) -> bytes:
 #
 # Both are harness-generated at each export, with no model call: ``.memory/catalogue.md``, one card per stored
 # function in module-path order (never a score), then the notes, then the captured procedures; and
-# ``.memory/dispatch.json``, the structural catalogue: one row per stored procedure from its syntax and records (rev 2). Neither carries an answer or a raw
-# request text; the free texts (docstrings, summary sections, what broke) are shown as written, identifiers included
-# (rev 2.1: nothing strips or masks an identifier).
+# ``.memory/dispatch.json``, the structural catalogue: one row per stored procedure from its syntax and records
+# (rev 2). Neither carries an answer or a raw request text; the free texts (docstrings, summary sections, what broke)
+# are shown as written, identifiers included (rev 2.1: nothing strips or masks an identifier).
 
 CATALOGUE_FILE = ".memory/catalogue.md"
 DISPATCH_FILE = ".memory/dispatch.json"
 #: The captures' prefix in the catalogue and in ``dispatch.json`` (``memory.match`` and ``memory.run`` use it too).
 CAPTURE_PREFIX = "capture:"
 _CAPTURE_ID = "[0-9a-f]{16}"
-_UNCHECKED = "unchecked"
 
 
 def _first_paragraph(doc: str) -> str:
@@ -701,8 +704,9 @@ def catalogue_text(
     out: list[str] = [
         "# The library's catalogue\n",
         "\nOne card per stored function in module-path order, then the notes, then the captured procedures. "
-        "Saved against: what the work each item was built from asked and how it went about it. Evidence: what has "
-        "been checked about the item and how it has been used.\n",
+        "Saved against: what the work each item was built from asked and how it went about it. Evidence: its kind "
+        "(curated item, recorded procedure or fixed answer), the episodes it comes from and the uses whose outcome "
+        "confirmed it, its status, and how it has been used.\n",
         "\n## Functions\n",
     ]
     functions = [f for f in sorted(lib.functions, key=lambda f: (f.module, f.name)) if f.item_id in shown]
@@ -713,7 +717,6 @@ def catalogue_text(
         rec = rec if isinstance(rec, dict) else None
         sig = rec.get("signature") if rec else None
         reader = _reader_of(rec)
-        level = rec.get("level") if rec and isinstance(rec.get("level"), str) else "not recorded"
         lines = [f"\n### {f.item_id}\n", f"`{f.module}:{f.signature}`\n"]
         doc = _one_line(_first_paragraph(docs.get(f.item_id, "")))
         if doc:
@@ -728,7 +731,8 @@ def catalogue_text(
         lines += _item_in_place_lines(replaced_items.get(f.item_id), docs)
         input_line = signature_text(sig) if isinstance(sig, dict) else ""
         lines.append(
-            f"Evidence: level {level}; status {status[f.item_id]}; reader {reader or _no_reader(rec)}; "
+            f"Evidence: {support_text('curated item', support(rec))}; status {status[f.item_id]}; "
+            f"reader {reader or _no_reader(rec)}; "
             f"applies: {'yes' if _applies_stated(sig) else 'no'}\n",
         )
         lines += _serving_lines(serving, f.item_id)
@@ -763,7 +767,9 @@ def catalogue_text(
             f"\n### {n.item_id}\n"
             + (f"{_one_line(n.title)}\n" if n.title else "")
             + (f"{_one_line(about)}\n" if about else "")
-            + f"Status: {status[n.item_id]}\n"
+            + f"Status: {status[n.item_id]}; "
+            + support_text("curated item", support(records.get(n.item_id) if records else None))
+            + "\n"
             + "".join(_serving_lines(serving, n.item_id))
             + ("Functions: " + ", ".join(fns) + "\n" if fns else ""),
         )
@@ -783,11 +789,11 @@ def catalogue_text(
         lines.append(f"Saved against:\n- Asked: {goal or 'not recorded'}\n")
         lines += _in_place_lines(replaced.get(CAPTURE_PREFIX + cid))
         input_line = signature_text(sig)
-        level = _UNCHECKED  # captured procedures are listed at level unchecked (design J(b).3)
         state = rec.get("status") if isinstance(rec.get("status"), str) else "on-trial"
         example = worked_example(rec)
+        kind = "fixed answer" if example else "recorded procedure"
         lines.append(
-            f"Evidence: level {level}; status {state}; "
+            f"Evidence: {support_text(kind, support(rec))}; status {state}; "
             + ("reader none (a worked example)" if example else "reader read_input")
             + f"; applies: {'yes' if _applies_stated(sig) and not example else 'no'}"
             + ("; tried and failed: never offered to run" if failed else "")
@@ -1104,7 +1110,7 @@ def generated_library_mode(
             example_of if records is not None else None,
             episodes_of(records) if records is not None else None,
             signature_of if saved_against is not None else None,
-            level_of(records) if records is not None else None,
+            (lambda item: support(records.get(item))) if records is not None else None,
         ).encode("utf-8"),
         LINKS_FILE: render_links(links).encode("utf-8"),
         ITEMS_FILE: _json_bytes(

@@ -276,23 +276,25 @@ def test_the_derived_effect_shows_beside_the_status_in_the_index_and_show(tmp_pa
     root = _library(tmp_path, records=records)
     index = (root / "INDEX.md").read_text()
     assert (
-        "`memory.text.dates:week(s)` — The ISO week of a date. [on-trial, effect: write]"
+        "`memory.text.dates:week(s)` — The ISO week of a date. [on-trial, curated item from 0 episodes, effect: write]"
         in index
     )
-    assert "[on-trial, effect: read]" in index
-    # an item without a derived effect keeps the plain status
+    assert "[on-trial, curated item from 0 episodes, effect: read]" in index
+    # an item without a record keeps the plain status: no effect and no support it does not have
     assert "Split text on whitespace. [on-trial]\n" in index
     out = json.loads(
         _py(root, f"import json, memory\nprint(json.dumps(memory.show({week!r})))"),
     )
     assert out.splitlines()[:2] == [
-        "memory.text.dates:week(s)  [on-trial, effect: write]",
+        "memory.text.dates:week(s)  [on-trial, curated item from 0 episodes, effect: write]",
         "Status: it refused inputs it was not built for in 2 episodes and no call to it has returned yet; "
         "a refusal is not a failure.",
     ]
 
 
-def test_show_gives_the_evidence_level_and_the_findings_that_set_it(tmp_path):
+def test_show_gives_the_support_and_the_gates_findings(tmp_path):
+    """Rev 2.1: show gives what an item rests on (its kind, episodes and confirmed uses) and the gate's findings, in
+    place of an evidence level."""
     from unify.memory.item_records import empty_record
 
     week = "memory.text.dates:week"
@@ -300,29 +302,30 @@ def test_show_gives_the_evidence_level_and_the_findings_that_set_it(tmp_path):
         "examples: no call of it returns on a value from a recorded episode",
         "exact assertion: its tests assert no exact value",
     ]
+    confirmed = {"verdicts": {"accepted": 1, "rejected": 0}, "end_outcomes": {"positive": 0, "contrary": 0}}
     records = {
-        DATE: {**empty_record(DATE, "function"), "level": "reproduces-its-case"},
+        DATE: {**empty_record(DATE, "function"), "provenance": {"episodes": ["e1"]}, "track": confirmed},
         week: {**empty_record(week, "function"), "level": "unchecked", "level_reasons": reasons},
     }
     root = _library(tmp_path, records=records)
     index = (root / "INDEX.md").read_text()
-    assert "The ISO week of a date. [on-trial, evidence: unchecked]\n" in index
+    assert "The ISO week of a date. [on-trial, curated item from 0 episodes]\n" in index
     out = json.loads(
         _py(root, f"import json, memory\nprint(json.dumps(memory.show({week!r})))"),
     )
     assert out.splitlines()[:4] == [
-        "memory.text.dates:week(s)  [on-trial, evidence: unchecked]",
-        "Evidence level: unchecked, set by:",
+        "memory.text.dates:week(s)  [on-trial, curated item from 0 episodes]",
+        "Gate findings:",
         "  " + reasons[0],
         "  " + reasons[1],
     ]
     date = json.loads(
         _py(root, f"import json, memory\nprint(json.dumps(memory.show({DATE!r})))"),
     )
-    assert date.splitlines()[:2] == [
-        "memory.text.dates:parse_date(s: str) -> str  [on-trial, evidence: reproduces-its-case]",
-        "Evidence level: reproduces-its-case",
-    ]
+    assert date.splitlines()[0] == (
+        "memory.text.dates:parse_date(s: str) -> str  [on-trial, curated item from 1 episode, 1 confirmed use]"
+    )
+    assert "Evidence level" not in date
 
 
 def test_show_reads_old_status_and_level_names_in_todays_names(tmp_path):
@@ -335,11 +338,11 @@ def test_show_reads_old_status_and_level_names_in_todays_names(tmp_path):
     out = json.loads(
         _py(root, "import json, memory\nprint(json.dumps(memory.show('memory.text.dates:week')))"),
     )
-    assert out.splitlines()[:3] == [
-        "memory.text.dates:week(s)  [retired, evidence: reproduces-its-case]",
+    assert out.splitlines()[:2] == [
+        "memory.text.dates:week(s)  [retired]",
         "Not in the index: its status is retired.",
-        "Evidence level: reproduces-its-case",
     ]
+    assert "Evidence level" not in out and "verified" not in out
 
 
 def test_the_helpers_own_copy_of_the_names_matches_item_states():

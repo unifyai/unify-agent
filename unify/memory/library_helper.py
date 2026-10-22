@@ -1587,6 +1587,18 @@ def _status_of(row: dict) -> str:
     return _OLD_STATUSES.get(status, status)
 
 
+def _support_line(kind: str, facts: Any) -> str:
+    """What an item rests on, in words (rev 2.1, every card shows it in place of the evidence ladder): its kind
+    (``curated item``, ``recorded procedure`` or ``fixed answer``), the episodes it comes from and, when it has any,
+    the uses whose outcome confirmed it. *facts* is the export's ``support`` (``{"episodes", "confirmed_uses"}``)."""
+    if not isinstance(facts, dict):
+        return ""  # no record of what it rests on: the card says nothing rather than a count it does not have
+    n = facts.get("episodes") if isinstance(facts.get("episodes"), int) else 0
+    m = facts.get("confirmed_uses") if isinstance(facts.get("confirmed_uses"), int) else 0
+    text = f"{kind} from {n} episode{'' if n == 1 else 's'}"
+    return text + (f", {m} confirmed use{'' if m == 1 else 's'}" if m else "")
+
+
 def _level_of(row: dict) -> str | None:
     """A row's evidence level in today's names; None when none is recorded."""
     level = row.get("level")
@@ -1715,6 +1727,9 @@ class Item:
         links: the ids of the items it links to and of those that link to it.
         history: the library commits that changed it, newest first.
         reason: why ``memory.ask`` judged it applicable ('' from ``memory.get`` and ``memory.items``).
+        support: what it rests on, in words: its kind (curated item, recorded procedure or fixed answer), the
+            episodes it comes from and its confirmed uses, for example ``'curated item from 3 episodes, 1 confirmed
+            use'``.
 
     A function item is called directly, ``item(*args, **kwargs)``: the call is tracked, returns what the function
     returned and raises what it raised. ``item.fits(inputs)`` checks whether it applies to data you were given.
@@ -1732,6 +1747,7 @@ class Item:
     links: tuple[str, ...]
     history: tuple[str, ...]
     reason: str = ""
+    support: str = ""
 
     def __repr__(self) -> str:
         return f"Item({self.id!r}" + (f", reason={shown(self.reason)}" if self.reason else "") + ")"
@@ -1827,7 +1843,7 @@ class Item:
 
 def _plain_card(item: Item) -> str:
     """The card of an :class:`Item` made by hand (one ``get`` made carries its own)."""
-    head = f"{item.id}  [{item.status}" + (f", evidence: {item.evidence}" if item.kind == "function" else "") + "]"
+    head = f"{item.id}  [{item.status}" + (f", {item.support}" if item.support else "") + "]"
     out = [head, item.summary]
     if item.example:
         out.append(f"Example: {item.example}")
@@ -1842,7 +1858,7 @@ class Items:
     """A listing of the library's items (:func:`items`): a frozen sequence of :class:`Item` in id order, functions
     first, then notes, then captured procedures. ``len()``, indexing, slicing and ``for`` work as on a tuple.
 
-    ``print(items)`` shows a compact table one page at a time (id, kind, evidence level, one-line summary), with
+    ``print(items)`` shows a compact table one page at a time (id, kind, what each rests on, one-line summary), with
     the topics and the call that shows the next page.
 
     Members:
@@ -1896,10 +1912,10 @@ class Items:
             "memory.get(id); call a function item directly.",
         ]
         width = min(max(len(r.id) for r in rows), _ID_COLUMN)
-        out.append(f"  {'id':<{width}}  {'kind':<8}  {'evidence':<21}  summary")
+        rests = max([len("rests on")] + [len(r.support or "-") for r in rows])
+        out.append(f"  {'id':<{width}}  {'kind':<8}  {'rests on':<{rests}}  summary")
         for r in rows:
-            evidence = r.evidence if r.kind == "function" else "-"
-            out.append(f"  {r.id:<{width}}  {r.kind:<8}  {evidence:<21}  {_cut(r.summary)}".rstrip())
+            out.append(f"  {r.id:<{width}}  {r.kind:<8}  {r.support or '-':<{rests}}  {_cut(r.summary)}".rstrip())
         if self.topic is None:
             counts: dict[str, int] = {}
             for r in self.rows:
@@ -2243,6 +2259,7 @@ class _Catalog:
             text=text,
             links=tuple(dict.fromkeys(self.linked(iid, "links_to") + self.linked(iid, "linked_from"))),
             history=_history(row),
+            support=_support_line("curated item", row.get("support")),
         )
         return built, self._card(iid, row, text, missing)
 
@@ -2264,24 +2281,25 @@ class _Catalog:
             text=text,
             links=tuple(dict.fromkeys(self.linked(iid, "links_to") + self.linked(iid, "linked_from"))),
             history=_history(row),
+            support=_support_line("curated item", row.get("support")),
         )
         return built, self._card(iid, row, text.rstrip("\n"), missing)
 
     def _card(self, wanted: str, row: dict, body: str, missing: str) -> str:
         """One item in full, as ``memory.show`` printed it: a function's signature, with an example call quoted from
         its tests (``Example (from <test id>): <call>``) when one is recorded and still in its test file, then its
-        source with its docstring; or a note's text. Then its links both ways, its status with, for a function, its
-        effect (and why, for an item left out of the index or given a reason), a function's evidence level with the
-        findings that set it, its verification and use records, and the subjects of the library commits that
-        changed it, newest first."""
+        source with its docstring; or a note's text. Then its links both ways, its status with what it rests on (its
+        kind, the episodes it comes from and its confirmed uses) and, for a function, its effect (and why, for an item
+        left out of the index or given a reason), its verification and use records, and the subjects of the library
+        commits that changed it, newest first."""
         status = _status_of(row)
-        level = _level_of(row)
         function = row["kind"] == "function"
         if function:
             effect = row.get("effect")
+            rests = _support_line("curated item", row.get("support"))
             out = [
                 f"{row.get('signature') or wanted}  [{status}"
-                + (f", evidence: {level}" if level else "")
+                + (f", {rests}" if rests else "")
                 + (f", effect: {effect}" if effect else "")
                 + "]",
             ]
@@ -2292,14 +2310,16 @@ class _Catalog:
                 # a procedure's one-call entry: its recipe applied to the current request (run only when called)
                 out.append(f"Applies to the current request: {_recipe_call(row['recipe'])}")
         else:
-            out = [f"{wanted}  [{status}]" + (f"  {row['title']}" if row.get("title") else "")]
+            rests = _support_line("curated item", row.get("support"))
+            out = [f"{wanted}  [{status}" + (f", {rests}" if rests else "") + "]"
+                   + (f"  {row['title']}" if row.get("title") else "")]
         if status in _HIDDEN_STATUSES:
             out.append(f"Not in the index: {row.get('status_reason') or 'its status is ' + status}.")
         elif row.get("status_reason"):
             out.append(f"Status: {row['status_reason']}.")
-        if level:
-            reasons = [str(r) for r in (row.get("level_reasons") or [])]
-            out.append(f"Evidence level: {level}" + (", set by:" if reasons else ""))
+        reasons = [str(r) for r in (row.get("level_reasons") or []) if not str(r).startswith("not run:")]
+        if reasons:
+            out.append("Gate findings:")
             out += [f"  {r}" for r in reasons]
         out += _evidence_lines(_evidence(), wanted)
         out += _label_lines(row.get("label"), _evidence() is not None)
@@ -2345,12 +2365,13 @@ class _Catalog:
             text=text or "",
             links=(),
             history=(),
+            support=_support_line("recorded procedure", rec.get("support")),
         )
         example = rec.get(EXAMPLE_KEY) if isinstance(rec.get(EXAMPLE_KEY), dict) else None
         if example is not None:
             return self._example(iid, built, example, rec, asked, text)
         out = [
-            f"{iid}  [{status}, evidence: {level}]",
+            f"{iid}  [{status}" + (f", {built.support}" if built.support else "") + "]",
             "A captured procedure: calling it runs it in a separate confined process on text or JSON values.",
         ]
         out += _evidence_lines(_evidence(), iid)
@@ -2366,8 +2387,9 @@ class _Catalog:
     def _example(self, iid: str, built: Item, example: dict, rec: dict, asked: str, source: str) -> tuple[Item, str]:
         """A captured procedure offered as a worked example: a note-kind item whose text is the example."""
         text = _example_text(example, rec, asked, source)
-        item = dataclasses.replace(built, kind="note", evidence="unchecked", text=text)
-        return item, f"{iid}  [{built.status}, a worked example]\n" + text
+        support = _support_line("fixed answer", rec.get("support"))
+        item = dataclasses.replace(built, kind="note", evidence="unchecked", text=text, support=support)
+        return item, f"{iid}  [{built.status}" + (f", {support}" if support else "") + "]\n" + text
 
 
 def _example_text(example: dict, rec: dict, asked: str, source: str | None) -> str:

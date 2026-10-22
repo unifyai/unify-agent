@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from typing import Any
 
 from .gitio import GitError, Repo
 from .item_states import (
@@ -313,12 +314,16 @@ def verification_summary(record: Mapping | None) -> dict | None:
 
 
 def recipe_text(record: Mapping | None) -> str | None:
-    """A procedure's recipe and how it did on its cases at the gate, from its verification record (``recipe``:
-    ``{"item", "cases", "passed", "kinds"}``, :mod:`.recipes`), as one line; None for an item without one."""
+    """A procedure's recipe and its cases at the gate, from its verification record (``recipe``: ``{"item", "cases",
+    "ran": false, "why"}``, since the gate runs no recipe; or ``{"item", "cases", "passed", "kinds"}`` in a record a
+    gate before rev 2.1 wrote), as one line; None for an item without one."""
     v = record.get("verification") if isinstance(record, Mapping) else None
     r = v.get("recipe") if isinstance(v, dict) else None
     if not isinstance(r, dict) or not isinstance(r.get("item"), str):
         return None
+    if r.get("ran") is False:
+        n = r.get("cases", 0)
+        return f"{r['item']}; not run at the gate ({n} case{'' if n == 1 else 's'} listed)"
     kinds = r.get("kinds") if isinstance(r.get("kinds"), dict) else {}
     shown = ", ".join(f"{kinds[k]} {k}" for k in sorted(kinds) if isinstance(kinds[k], int) and kinds[k])
     return f"{r['item']}; {r.get('passed', 0)} of {r.get('cases', 0)} cases passed" + (f" ({shown})" if shown else "")
@@ -351,6 +356,45 @@ def recipe_ids(records: Mapping | None) -> set[str]:
         if isinstance(r, dict) and isinstance(r.get("item"), str):
             out.add(r["item"])
     return out
+
+
+def support(record: Mapping | None) -> dict | None:
+    """What an item rests on (rev 2.1, in place of the pure-function evidence ladder), from its record only: the
+    distinct episodes it comes from (a library item's provenance episodes; a captured procedure's own episodes) and the
+    uses whose outcome confirmed it (accepted verdicts and positive end outcomes in its track); None when it has no
+    record (unknown stays unknown). Nothing is run."""
+    if not isinstance(record, Mapping):
+        return None
+    rec = record
+    prov = rec.get("provenance")
+    eps = prov.get("episodes") if isinstance(prov, Mapping) else None
+    if not isinstance(eps, list) or not eps:
+        eps = rec.get("episodes") if isinstance(rec.get("episodes"), list) else []
+    track = rec.get("track") if isinstance(rec.get("track"), Mapping) else {}
+    verdicts = track.get("verdicts") if isinstance(track.get("verdicts"), Mapping) else {}
+    ends = track.get("end_outcomes") if isinstance(track.get("end_outcomes"), Mapping) else {}
+
+    def count(v: Any) -> int:
+        return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+    return {
+        "episodes": len({e for e in eps if isinstance(e, str)}),
+        "confirmed_uses": count(verdicts.get("accepted")) + count(ends.get("positive")),
+    }
+
+
+def support_text(kind: str, facts: Mapping | None) -> str:
+    """A card's support, in words: its kind (``curated item``, ``recorded procedure`` or ``fixed answer``), the
+    episodes it comes from, and its confirmed uses when it has any; the kind alone, with ``no record``, when *facts*
+    is None."""
+    if not isinstance(facts, Mapping):
+        return f"{kind}, no record"
+    n = facts.get("episodes") if isinstance(facts.get("episodes"), int) else 0
+    m = facts.get("confirmed_uses") if isinstance(facts.get("confirmed_uses"), int) else 0
+    text = f"{kind} from {n} episode{'' if n == 1 else 's'}"
+    if m:
+        text += f", {m} confirmed use{'' if m == 1 else 's'}"
+    return text
 
 
 def use_totals(record: Mapping | None) -> dict:
