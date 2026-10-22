@@ -144,18 +144,22 @@ def test_a_writer_that_delegates_gets_the_helpers_messages_and_staged_files(tmp_
         assert model.outputs[cid].startswith(f"helper {call} started"), model.outputs[
             cid
         ]
-    waited = "\n".join(model.outputs[w] for w in ("w0", "w1", "w2", "w3"))
+    # each helper's reply reaches the writer once it is on the record: in the output of a wait, or, when it lands
+    # between the writer's turns, in the record's block at the next turn boundary (which one depends on timing only)
+    received = "\n".join(
+        str(m.get("content")) for m in model.seen if m.get("role") in ("tool", "user")
+    )
     for call, task in (
         ("call-1", "area"),
         ("call-2", "perimeter"),
         ("call-3", "volume"),
     ):
-        assert f"{call} (reply): helper {call}: ok" in waited, waited  # rev 2 tags a reply "(reply)"
+        assert f"{call} (reply): helper {call}: ok" in received, received  # rev 2 tags a reply "(reply)"
         assert (
-            f"files under /inputs/helpers/{call}/" in waited
-            and f"- candidates/{task}.py" in waited
+            f"files under /inputs/helpers/{call}/" in received
+            and f"- candidates/{task}.py" in received
         )
-        assert f"summary: drafted {task}" in waited
+        assert f"summary: drafted {task}" in received
     # rev 2: who lists the agents on the record now; the three helpers had replied and ended, so they are counted
     assert "(3 agents of this run have ended)" in model.outputs["who"]
     assert "- writer (writer, running)" in model.outputs["who"] and "- call-" not in model.outputs["who"]
