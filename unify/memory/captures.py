@@ -373,11 +373,13 @@ def final_value_signals(signals: Iterable[Any], ep: Any) -> list:
     """The signals that judge the value the episode handed back (:func:`handed_back`), so a capture of the final
     procedure is never judged by a verdict on another value.
 
-    A checker verdict names the action it judged (``<episode>/actions/<i>``) where the pairing is certain. Those on
-    the answered action (:func:`answered_action`) judge the handed-back value; one that names another action judged
-    another value and is left out (an attempt that was rejected and then accepted is judged by its acceptance). When
-    verdicts name actions but none names this one, no verdict judges it. When none names an action, the last verdict
-    given stands for the final value. An implicit correction (:data:`IMPLICIT_CORRECTIONS`) judges it only when it
+    A checker verdict names the action it judged (``<episode>/actions/<i>``) where the pairing is certain. When the
+    episode handed back a value through an answered dialogue action (:func:`answered_action`), the verdicts on that
+    action judge it; one that names another action judged another value and is left out (an attempt that was
+    rejected and then accepted is judged by its acceptance), and when verdicts name actions but none names this one,
+    no verdict judges it. When it handed back no such value (rev 2.1: in tool and action worlds the work is its
+    actions), the last verdict on any of its actions stands for the work. When none names an action, the last
+    verdict given stands for the final value. An implicit correction (:data:`IMPLICIT_CORRECTIONS`) judges it only when it
     came after the value was handed back (:func:`came_after`); one that came before was about an earlier value. Every
     other signal (provenance) is about the episode and is kept."""
     sigs = [
@@ -392,8 +394,10 @@ def final_value_signals(signals: Iterable[Any], ep: Any) -> list:
     eid = str(getattr(ep, "episode_id", ""))
     named = [s for s in checker if str(getattr(s, "refers_to", "")).startswith(f"{eid}/actions/")]
     i = answered_action(ep)
-    if named:
-        kept = [s for s in named if i is not None and getattr(s, "refers_to", "") == f"{eid}/actions/{i}"]
+    if named and i is not None:
+        kept = [s for s in named if getattr(s, "refers_to", "") == f"{eid}/actions/{i}"]
+    elif named:
+        kept = [max(named, key=_given_order)]  # no answered value: a verdict on any of its actions judges the work
     else:
         kept = [max(checker, key=_given_order)]
     return others + kept
@@ -1046,8 +1050,10 @@ def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str
     """The outcome of one segment of the recorded episode *ep* (its record as it stood at the segment's checkpoint is
     *seg_ep*), from the signals about the segment alone, as :func:`.capture_trace.outcome_of` reads them:
 
-    * a verdict naming an action (``<episode>/actions/<i>``) judges the segment only when it names the segment's own
-      answered action (its actions are numbered from the episode's start), whenever it came;
+    * a verdict naming an action (``<episode>/actions/<i>``) judges the segment when it names the segment's own
+      answered action (its actions are numbered from the episode's start), whenever it came; when the segment
+      answered no dialogue action (rev 2.1: its work is its actions), it judges the segment as any other signal
+      does (below), by when it came;
     * an implicit correction judges it when it came after the segment's checkpoint and before its episode ended;
     * every other signal judges it only when it came while the segment's cells ran (at or before its checkpoint).
 
@@ -1064,8 +1070,8 @@ def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str
     for s in signals:
         at = _instant(getattr(s, "ts", None))
         named = str(getattr(s, "refers_to", "") or "")
-        if getattr(s, "source", None) == "checker" and named.startswith(f"{base}/actions/"):
-            if i is not None and named == f"{base}/actions/{i}":
+        if getattr(s, "source", None) == "checker" and named.startswith(f"{base}/actions/") and i is not None:
+            if named == f"{base}/actions/{i}":
                 mine.append(s)
         elif (getattr(s, "source", None), getattr(s, "label", None)) in IMPLICIT_CORRECTIONS:
             if at is not None and ep_end is not None and at <= ep_end:

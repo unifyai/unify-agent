@@ -152,3 +152,22 @@ def test_a_correction_before_the_final_answer_leaves_it_positive(tmp_path):
     rec = _captured(tmp_path, [_correction("reader", "correct", "2026-10-13T01:04:00Z"), accepted])
     assert rec["own_check"]["ran"] is False
     assert rec["outcome"] == "positive"
+
+
+def test_without_an_answered_value_a_verdict_on_any_action_judges_the_work():
+    """Rev 2.1: in tool and action worlds the work is the actions and nothing is handed back through a
+    dialogue action, so the last verdict on any of the episode's actions judges it (rev 2 judged nothing then)."""
+    import dataclasses
+
+    acting = dataclasses.replace(
+        _episode(),
+        actions=[Action(i, "board", "step", [d], {}, "moved", "ok", "write", kind="tool") for i, d in enumerate("lrl")],
+        replies=[],
+        worktree_before="a",
+        worktree_after="b",
+    )
+    assert captures.answered_action(acting) is None
+    first, last = _verdict(1, "fail", action=0), _verdict(3, "pass", action=2)
+    assert captures.final_value_signals([first, last], acting) == [last]
+    judged = captures.judged_outcome([first, last], acting, "dense")
+    assert judged["positive"] is True and judged["contrary"] is False
