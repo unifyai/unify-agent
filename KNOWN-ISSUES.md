@@ -36,3 +36,33 @@ relay then refuses the writer's next call (a refusal the pass reports as the cap
 rest of the run. Nothing is spent past the cap: this is an early stop, never an overspend.
 
 Direction: open. A later run can show the writer the relay's remaining room before it plans a pass.
+
+## Capture grouping rereads every pair on every service turn
+
+The writer service groups new captures on every turn of its loop (`capture_groups.groups`, about every 2 s). Each
+time, it compares every open capture with every other live grouped entry and reads each entry's item uses from the
+evidence store again; only a capture's own facts are cached (`HomeProfiles`). The cost grows with the square of a
+run's entries. That is fine at a few hundred entries, but a cost risk over long campaigns.
+
+Direction: cache the item uses per episode and compare only what changed since the last turn. Not changed in
+`7ed7171a3`: the live rev 2.1 runs measure that build.
+
+## A pass can start just before a stop marker
+
+The service checks the stop marker at the top of each turn and then hands a pass, so a stop (a suspend or a drain)
+set just after that check finds a pass already running. That pass runs to its deadline; its entries then return as
+`suspend`, with no miss. Rev 2 showed about 5.8 minutes of dead time per stage boundary when the route was already
+gone.
+
+Proposed fix, to evaluate in a later run: check the marker again just before handing, and end a pass whose first
+call fails after the marker. Not changed in `7ed7171a3`, for the same reason.
+
+## A wall-clock test can time out under the full suite's load
+
+`tests/memory/test_adapter_worktree.py::test_benign_yaml_near_the_parse_cap_shapes_within_the_timeout` checks that
+a YAML file near the parse cap is shaped within the adapter's `PARSE_TIMEOUT`. In one full run of the suite
+(`r21-final4`, ten files at a time), it timed out. It passed when run alone on the same tree, and in the two full
+runs before it, and no change touched the adapter. The test measures wall-clock time, so a loaded host can fail it.
+
+Direction: open. Do not raise the timeout to make it pass. Run it alone to tell a load failure from a real slowdown.
+
