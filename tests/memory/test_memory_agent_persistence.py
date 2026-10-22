@@ -17,7 +17,7 @@ from tests.memory.test_helpers import EPS, _ctx, _msg, _tc
 from tests.memory.test_helper_messaging import Steps
 from tests.memory.test_tool_channel_box import _descendants
 from tests.memory.test_writer_pass import Turns, _call, _e1, _ME
-from unify.memory import helpers, messaging, writer_pass
+from unify.memory import helpers, messaging
 from unify.memory import sandbox_run as sr
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore

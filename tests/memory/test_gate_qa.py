@@ -20,7 +20,6 @@ import random
 import shutil
 import subprocess
 import sys
-from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,7 +33,6 @@ from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
-from unify.memory.integration.adapters.dialogue import cap_text
 from unify.memory.qa import QAConfig, pytest_env, stage_inputs
 from unify.memory.sandbox_run import PytestOutcome
 from tests.memory.test_episodes import _ep

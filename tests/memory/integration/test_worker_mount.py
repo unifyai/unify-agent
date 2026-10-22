@@ -13,7 +13,6 @@ import pytest
 
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from tests.memory.integration.test_checkout import _seed
-from unify import sandbox
 from tests.memory.cells import Cells
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.checkout import export_checkout

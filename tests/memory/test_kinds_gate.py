@@ -1,6 +1,5 @@
 """Per-kind admission: covers per action kind, channel mapping and recorded-blob export."""
 
-import asyncio
 import json
 import shutil
 
@@ -13,10 +12,8 @@ from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
-from unify.memory.writer_pass import PassConfig, WriterPass, export_blobs
-from unify.memory.trigger import PassRequest
+from unify.memory.writer_pass import export_blobs
 from tests.memory.test_episodes import _ep
-from tests.memory.test_writer_pass import Script, _write
 
 needs_bwrap = pytest.mark.skipif(
     shutil.which("bwrap") is None,

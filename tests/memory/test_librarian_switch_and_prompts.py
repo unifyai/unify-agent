@@ -29,7 +29,7 @@ from unify.memory.integration.request import (
     memory_use,
     runtime_calls_empty,
 )
-from unify.settings import ProductionSettings, SETTINGS
+from unify.settings import SETTINGS
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
 SWITCH = "UNIFY_MEMORY"  # the librarian is on whenever memory is

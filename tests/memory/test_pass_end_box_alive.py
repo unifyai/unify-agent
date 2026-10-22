@@ -26,7 +26,6 @@ from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.trigger import PassRequest
 from unify.memory.writer_pass import CODE_WRITER_ERROR, PassConfig, WriterPass
-from unify.settings import SETTINGS
 
 STILL_RUNNING = "a box of this pass is still running"
 

@@ -11,9 +11,7 @@ from unify.memory.gate import Gate, _covers_a_write
 from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.index import build_index
-from unify.memory.snapshot import listing, materialise
 from tests.memory.test_episodes import _ep
-from tests.memory.test_gate import KIT, _candidate
 
 sandboxed = pytest.mark.skipif(
     shutil.which("bwrap") is None,

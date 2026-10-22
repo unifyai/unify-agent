@@ -22,7 +22,6 @@ from unify.actor.execution.types import ExecutionResult, TextPart
 from unify.memory.analysis import use
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import (
-    Action,
     EpisodeWriter,
     env_channel,
     episode_dir,

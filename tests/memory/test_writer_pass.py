@@ -17,7 +17,7 @@ from unify.memory.redact import Redactor
 from unify.memory.writer_pass import LIBRARY_BUDGET_TOKENS, PREVIOUS_GATE_LINES, PassConfig, WriterPass, _mirror, export_for_writer, last_passes, library_summary, previous_gate, transcript_lines
 from unify.memory.trigger import PassRequest
 from tests.memory.test_episodes import _ep
-from tests.memory.test_gate import ITEM, KIT, MAN, MOD, TEST
+from tests.memory.test_gate import MAN, MOD
 
 needs_bwrap = pytest.mark.skipif(
     shutil.which("bwrap") is None,

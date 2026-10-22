@@ -1,22 +1,11 @@
-"""Identical parts answered with a pointer to where the same agent saw them, finish validating the manifest with
-the gate's own parser, and the first repair round priced on the write phase. Built on test_writer_pass's and
+"""Identical parts answered with a pointer to where the same agent saw them, and finish validating the manifest with
+the gate's own parser (the repair-reserve pricing is a known issue: KNOWN-ISSUES.md). Built on test_writer_pass's and
 test_writer_library_tools' helpers."""
 
-import asyncio
-import json
-from decimal import Decimal
-
 from unify.memory import writer_pass
-from unify.memory.blobs import BlobStore
-from unify.memory.evidence import EvidenceStore
-from unify.memory.gate import Gate
-from unify.memory.library_checks import LibraryConfig
-from unify.memory.gitio import Repo
-from unify.memory.writer_pass import FINISH_G1_REFUSALS, PassConfig, WriterPass
-from unify.memory.trigger import PassRequest
+from unify.memory.writer_pass import FINISH_G1_REFUSALS
 from tests.memory import writer_library_items as wl
-from tests.memory.test_writer_pass import Turns, _call, _e1, needs_bwrap
-from tests.memory.test_writer_library_repair import KEYED_BAD
+from tests.memory.test_writer_pass import _call
 from tests.memory.test_writer_library_tools import EPS, _episode, _pass
 
 # --- identical parts ---------------------------------------------------------------------------------------

@@ -22,7 +22,6 @@ from unify.memory.integration.request import (
     library_failure_list,
     library_failures_empty,
     memory_use,
-    runtime_calls_empty,
     settle_library_failures,
 )
 from unify.memory.redact import Redactor

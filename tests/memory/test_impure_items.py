@@ -16,7 +16,6 @@ import pytest
 from tests.memory import library_example_world as w
 from tests.memory.library_example_world import library_example_world  # noqa: F401 - the fixture
 from unify.memory import item_label, manifest as mf
-from unify.memory import writer_tests as wt
 from unify.memory.episodes import Action, Episode
 from unify.memory.gate import Gate, _Run, labelled
 from unify.memory.library_checks import LibraryConfig

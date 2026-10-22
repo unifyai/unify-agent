@@ -11,8 +11,6 @@ from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
-from unify.memory.manifest import parse_manifest
-from unify.memory.reduction import build, with_dependents
 from unify.memory.snapshot import listing, materialise
 from tests.memory.test_episodes import _ep
 from tests.memory.test_gate import KIT

@@ -22,7 +22,7 @@ from unify.memory.writer_pass import PassConfig, WriterPass
 from unify.memory.staging import StagingView
 from unify.memory.trigger import PassRequest
 from tests.memory import writer_library_items as wl
-from tests.memory.test_writer_pass import Turns, _call, _e1, _ME, _write, needs_bwrap
+from tests.memory.test_writer_pass import Turns, _call, _e1, _ME, needs_bwrap
 from tests.memory.test_writer_library_tools import EPS
 
 #: A manifest that lists nothing (the library item's manifest keys, no item)
