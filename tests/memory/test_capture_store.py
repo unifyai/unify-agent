@@ -30,6 +30,7 @@ import pytest
 from tests.actor.code_act.sandbox_world import world  # noqa: F401
 from unify.memory.episodes import Action, Episode
 from unify.memory.signals import Signal
+from tests.memory import prompt_guards as guards
 
 # ---------------------------------------------------------------------------------------------------------------
 # Assumed names (the spec leaves these open; adapt them here)
@@ -587,5 +588,5 @@ def test_the_writer_brief_says_captures_exist_and_how_to_land_one():
     assert LAND_CALL_TEXT in brief
     assert BRIEF_CAPTURE_TEXT in brief
     assert BRIEF_FAILURE_TEXT in brief
-    assert lp.benchmark_words(brief) == []
-    assert lp.example_checks(brief) == []
+    assert guards.benchmark_words(brief) == []
+    assert guards.example_checks(brief) == []

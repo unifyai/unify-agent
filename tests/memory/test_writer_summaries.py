@@ -24,6 +24,7 @@ from unify.memory.trigger import PassRequest
 from unify.memory.writer_pass import PassConfig, WriterPass
 from tests.memory.test_writer_library_tools import _episode
 from tests.memory.test_writer_pass import _call
+from tests.memory import prompt_guards as guards
 
 # --- assumed names (the spec leaves these open; the integrator adapts them here, in one place) ---------------------
 SUMMARY_PATH = "summary.md"
@@ -170,7 +171,7 @@ def test_the_brief_points_to_the_summaries_first():
     assert step1.find(SUMMARY_PATH) < step1.find("proposals")
     assert OPEN_ONLY_WHEN_NEEDED in how[two:]
     assert NOT_EVIDENCE in how
-    assert lp.benchmark_words(text) == [] and lp.example_checks(text) == []
+    assert guards.benchmark_words(text) == [] and guards.example_checks(text) == []
 
 
 def test_the_brief_stays_complete_with_summaries():

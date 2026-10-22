@@ -3,6 +3,7 @@
 from unify.memory import library_prompts as pv
 from unify.memory.evidence import EvidenceStore
 from unify.memory.usage import MAX_TABLE_ROWS, usage_table
+from tests.memory import prompt_guards as guards
 
 
 def test_the_library_usage_table_can_list_every_item(tmp_path):
@@ -25,4 +26,4 @@ def test_write_asks_for_each_items_when_to_use_section_and_a_linked_note_of_prec
     assert "A new or changed function or note without the section or one of its four lines is labelled so." in text
     assert "The items of a folder the pass changes are labelled when the folder has no README.md" in text
     assert "The gate refuses" not in text.split("- Every function and note carries")[1].split("- Tests go")[0]
-    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
+    assert guards.benchmark_words(text) == [] and guards.example_checks(text) == []

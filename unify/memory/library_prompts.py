@@ -1125,57 +1125,9 @@ def input_pointer_files() -> dict[str, str]:
     }
 
 
-#: Words no writer brief or first message may hold: economy cues and the retired reading-quota machinery.
-BANNED_WORDS = (
-    "cheaply",
-    "budget",
-    "coverage",
-    "required_parts",
-    "experience_tokens",
-    "covered or dismissed",
-)
-
-#: The most an inlined list may hold: items (lines starting "- ", or table rows) and bytes. A list that grows with
-#: the library, the pool or the batch goes to a file the prompt points to. The Tools section, rendered once per run
-#: from the tool registry, is stable text and is not such a list.
+#: The most an inlined list may hold, in items: a list that grows with the library, the pool or the batch goes to a
+#: file the prompt points to.
 MAX_INLINE_LIST = 10
-MAX_INLINE_LIST_BYTES = 1000
-
-
-# --- guards -----------------------------------------------------------------
-
-#: Names and terms of particular benchmarks and environments (case-insensitive, whole words).
-_BENCHMARK = re.compile(
-    r"\b(apis|venmo|arc|grids?|office|payroll|crafter|alfworld|appworld|scienceworld|travelplanner|webshop|"
-    r"minecraft|sokoban|submission)\b",
-    re.IGNORECASE,
-)
-#: An environment's verdict text, which the harness never matches: upper case only.
-_VERDICT = re.compile(r"\bCORRECT\b")
-
-#: Instructions to check a task's examples. A function docstring's ``Example:`` line names one of its tests, not a
-#: task's example, and matches none of these.
-_EXAMPLE_CHECKS = (
-    re.compile(
-        r"\b(check|verify|validate|confirm|test|try|run)\w*\b[^.\n]{0,60}?\bexamples?\b",
-        re.I,
-    ),
-    re.compile(r"\bexamples?\b[^.\n]{0,20}\bfirst\b", re.I),
-    re.compile(
-        r"\b(training|train|worked|given|task'?s?|request'?s?|input[- ]output)\s+(examples?|pairs?)\b",
-        re.I,
-    ),
-)
-
-
-def benchmark_words(text: str) -> list[str]:
-    return [m.group(0) for m in _BENCHMARK.finditer(text)] + [
-        m.group(0) for m in _VERDICT.finditer(text)
-    ]
-
-
-def example_checks(text: str) -> list[str]:
-    return [m.group(0) for rx in _EXAMPLE_CHECKS for m in rx.finditer(text)]
 
 
 #: Phrases (lower case) that only the WRITE brief may hold, only the CURATE brief, and only the two briefs.

@@ -18,6 +18,7 @@ from unify.memory import tool_spec, writer_pass
 from unify.memory.tool_spec import ToolSpec
 from unify.memory.trigger import PassRequest
 from unify.memory.usage import LIBRARY_COPY, writer_usage_record
+from tests.memory import prompt_guards as guards
 
 _SCHEMA = {"type": "object", "properties": {}}
 
@@ -118,7 +119,7 @@ def test_no_inline_list_is_longer_than_the_bound(registry):
             assert items <= lp.MAX_INLINE_LIST, name
             # a list of stable text may be long; only the first message's must also be short in bytes
             if name.startswith("first"):
-                assert size <= lp.MAX_INLINE_LIST_BYTES, name
+                assert size <= guards.MAX_INLINE_LIST_BYTES, name
 
 
 def test_the_pointer_list_is_the_evaluated_one(registry):
@@ -144,7 +145,7 @@ def test_no_banned_word_reaches_the_writer(registry):
         "first": _first(),
     }.items():
         low = text.lower()
-        for word in lp.BANNED_WORDS:
+        for word in guards.BANNED_WORDS:
             assert word not in low, (name, word)
         for gone in (
             "dismiss",
@@ -177,7 +178,7 @@ def test_the_first_message_points_and_is_stable_apart_from_ids_and_the_wall_cloc
         "e00" not in many
         and f"over {lp.MAX_INLINE_LIST + 1} recorded episodes." in many
     )
-    assert len(one.encode()) <= lp.MAX_INLINE_LIST_BYTES
+    assert len(one.encode()) <= guards.MAX_INLINE_LIST_BYTES
 
 
 def test_the_staged_inputs_are_always_named(registry):

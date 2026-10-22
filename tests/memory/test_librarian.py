@@ -31,7 +31,6 @@ from tests.memory.test_library_helper import _py
 from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.common import tool_registry as R
 from unify.memory import library_export as lx
-from unify.memory import library_prompts as lp
 from unify.memory import library_search
 from unify.memory import librarian as L
 from unify.memory import memory_helper
@@ -45,6 +44,7 @@ from unify.memory.item_records import recipe_call
 from unify.memory.layout import RESERVED_INIT, RESERVED_STUB
 from unify.memory.library_index import signature_text
 from unify.settings import SETTINGS
+from tests.memory import prompt_guards as guards
 
 needs_box = pytest.mark.skipif(
     shutil.which("bwrap") is None or not os.access(sr.PRLIMIT, os.X_OK),
@@ -447,7 +447,7 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
                  "tools.finish(answer)", "README.md", "When to use", "recipe", "Search first",
                  "Name every item that applies", "nothing fits", "evidence only"):
         assert part in brief, part
-    assert lp.benchmark_words(brief) == [] and lp.example_checks(brief) == []
+    assert guards.benchmark_words(brief) == [] and guards.example_checks(brief) == []
     # the library's calls are named without arguments: their help holds those
     assert not re.search(r"memory\.[a-z_]+\(", brief) and "memory.show" not in brief and "memory.run" not in brief
     lowered = brief.lower()

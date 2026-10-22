@@ -7,6 +7,7 @@ from __future__ import annotations
 
 
 from unify.memory import library_prompts as pv
+from tests.memory import prompt_guards as guards
 
 
 def _prompts():
@@ -48,8 +49,8 @@ def test_no_v2_rule_survives(tmp_path):
                 assert retired not in text, (name, retired)
             else:
                 assert retired.lower() not in low, (name, retired)
-        assert pv.benchmark_words(text) == [], name
-        assert pv.example_checks(text) == [], name
+        assert guards.benchmark_words(text) == [], name
+        assert guards.example_checks(text) == [], name
 
 
 #: Rules rev 2's in-code prompts do not state: CURATE's (no curator), the mechanisms rev 2 removed (recorded

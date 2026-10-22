@@ -7,6 +7,7 @@ import re
 import pytest
 
 from unify.memory import library_prompts as pv
+from tests.memory import prompt_guards as guards
 
 #: The WRITE brief's parts, in order (rev 2's attention WRITE pass, tools called from code: the tools are in the shared
 #: opening, so there is no Tools part; there is no CURATE brief).
@@ -109,14 +110,14 @@ def test_the_vocabulary_check_is_live():
         "submission",
         "CORRECT",
     ):
-        assert pv.benchmark_words(f"use the {word} tool"), word
-    assert pv.benchmark_words("keep it small, correct and easy to navigate") == []
-    assert pv.benchmark_words("search the archive of records") == []
+        assert guards.benchmark_words(f"use the {word} tool"), word
+    assert guards.benchmark_words("keep it small, correct and easy to navigate") == []
+    assert guards.benchmark_words("search the archive of records") == []
 
 
 def test_no_benchmark_vocabulary_anywhere():
     for name, text in _texts().items():
-        assert pv.benchmark_words(text) == [], name
+        assert guards.benchmark_words(text) == [], name
 
 
 def _contract_texts():
@@ -140,8 +141,8 @@ def _contract_texts():
 
 def test_the_contract_texts_carry_no_benchmark_words_and_no_example_checking():
     for name, text in _contract_texts().items():
-        assert pv.benchmark_words(text) == [], name
-        assert pv.example_checks(text) == [], name
+        assert guards.benchmark_words(text) == [], name
+        assert guards.example_checks(text) == [], name
 
 
 def test_the_fork_format_block_follows_the_contract_it_states():

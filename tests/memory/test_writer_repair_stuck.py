@@ -22,6 +22,7 @@ from unify.memory.writer_pass import PassOutcome
 from tests.memory import writer_library_items as wl
 from tests.memory.test_writer_library_repair import FILES_CODE
 from tests.memory.test_writer_pass import Turns, _call, _run, _write, _writer, needs_bwrap
+from tests.memory import prompt_guards as guards
 
 ME, OTHER = wl.ITEM_ID, "memory.acct.users:other"
 TEST_PATH = f"/memory/{wl.TEST_FILE}"
@@ -287,4 +288,4 @@ def test_the_uncapped_brief_states_the_stuck_rule_as_information():
     assert "There is no set number of repair rounds" in text
     assert library_prompts.limits_now().stuck_repeats == STUCK_REPEATS
     assert library_prompts.limits_now(finish_capped=True).stuck_repeats is None
-    assert library_prompts.example_checks(text) == [] and library_prompts.benchmark_words(text) == []
+    assert guards.example_checks(text) == [] and guards.benchmark_words(text) == []

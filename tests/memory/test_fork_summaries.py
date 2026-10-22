@@ -21,6 +21,7 @@ from unify.memory.trigger import PassRequest
 from unify.memory.writer_tools import part_names
 from tests.memory.test_writer_library_tools import _episode
 from tests.memory.test_writer_pass import Turns, _call, _writer
+from tests.memory import prompt_guards as guards
 
 # --- one recorded episode and a summary of it --------------------------------------------------------------------
 
@@ -176,7 +177,7 @@ def test_the_writer_brief_names_the_summaries_first():
     # delegate stays, unchanged; the brief stays complete
     assert "hand a reading or drafting task to a helper" in _step(brief, 5)
     assert all(head in brief for head in ("# Role\n", "# Inputs\n", "# How to work\n", "# Done\n"))
-    assert not lp.example_checks(brief) and not lp.benchmark_words(brief)
+    assert not guards.example_checks(brief) and not guards.benchmark_words(brief)
 
 
 def test_the_staging_row_keys_are_the_built_rows_keys_with_the_summary_and_no_reader_name(tmp_path):

@@ -23,6 +23,7 @@ from unify.memory.integration import request as request_mod
 from unify.memory.integration.paths import Paths
 from unify.memory.library_export import generated_library_mode
 from unify.settings import SETTINGS
+from tests.memory import prompt_guards as guards
 
 # ==== names and sentences this file assumes (the spec gives them; adapt them here, in one place) ====================
 #: tool_registry.sandbox_paragraph(agent, names, persistent) -> str (design D.1)
@@ -212,8 +213,8 @@ async def test_the_new_sentences_hold_no_host_path_secret_or_forcing(in_code, tm
         opening = opening_of(text, role)
         for value in (str(tmp_path), planted):
             assert value not in opening, role
-        assert lp.example_checks(opening) == [], role
-        assert lp.benchmark_words(opening) == [], role
+        assert guards.example_checks(opening) == [], role
+        assert guards.benchmark_words(opening) == [], role
     # the shared sentences are the same bytes for every role (a stable, cached prefix)
     paragraph = {role: PERSISTENT_SENTENCE in flat(t) for role, t in texts.items()}
     assert all(paragraph.values()), paragraph

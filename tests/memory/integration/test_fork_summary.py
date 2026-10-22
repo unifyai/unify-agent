@@ -38,6 +38,7 @@ from tests.memory.integration.test_request import (  # noqa: F401
     _transcript,
     mv2,
 )
+from tests.memory import prompt_guards as guards
 
 # --- assumed names (the spec leaves these open; the integrator adapts them here, in one place) ---------------------
 #: the summary file's staged path and its kind in the block ledger (H.4, H.5 item 6)
@@ -111,8 +112,8 @@ def test_the_summary_format_has_five_sections_in_order_and_pointer_rules():
     # the outcome is never guessed
     assert "not shown" in text
     # general across domains, and nothing about checking a task's examples
-    assert library_prompts.benchmark_words(text) == []
-    assert library_prompts.example_checks(text) == []
+    assert guards.benchmark_words(text) == []
+    assert guards.example_checks(text) == []
 
 
 # rev 2: tools are always called from code, so the one instruction is the in-code one (INSTRUCTION_IN_CODE is gone)
@@ -125,8 +126,8 @@ def test_the_fork_instruction_asks_for_the_summary_first_in_the_one_format(which
     # the rest of what it writes is still asked for
     for rel in ("`cases/<name>.json`", "`notes.md`"):
         assert rel in text
-    assert library_prompts.benchmark_words(text) == []
-    assert library_prompts.example_checks(text) == []
+    assert guards.benchmark_words(text) == []
+    assert guards.example_checks(text) == []
 
 
 def test_the_format_example_stages_a_summary_first():

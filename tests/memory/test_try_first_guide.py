@@ -29,6 +29,7 @@ from unify.memory import library_export as lx
 from unify.memory import library_prompts as lp
 from unify.memory.catalogue import write_files
 from unify.memory.episodes import Action
+from tests.memory import prompt_guards as guards
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
 #: The guide texts the actor reads (``library_prompts``). Rev 2 has tools in code only, so these are the in-code
@@ -168,8 +169,8 @@ def test_the_guide_says_trying_a_matching_procedure_is_cheaper_than_working_it_o
 @pytest.mark.parametrize("name", GUIDES)
 def test_the_guide_says_nothing_about_a_tasks_examples_or_any_benchmark(name):
     text = _guide(name)
-    assert lp.example_checks(text) == []
-    assert lp.benchmark_words(text) == []
+    assert guards.example_checks(text) == []
+    assert guards.benchmark_words(text) == []
     assert not re.search(r"\bexamples?\b", text, re.I)
     assert not re.search(r"input[- ]output pairs?|given examples", text, re.I)
 

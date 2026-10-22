@@ -20,7 +20,6 @@ import pytest
 from tests.actor.code_act.test_prompt_generality import BENCHMARK_WORDS
 from tests.memory.test_episodes import _ep
 from tests.memory.test_library_helper import _commit
-from unify.memory import library_prompts
 from unify.memory.gitio import Repo
 from unify.memory.integration.checkout import export_actor_library_mode
 from unify.memory.integration.request import (
@@ -30,6 +29,7 @@ from unify.memory.integration.request import (
     runtime_calls_empty,
 )
 from unify.settings import SETTINGS
+from tests.memory import prompt_guards as guards
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
 SWITCH = "UNIFY_MEMORY"  # the librarian is on whenever memory is
@@ -127,9 +127,9 @@ def test_the_brief_says_role_inputs_and_answer_form():
 
 def test_the_brief_is_general_and_says_nothing_of_ids_answers_or_examples():
     brief = librarian_brief()
-    assert library_prompts.benchmark_words(brief) == []
+    assert guards.benchmark_words(brief) == []
     assert BENCHMARK_WORDS.findall(brief) == []
-    assert library_prompts.example_checks(brief) == []
+    assert guards.example_checks(brief) == []
     assert _IDS_OR_ANSWERS.findall(brief) == []
     assert librarian_brief() == brief  # constant bytes
 

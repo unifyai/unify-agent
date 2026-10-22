@@ -33,8 +33,6 @@
 *	the kind of task, what it was given	the fork's summary format: what the request asked, in general terms
 *	where the task depends on it	the fork's summary format
 *	check a task's examples	a docstring naming what the brief guard refuses
-*	apis|venmo|arc|grids?|office|payroll|crafter	the brief guard's own pattern of words no brief may hold
-*	given|task'?s?|request'?s?	the example-check guard's own pattern
 *	made by hand	English idiom (an Item built directly)
 *	hand over the request	to pass (verb)
 *	Hand one cell's drained audit records	to pass (verb)
