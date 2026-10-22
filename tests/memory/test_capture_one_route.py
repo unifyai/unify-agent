@@ -13,8 +13,7 @@ from __future__ import annotations
 import json
 
 from tests.memory.test_captures import BROKE, PROC, VALUE, _box, _ep
-from tests.memory.test_gate import ITEM, MAN
-from tests.memory.test_pool import EMPTY, _finish_with, _open, _Stores
+from tests.memory.test_pool import EMPTY, ITEM, MAN, _finish_with, _open, _Stores
 from tests.memory.test_pool_start import CID, LID, _fake_merge, _stage
 from tests.memory.test_writer_pass import _call
 from unify.memory import captures as cp
@@ -22,13 +21,21 @@ from unify.memory import pool, staging
 from unify.memory.gate import GateResult
 from unify.memory.gitio import Repo
 
-FAILED_PROC = PROC.replace("Total", "Sum")
+#: e1's procedure: another shape than e2's (a capture of the same shape would fold into e2's), whose episode a signal
+#: contradicts
+FAILED_PROC = PROC.replace("Total", "Sum").replace(
+    "    return [sum(value[k]) for k in sorted(value)]\n",
+    "    names = sorted(value)\n    return [sum(value[k]) for k in names]\n",
+)
 
 
 def _world(tmp_path):
-    """Two settled forks and their captures: e2 staged a candidate with its case, notes, a procedure and what broke,
-    and its capture reproduced the handed-back result (it can be landed); e1 staged a procedure whose capture gave
-    another result (failed). Returns the staging root, the capture store and the two capture ids."""
+    """Two settled forks and their captures: e2 staged a candidate with its case, notes, a procedure and what broke
+    (its capture can be landed); e1 staged a procedure whose episode a visible checker verdict rejected, so its
+    capture is negative knowledge (rev 2: a capture is never run; its outcome comes from the signals only). Returns
+    the staging root, the capture store and the two capture ids."""
+    from unify.memory.signals import Signal
+
     state = tmp_path / "state"
     root = state / "memory-staging"
     store = cp.store_dir(state)
@@ -41,10 +48,11 @@ def _world(tmp_path):
     d1.mkdir(parents=True)
     (d1 / "procedure.py").write_text(FAILED_PROC)
     (d1 / "fork.json").write_text(json.dumps({"episode": "e1", "status": "ok"}))
-    runner, _ = _box(VALUE, [6, 10])  # another result than the one handed back
-    failed = cp.capture_trace_step(d1, _ep("e1"), store)["capture_id"]
-    assert cp.load(store)[failed]["record"]["outcome"] == cp.FAILED
-    assert cp.load(store)[landable]["record"]["outcome"] != cp.FAILED
+    rejected = Signal("s-e1", "e1", "checker", "fail", "2026-10-13T00:01:30Z", refers_to="e1/actions/0",
+                      regime="dense", visible_to_actor=True)  # fmt: skip
+    failed = cp.capture_trace_step(d1, _ep("e1"), store, signals=[rejected])["capture_id"]
+    assert failed != landable and cp.load(store)[failed]["record"]["outcome"] == cp.CONTRARY
+    assert not cp.negative(cp.load(store)[landable]["record"])
     return root, store, landable, failed
 
 
@@ -98,8 +106,8 @@ def test_a_landable_capture_reaches_the_writer_once_and_a_failed_one_keeps_its_s
     assert [c["file"] for c in e2["candidates"]] == ["/inputs/staging/e2/candidates/fill.py"]
     assert rows["e2"]["capture"]["id"] == landable and rows["e1"]["capture"]["id"] == failed
     assert "procedure.py" in e1["files"] and e1["capture"] is None
-    # e2's row names its capture and the one call that lands it (in code, through ``tools.``: the end-to-end test)
-    assert e2["capture"] == {"id": landable, "land": f"land_capture('{landable}', package, name)"}
+    # e2's row names its capture and the one call that lands it, as the writer makes it (in code, through ``tools.``)
+    assert e2["capture"] == {"id": landable, "land": f"tools.land_capture('{landable}', package, name)"}
     # the host's staging is untouched: the capture step and the pool read it there
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == host
     # what broke stays with the capture's entry: it is not a second, failure entry of its own

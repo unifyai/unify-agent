@@ -165,10 +165,12 @@ def test_failing_test_output_is_kept_whole_as_a_blob(library_example_world):
         test=w.TEST_SOURCE.replace('== "u-1"', '== "u-1" and print("z" * 9000)'),
     )
     res = gate().check(mem.head(), _candidate(mem, files), w.manifest(fixtures))
-    assert not res.passed
+    # rev 2's gate is labels only: the red test is a label on the item (its note is cut to a line), and the run's
+    # whole output is kept in the gate result's outputs, which the writer's full result carries
+    assert res.passed
     [line] = [r for r in res.reasons if "is not green on the candidate" in r]
-    sha = line.rsplit("full output: blob ", 1)[1].rstrip("]")
-    assert b"z" * 9000 in blobs.get(sha)
+    assert line.startswith(f"note: label: {w.ITEM_ID}: G3: "), line
+    assert "z" * 9000 in res.outputs[f"{w.TEST_FILE} (candidate)"]
 
 
 def test_spool_stops_at_its_limit_with_a_marker_and_the_run_is_still_kept(tmp_path):

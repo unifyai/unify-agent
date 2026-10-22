@@ -15,10 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.memory.test_gate import ITEM, KIT, MAN, MOD, TEST
 from tests.memory.test_writer_pass import Turns, _call, _e1, _ME
 from unify.memory import sandbox_run as sr
-from unify.memory import tool_handlers
 from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
@@ -100,13 +98,15 @@ except tools.Refused as exc:
 
 
 def _files_cell() -> str:
-    manifest = json.dumps({**MAN, "items": [ITEM], "summary": "s"})
+    """The library item written by the cell itself (rev 2 has no write tool: a cell writes files), then a fixture the
+    tool refuses and a check."""
+    from tests.memory import writer_library_items as wl
+
     return "\n".join(
         [
-            f"print(tools.write('unify_memory_testkit.py', {KIT!r}))",
-            f"print(tools.write('env/venmo/tests/test_me.py', {TEST!r}))",
-            f"print(tools.write('env/venmo/__init__.py', {MOD!r}))",
-            f"print(tools.write('.pass/manifest.json', {manifest!r}))",
+            wl.files_code(),
+            "print('WROTE', sorted(str(p.relative_to('/memory')) for p in __import__('pathlib').Path('/memory/memory/acct')"
+            ".rglob('*.py')))",
             "try:",
             "    tools.fixture('e1', 'env/venmo/tests/data/none.json', source='no-such-source')",
             "except (tools.Refused, tools.ToolError) as exc:",
@@ -147,7 +147,7 @@ def test_a_scripted_writer_pass_runs_its_tools_from_cells_in_a_real_box(tmp_path
         _cell("c3", DELEGATE),
         _cell("c4", "tools.finish('stored the me function')\nprint('NOT REACHED')"),
     ]
-    writer, model, ev = _writer(tmp_path, turns, edit_tools=True)
+    writer, model, ev = _writer(tmp_path, turns)
     helper_tools: list = []
     writer.helper_turn = _helper_factory(helper_tools)
     started = time.monotonic()
@@ -163,9 +163,10 @@ def test_a_scripted_writer_pass_runs_its_tools_from_cells_in_a_real_box(tmp_path
     c1, c2, c3, c4 = (outputs[k] for k in ("c1", "c2", "c3", "c4"))
     assert "EPISODE True Result" in c1 and "LISTING True" in c1 and "GREP Result" in c1, c1
     assert "REFUSED outside_roots" in c1, c1
-    assert "ok: created env/venmo/__init__.py" in c2 and "FIXTURE" in c2, c2
+    assert "WROTE ['memory/acct/__init__.py', 'memory/acct/tests/test_users.py', 'memory/acct/users.py']" in c2, c2
+    assert "FIXTURE" in c2, c2
     assert "CHECK ok" in c2, c2
-    assert "DELEGATE helper call-0 started" in c3 and "WAIT" in c3, c3
+    assert "DELEGATE helper call-1 started" in c3 and "WAIT" in c3, c3
     assert c4.splitlines()[-1] == "ok" and "NOT REACHED" not in c4, c4
     # the event rows: one per cell from the model, one per in-code call from the channel, each naming its cell
     calls = [r for r in rows if r["event"] == "tool_call"]
@@ -175,7 +176,6 @@ def test_a_scripted_writer_pass_runs_its_tools_from_cells_in_a_real_box(tmp_path
         "read_episode",
         "read",
         "grep",
-        "write",
         "fixture",
         "check",
         "delegate",
@@ -200,7 +200,10 @@ def _waiting(monkeypatch, seconds: float):
         await asyncio.sleep(seconds)
         return "no new messages"
 
-    monkeypatch.setattr(tool_handlers, "wait", wait)
+    # rev 2: wait is the run record's (tool_registry names unify.agents.run_record_tools:wait as its handler)
+    from unify.agents import run_record_tools
+
+    monkeypatch.setattr(run_record_tools, "wait", wait)
 
 
 CLOCK_CELL = """

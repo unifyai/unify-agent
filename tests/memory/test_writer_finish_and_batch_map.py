@@ -127,14 +127,18 @@ def test_finish_is_refused_only_for_its_manifest(tmp_path):
         eids=("e2",),
         max_calls=4,
     )
-    assert model.outputs["f"].startswith("not finished: G1: no manifest")
+    from tests.memory.writer_library_items import FINISH_CELL
+
+    assert model.outputs["f"].startswith(FINISH_CELL + "not finished: G1: no manifest")
 
 
 # --- 4. the brief states the batch map's schema; 6. no sentence about the pass's time ---------------------------
 
 
 def test_the_brief_names_every_batch_map_key_and_its_shape():
-    text = pv.write_brief_now()
+    # rev 2: the keys and their shapes are in /inputs/batch_map_keys.md, the reference file the brief points to
+    assert "/inputs/batch_map_keys.md" in pv.write_brief_now()
+    text = pv.input_pointer_files()[pv.BATCH_MAP_KEYS_FILE]
     bmap = build_batch_map(EPS.__getitem__, ["e1"])
     keys = (
         set(bmap) | set(bmap["episodes"][0]) | {"staging", "pool_entries", "candidates"}

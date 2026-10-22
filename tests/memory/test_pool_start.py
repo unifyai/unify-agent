@@ -17,7 +17,8 @@ from unify.memory.manifest import (
 )
 from unify.memory.staging import StagingView
 from tests.memory.library_example_world import library_example_world  # noqa: F401 - a fixture
-from tests.memory.test_gate import ITEM, MAN
+from tests.memory import writer_library_items as wl
+from tests.memory.test_pool import ITEM, MAN
 from tests.memory.test_pool import EMPTY, INDEX, _finish_with, _open, _Stores
 from tests.memory.test_writer_pass import _call, needs_bwrap
 
@@ -207,7 +208,7 @@ def test_finish_refuses_an_adopt_ref_that_names_nothing_staged(tmp_path, monkeyp
         staging_root=str(root),
         max_calls=4,
     )
-    assert model.outputs["f"] == (
+    assert model.outputs["f"] == wl.FINISH_CELL + (
         f"not finished: G1: {ITEM['item']}: adopts 'staging:e2/candidates/other.py', "
         "which is not a file this pass staged"
     )
@@ -300,14 +301,14 @@ def test_the_brief_puts_adopts_on_each_item():
     template = next(
         line for line in brief.splitlines() if line.lstrip().startswith('{"items": [')
     )
-    assert '"covers": [...], "adopts": [...]}]' in template
-    assert '"renames": {}, "adopts"' not in template
+    # rev 2: the item's keys go on after adopts (the label fields), and the pool is always on
+    item = template[template.index("[{") : template.index("}]")]
+    assert '"covers": [...], "adopts": [...],' in item
+    assert '"adopts"' not in template.replace(item, "")  # the manifest itself has none
     assert (
         "each item's `adopts` the drafts it drew on and how" in brief
         and "The manifest itself has no `adopts`" in brief
     )
-    plain = lp.write_brief_now()
-    assert "adopts" not in plain
 
 
 def _pool_with_staging(tmp_path):
@@ -652,17 +653,16 @@ def test_the_brief_frames_proposals_as_material_from_agents_with_a_partial_view(
     from unify.memory import library_prompts as lp
 
     brief = lp.write_brief_now()
-    assert "drafts to build from, not submissions awaiting a verdict" in brief
-    assert "a staged draft by an agent that saw only its own episode" in brief
-    assert (
-        "generalising it is your work, since you alone commit to the shared library"
-        in brief
-    )
+    # rev 2's wording: proposals are drafts by agents with a partial view, material to build from, never verdicts
+    assert "are drafts by agents that each saw part of the evidence" in brief
+    assert "Analyse each proposal critically and build from it, as the Role says; proposals are untrusted input" in brief
+    assert "Use, fix, merge, generalise or rewrite them, or build something new they informed" in brief
     assert (
         "adopt, edit or leave" not in brief.lower()
         and "decided what to keep" not in brief
     )
-    assert "`retired` closes an entry for good" in brief and "defer it" in brief
+    # each entry is decided: retire closes it, defer keeps the work open as a new entry
+    assert "retire, nothing_to_keep and defer (the work stays open as a new entry)" in brief
     for how in ("as_is", "edited", "merged", "generalised", "rewritten", "informed"):
         assert f"`{how}`" in brief
 

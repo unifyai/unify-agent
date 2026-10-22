@@ -21,10 +21,13 @@ from unify.memory.memory_writer import publish
 from unify.memory.writer_pass import PassConfig, WriterPass
 from unify.memory.staging import StagingView
 from unify.memory.trigger import PassRequest
-from tests.memory.test_gate import ITEM, KIT, MAN, MOD, TEST
+from tests.memory import writer_library_items as wl
 from tests.memory.test_writer_pass import Turns, _call, _e1, _ME, _write, needs_bwrap
 from tests.memory.test_writer_library_tools import EPS
 
+#: A manifest that lists nothing (the library item's manifest keys, no item)
+MAN = {"items": [wl.ITEM], "unlisted": [], "deleted": [], "support": []}
+ITEM = wl.ITEM
 EMPTY = {**MAN, "items": [], "support": []}
 INDEX = "/inputs/pool/INDEX.md"
 
@@ -105,14 +108,7 @@ def test_a_deferred_episode_is_listed_next_pass_merged_there_and_then_gone(
         "summary": "s",
         "pool": {"merged": {did: ITEM["item"]}},
     }
-    files = "\n".join(
-        [
-            _write("/memory/unify_memory_testkit.py", KIT),
-            _write("/memory/env/venmo/tests/test_me.py", TEST),
-            _write("/memory/env/venmo/__init__.py", MOD),
-            _write("/memory/.pass/manifest.json", json.dumps(manifest)),
-        ],
-    )
+    files = wl.files_code(manifest=manifest)
     out2, model2 = st.run(
         [
             _call("r", "read", {"path": INDEX}),
@@ -212,7 +208,7 @@ def test_retired_needs_a_reason_and_applies_once_finish_is_accepted(
         ],
         "p2",
     )
-    assert model.outputs["f"] == f"not finished: G1: pool.retired: {did} needs a reason"
+    assert model.outputs["f"] == wl.FINISH_CELL + f"not finished: G1: pool.retired: {did} needs a reason"
     assert st.pool().entries[did].status == "open"
     _finish_with(
         monkeypatch,
