@@ -485,6 +485,12 @@ def test_f3_nothing_flows_back_to_the_record_the_transcript_or_the_client(
     monkeypatch,
     lane,
 ):  # noqa: F811
+    # The writer service a request starts is a process of its own that joins the roster when it is up, before or after
+    # the snapshot below depending on how fast it starts; it is kept out of this home, so what changes is the fork's
+    # doing alone.
+    from unify.memory import writer_service
+
+    monkeypatch.setattr(writer_service, "ensure_service", lambda *a, **k: writer_service.ServiceState("off"))
     run, eid, src, seen, made, popen = _started(
         mv2,
         monkeypatch,
