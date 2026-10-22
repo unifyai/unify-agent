@@ -19,10 +19,15 @@ the three. The rest of memory's configuration is in [CONFIG.md](../CONFIG.md); t
    - a signal that arrived after its episode ended;
    - an item called again in new episodes.
 
-   An entry stays open until a writer pass decides it.
+   An entry stays open until a writer pass decides it. A new capture waits until its **capture group** is due:
+   captures whose records show they act through the same tools, touch the same library items or read the same shape
+   of input (never an id, a word or the order they came in). A group is due once two of them are open, once a new one
+   relates to captures an earlier pass decided, or, for a capture still alone, after 8 later captures or 10 minutes
+   with none. Every other kind of entry is handed at once.
 4. **The writer keeps the library.** The writer is a detached service, one per memory home. It hands open entries to
    writer passes, and each pass is a model with tools in a confined box:
-   - it reads the entries' material;
+   - it reads the entries' material: for a capture group, its members together with the related captures earlier
+     passes decided and the library items the group touches;
    - it may start helpers;
    - it lands new library items (tested functions and linked notes), changes or renames existing ones, and decides
      each entry. A pass never removes an item, merges two, or retires one: the gate refuses aliases, retirements and
@@ -69,6 +74,7 @@ the baseline that the other two settings are measured against.
 | A request's memory (recording, serving, the fork) | `unify/memory/integration/request.py`, `integration/fork.py` |
 | Memory during an episode | `unify/memory/integration/in_episode.py` |
 | The attention ledger | `unify/memory/attention.py` |
+| Capture groups (which captures a pass reads together, and when) | `unify/memory/capture_groups.py` |
 | The writer service and its passes | `unify/memory/writer_service.py`, `unify/memory/writer_pass.py` |
 | The gate | `unify/memory/gate.py`, `unify/memory/gate_policy.py` |
 | Captures | `unify/memory/captures.py`, `unify/memory/capture_trace.py` |

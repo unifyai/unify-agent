@@ -216,15 +216,54 @@ def owed(home: Path) -> list[Any]:
     return [e for e in ledger(home).entries().values() if e.active]
 
 
+def age_waiting_captures(home: Path) -> int:
+    """Move the creation time of every open capture entry back by the grouping's idle time
+    (:data:`unify.memory.capture_groups.IDLE_S`), as if that long had passed with no new capture: a capture still alone
+    is then due (rev 2.1's readiness rule), so a run of a few episodes settles in seconds instead of ten minutes.
+    Only the ledger's own ``create`` rows of open ``new_experience`` entries change, under the ledger's lock; what is
+    due and when is the service's own rule, unchanged. Returns how many entries were aged."""
+    import datetime as dt
+    import json as _json
+
+    from unify.memory import attention as at
+    from unify.memory import capture_groups as cg
+
+    led = ledger(home)
+    with led.locked():
+        state = at.fold(led.rows())
+        waiting = {e.entry for e in state.values() if e.kind in cg.GROUPED_KINDS and e.state == "open"}
+        if not waiting:
+            return 0
+        lines = led.path.read_text(encoding="utf-8").splitlines()
+        back = at.now_iso(dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=cg.IDLE_S + 1))
+        out, aged = [], 0
+        for line in lines:
+            try:
+                row = _json.loads(line)
+            except ValueError:
+                out.append(line)
+                continue
+            if row.get("op") == "create" and row.get("entry") in waiting and row.get("at") != back:
+                row["at"], aged = back, aged + 1
+                line = _json.dumps(row, sort_keys=True)
+            out.append(line)
+        led.path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return aged
+
+
 def wait_until_settled(home: Path, timeout_s: float = SETTLE_S, poll_s: float = 0.25, quiet_s: float = 8.0) -> None:
     """Wait until the service has nothing owed, is in no pass, and has stayed so for *quiet_s* (several of its
-    polls: the entries a just-settled fork makes appear only at its next look, after the capture step)."""
+    polls: the entries a just-settled fork makes appear only at its next look, after the capture step). A capture
+    still waiting for its group is aged past the grouping's idle time (:func:`age_waiting_captures`) whenever the
+    service is idle, so it is due without the test waiting that long."""
     from unify.memory import writer_service as ws
 
     end = time.monotonic() + timeout_s
     quiet_since = None
     while time.monotonic() < end:
         doc = ws.read_state(home) or {}
+        if not doc.get("pass_id"):
+            age_waiting_captures(home)
         calm = not owed(home) and not doc.get("pass_id") and doc.get("state") in (None, "idle", "stopped")
         now = time.monotonic()
         if calm:

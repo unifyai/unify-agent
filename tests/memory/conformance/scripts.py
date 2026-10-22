@@ -25,7 +25,13 @@ FORK_REPLY = (
     "```\n\n"
     "```path: broke.md\nnone\n```\n"
 )
-PASS_LINE = re.compile(r"^Pass (\S+): (\d+) entr(?:y needs|ies need) your attention: (.*)\.$", re.M)
+#: an attention pass's first line: its entries, or (rev 2.1) the capture group it is handed
+#: (attention_tools.first_message)
+PASS_LINE = re.compile(
+    r"^Pass (\S+): (?:\d+ entr(?:y|ies)|a group of \d+ related captures?) needs? your attention: (.*?)"
+    r"(?:, with \d+ related captures? an earlier pass decided)?\.$",
+    re.M,
+)
 
 
 def _first_user(body: dict) -> str:
@@ -37,10 +43,11 @@ def _first_user(body: dict) -> str:
 
 
 def handed(body: dict) -> list[str]:
-    """The entry ids an attention pass's first message hands (``Pass <id>: n entries need your attention: ...``)."""
+    """The entry ids an attention pass's first message hands (``Pass <id>: n entries need your attention: ...``, or
+    ``Pass <id>: a group of n related captures needs your attention: ...``)."""
     m = PASS_LINE.search(_first_user(body))
     assert m, _first_user(body)[:400]
-    return [part.split(" ", 1)[0] for part in m.group(3).split(", ")]
+    return [part.split(" ", 1)[0] for part in m.group(2).split(", ")]
 
 
 READ_ALL = (
@@ -201,7 +208,7 @@ EP_IN_TASK = re.compile(r"episode (\S+?) sorted")
 
 def _kinds(body: dict) -> list[str]:
     m = PASS_LINE.search(_first_user(body))
-    return [part.split(" (", 1)[1].rstrip(")") for part in m.group(3).split(", ")] if m else []
+    return [part.split(" (", 1)[1].rstrip(")") for part in m.group(2).split(", ")] if m else []
 
 
 def _last_tool_text(body: dict) -> str:

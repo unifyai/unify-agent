@@ -16,8 +16,9 @@ the service itself is alive, never by its number alone), a ``takeover`` row is w
 same way: the new service writes ``takeover`` naming the old one.
 
 **The loop** (:func:`service_main`): sync the ledger; stop at the stop marker; at the cap, every entry still owed is
-``not_reached: spend_cap`` and the service idles; with entries open, one pass (``hand(k)``, the pass, ``verify_reads``,
-then the unread ones go back); else idle, and after :data:`IDLE_EXIT_S` with nothing open it exits. A heartbeat thread
+``not_reached: spend_cap`` and the service idles; with entries open, one pass (``hand(k)`` with the capture grouping,
+:mod:`.capture_groups`: other kinds at once, else one due group of related captures; the pass, ``verify_reads``, then
+the unread ones go back); else idle, and after :data:`IDLE_EXIT_S` with nothing open it exits. A heartbeat thread
 rewrites ``service.json`` every :data:`HEARTBEAT_S`. Each turn of the loop is :func:`_iteration`; :func:`step` runs
 exactly one such turn in the calling process (deterministic step mode, for the offline replay).
 
@@ -1604,8 +1605,9 @@ async def _iteration(
     """One turn of the service's loop, shared by :func:`service_main` and :func:`step`: the stop marker (and
     SIGTERM), the service's end (its lifetime), a pass left running to resume, else the capture step, ``sync``, the
     cap (every entry still owed is ``not_reached: spend_cap``), the lifetime's margin for a new pass, and one pass
-    over up to K handed entries. Returns what it did (:func:`_turn_result`): ``stop`` names why the service must
-    stop (None: go on); ``why_idle`` why no pass ran (:data:`IDLE_WHY`)."""
+    over up to K handed entries (one due capture group, or the other kinds of entry at once). Returns what it did
+    (:func:`_turn_result`): ``stop`` names why the service must stop (None: go on); ``why_idle`` why no pass ran
+    (:data:`IDLE_WHY`)."""
     from .attention import K
     from .integration.request import actor_effort
     from .integration.switch import PASS_WALL_S
@@ -1672,13 +1674,39 @@ async def _iteration(
     # with no miss), so no pass asks for an episode that is not recorded yet
     from .attention import HomeSources, entry_ready
 
-    resolve = HomeSources(home, state_dir=ledger.state_dir).resolver()
-    handed = ledger.hand(pass_id, K, ready=lambda e: entry_ready(e, resolve))
+    sources = HomeSources(home, state_dir=ledger.state_dir)
+    resolve = sources.resolver()
+    handed = ledger.hand(
+        pass_id, K, ready=lambda e: entry_ready(e, resolve), grouping=_grouping(service, sources, clock)
+    )
     if not handed:
         out["why_idle"] = "nothing_handed"
         return out
     report = await _run_pass(service, pass_id, handed, resume=False, runner=runner)
     return _passed(out, ledger, pass_id, handed, report, resumed=False)
+
+
+def _grouping(service: Any, sources: Any, clock: Callable[[], datetime]) -> Callable[[dict], list]:
+    """The capture grouping the pass hands with (:func:`.capture_groups.groups`, at *clock*'s time): the profiles of a
+    home's captures, kept on *service* across its turns (a capture's files never change once written)."""
+    from .capture_groups import HomeProfiles, groups
+
+    profiles = getattr(service, "profiles", None)
+    if profiles is None:
+        try:
+            evidence = sources.stores().evidence
+        except Exception:  # noqa: BLE001 - without the evidence store, only the captures' own records relate them
+            evidence = None
+        profiles = HomeProfiles(sources.state_dir, evidence)
+        try:
+            service.profiles = profiles
+        except AttributeError:
+            pass
+
+    def grouping(entries: dict) -> list:
+        return groups(entries, profiles, now=clock())
+
+    return grouping
 
 
 async def step_async(

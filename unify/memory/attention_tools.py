@@ -39,6 +39,8 @@ class AttentionPass:
     sources: Any = None
     tests: Any = None  # writer_tests.TestContext
     exported: set = field(default_factory=set)
+    #: the capture group the pass was handed (``/inputs/attention/group.json``), None for a pass with no group
+    group: dict | None = None
 
     @property
     def decisions_path(self) -> Path:
@@ -101,13 +103,21 @@ def open_entries(ctx: Any, args: dict) -> "_wt.Reply":
 
 def take(ctx: Any, args: dict) -> "_wt.Reply":
     """``tools.take(entry_id)``: pull an open entry into this pass; its material is exported under /inputs and it is
-    owed a read and a decision like the handed ones."""
+    owed a read and a decision like the handed ones. A closed entry (an earlier pass decided it) is taken read-only:
+    its material is exported and what was decided is returned, so earlier captures of the same kind can be read with
+    the new ones; nothing about it is owed or changed (rev 2.1)."""
     writer, att = _state(ctx)
     if att is None:
         return _no_ledger("take")
     eid = args.get("entry_id")
     if not isinstance(eid, str) or not eid.strip():
         return _refused("take", "entry_id is one entry id, a string; for example tools.take('a1b2c3d4e5f60718')")
+    closed = att.ledger.get(eid.strip())
+    if closed is not None and closed.state == "closed":
+        paths = export_context(att, [closed])
+        return _wt.Reply(_json({"entry": closed.entry, "kind": closed.kind, "taken": "read-only",
+                                "decision": closed.decision, "decided_items": list(closed.decided_items),
+                                "material": paths}))  # fmt: skip
     got = att.ledger.take(att.pass_id, eid.strip())
     if not got.taken:
         return _refused("take", got.detail + "; tools.open_entries() lists the open entries")
@@ -319,6 +329,80 @@ def export_entries(writer: Any, att: AttentionPass, entries: list) -> None:
     index.write_text(json.dumps(doc, sort_keys=True, indent=1) + "\n", encoding="utf-8")
 
 
+def export_context(att: AttentionPass, entries: list) -> list[str]:
+    """Export closed *entries*' material read-only under the pass's ``/inputs`` (their staging and captures), for
+    reading beside the pass's own entries; nothing is owed for them. Returns the box paths exported."""
+    from . import captures as _captures
+    from . import staging as _staging
+
+    state = att.ledger.state_dir
+    root = state / "memory-staging"
+    out: list[str] = []
+    cids: list[str] = []
+    for e in entries:
+        for name in _att.pass_episodes([e]):
+            dest = att.inputs / "staging" / name
+            if not dest.exists():
+                view = _staging.read(root, name)
+                if view is not None:
+                    _staging.export(view, dest)
+            if dest.exists():
+                out.append(f"{_att.STAGING_INPUTS}/{name}/")
+        cids += list(e.refs.captures)
+    if cids:
+        try:
+            done = _captures.export_for_writer(_captures.store_dir(state), cids, att.inputs / "captures")
+        except OSError:
+            done = []
+        out += [f"{_att.CAPTURES_INPUTS}/{c}/" for c in done]
+    return out
+
+
+def export_group(att: AttentionPass, handed: list) -> dict | None:
+    """Write ``/inputs/attention/group.json`` (:func:`.capture_groups.group_doc`): for a pass handed a capture group
+    (:meth:`.attention.Ledger.group_of`) its members, its related closed entries, why each pair is related and the
+    library items it touches, with the material of its most recent related closed entries (at most
+    :data:`.attention.K`; the rest are listed, and ``tools.take`` exports any of them) exported read-only; for any
+    other pass its entries and the library items they touch (``group`` null). Returns the document (None only when
+    the pass has no entries); :attr:`AttentionPass.group` keeps it when it is a group."""
+    from . import capture_groups as cg
+    from . import captures as _captures
+
+    if not handed:
+        return None
+    row = att.ledger.group_of(att.pass_id) or {"group": None, "due": None, "members": [e.entry for e in handed]}
+    entries = att.ledger.entries()
+    members = [e for e in handed if e.entry in set(row.get("members") or [])] or list(handed)
+    context = [entries[c] for c in row.get("context") or [] if c in entries]
+    try:
+        evidence = att.sources.stores().evidence if att.sources is not None else None
+    except Exception:  # noqa: BLE001 - without the evidence store the captures' own records still describe them
+        evidence = None
+    profiles = cg.HomeProfiles(att.ledger.state_dir, evidence)
+    pairs = []
+    everyone = [*members, *context]
+    for i, a in enumerate(everyone):
+        for b in everyone[i + 1 :]:
+            why = cg.related(profiles(a), profiles(b))
+            if why:
+                pairs.append({"a": a.entry, "b": b.entry, "why": why})
+    group = cg.Group(id=str(row.get("group") or ""), open=members, context=context, relations=pairs,
+                     due=row.get("due") if isinstance(row.get("due"), str) else None)  # fmt: skip
+    landed = {cid: doc.get("item") for cid, doc in _captures.landings(_captures.store_dir(att.ledger.state_dir)).items()}
+    doc = cg.group_doc(group, profiles, landed=landed)
+    if row.get("group") is None:
+        doc["group"] = None
+    shown = context[-_att.K :]
+    doc["exported_closed"] = [e.entry for e in shown]
+    export_context(att, shown)
+    path = att.inputs / "attention" / cg.GROUP_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, sort_keys=True, indent=1) + "\n", encoding="utf-8")
+    if doc["group"] is not None:
+        att.group = doc
+    return doc
+
+
 def write_read_log(writer: Any) -> None:
     """At the pass's end: keep its read evidence (:func:`reads_of`) beside its records (``read-log.json``), for the
     service's :meth:`.attention.Ledger.verify_reads`. Never raises."""
@@ -336,6 +420,22 @@ def first_message(att: AttentionPass, req: Any, wall: str) -> str:
     ids and the number)."""
     handed = list(getattr(req, "attention", None) or [])
     ids = ", ".join(f"{e.entry} ({e.kind})" for e in handed)
+    group = getattr(att, "group", None)
+    if group is not None:
+        closed = len(group.get("related_closed") or [])
+        lib = len(group.get("library_items") or [])
+        return (
+            f"Pass {att.pass_id}: a group of {len(handed)} related "
+            f"{'capture' if len(handed) == 1 else 'captures'} needs your attention: {ids}"
+            + (f", with {closed} related {'capture' if closed == 1 else 'captures'} an earlier pass decided"
+               if closed else "")
+            + ".\n"
+            "/inputs/attention/group.json says why the harness put them together (from its records only), what earlier "
+            f"passes decided, and the {lib} library {'item' if lib == 1 else 'items'} the group touches. Read them "
+            "together with the library, and make or reshape items that hold beyond any one of them. What each entry "
+            "owes a read is in /inputs/attention/index.json; decide each with tools.decide.\n"
+            f"Wall clock for this pass: {wall} s.\n"
+        )
     return (
         f"Pass {att.pass_id}: {len(handed)} {'entry needs' if len(handed) == 1 else 'entries need'} your attention: "
         f"{ids}.\n"

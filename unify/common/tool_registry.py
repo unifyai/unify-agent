@@ -1093,20 +1093,25 @@ OPEN_ENTRIES = RegisteredTool(
 
 TAKE = RegisteredTool(
     name="take",
-    summary="take an open entry into this pass: it is then owed a read and a decision.",
+    summary="take an entry into this pass: an open one is owed a read and a decision; a closed one is read-only.",
     description=(
         "Take one open entry into this pass. Its material is then under /inputs (its attention files, staging and "
-        "captures), and it is owed a read and a decision like the entries handed to you."
+        "captures), and it is owed a read and a decision like the entries handed to you. Taking a closed entry (one "
+        "an earlier pass decided, such as a related capture group.json lists) exports its material read-only and "
+        "returns what was decided; nothing about it is owed."
     ),
     parameters={
         "type": "object",
-        "properties": {"entry_id": {"type": "string", "description": "The entry's id, as open_entries lists it."}},
+        "properties": {
+            "entry_id": {"type": "string", "description": "The entry's id, as open_entries or group.json lists it."},
+        },
         "required": ["entry_id"],
         "additionalProperties": False,
     },
     refusals=_REFUSED_REASON,
     roles=(_W,),
-    returns='JSON text: {"entry", "kind", "taken": true, "detail", "material": [the paths owed a read]}.',
+    returns='JSON text: {"entry", "kind", "taken": true, "detail", "material": [the paths owed a read]}; for a closed '
+    'entry {"entry", "kind", "taken": "read-only", "decision", "decided_items", "material": [the paths exported]}.',
     examples=('print(tools.take("a1b2c3d4e5f60718"))',),
     when="Take an open entry that shares a rule with one handed to you, so one decision can cover both.",
     kind="action",

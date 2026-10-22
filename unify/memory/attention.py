@@ -49,6 +49,11 @@ The age backstop: when the oldest open entry of any kind is older than the 90th-
 handed in the last :data:`STARVATION_PASSES` passes, it is handed first. :data:`K` entries per pass, the same
 everywhere; the writer may take more.
 
+**Capture groups** (rev 2.1, :mod:`.capture_groups`): the writer service hands with a grouping, so a
+``new_experience`` entry waits until its group of related captures is due (formed, joined, or waited out by counters),
+and a pass is then handed that group's open members with a ``group`` row naming its related closed entries. Every
+other kind is still handed at once.
+
 **Reopening.** A ``late_evidence`` entry reopens every closed entry that names one of the items its episode used or
 produced, when the signal is newer than that entry's last close; each reopen names its cause.
 
@@ -1161,11 +1166,21 @@ class Ledger:
         return sorted(entries, key=lambda e: (rank.get(e.kind, len(rank)), e.created_at, e.entry))
 
     def hand(
-        self, pass_id: str, k: int = K, *, ready: Callable[[AttentionEntry], bool] | None = None
+        self,
+        pass_id: str,
+        k: int = K,
+        *,
+        ready: Callable[[AttentionEntry], bool] | None = None,
+        grouping: Callable[[dict[str, AttentionEntry]], list] | None = None,
     ) -> list[AttentionEntry]:
         """Hand up to *k* open entries to *pass_id* (module docstring: order, the age backstop, alone after two
         misses); returns them in the order handed. With *ready* (:func:`entry_ready`), an open entry it refuses waits
-        (module docstring: waiting for an episode): it is not handed, and its first wait is recorded (a ``wait`` row)."""
+        (module docstring: waiting for an episode): it is not handed, and its first wait is recorded (a ``wait`` row).
+
+        With *grouping* (:func:`.capture_groups.groups` over the fold), the grouped kinds
+        (:data:`.capture_groups.GROUPED_KINDS`) wait for their group: every other open entry is handed first, as
+        above; else the first due group's open members, oldest first, up to *k*, with one ``group`` row naming the
+        group, why it is due and its related closed entries (the pass reads it, :func:`.attention_tools.group_of`)."""
         if not isinstance(pass_id, str) or not pass_id:
             raise LedgerError("pass_id is the pass's id, a non-empty string")
         if isinstance(k, bool) or not isinstance(k, int) or k < 1:
@@ -1185,8 +1200,37 @@ class Ledger:
                     pending = [e for e in pending if e not in waiting]
             if not pending:
                 return []
+            group_row: dict | None = None
+            if grouping is not None:
+                from .capture_groups import GROUPED_KINDS
+
+                now_state = {e.entry: e for e in state.values()}
+                waiting_ids = {e.entry for e in state.values() if e.state == "open"} - {e.entry for e in pending}
+                for wid in waiting_ids:
+                    now_state.pop(wid, None)  # an entry waiting for its episode is not part of a group's pass yet
+                immediate = [e for e in pending if e.kind not in GROUPED_KINDS]
+                if not immediate:
+                    due = [g for g in grouping(now_state) if g.due]
+                    if not due:
+                        return []
+                    g = due[0]
+                    members = [e for e in g.open if e in pending][:k]
+                    if not members:
+                        return []
+                    alone_members = [e for e in members if e.misses >= ALONE_AFTER_MISSES
+                                     or e.undecided >= ALONE_AFTER_MISSES]  # fmt: skip
+                    if alone_members:
+                        members = alone_members[:1]
+                    group_row = {"op": "group", "pass_id": pass_id, "group": g.id, "due": g.due,
+                                 "members": [e.entry for e in members],
+                                 "context": [e.entry for e in g.context], "at": self.now()}  # fmt: skip
+                    pending = members
+                else:
+                    pending = immediate
             alone = [e for e in pending if e.misses >= ALONE_AFTER_MISSES or e.undecided >= ALONE_AFTER_MISSES]
-            if alone:
+            if group_row is not None:
+                chosen = list(pending)
+            elif alone:
                 chosen = self._order(alone)[:1]
             else:
                 chosen = []
@@ -1207,9 +1251,18 @@ class Ledger:
                 {"op": "hand", "entry": e.entry, "pass_id": pass_id, "at": at, "hand_count": e.hand_count + 1}
                 for e in chosen
             ]
-            self._write(handed)
+            self._write(handed + ([group_row] if group_row is not None else []))
             got = fold([*rows, *handed])
         return [got[e.entry] for e in chosen]
+
+    def group_of(self, pass_id: str) -> dict | None:
+        """The ``group`` row written when *pass_id* was given its entries (its group, why it was due, its members and
+        its related closed entries), or None when the pass was given no group."""
+        found = None
+        for r in self.rows():
+            if r.get("op") == "group" and r.get("pass_id") == pass_id:
+                found = r
+        return found
 
     def take(self, pass_id: str, eid: str) -> TakeResult:
         """Pull an open entry into *pass_id*: it is then owed a read and a decision like the handed ones."""

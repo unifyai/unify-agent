@@ -267,10 +267,13 @@ async def _wait_for_item_served(home: Path, item: str, timeout_s: float = 300.0)
     """Wait (without blocking the request's event loop) until the commit requests now pin (``served_head``: what the
     next cell re-pins to) holds *item* (its path in the memory); that commit, or None when it was not served in time.
     The service lands on main and publishes ``served`` after it, and under load it can group the segment entries into
-    fewer passes, so neither main moving nor the item on main is enough: the wait is for the item where cells read it."""
+    fewer passes, so neither main moving nor the item on main is enough: the wait is for the item where cells read it.
+    A segment's capture alone waits for its group (rev 2.1); while the service is idle it is aged past the grouping's
+    idle time (:func:`harness.age_waiting_captures`), so it is due without the test waiting ten minutes."""
     import asyncio
     import time
 
+    from unify.memory import writer_service as ws
     from unify.memory.gitio import Repo
     from unify.memory.integration.paths import Paths
     from unify.memory.memory_writer import served_head
@@ -281,6 +284,8 @@ async def _wait_for_item_served(home: Path, item: str, timeout_s: float = 300.0)
         head = served_head(repo)
         if repo.run("ls-tree", "--name-only", head, "--", item).strip() == item:
             return head
+        if not (ws.read_state(home) or {}).get("pass_id"):
+            H.age_waiting_captures(home)
         await asyncio.sleep(0.25)
     return None
 

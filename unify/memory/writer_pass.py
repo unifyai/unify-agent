@@ -4201,6 +4201,8 @@ class WriterPass:
 
                 # what each handed entry owes a read, under /inputs (its staging, captures and attention files)
                 _at_tools.export_entries(self, self._attention, list(req.attention))
+                # rev 2.1: a capture group's related closed entries and the library items it touches
+                _at_tools.export_group(self._attention, list(req.attention))
                 wall = format(Decimal(str(float(self.cfg.deadline_s))).normalize(), "f")
                 first = _at_tools.first_message(self._attention, req, wall)
             pr = self._pass_record

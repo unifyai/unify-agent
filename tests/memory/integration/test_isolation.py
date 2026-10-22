@@ -256,7 +256,13 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
     (fork_dir / "fork.json").write_text(
         json.dumps({"episode": run.episode_id, "status": "ok", "files": ["summary.md"]}),
     )
-    stepped = ws.step(home, settings=SETTINGS)
+    # rev 2.1: a capture alone waits for its group; the service steps once the idle time has passed, so it is due
+    from datetime import datetime, timedelta, timezone
+
+    from unify.memory import capture_groups
+
+    later = datetime.now(timezone.utc) + timedelta(seconds=capture_groups.IDLE_S + 1)
+    stepped = ws.step(home, settings=SETTINGS, now=later)
 
     assert (
         sent

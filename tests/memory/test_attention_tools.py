@@ -124,10 +124,13 @@ def test_open_entries_take_and_decide(tmp_path):
     reads = at.pass_reads(home / "memory-state", "p1")
     assert f"/inputs/staging/{names[0]}/summary.md" in reads.paths
     assert tools.take(ctx, {"entry_id": ""}).status == "refused"
-    assert tools.take(ctx, {"entry_id": other}).status == "refused"  # closed: not open
+    # rev 2.1: a closed entry is taken read-only: its material and what was decided, and it stays closed
+    again = json.loads(tools.take(ctx, {"entry_id": other}).text)
+    assert again["taken"] == "read-only" and again["decision"] == "new_item" and led.get(other).state == "closed"
 
 
-def test_find_ranks_summaries_entries_and_items(tmp_path):
+def test_find_lists_summaries_entries_and_items_unranked_without_an_embedding_route(tmp_path):
+    """Rev 2.1, fix 8: no word matching ranks anything; with no embedding route (none here) find lists in order."""
     home = _home(tmp_path)
     led = Ledger(home)
     led.sync(_Src(_forks()))
