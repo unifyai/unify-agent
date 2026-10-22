@@ -484,8 +484,7 @@ class SandboxPolicy:
     # every mount, so no mount that contains them shows them.
     hidden: list[tuple[Path, str]] = field(default_factory=list)
     # Inside the workspace, masked after its bind (a file with a notice, a
-    # directory with an empty tmpfs): the secret scan's finds there and the
-    # store's files (store.sqlite, -wal, -shm) when the workspace holds them.
+    # directory with an empty tmpfs): the secret scan's finds there.
     workspace_masked: list[tuple[Path, str]] = field(default_factory=list)
     # The workspace's secret scan (_scan_workspace), and the warning written
     # to the log and the run's record when it stopped at its cap.
@@ -1952,9 +1951,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         #   by the lead's design (8 Oct: "the model should be able to grep any
         #   transcript even other sessions' and other agents' transcripts too.
         #   That's by design."). Every line is outcome-free (the outcome
-        #   section the harness rendered is redacted, unify/outcome.py), and
-        #   the harness-internal sessions (reviews, gates) are written to
-        #   internal-transcripts/, which is never mounted (``hidden`` below).
+        #   section the harness rendered is redacted, unify/outcome.py).
         readonly = [
             p
             for p in (
