@@ -178,7 +178,7 @@ def test_a_quality_finding_labels_its_item_and_a_hard_one_refuses(tmp_path):
     off = _Run(GateResult(True, {}), Manifest(), {}, "", "", tmp_path)
     off.fail("G2", f"{ITEM} held-out value refused: rows", ITEM)
     assert not off.res.passed and off.item_fail == {ITEM: ["G2"]}
-    assert labelled("G2", "x") and not labelled("G5", "x") and not labelled("G2", "ModuleNotFoundError: no x")
+    assert labelled("G2", "x") and not labelled("G5", "x") and not labelled("G2", "memory/x.py does not parse")
 
 
 # --- 1. a side-effect-only item lands, labelled with its effects and its replay test -----------------------------------------

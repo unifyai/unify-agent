@@ -22,7 +22,6 @@ from tests.memory.test_tool_channel_box import needs_box
 from unify.memory import captures
 from unify.memory import land_capture as lc
 from unify.memory import recognition
-from unify.memory.sandbox_run import run_confined
 
 
 def test_nothing_in_the_listing_or_the_landing_can_run_code_to_list():
@@ -73,22 +72,26 @@ def test_a_reader_is_reused_only_when_it_is_the_same_code_and_nothing_runs(tmp_p
 
 @needs_box
 @pytest.mark.timeout(600)
-def test_a_landing_runs_nothing_to_list_or_reuse_and_records_the_absence(tmp_path):
+def test_a_landing_runs_nothing_to_list_or_reuse_and_records_the_absence(tmp_path, monkeypatch):
+    from unify.memory import sandbox_run
+
     calls: list = []
 
-    def spy(argv, **kw):
+    def spy(*a, **kw):
         calls.append(json.dumps({k: kw.get(k) for k in ("ro", "rw", "cwd")}, default=str))
-        return run_confined(argv, **kw)
+        raise AssertionError("a landing started a confined run")
+
+    monkeypatch.setattr(sandbox_run, "_spawn_box", spy)
 
     ep = recorded_episode("e7", rows=ROWS)
     cid = _store(tmp_path / "store")
     box = tmp_path / "box"
     box.mkdir()
     reply = lc.land({"package": "readings", "name": "row_sums", "capture_id": cid}, store=tmp_path / "store",
-                    box=box, episode={"e7": ep}.get, blob=_no_blob, batch=["e7"], runner=spy)  # fmt: skip
+                    box=box, episode={"e7": ep}.get, blob=_no_blob, batch=["e7"])  # fmt: skip
     assert reply.status == "ok", reply.text
     assert recognition.LISTED_BY_STRUCTURE in reply.text
-    assert not any("/recognition" in c or "/reader-" in c for c in calls), calls
+    assert calls == []
     landing = captures.landings(tmp_path / "store")[cid]
     assert landing["recognition"] == recognition.NOT_RUN
 

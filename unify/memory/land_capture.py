@@ -44,8 +44,8 @@ files are read without following a link, only as regular files, size-bounded; ``
 the id; the capture is not failed and not retired; the gate's safety checks hold (:func:`.captures.safety`); nothing
 landed holds a key-shaped string or a URL with a password; *package* and *name* are plain module identifiers. Every
 file is written through :func:`.memory_files.write` (the same path checks as every host write, never through a link)
-and the fixture tool; the caller then measures the quota as after any write. Model-written code runs only in
-:func:`.sandbox_run.run_confined`; on the host it is only parsed as data.
+and the fixture tool; the caller then measures the quota as after any write. A landing runs nothing (rev 2.1): the
+captured code is only parsed as data.
 
 Not in this build: the ``episode`` cover of the ``request`` runner (design I.3.5) on the procedure's entry.
 """
@@ -75,7 +75,7 @@ from . import safe_paths as _safe
 from . import writer_tools as _wt
 from .redact import KEY_SHAPED
 from .request_value import REQUEST_CLASS
-from .sandbox_run import PYTHON, SandboxResult, run_confined
+from .sandbox_run import PYTHON
 
 TOOL = "land_capture"
 #: A capture id as the tool takes it: the store's 16 hex digits, optionally prefixed ``capture:``.
@@ -582,7 +582,6 @@ def land(
     blob: Callable[[str], bytes],
     batch: list[str] | tuple[str, ...] = (),
     python: Path | None = None,
-    runner: Callable[..., SandboxResult] = run_confined,
     parse: Callable[[str, str], tuple[str, str]] | None = None,
     pass_id: str | None = None,
 ) -> _wt.Reply:
@@ -591,14 +590,14 @@ def land(
     where = (_wt.path_row("/memory/memory", "write"),)
     work = Path(tempfile.mkdtemp(prefix="land-capture-"))
     try:
-        return _land(args, store, Path(box), episode, blob, batch, python or PYTHON, runner, parse, work, pass_id)
+        return _land(args, store, Path(box), episode, blob, batch, python or PYTHON, parse, work, pass_id)
     except _NotLanded as n:
         return _wt.refused(TOOL, n.form, where, **n.fields)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _land(args, store, box, episode, blob, batch, python, runner, parse, work, pass_id=None) -> _wt.Reply:
+def _land(args, store, box, episode, blob, batch, python, parse, work, pass_id=None) -> _wt.Reply:
     package, name = args.get("package"), args.get("name")
     for what, v in (("package", package), ("name", name)):
         if not isinstance(v, str) or not _IDENT.match(v) or keyword.iskeyword(v):

@@ -157,7 +157,7 @@ def test_a_landing_runs_nothing(tmp_path, monkeypatch):
     box = tmp_path / "box"
     box.mkdir()
     reply = lc.land({"package": "readings", "name": "row_sums", "capture_id": cid}, store=tmp_path / "store", box=box,
-                    episode={"e7": ep}.get, blob=_no_blob, batch=["e7"], runner=_refuse)  # fmt: skip
+                    episode={"e7": ep}.get, blob=_no_blob, batch=["e7"])  # fmt: skip
     assert reply.status == "ok", reply.text
     from unify.memory import captures
 

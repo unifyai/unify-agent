@@ -189,15 +189,10 @@ def _owners(man: Manifest, test: str) -> list[str]:
 #: behaviour, its examples). G1 (layout, provenance, the manifest, links), G5 (items and coverage kept) and G6
 #: (safety) stay hard, as do the library's other tests (a finding no item owns).
 LABELLED_CHECKS = frozenset({"G2", "G3"})
-#: What makes a G2 or G3 finding hard all the same: syntax, an import that fails, a missing path, the gate's own kit.
+#: What makes a G2 or G3 finding hard all the same: code that does not parse, a missing path, the gate's own kit, a
+#: key-shaped string. (The texts of failed imports and runs went with the runs: the gate runs no code.)
 _HARD_MARKS = (
     "does not parse",
-    "SyntaxError",
-    "IndentationError",
-    "ImportError",
-    "ModuleNotFoundError",
-    "cannot be imported",
-    "could not be imported",
     "is not in the candidate",
     "[library_mode:plain]",
     "key-shaped",
