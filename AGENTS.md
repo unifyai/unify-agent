@@ -35,13 +35,12 @@ The assistant is **reactive**: it acts on the messages it receives and on the wo
 ```bash
 uv sync --all-groups
 cp .env.example .env        # add one LLM provider key
-.venv/bin/python -m unify   # chat; `unify` is the same entry point on PATH inside the venv
+.venv/bin/unify act "request"   # `act` is the default; with no request it reads stdin
 ```
 
 - The runtime's home is `UNIFY_HOME` (default `~/.unify`): `store.sqlite`, `embeddings.sqlite` (a cache of the vectors skill search compares, safe to delete), `workspace/` (the actor's working directory, attachments and downloads) and `logs/`.
 - `unify --debug` streams runtime logs to the terminal as well as the log files; `unify --home DIR` uses another home.
-- The chat CLI lives in `unify/cli.py`. It publishes `UnifyMessageReceived` events on the in-memory event broker and renders the `UnifyMessageSent` replies, so it is one front end over the same loop any client can drive.
-- `unify act "request"` bypasses the conversation loop: one `CodeActActor` takes the request, progress streams to stderr from the handle's notification queue, a question the actor asks is answered from the terminal through `next_clarification`/`answer_clarification`, and the result goes to stdout (`--json` adds token accounting, `--persist` keeps the sandbox for follow-ups, `--no-store` skips the storage review). Use it for like-for-like comparisons with single-loop harnesses and for benchmark runners.
+- The CLI lives in `unify/cli.py`. `unify act "request"` runs one `CodeActActor` on the request: progress streams to stderr from the handle's notification queue, a question the actor asks is answered from the terminal through `next_clarification`/`answer_clarification`, and the result goes to stdout. Its options: `--json` (the result as a JSON object, with token accounting), `--jsonl` (newline-delimited JSON on stdin and stdout, for a driving program), `--persist` (further lines are follow-ups), `--no-clarify` (unattended: questions get no reply), `--timeout SECONDS` and `--quiet`. Memory has one switch, `UNIFY_MEMORY` (`off`, `on`, `in_episode`; see `CONFIG.md`), and no command-line flag.
 
 ## Development environment
 
