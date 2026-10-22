@@ -16,7 +16,7 @@ Each root holds ``memlab/`` (the modules, a git stub and an ``__init__`` carryin
 blobs the tests name, bounded). ``memlab.inputs.blob`` finds ``blobs/`` beside the kit, so a test reads a
 recorded blob the same way in every place; a test naming the ``/inputs`` path itself would not.
 
-Library code (a module under ``env/``, not a test) must never use the kit: the actor imports the library
+Library code (a module or package init under ``memory/``, not a test) must never use the kit: the actor imports the library
 without it. :func:`library_uses` finds such uses and :func:`unresolved` finds a test's ``memlab`` imports the
 current kit does not provide; the gate refuses both (G3, ``[qa:kit]``). Standard library only on the box side;
 this module runs on the host.
@@ -30,7 +30,6 @@ import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .manifest import TESTKIT, TESTS_DIR
 
 KIT_VERSION = "1"  # bump when a module's public names change; stored tests are checked against the kit
 # (replay.env_from/calls/call_of and RecordedEnv.issued/misses were added within "1": additive, and no stored
@@ -129,9 +128,15 @@ def stage(
 # --- which files use the kit ----------------------------------------------------------------------------------
 
 
+#: The library layout's test-side kinds (:func:`.layout.classify`): ``memory/<package>/tests/`` files.
+TEST_SIDE_KINDS = frozenset({"test", "test_helper", "fixture"})
+
+
 def is_test_side(path: str) -> bool:
-    """Whether *path* is test-side: under ``env/<channel>/tests/`` or the root test kit."""
-    return bool(TESTS_DIR.match(path)) or path == TESTKIT
+    """Whether *path* is test-side: a test, a test helper or a fixture under ``memory/<package>/tests/``."""
+    from .layout import classify
+
+    return classify(path) in TEST_SIDE_KINDS
 
 
 def read_sources(tree: Path, paths: Iterable[str]) -> dict[str, bytes]:
@@ -154,9 +159,9 @@ def read_sources(tree: Path, paths: Iterable[str]) -> dict[str, bytes]:
 
 
 def tree_paths(tree: Path) -> list[str]:
-    """The test-side paths of a checked-out library (``env/*/tests/**`` and the root test kit)."""
-    out = [TESTKIT] if (tree / TESTKIT).is_file() else []
-    for p in sorted(tree.glob("env/*/tests/**/*")):
+    """The test-side paths of a checked-out library (``memory/*/tests/**``)."""
+    out: list[str] = []
+    for p in sorted(tree.glob("memory/*/tests/**/*")):
         if len(out) >= MAX_SCAN_FILES:
             break
         if p.is_file() and not p.is_symlink():

@@ -41,7 +41,7 @@ class QAChecks:
         imports of a module named only at run time, and tests that name the ``/inputs`` path (each would work
         in one place a library's tests run, not all).
 
-        Run wherever the kit is mounted (a switch on, or the library's tests use it); static, no test runs.
+        Run on every check and merge; static, no test runs.
         """
         run = self.run
         for p in sorted(set(run.changed) & set(run.c_files)):

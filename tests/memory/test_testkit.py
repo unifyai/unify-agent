@@ -86,9 +86,21 @@ def test_which_tests_use_the_kit():
     assert testkit.uses_kit([PLAIN], store_has, ["ab" * 32])  # names a recorded blob
     assert not testkit.uses_kit([PLAIN], store_has, ["cd" * 32])  # a hex token, no blob
     assert not testkit.uses_kit([PLAIN, b"not python ("], store_has, [])
-    assert testkit.is_test_side("env/phone/tests/test_x.py")
-    assert testkit.is_test_side("unify_memory_testkit.py")
-    assert not testkit.is_test_side("env/phone/__init__.py")
+    # the library layout's test side: tests, test helpers and fixtures under memory/<package>/tests/
+    assert testkit.is_test_side("memory/phone/tests/test_x.py")
+    assert testkit.is_test_side("memory/phone/tests/helpers.py")
+    assert testkit.is_test_side("memory/phone/tests/data/rows.json")
+    assert not testkit.is_test_side("memory/phone/clock.py")
+    assert not testkit.is_test_side("memory/phone/__init__.py")
+    assert not testkit.is_test_side("env/phone/tests/test_x.py")  # v2's layout is no library's
+
+
+def test_the_test_side_paths_of_a_library_tree(tmp_path):
+    for rel in ("memory/phone/clock.py", "memory/phone/tests/test_clock.py", "memory/phone/tests/data/a.json",
+                "notes/phone/n.md"):  # fmt: skip
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x\n")
+    assert testkit.tree_paths(tmp_path) == ["memory/phone/tests/data/a.json", "memory/phone/tests/test_clock.py"]
 
 
 def test_dynamic_imports_of_the_kit_are_kit_imports():
@@ -177,15 +189,15 @@ def test_a_tree_gets_the_kit_only_when_its_tests_use_it(tmp_path):
     sha = store.put(b"recorded")
     kw = dict(has_blob=store.has, read_blob=store.get, blob_size=store.size)
     plain = tmp_path / "plain"
-    (plain / "env/phone/tests").mkdir(parents=True)
-    (plain / "env/phone/tests/test_x.py").write_bytes(PLAIN)
+    (plain / "memory/phone/tests").mkdir(parents=True)
+    (plain / "memory/phone/tests/test_x.py").write_bytes(PLAIN)
     assert not testkit.stage_for_tree(plain, tmp_path / "k1", **kw)
     assert not (tmp_path / "k1").exists()
     assert testkit.stage_for_tree(plain, tmp_path / "k2", force=True, **kw)
     assert (tmp_path / "k2/memlab/inputs.py").is_file()
     uses = tmp_path / "uses"
-    (uses / "env/phone/tests").mkdir(parents=True)
-    (uses / "env/phone/tests/test_x.py").write_text(f"SCREEN = {sha!r}\n")
+    (uses / "memory/phone/tests").mkdir(parents=True)
+    (uses / "memory/phone/tests/test_x.py").write_text(f"SCREEN = {sha!r}\n")
     assert testkit.stage_for_tree(uses, tmp_path / "k3", **kw)
     assert (tmp_path / "k3/blobs" / sha).read_bytes() == b"recorded"
 

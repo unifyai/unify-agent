@@ -157,7 +157,6 @@ ITEM_ID = {
     "workflow": re.compile(r"^workflows/[a-z0-9][a-z0-9_-]*\.md\Z"),
 }
 SKELETON_ID = re.compile(rf"^env/{_CH}\Z")
-TESTS_DIR = re.compile(r"^env/[^/]+/tests/(?P<rest>.+)\Z")
 # Files that configure git, pytest or the interpreter, refused anywhere in the memory tree.
 FORBIDDEN_NAMES = frozenset(
     {
