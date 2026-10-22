@@ -1,13 +1,15 @@
 """Capturing every completed attempt at once, into a store of its own beside the library.
 
 When the episode-end fork settles, the harness (never an agent) captures the attempt: it checks the fork's
-``procedure.py`` for safety, runs it confined on the episode's request text, compares its result with what the
-episode handed back, and writes ``procedure.py``, ``signature.json`` and ``record.json`` under
-``<store>/<capture id>/``, where the capture id is the first 16 hex digits of the sha256 of ``procedure.py``. The
+``procedure.py`` for safety and writes ``procedure.py``, ``signature.json`` and ``record.json`` under
+``<store>/<capture id>/``, where the capture id is the first 16 hex digits of the sha256 of ``procedure.py``. Rev 2
+(the trace contract): the procedure is never run; its record says so, its signature describes what was recorded,
+and its outcome comes from the episode's signals only. The
 store is not the library: only the writer edits the library, and the writer reads captures as pool entries.
 
 The applicability signature is computed by the harness and holds no identifier and no request text, even when the
-request prints aliases or ids. A failed attempt is captured as negative knowledge (``outcome: "failed"``).
+request prints aliases or ids. An attempt with a contrary signal is captured as negative knowledge
+(``outcome: "contrary"``).
 
 Every name this file assumes for code that does not exist yet is in the block of constants below, so the code's
 real names can be put in one place.
@@ -32,7 +34,7 @@ from unify.memory.signals import Signal
 # ---------------------------------------------------------------------------------------------------------------
 # Assumed names (the spec leaves these open; adapt them here)
 # ---------------------------------------------------------------------------------------------------------------
-#: The capture step's module and function: ``capture(staging_dir, episode, store, *, signals, checker_visible)``.
+#: The capture step's module (its step is ``capture_trace_step(staging_dir, episode, store, *, signals)``).
 CAPTURES_MODULE = "unify.memory.captures"
 #: The store's directory name under the state home, and the ``Paths`` property that names it.
 STORE_DIR_NAME = "memory-captures"
@@ -49,15 +51,16 @@ FORK_PROCEDURE_KIND = "procedure"
 FORK_BROKE_KIND = "broke"
 #: Signature fields.
 SIGNATURE_FIELDS = ("input", "output", "relations", "constraints", "goal")
-#: Reproduction outcomes, the failed outcome, and the renamed starting level and status.
+#: The older reproduction outcome and failed outcome (a record the pool still reads), the trace contract's negative
+#: outcome, and the renamed starting level and status.
 REPRODUCES, DIFFERS = "reproduces", "differs"
 FAILED = "failed"
+CONTRARY = "contrary"
 LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
 START_STATUS = "on-trial"
 #: Pool kinds the writer reads captures through, and the pool's reader of the store.
 POOL_CAPTURE_KIND = "capture"
 POOL_FAILURE_KIND = "failure"
-POOL_FROM_CAPTURES = "from_captures"  # pool.from_captures(store) -> list[Entry]
 #: The writer's tool that lands a capture, and its brief text (quoted from the spec).
 LAND_TOOL = "land_capture"
 LAND_CALL_TEXT = "land_capture(capture_id, package, name)"
@@ -74,9 +77,11 @@ def _capture(staging: Path, ep: Episode, store: Path, signals: list[Signal]):
 
 
 def _from_captures(store: Path):
-    from unify.memory import pool
+    """The store as the pool reads it at a pass's start (``Pool.enter_captures``): each capture of
+    ``captures.load(store)``, in id order, as ``pool.from_capture``'s entry."""
+    from unify.memory import captures, pool
 
-    return getattr(pool, POOL_FROM_CAPTURES)(store)
+    return [pool.from_capture(cid, doc) for cid, doc in sorted(captures.load(store).items())]
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -134,34 +139,6 @@ def applies(value):
 def holds(value, result):
     """The result is the input in ascending order."""
     return result == sorted(value)
-'''
-
-#: Ignores its input: reproduces on [5, 3, 9, 1], differs on any other list of the same shape.
-CONSTANT_PROCEDURE = '''"""Always the same list."""
-
-
-def read_input(text):
-    """The numbers on the last line."""
-    return [int(x) for x in text.strip().splitlines()[-1].split()]
-
-
-def run(value):
-    """A fixed list."""
-    return [1, 3, 5, 9]
-'''
-
-RANDOM_PROCEDURE = '''"""Sorted, with noise."""
-import random
-
-
-def read_input(text):
-    """The numbers on the last line."""
-    return [int(x) for x in text.strip().splitlines()[-1].split()]
-
-
-def run(value):
-    """The numbers in ascending order, plus a random draw."""
-    return sorted(value) + [random.random()]
 '''
 
 WRONG_PROCEDURE = '''"""Sort descending (the request asked for ascending)."""
@@ -356,18 +333,24 @@ def test_a_completed_attempt_is_captured_with_its_procedure_signature_and_record
     sig = json.loads((d / SIGNATURE_FILE).read_text())
     assert set(SIGNATURE_FIELDS) <= set(sig)
     assert sig["input"] and sig["output"]
-    held = _held(sig["relations"])
-    assert "same_outer_length" in held and "scalar_output" not in held
+    # rev 2: the signature describes what was recorded: the value handed back (a list of whole numbers), and no
+    # relation that only a run's read value could show
+    assert sig["output"]["tree"] == ["int"]
+    assert "scalar_output" not in _held(sig["relations"])
     constraints = json.dumps(sig["constraints"])
     assert "applies" in constraints and "holds" in constraints
+    assert sig["constraints"]["applies"]["held"] is None and sig["constraints"]["holds"]["held"] is None
     assert "ascending" in sig["goal"]  # the goal is the summary's Asked section
 
     rec = _record(store, cid)
     assert rec["episodes"] == ["ep-0001"]
-    assert rec["reproduces"] == REPRODUCES
-    assert rec["deterministic"] is True
-    assert rec["applies"] is True and rec["holds"] is True
-    assert rec["outcome"] != FAILED
+    # rev 2: never run to classify it: no reproduction, no determinism, no conditions judged
+    assert rec["own_check"] == {"ran": False, "why": "a capture is never run to classify it"}
+    assert "reproduces" not in rec
+    assert rec["deterministic"] is None
+    assert rec["applies"] is None and rec["holds"] is None
+    assert rec["value"]["present"] is True
+    assert rec["outcome"] == "positive"
     assert rec["level"] in LEVELS[:2]
     assert rec["status"] == START_STATUS
     assert isinstance(rec["track"], dict)
@@ -376,7 +359,7 @@ def test_a_completed_attempt_is_captured_with_its_procedure_signature_and_record
     assert len(rows) == 1
     row = rows[0]
     assert row["capture_id"] == cid and row["episode"] == "ep-0001"
-    assert row["safety"] == "ok" and row["reproduces"] == REPRODUCES
+    assert row["safety"] == "ok" and row["run"] == "not run" and "reproduces" not in row
     assert row["published_at"]
 
 
@@ -401,7 +384,8 @@ def test_the_signature_is_the_same_when_only_printed_identifiers_change(tmp_path
 
 
 @needs_bwrap
-def test_the_procedure_runs_confined_never_on_the_host(tmp_path, monkeypatch, request):
+def test_the_procedure_never_runs(tmp_path, monkeypatch, request):
+    """Rev 2: the capture step runs no model-written code at all, on the host or in a box."""
     # outside /tmp on purpose: the box's /tmp is private, so a probe there would prove nothing
     root = Path(__file__).resolve().parents[2] / "logs" / "capture_store_tests"
     digest = hashlib.md5(request.node.nodeid.encode()).hexdigest()[:12]
@@ -414,15 +398,11 @@ def test_the_procedure_runs_confined_never_on_the_host(tmp_path, monkeypatch, re
         source = _confinement_probe(sentinel)
         store, cid = _captured(tmp_path, source)
         assert not sentinel.exists(), "the procedure ran on the host"
-        assert _record(store, cid)["reproduces"] == REPRODUCES  # it saw an empty environment
+        rec = _record(store, cid)
+        assert rec["own_check"]["ran"] is False and [c["run"] for c in rec["cases"]] == ["not run"]
+        assert [r["run"] for r in _events(store)] == ["not run"]
     finally:
         shutil.rmtree(probe_dir, ignore_errors=True)
-
-
-@needs_bwrap
-def test_a_non_deterministic_procedure_is_marked(tmp_path):
-    store, cid = _captured(tmp_path, RANDOM_PROCEDURE)
-    assert _record(store, cid)["deterministic"] is False
 
 
 @needs_bwrap
@@ -441,20 +421,13 @@ def test_a_key_shaped_string_is_refused_before_anything_runs(tmp_path):
 
 
 @needs_bwrap
-def test_an_attempt_with_a_contrary_signal_is_captured_as_failed(tmp_path):
+def test_an_attempt_with_a_contrary_signal_is_captured_as_negative_knowledge(tmp_path):
+    from unify.memory.captures import negative
+
     store, cid = _captured(tmp_path, label="fail")
     rec = _record(store, cid)
-    assert rec["outcome"] == FAILED
+    assert rec["outcome"] == CONTRARY and negative(rec)
     assert rec["status"] == START_STATUS
-
-
-@needs_bwrap
-def test_a_procedure_whose_result_differs_is_captured_as_failed(tmp_path):
-    store, cid = _captured(tmp_path, WRONG_PROCEDURE)
-    rec = _record(store, cid)
-    assert rec["reproduces"] == DIFFERS
-    assert rec["outcome"] == FAILED
-    assert rec["level"] == LEVELS[0]
 
 
 # --- the store sits outside every root a box can write or read -----------------------------------------------
