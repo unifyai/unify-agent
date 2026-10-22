@@ -485,10 +485,12 @@ def test_an_actor_report_on_the_record_is_a_message_and_a_failed_use(tmp_path):
     msg = next(e for e in made if e.kind == "message")
     assert msg.refs.record_seq == 12 and msg.refs.items == ("notes/invoices/totals.md",)
     assert msg.refs.episodes == ("3f9a0c1d2e4b5a69",)
-    # the actor report reader of the home's sources (the role, the writer mention and an item ref)
-    assert at._actor_report(entry)
-    assert not at._actor_report({**entry, "role": "fork", "author": "fork-3f9a"})
-    assert not at._actor_report({**entry, "refs": ["3f9a0c1d2e4b5a69/action:7"]})
+    # the home's sources read an actor's entry to the writer (the role and the writer mention); which items it is about
+    # comes from its item refs, else from the library names it gives (test_harmful_items_are_revisited.py)
+    assert at._actor_to_writer(entry)
+    assert at._actor_to_writer({**entry, "refs": ["3f9a0c1d2e4b5a69/action:7"]})
+    assert not at._actor_to_writer({**entry, "role": "fork", "author": "fork-3f9a"})
+    assert not at._actor_to_writer({**entry, "mentions": []})
 
 
 def test_material_names_what_each_kind_owes(tmp_path):

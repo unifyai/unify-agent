@@ -13,9 +13,10 @@ kind                   created when
 =====================  ==================================================================================================
 ``new_experience``     an episode's (or a segment's) fork settled with any output: the summary, plus the procedure
 ``own_check_failed``   never made under rev 2 (no capture is run to classify it); kept so an older ledger still folds
-``use_went_badly``     a use of an item was failed (an error, ``holds`` false, a contrary signal after it), or an actor
-                       reported a problem about it on the run record (an actor entry to the writer with an ``item:``
-                       ref)
+``use_went_badly``     a use of an item was failed (an error, ``holds`` false, a contrary signal after it) or refused (the
+                       item refused the call, ``MemoryInputError``), or an actor wrote to the writer about it on the run
+                       record (an actor entry to the writer with an ``item:`` ref, or naming by its library name an item
+                       its episode used: :func:`named_items`)
 ``late_evidence``      a signal arrived after its episode ended
 ``repeated_use``       an item was called in 2 or more new episodes since the writer last read it
 ``deferred``           the writer deferred an entry, or the gate refused a draft
@@ -69,6 +70,7 @@ import hashlib
 import json
 import os
 import posixpath
+import re
 import stat
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -1944,12 +1946,15 @@ class HomeSources:
         from .signals import _CONTRARY  # the (source, label) pairs that contradict an episode
 
         out: list[UseFailure] = []
-        ev = self.stores().evidence
         for f in self._episode_facts():
             contrary = None
             for item, u in f.items.items():
                 for use in trust_uses(f, u):
                     verdict, why, _ = trust.judge(use)
+                    # a refusal is never a failure of the item's trust record (it was not built for that input), but
+                    # it is a use that went badly: the writer reads it
+                    if use.outcome == "refused":
+                        verdict, why = trust.FAILED, "refused"
                     if verdict != trust.FAILED:
                         continue
                     sigs: tuple[str, ...] = ()
@@ -1957,20 +1962,26 @@ class HomeSources:
                         if contrary is None:
                             contrary = tuple(
                                 s.signal_id
-                                for s in ev.signals_for(f.episode_id)
+                                for s in self.stores().evidence.signals_for(f.episode_id)
                                 if (s.source, s.label) in _CONTRARY
                             )
                         sigs = contrary
                     out.append(UseFailure(f.episode_id, item, str(why), sigs))
                     break
-        # an actor's report about an item, addressed to the writer on the run record
+        # an actor's report about an item, addressed to the writer on the run record: the items its ``item:`` refs
+        # name, else the items its episode used that it names by their library names
         for r in self.record_entries():
-            if not _actor_report(r):
+            if not _actor_to_writer(r):
                 continue
             ep = r.get("episode") if isinstance(r.get("episode"), str) else None
-            for ref in r.get("refs") or []:
-                if isinstance(ref, str) and ref.startswith("item:") and ep:
-                    out.append(UseFailure(ep, ref[len("item:") :], "actor_reported", (), int(r["seq"])))
+            if not ep:
+                continue
+            items = [ref[len("item:") :] for ref in r.get("refs") or [] if isinstance(ref, str) and ref.startswith("item:")]
+            if not items:
+                text = r.get("text") if isinstance(r.get("text"), str) else ""
+                items = named_items(text, self.episode_items(ep))
+            for item in items:
+                out.append(UseFailure(ep, item, "actor_reported", (), int(r["seq"])))
         return out
 
     def _ended(self) -> dict[str, str]:
@@ -2095,16 +2106,37 @@ class HomeSources:
             return _read_rows(self.state_dir / "agents" / "run-record.jsonl")
 
 
-def _actor_report(r: Mapping[str, Any]) -> bool:
-    """A run-record entry by an actor, addressed to the writer, naming an item: an actor's report about a served item."""
+def _actor_to_writer(r: Mapping[str, Any]) -> bool:
+    """A run-record entry by an actor, addressed to the writer."""
     if not isinstance(r, Mapping) or not isinstance(r.get("seq"), int):
         return False
     role = r.get("role")
     author = r.get("author") if isinstance(r.get("author"), str) else ""
     is_actor = role == "actor" or (role is None and author.startswith("actor-"))
     mentions = [m for m in r.get("mentions") or [] if isinstance(m, str)]
-    has_item = any(isinstance(x, str) and x.startswith("item:") for x in r.get("refs") or [])
-    return is_actor and "writer" in mentions and has_item
+    return is_actor and "writer" in mentions
+
+
+def _library_names(item: str) -> tuple[str, ...]:
+    """The names *item* has in the library: its id, and for a function the dotted name a cell calls it by
+    (``memory.<package>.<module>:<name>`` is also ``memory.<package>.<module>.<name>``)."""
+    from .layout import FUNCTION_ID
+
+    m = FUNCTION_ID.match(item)
+    return (item, f"memory.{m.group(1)}.{m.group(2)}.{m.group(3)}") if m else (item,)
+
+
+def named_items(text: str, items: Iterable[str]) -> list[str]:
+    """Which of *items* (the items an episode used, from the harness's records) *text* names by a library name of its
+    own (:func:`_library_names`), whole: not inside a longer name and not as the prefix of an attribute. An exact
+    identifier, never a word: a description of what an item does names nothing."""
+    out: list[str] = []
+    for item in items:
+        for name in _library_names(item):
+            if re.search(r"(?<![\w.:/-])" + re.escape(name) + r"(?![\w]|[.:]\w)", text or ""):
+                out.append(item)
+                break
+    return out
 
 
 def _pass_episodes(events: Path) -> dict[str, list[str]]:
