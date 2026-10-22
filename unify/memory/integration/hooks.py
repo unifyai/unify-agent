@@ -22,9 +22,12 @@ T = TypeVar("T")
 
 
 def enabled() -> bool:
+    """Whether the run has memory: ``UNIFY_MEMORY`` ``on`` or ``in_episode`` (:func:`.switch.memory_on`)."""
     from unify.settings import SETTINGS
 
-    return getattr(SETTINGS, "UNIFY_MEMORY", "") == "on"
+    from .switch import memory_on
+
+    return memory_on(SETTINGS)
 
 
 def _run() -> Any:
