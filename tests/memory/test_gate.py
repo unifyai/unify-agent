@@ -7,11 +7,11 @@ import pytest
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
-from unify.memory.gate import RED_TEST_HINT, Gate
+from unify.memory.gate import Gate
 from unify.memory.library_checks import LibraryConfig
 from unify.memory.gitio import Repo
 from unify.memory.snapshot import blob_id, tree_listing
-from unify.memory.sandbox_run import PytestOutcome
+from unify.memory.gate_policy import NOT_RUN_GATE
 from tests.memory.test_episodes import _ep
 from tests.memory.test_overrides import RULE_BODY
 
@@ -127,27 +127,6 @@ def _merged(mem, files):
 # --- G3 decision logic, with an injected runner -----------------------------------------------------------
 
 
-def _fake_runner(on_parent: PytestOutcome, on_candidate: PytestOutcome):
-    """Answer like pytest would: the code under test exists only on the candidate."""
-
-    def run(target, *, python, ro, rw, cwd, timeout_s=300.0, env=None):
-        assert env == {
-            "PYTHONPATH": "/memory",
-            "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
-        }
-        assert cwd == "/memory"
-        (tree,) = ro
-        assert ro[tree] == "/memory" and rw == {}
-        code = tree / "env/venmo/__init__.py"
-        return on_candidate if code.exists() else on_parent
-
-    return run
-
-
-RED = PytestOutcome(failed={"t::a"}, returncode=1)
-GREEN = PytestOutcome(passed={"t::a"}, returncode=0)
-
-
 SLACK = '__all__ = ["x"]\n\ndef x():\n    """One.\n\n    Effect: read\n    Input: env\n    """\n    return 1\n'
 SLACK_TEST = "from env.slack import x\n\ndef test_x():\n    assert x() == 1\n"
 
@@ -158,54 +137,9 @@ SLACK_TEST = "from env.slack import x\n\ndef test_x():\n    assert x() == 1\n"
 # --- fix round 1: the reviewer's probes and the scope rules -----------------------------------
 
 
-def _probe_runner(target, *, python, ro, rw, cwd, timeout_s=300.0, env=None):
-    """The reviewer's stand-in for pytest: a test file passes only where the code it names exists."""
-    (tree,) = ro
-    m = tree / "env/venmo/__init__.py"
-    need = "def me2" if "me2" in target else "def me"
-    if target.endswith(".py") and not (m.exists() and need in m.read_text()):
-        return PytestOutcome(failed={"t::a"}, returncode=1)
-    if not target.endswith(".py"):
-        return PytestOutcome(passed={"s::a"}, returncode=0)
-    return PytestOutcome(passed={"t::a"}, returncode=0)
-
-
-@pytest.fixture
-def probe(tmp_path, world):
-    mem, ev, _ = world
-    return (
-        mem,
-        ev,
-        Gate(
-            mem,
-            ev,
-            BlobStore(tmp_path / "pb"),
-            action_lookup=_lookup,
-            pytest_runner=_probe_runner,library_mode=LibraryConfig()
-        ),
-    )
-
-
 PROBE_TEST = "from env.venmo import me\n\ndef test_me():\n    assert me\n"
 PROBE_BASE = {"env/venmo/__init__.py": MOD, "env/venmo/tests/test_me.py": PROBE_TEST}
 PROBE_ITEM = {**ITEM}
-
-
-def _suite_runner(parent_passed: set, cand_passed: set):
-    def run(target, *, python, ro, rw, cwd, timeout_s=300.0, env=None):
-        (tree,) = ro
-        if target.endswith(
-            ".py",
-        ):  # the item's own test: red on the parent, green on the candidate
-            mod = tree / "env/venmo/__init__.py"
-            return GREEN if mod.exists() and "def who" in mod.read_text() else RED
-        has = "def who" in (tree / "env/venmo/__init__.py").read_text()
-        return PytestOutcome(
-            passed=set(cand_passed if has else parent_passed),
-            returncode=0,
-        )
-
-    return run
 
 
 # --- fix round 2: the reviewer's second probes ---------------------------
@@ -394,73 +328,6 @@ RULE_MOD = MOD.replace('    return apis.venmo.me()["user_id"]\n', RULE_BODY)
 # --- the library mode: the whole output of each failing run, and one stage-5 seed per pass -------------------
 
 
-def test_the_stage5_seed_is_the_passes_when_given():
-    from types import SimpleNamespace
-
-    from unify.memory.qa import QAChecks, QAConfig, seed_of
-
-    gate = SimpleNamespace(qa=QAConfig())
-    run = SimpleNamespace(candidate="c" * 40, seed=None)
-    assert QAChecks(gate, run).seed == seed_of("c" * 40)  # v2: drawn by the candidate
-    run.seed = seed_of("a" * 40)
-    assert QAChecks(gate, run).seed == seed_of(
-        "a" * 40,
-    )  # library mode: every round and the merge alike
-    assert QAChecks(gate, SimpleNamespace(candidate="c" * 40)).seed == seed_of("c" * 40)
-
-
-def test_check_and_merge_thread_one_seed_to_every_gate_run(
-    library_example_world,
-    monkeypatch,
-):
-    from tests.memory import library_example_world as lw
-
-    mem, ev, blobs, gate = library_example_world
-    files, fixtures = lw.files_and_fixtures(blobs.get)
-    seen: list = []
-    real = Gate._check
-
-    def spy(self, *a, **k):
-        seen.append(k.get("seed"))
-        return real(self, *a, **k)
-
-    monkeypatch.setattr(Gate, "_check", spy)
-    parent = mem.head()
-    pass_seed = b"s" * 32
-    gate().check(parent, lw.candidate(mem, files), lw.manifest(fixtures), seed=pass_seed)
-    gate().merge(
-        parent,
-        lw.candidate(mem, files),
-        lw.manifest(fixtures),
-        "p10",
-        "write",
-        None,
-        "0",
-        seed=pass_seed,
-    )
-    assert seen and all(s == pass_seed for s in seen)
-    seen.clear()
-    gate().check(parent, lw.candidate(mem, files), lw.manifest(fixtures))  # no seed given: drawn by the candidate
-    assert seen == [None]
-
-
-def test_run_pytest_keeps_the_uncut_output_beside_the_tail(tmp_path, monkeypatch):
-    """The runner's ``output`` stays the 4,000-character tail (v2's reasons); ``full_output`` is uncut."""
-    from unify.memory import sandbox_run as sr
-
-    long = "x" * 9000 + "END"
-    monkeypatch.setattr(
-        sr,
-        "run_confined",
-        lambda *a, **k: sr.SandboxResult(1, long, "ERR", False),
-    )
-    out = sr.run_pytest("tests", python=sr.PYTHON, ro={}, rw={}, cwd="/memory")
-    assert out.output == (long + "ERR")[-4000:] and out.full_output == long + "ERR"
-    assert (
-        sr.PytestOutcome(output="abc").full_output == "abc"
-    )  # empty means the same text
-
-
 # --- any edit can land: G3 judges functions, not test files (library mode, writer role) ------------------------
 
 from tests.memory import library_example_world as lw  # noqa: E402
@@ -533,11 +400,12 @@ def _g3_reasons(res):
     return [r for r in res.reasons if r.startswith("G3")]
 
 
-def _keeping(res):
-    return [r for r in res.reasons if r.startswith("note: G3 keeping test: ")]
+def _not_run(res, item):
+    """The not-run labels of *item* (rev 2.1: the gate runs no test, suite or stored function)."""
+    return [r for r in res.verification.get(item, {}).get("label_findings", []) if r.startswith("not run: G3 ")]
 
 
-def test_any_edit_a_test_only_change_lands_with_a_keeping_note(library_example_world):
+def test_any_edit_a_test_only_change_lands_with_its_test_labelled_not_run(library_example_world):
     mem, ev, blobs, gate = library_example_world
     _land_through_gate(library_example_world)
     cand = lw.candidate(mem, {SECOND_TEST: SECOND_SOURCE})
@@ -552,10 +420,8 @@ def test_any_edit_a_test_only_change_lands_with_a_keeping_note(library_example_w
     )
     assert res.passed and _g3_reasons(res) == [], res.reasons
     assert mem.head() == res.merged
-    assert _keeping(res) == [
-        f"note: G3 keeping test: {SECOND_TEST} passes on the parent: it records existing behaviour; it exercises "
-        f"{lw.ITEM_ID}",
-    ], res.reasons
+    # rev 2.1: the listed test is not run; its item's label says so
+    assert f"not run: G3 {SECOND_TEST}: {NOT_RUN_GATE}" in _not_run(res, lw.ITEM_ID), res.reasons
 
 
 def test_any_edit_a_pin_only_change_lands_and_a_weakened_one_needs_its_reason(library_example_world):
@@ -573,7 +439,7 @@ def test_any_edit_a_pin_only_change_lands_and_a_weakened_one_needs_its_reason(li
         lw.manifest({}, lw.item(), tests_changed=why),
     )
     assert res.passed and _g3_reasons(res) == [], res.reasons
-    assert [r for r in _keeping(res) if lw.TEST_FILE in r], res.reasons
+    assert f"not run: G3 {lw.TEST_FILE}: {NOT_RUN_GATE}" in _not_run(res, lw.ITEM_ID), res.reasons
     # a weaker assertion without a stated reason: found by the weakening rule only, never for being not red; rev 2's
     # gate is labels only, so the finding is a label on the item and the change lands
     weaker = files[lw.TEST_FILE].replace(
@@ -585,7 +451,7 @@ def test_any_edit_a_pin_only_change_lands_and_a_weakened_one_needs_its_reason(li
         lw.candidate(mem, {lw.TEST_FILE: weaker}),
         lw.manifest({}, lw.item()),
     )
-    findings = res.verification[lw.ITEM_ID]["label_findings"]
+    findings = [r for r in res.verification[lw.ITEM_ID]["label_findings"] if not r.startswith("not run: ")]
     assert res.passed and findings and all("is weakened" in r for r in findings), res.reasons
     assert all(f"note: label: {lw.ITEM_ID}: {r}" in res.reasons for r in findings), res.reasons
 
@@ -625,15 +491,13 @@ def test_any_edit_tests_only_for_two_unchanged_functions_land(library_example_wo
         "0",
     )
     assert res.passed and _g3_reasons(res) == [], res.reasons
-    assert sorted(r.split(" passes on the parent")[0] for r in _keeping(res)) == [
-        f"note: G3 keeping test: {NAME_TEST}",
-        f"note: G3 keeping test: {SECOND_TEST}",
-    ], res.reasons
+    assert f"not run: G3 {SECOND_TEST}: {NOT_RUN_GATE}" in _not_run(res, lw.ITEM_ID), res.reasons
+    assert f"not run: G3 {NAME_TEST}: {NOT_RUN_GATE}" in _not_run(res, NAME_ID), res.reasons
 
 
-def test_any_edit_a_behaviour_change_without_a_red_test_is_labelled(library_example_world):
-    """Rev 2's gate is labels only: the finding is a label on the item (in its verification record), never a
-    refusal."""
+def test_any_edit_a_behaviour_change_is_labelled_not_run(library_example_world):
+    """Rev 2.1: the gate runs no test, so whether a test is red on the parent is not known; the edited function's
+    label says its tests and its recorded calls were not run, and the change lands (labels only)."""
     mem, ev, blobs, gate = library_example_world
     files = _land_through_gate(library_example_world)
     edited = lw.MODULE_SOURCE.replace('    return response["user_id"]\n', '    return str(response["user_id"])\n')
@@ -644,10 +508,9 @@ def test_any_edit_a_behaviour_change_without_a_red_test_is_labelled(library_exam
         lw.manifest({}, lw.item()),
     )
     assert res.passed, res.reasons
-    assert (
-        f"G3: {lw.ITEM_ID} is edited, but none of its tests is red on the parent's library. {RED_TEST_HINT}"
-        in res.verification[lw.ITEM_ID]["label_findings"]
-    ), res.reasons
+    labels = _not_run(res, lw.ITEM_ID)
+    assert f"not run: G3 {lw.TEST_FILE}: {NOT_RUN_GATE}" in labels, labels
+    assert any(r.startswith(f"not run: G3 behaviour on its recorded calls: {NOT_RUN_GATE}") for r in labels), labels
 
 
 HELPER = lw.MODULE_SOURCE.replace(
@@ -662,12 +525,12 @@ def test_any_edit_a_behaviour_change_through_a_helper_is_labelled(library_exampl
     _land_directly(library_example_world, {**files, lw.MODULE: HELPER})
     changed = HELPER.replace('    return "user_id"\n', '    return "name"\n')
     res = gate().check(mem.head(), lw.candidate(mem, {lw.MODULE: changed}), lw.manifest({}, lw.item()))
-    # rev 2's gate is labels only: the change is caught as the item's tests going red on the candidate (the
-    # parent's tests no longer pass), a label on the item, never a refusal
+    # rev 2.1: the gate runs neither the suite nor the function, so a change made through a helper is not found by
+    # running anything; the function in the changed module is labelled not run, and the change lands
     assert res.passed, res.reasons
-    findings = res.verification[lw.ITEM_ID]["label_findings"]
-    assert any(r.startswith("G3: suite memory/acct/tests has new failures") for r in findings), findings
-    assert any(f"{lw.TEST_FILE}::test_reads_the_recorded_user_ids" in r for r in findings), findings
+    labels = _not_run(res, lw.ITEM_ID)
+    assert any(r.startswith(f"not run: G3 behaviour on its recorded calls: {NOT_RUN_GATE}") for r in labels), labels
+    assert f"note: suite memory/acct/tests not run: {NOT_RUN_GATE}" in res.reasons, res.reasons
 
 
 NAME_TEST_2 = "memory/acct/tests/test_names_second.py"
@@ -685,10 +548,9 @@ def test_reads_an_id_field():
 '''
 
 
-def test_any_edit_an_edited_function_with_a_red_test_and_a_keeping_test_lands(library_example_world):
+def test_any_edit_an_edited_function_and_a_new_test_of_another_land_labelled_not_run(library_example_world):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = lw.files_and_fixtures(blobs.get)
-    # the parent's tests call both functions, so the behaviour check compares both
     _land_directly(library_example_world, {**files, lw.MODULE: TWO, NAME_TEST: NAME_SOURCE})
     edited = TWO.replace(
         '    if not isinstance(response, dict) or "user_id" not in response:\n'
@@ -709,30 +571,7 @@ def test_any_edit_an_edited_function_with_a_red_test_and_a_keeping_test_lands(li
         ),
     )
     assert res.passed and _g3_reasons(res) == [], res.reasons
-    assert [r.split(" passes on the parent")[0] for r in _keeping(res)] == [
-        f"note: G3 keeping test: {NAME_TEST_2}",
-    ], res.reasons
+    for item, test in ((lw.ITEM_ID, RED_TEST), (NAME_ID, NAME_TEST_2)):
+        assert f"not run: G3 {test}: {NOT_RUN_GATE}" in _not_run(res, item), res.reasons
 
 
-FAKE_RED_TEST = "memory/acct/tests/test_third.py"
-FIXTURE_3 = "memory/acct/tests/data/me_3.json"
-FAKE_RED_SOURCE = _LOAD.format(name="user_id") + '''
-
-def test_reads_the_third_recorded_user():
-    assert user_id(load("me_3.json")) == "u-3"
-'''
-
-
-def test_any_edit_a_repaired_red_test_lands_with_its_note(library_example_world):
-    mem, ev, blobs, gate = library_example_world
-    files, fixtures = lw.files_and_fixtures(blobs.get)
-    broken = files[lw.TEST_FILE].replace('== "u-1"', '== "u-X"')
-    assert broken != files[lw.TEST_FILE]
-    _land_directly(library_example_world, {**files, lw.TEST_FILE: broken})
-    res = gate().check(
-        mem.head(),
-        lw.candidate(mem, {lw.TEST_FILE: files[lw.TEST_FILE]}),
-        lw.manifest({}, lw.item()),
-    )
-    assert res.passed and _g3_reasons(res) == [], res.reasons
-    assert [r for r in _keeping(res) if "repairs a test the parent had red" in r and lw.TEST_FILE in r], res.reasons

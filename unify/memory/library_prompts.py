@@ -292,8 +292,15 @@ POOL_KIND_TEXT: dict[str, str] = {
     "failure": "an attempt that failed, with what broke",
 }
 
+#: The environment the brief gives the writer's own pytest runs: no configuration discovery and no sys.path insertion
+#: of test directories.
+WRITER_PYTEST_ENV = {
+    "PYTHONPATH": "/memory",
+    "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
+}
+
 _RUN_TESTS = (
-    'Run the tests as the gate does, from /memory: `subprocess.run([sys.executable, "-m", "pytest", "memory", "-q", '
+    'Run the tests from /memory: `subprocess.run([sys.executable, "-m", "pytest", "memory", "-q", '
     '"-p", "no:cacheprovider", "--rootdir", "/memory"], cwd="/memory", env=<<pytest_env>>)` (without `--rootdir`, '
     "the empty config file makes /dev the root and the library's imports fail)."
 )
@@ -310,45 +317,6 @@ _HONESTY = (
     "Never claim a read, a test run or a result that did not happen, and never shape a function or a test to pass "
     "a known check by special-casing its values."
 )
-
-#: The example-evidence rule exactly as the gate checks it (``example_evidence.evidence_check``, whose
-#: ``MIN_EXAMPLE_EPISODES`` a test keeps equal to this): the brief states it in these words, and the example refusals end
-#: with the fix that satisfies them. Values from more episodes are recorded and shown beside the function, never
-#: required.
-EXAMPLE_EPISODES = 1
-EPISODES_FIX = (
-    "add a test call that returns on values loaded from a fixture of a recorded episode; a refused or raised call "
-    "counts for nothing"
-)
-#: ``[examples:grounded]``: what satisfies it, with the loading idiom of the library's own tests
-#: (``DATA = Path(__file__).parent / "data"``), so the refusal names a concrete change and not only the rule.
-GROUNDED_FIX = (
-    "make one call that returns take each structured argument (a list, a mapping or a path; plain numbers and "
-    "strings may stay literal) from a fixture made with `fixture`, or compute it in the test from one. The "
-    "fixture is a recorded episode's value saved under the package's `tests/data/`, and the test calls the "
-    'function on what it loads from it, such as `rows = json.loads((Path(__file__).parent / "data" / '
-    '"rows.json").read_text())` then `assert function(rows, 2) == <trusted value>`. A call on values written '
-    "in the test itself does not count, however close to the recorded ones. When the recorded value is text, "
-    "store a function that reads such text into a structured value and make the fixture with "
-    '`fixture(..., parser="<that function\'s id>")`; the gate runs the function on the recorded bytes again to '
-    "check the fixture"
-)
-#: ``[examples:unjudged]``: why the check with unseen fixture values did not complete -> what lets it complete.
-UNJUDGED_FIX = {
-    "budget": (
-        "the check runs the listed tests that open an input fixture of every function in this gate run within "
-        "{budget_s:.0f} s in all; make those tests quicker"
-    ),
-    "failed": "its listed tests that open an input fixture must pass, within their time limit, when run on their own",
-    "record": (
-        "its tests must end normally (no exit, no killed process) and make at most {max_calls} recorded calls of "
-        "library functions"
-    ),
-    "unmatched": (
-        "each call of it in its tests must still be reached when the fixture values change: what a test computes "
-        "from a fixture before the call (parsing, slicing, checks) must work on any values of the same shape"
-    ),
-}
 
 _G5_WRITE = (
     "a store pass never ends with fewer items, and every fixture a function's calls ran on is still used by a "
@@ -539,7 +507,6 @@ def write_brief_now(
     """The WRITE brief from the constants that enforce each number and the tools registered for the role (*helper*:
     a helper lane exists; *similar*: the pass has a similar-code index; *finish_capped*: the pass has a USD cap)."""
     from . import code_lint, qa
-    from .gate import _PYTEST_ENV
 
     flags = tool_flags(helper, similar)
     return write_brief(
@@ -547,7 +514,7 @@ def write_brief_now(
         mutation_min=qa.MUTATION_MIN,
         sample_k=qa.SAMPLE_K,
         lint_min=code_lint.LINT_MIN,
-        pytest_env=_PYTEST_ENV,
+        pytest_env=WRITER_PYTEST_ENV,
         tool_names=_tool_names("writer", flags),
         flags=flags,
     )
@@ -762,8 +729,8 @@ _WRITE_RULES_IN_CODE = (
     "5. Write the tests first, against trusted expected values, "
     + _TRUST
     + " At least one call returns on arguments loaded from fixtures made with `tools.fixture`, or computed in the "
-    "test from one; the gate checks the argument changes when the fixture does. An item whose evidence does not "
-    "reach that is still stored, at a lower evidence level, and later evidence can raise it. Across its examples, "
+    "test from one. An item whose evidence does not reach that is still stored, and its label says so. Across its "
+    "examples, "
     + EPISODES_RULE_IN_CODE
     + ". Each function needs at least one test asserting "
     "that its result on a recorded fixture equals an exact trusted value, and one test that it refuses an input of "
@@ -841,7 +808,7 @@ LABELS_ONLY_GATE = (
 #: Rev 2's repair: only a hard check gives a repair round.
 LABELS_ONLY_REPAIR = (
     "# Repair\n"
-    "If a check refuses anything, its full result (every check, every failing test's output and every note) is "
+    "If a check refuses anything, its full result (every check and every note) is "
     "written to /inputs/gate/result-<round>.md and you get a repair round: fix what it refused, keep the manifest "
     "current, and call `tools.finish(summary)` again. The limits below say how many repair rounds a pass has. "
     "Everything else lands, each item with its label; the labels are in the same result, for this pass or a later "

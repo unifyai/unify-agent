@@ -175,7 +175,7 @@ def test_an_item_whose_last_change_is_beyond_the_scan_is_not_promoted(
 ):
     """With its version unknown, three clean uses do not make an item adopted; with the history
     found in its own file it is promoted as usual."""
-    from unify.memory import item_bisect, library_export
+    from unify.memory import item_versions, library_export
 
     stores, head = lib
     for i in range(3):
@@ -185,7 +185,7 @@ def test_an_item_whose_last_change_is_beyond_the_scan_is_not_promoted(
         "item_history",
         lambda mem, sha, **k: ({}, False),
     )
-    monkeypatch.setattr(item_bisect, "versions_of", lambda *a, **k: [])
+    monkeypatch.setattr(item_versions, "versions_of", lambda *a, **k: [])
     out = _consolidate(stores)
     rec = read_records(stores.memory, out["noted"])[PD]
     assert (

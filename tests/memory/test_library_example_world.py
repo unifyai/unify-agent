@@ -7,7 +7,6 @@ import json
 
 from unify.memory import fixtures as fx
 from unify.memory.blobs import BlobStore
-from unify.memory.example_calls import CallKey
 from tests.memory import library_example_world as w
 
 
@@ -43,23 +42,3 @@ def test_the_item_has_no_input_and_no_action_cover():
     assert "def user_id(response: dict)" in w.MODULE_SOURCE
 
 
-def test_recorded_calls_point_at_the_test_file_lines(tmp_path):
-    blobs = BlobStore(tmp_path / "b")
-    files, _ = w.files_and_fixtures(blobs.get)
-    lines = files[w.TEST_FILE].splitlines()
-    calls = w.recorded_calls(blobs.get)
-    assert [c.outcome for c in calls] == ["returned"] * 4 + ["refused"]
-    for c in calls:
-        assert "user_id(" in lines[c.line - 1] and c.item == w.ITEM_ID
-    for c, path in zip(calls, w.FIXTURE_PATHS):
-        assert c.args[0].json == json.loads(files[path])
-        assert c.result_json == c.args[0].json["user_id"]
-    rows = [json.loads(x)["input"] for x in files[w.INPUTS_PATH].splitlines()]
-    assert [c.args[0].json for c in calls[2:4]] == rows
-    assert [c.key for c in calls[:4]] == [
-        CallKey(w.EXAMPLE_TEST, (), 0),
-        CallKey(w.EXAMPLE_TEST, (), 1),
-        CallKey(w.INPUTS_TEST, (("row", 0),), 0),
-        CallKey(w.INPUTS_TEST, (("row", 1),), 0),
-    ]
-    assert len({c.key for c in calls}) == len(calls)

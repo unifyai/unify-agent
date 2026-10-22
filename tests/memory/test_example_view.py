@@ -1,5 +1,5 @@
-"""One example call quoted from a function's tests: the quote, the pick, the docstring's Example: line, the
-record that carries it and ``memory.show``."""
+"""One example call quoted from a function's tests: the quote, the record that carries it (kept from a gate before
+rev 2.1, which picked it) and ``memory.show``."""
 
 from __future__ import annotations
 
@@ -11,13 +11,11 @@ from unify.memory import example_view as ev
 from unify.memory import library_export as lx
 from unify.memory import lifecycle as lc
 from unify.memory.catalogue import write_files
-from unify.memory.example_calls import CallKey, ExampleCall
 from unify.memory.item_records import empty_record
 
 PD = "memory.text.dates:parse_date"
 TESTS = "memory/text/tests/test_dates.py"
 TEST = TESTS + "::test_parse_date"
-OTHER = TESTS + "::test_other"
 QUOTED = "parse_date('2026-10-09')"
 MULTI = """from memory.grid import fill
 
@@ -32,39 +30,6 @@ def test_fills():
     assert got
     assert flood_fill(flood_fill(grid, (0, 0), 3), (1, 1), 4)
 """
-
-
-def _call(
-    test: str = TEST,
-    *,
-    item: str = PD,
-    line: int = 5,
-    outcome: str = "returned",
-    indices: tuple = (),
-    ordinal: int = 0,
-    file: str | None = None,
-) -> ExampleCall:
-    return ExampleCall(
-        item=item,
-        key=CallKey(test, indices, ordinal),
-        node=test,
-        file=file if file is not None else test.split("::", 1)[0],
-        line=line,
-        args=(),
-        outcome=outcome,
-        raised=None if outcome == "returned" else "KeyError",
-        result_sha=None,
-        result_type=None,
-        result_json=None,
-        opened=(),
-    )
-
-
-def _doc(example: str = TEST, extra: str = "") -> str:
-    return (
-        "Parse a date.\n\nArgs:\n    s: the date.\n\nReturns:\n    The date.\n\nRaises:\n"
-        f"    MemoryInputError: when it is not a date.\n\nExample:\n    {example}\n{extra}"
-    )
 
 
 # --- the quote --------------------------------------------------------------------------------------------
@@ -119,106 +84,10 @@ def test_only_files_under_memory_are_read(tmp_path):
 # --- the pick ---------------------------------------------------------------------------------------------
 
 
-def test_the_pick_prefers_the_named_test_then_the_first_grounded_returned_call(
-    tmp_path,
-):
-    root = _tree(tmp_path / "lib")
-    first = _call(TESTS + "::test_a", line=5)
-    named = _call(TEST, line=5, ordinal=1)
-    refused = _call(TESTS + "::test_0", line=5, outcome="refused")
-    loose = _call(TESTS + "::test_00", line=5)  # not grounded
-    helper = _call(TESTS + "::test_000", line=5, file="memory/text/tests/helpers.py")
-    calls = [named, refused, loose, helper, first]
-    grounded = {c.key for c in calls if c is not loose}
-    want = {"test": TEST, "line": 5, "call": QUOTED}
-    assert ev.pick_example(PD, calls, grounded, TEST, root) == want
-    assert ev.pick_example(PD, calls, grounded, None, root) == {
-        **want,
-        "test": TESTS + "::test_a",
-    }
-    # the named test has no grounded returned call: the first one by key
-    assert ev.pick_example(PD, [first], {first.key}, TEST, root)["test"] == (
-        TESTS + "::test_a"
-    )
-    # a call whose line no longer quotes it is passed over
-    moved = _call(TESTS + "::test_a", line=4)
-    assert (
-        ev.pick_example(PD, [moved, named], {moved.key, named.key}, None, root) == want
-    )
-    assert ev.pick_example(PD, [refused, loose, helper], grounded, None, root) is None
-    assert (
-        ev.pick_example("memory.text.dates:week", calls, grounded, None, root) is None
-    )
-
-
-# --- the docstring ----------------------------------------------------------------------------------------
-
-
-def test_the_docstring_example_names_one_test():
-    assert ev.docstring_example(_doc()) == TEST
-    assert ev.docstring_example(_doc(f"`{TEST}`")) == TEST
-    assert ev.docstring_example(f"Parse.\n\nExample: {TEST}\n") == TEST
-    assert ev.docstring_example(_doc(TESTS + "::TestDates::test_it")) == (
-        TESTS + "::TestDates::test_it"
-    )
-    assert (
-        ev.docstring_example(_doc(">>> parse_date('2026-10-09')\n    '2026-10-09'"))
-        is None
-    )
-    assert ev.docstring_example(_doc(TEST + "\n    " + OTHER)) is None
-    assert (
-        ev.docstring_example(_doc("memory/text/test_dates.py::test_parse_date")) is None
-    )
-    assert ev.docstring_example("Parse a date.") is None
-
-
-def test_docstring_problems_name_each_rule_with_its_text():
-    call = _call()
-    grounded = {call.key}
-    tests = [TESTS]
-    assert ev.docstring_problems(PD, _doc(), tests, [call], grounded) == []
-    f1 = (
-        f"{PD} docstring has no Example: line naming one of its tests "
-        "(memory/<package>/tests/test_<name>.py::test_<case>)"
-    )
-    doctest_doc = _doc(">>> parse_date('2026-10-09')\n    '2026-10-09'")
-    assert ev.docstring_problems(PD, doctest_doc, tests, [call], grounded) == [f1]
-    assert ev.docstring_problems(PD, "Parse a date.", tests, [call], grounded) == [f1]
-    elsewhere = "memory/text/tests/test_other.py::test_parse_date"
-    assert ev.docstring_problems(PD, _doc(elsewhere), tests, [call], grounded) == [
-        f"{PD} docstring Example: names {elsewhere}, which is not a test of its listed test files",
-    ]
-    f3 = f"{PD} docstring Example: names {TEST}, which makes no call of it that returns on fixture values"
-    assert ev.docstring_problems(PD, _doc(), tests, [call], set()) == [f3]
-    refused = _call(outcome="refused")
-    assert ev.docstring_problems(PD, _doc(), tests, [refused], {refused.key}) == [f3]
-    assert ev.docstring_problems(PD, _doc(OTHER), tests, [call], grounded) == [
-        f3.replace(TEST, OTHER),
-    ]
-    f4 = (
-        f"{PD} docstring has an Input: line; a function's inputs are shown by its tests' calls, so remove "
-        "the line"
-    )
-    assert ev.docstring_problems(
-        PD,
-        _doc(extra="\nInput: observation\n"),
-        tests,
-        [call],
-        grounded,
-    ) == [f4]
-    assert ev.docstring_problems(
-        PD,
-        "Parse a date.\n\nInput: path\n",
-        tests,
-        [],
-        set(),
-    ) == [f1, f4]
-
-
 # --- the record, the export and show ----------------------------------------------------------------------
 
 
-def test_the_gates_example_reaches_the_record_and_input_is_gone():
+def test_a_recorded_example_reaches_the_record_and_input_is_gone():
     base = dict(
         items={PD: "function"},
         prev={},

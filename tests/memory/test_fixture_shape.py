@@ -1,11 +1,10 @@
-"""The examples' fixture check compares shapes exactly, with no information floor.
+"""Shapes compare exactly, with no information floor (:func:`unify.memory.memory_helper.same_shape`).
 
 ``find`` needs a named key before it says anything (:func:`unify.memory.memory_helper.compare`), which is
 right for retrieval and wrong for a fixture: a headerless table, a raw grid or a list of scalars has no named
 key, yet a fixture of exactly its shape is the recorded input. :func:`same_shape` compares the whole signature
 (named and unnamed key paths with their leaf types) and a file's format, delimiter, header, columns and
-column types; lengths and counts are left out. The gate accepts a fixture whose shape is the same as a
-recorded input's, or a keyed structural match (:func:`unify.memory.gate.fixture_fits`).
+column types; lengths and counts are left out.
 
 Seeded generators: random value schemas (each instantiated twice with fresh values, and once with one leaf
 type changed) and random headerless tables.
@@ -14,7 +13,6 @@ type changed) and random headerless tables.
 import json
 import random
 
-from unify.memory.gate import fixture_fits
 from unify.memory.memory_helper import (
     compare,
     file_shape,
@@ -82,7 +80,6 @@ def test_same_schema_values_have_the_same_shape_and_a_retyped_leaf_does_not():
         a, b = value_shape(_value(rng, schema)), value_shape(_value(rng, schema))
         assert a is not None and b is not None
         assert same_shape(a, b), (schema, a, b)
-        assert fixture_fits(a, b)
         if compare(a, b) is None:
             floorless += 1  # find's floor would have refused this identical shape
         path = rng.choice(list(_leaves(schema)))
@@ -122,19 +119,19 @@ def test_headerless_tables_of_the_same_column_types_have_the_same_shape():
             recorded["shape"]["header"] is False and fixture["shape"]["header"] is False
         )
         assert compare(fixture, recorded) is None  # no named key: find says nothing
-        assert same_shape(fixture, recorded) and fixture_fits(fixture, recorded)
+        assert same_shape(fixture, recorded)
         headed = file_shape("fixture.csv", _table(rng, types, 2, True))
         assert headed["shape"]["header"] is True
-        assert not same_shape(headed, recorded) and not fixture_fits(headed, recorded)
+        assert not same_shape(headed, recorded)
         other = list(types)
         other[rng.randrange(width)] = "str" if types[0] != "str" else "int"
         if other != types and not all(t == "str" for t in other):
             moved = file_shape("fixture.csv", _table(rng, other, 3, False))
-            assert not fixture_fits(moved, recorded)
+            assert not same_shape(moved, recorded)
 
 
 def test_the_three_shapes_of_the_review():
-    """The probes: each fixture has exactly the recorded shape and fits; find's floor would refuse each."""
+    """The probes: each fixture has exactly the recorded shape; find's floor would refuse each."""
     grid_rec, grid_fx = value_shape([[0, 1], [1, 0]]), value_shape(b"[[1, 0], [0, 1]]")
     list_rec, list_fx = value_shape([4, 5, 6]), value_shape("[1, 2, 3]")
     csv_rec = file_shape("rec.csv", b"5,6\n7,8\n")
@@ -147,13 +144,10 @@ def test_the_three_shapes_of_the_review():
         (csv_fx, tail_rec),
     ):
         assert compare(fx, rec) is None
-        assert same_shape(fx, rec) and fixture_fits(fx, rec)
-    assert not fixture_fits(
-        file_shape("f.csv", b"a,b\n1,2\n"),
-        csv_rec,
-    )  # headed vs headerless
-    assert not fixture_fits(value_shape("[[1.5, 0.5]]"), grid_rec)  # float cells
-    assert not fixture_fits(value_shape("[1, 2, 3]"), grid_rec)  # a list is not a grid
+        assert same_shape(fx, rec)
+    assert not same_shape(file_shape("f.csv", b"a,b\n1,2\n"), csv_rec)  # headed vs headerless
+    assert not same_shape(value_shape("[[1.5, 0.5]]"), grid_rec)  # float cells
+    assert not same_shape(value_shape("[1, 2, 3]"), grid_rec)  # a list is not a grid
 
 
 def test_shape_key_leaves_out_lengths_counts_and_encodings():

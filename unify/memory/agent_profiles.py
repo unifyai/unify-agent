@@ -9,7 +9,6 @@ enforces, :func:`unify.common.tool_registry.allow_list`). The tools themselves c
 
 from __future__ import annotations
 
-from .example_calls import CALLS_DIR, CALLS_OUT
 from .integration.switch import PASS_WALL_S
 from .library_prompts import MEMORY_HELP_LINE
 
@@ -92,16 +91,6 @@ _BOX_MOUNTS = [
     {"path": "/memory/memory/__init__.py", "mode": "ro"},
     # host-side only: `read` opens the saved cell outputs; cells cannot open /outputs
     {"path": "/outputs", "mode": "ro", "via": "read"},
-]
-
-
-#: The record of the calls a function's tests make, written by the observe-only plugin in the gate's test box while
-#: the gate runs the tests the writer wrote. Gate-internal: no writer-visible artifact.
-_CALL_RECORD = {"artifact": "call record", "path": CALLS_OUT}
-#: The gate's test box mounts the plugin read-only and a fresh directory for the record read-write.
-_CALL_RECORD_MOUNTS = [
-    {"path": CALLS_DIR, "mode": "ro"},
-    {"path": CALLS_OUT.rsplit("/", 1)[0], "mode": "rw"},
 ]
 
 
@@ -327,8 +316,6 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "path": "/memory/.pass/fixtures.json",
                 "consumer": "gate",
             },
-            # its tests, run by the gate, give the call record
-            {**_CALL_RECORD, "consumer": "gate"},
             {"artifact": "task", "path": "delegate arguments", "consumer": "helper"},
             {"artifact": "record", "path": _RECORD, "consumer": "helper"},
         ],
@@ -544,14 +531,13 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "agent": "gate",
         "mode": "repair",
         "instructions": "unify.memory.repair:repair_message",
-        # it reads the candidate library copy, its manifest and fixture listing under /memory/.pass
-        "mounts": [{"path": "/memory", "mode": "ro"}, *_CALL_RECORD_MOUNTS],
+        # it reads the candidate library copy, its manifest and fixture listing under /memory/.pass; it runs no code
+        "mounts": [{"path": "/memory", "mode": "ro"}],
         "denied": ["network"],
         "consumes": [
             {"artifact": "library item", "path": "/memory/memory/"},
             {"artifact": "manifest", "path": "/memory/.pass/manifest.json"},
             {"artifact": "fixture listing", "path": "/memory/.pass/fixtures.json"},
-            dict(_CALL_RECORD),
         ],
         "produces": [
             {

@@ -541,17 +541,6 @@ def merge_graphs(a: dict[str, set[str]], b: dict[str, set[str]]) -> dict[str, se
     return out
 
 
-def imported_closure(graph: dict[str, set[str]], module: str) -> set[str]:
-    """*module* and every library module it imports, directly or through others."""
-    seen, todo = {module}, [module]
-    while todo:
-        for n in graph.get(todo.pop(), ()):
-            if n not in seen:
-                seen.add(n)
-                todo.append(n)
-    return seen
-
-
 def dependants(graph: dict[str, set[str]], changed: set[str]) -> set[str]:
     """*changed* with every module that imports one of them, directly or through others."""
     reverse: dict[str, set[str]] = {}

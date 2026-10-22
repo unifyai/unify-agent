@@ -4,209 +4,65 @@ Nothing a consolidation pass writes reaches the working model unless :meth:`Gate
 revisions are resolved to commit SHAs once, and the trees inspected are exactly the committed blobs
 (``ls-tree`` + ``cat-file``; no ``git archive``, so no ``.gitattributes`` can hide a file).
 
+The gate runs no code (rev 2.1, :mod:`.gate_policy`): no item, test, recipe, reader, suite or recorded episode is
+run to check, classify or rank anything. It reads files, the manifest and the evidence store. A check that would
+need a run records ``not run: <why>`` on the label of the items it concerns (:meth:`_Run.not_run`), or a note for
+the pass; running code is a test the writer states and runs itself (``tools.test``).
+
 Threat model
 ------------------------------------
-The gate guards against a careless or mistaken consolidator, not a malicious one; malice is contained by
-the runtime confinement of every run (:mod:`.sandbox_run`). Its rules are structural: they pin what a pass
-may touch and keep every old test passing against the new library. Documented limits:
+The gate guards against a careless or mistaken consolidator, not a malicious one; what the writer's own code does is
+contained by the confinement of the writer's box. Its rules are structural: they pin what a pass may touch. A
+finding about an item's quality (G2 and G3) is recorded on its label and refuses nothing (:func:`.gate_policy.hard`,
+:meth:`_Run.fail`); only the hard checks refuse.
 
-* **Test adequacy** is not judged: a weak test that is red on the parent and green on the candidate passes
-  (unless a stage-5 switch of :mod:`.qa` is on: drawn inputs, mutants, determinism, replay, fixture size).
-* **Effect: lines** are checked for presence, and for ``write`` only where the recording shows it: a
-  function taking the environment that covers a tool call recorded with effect ``write`` must declare
-  ``Effect: write``. A call the environment did not declare an effect for (``unknown``) proves nothing,
-  and a ``read`` or ``unknown`` declaration on a function covering no recorded write is not checked.
-  These docstring checks apply to environment functions only. A library function (``memory/<package>``)
-  declares no effect: its effect is derived from what it reproduces and recorded in its item record
-  (:func:`.library_checks.derive_effect`), so nothing is asked of the writer.
-* **Covers** prove that a real recorded observation of the right kind on the item's channel exists (a
-  successful tool call, a shell output tail, a file blob, a dialogue observation; :mod:`.admission`), not
-  that the item agrees with it: the item's own tests over recorded fixtures check that.
-* **pass_id** uniqueness is checked before the gate runs, not atomically with ``record_pass``; two
-  concurrent merges with one id race (passes run one at a time).
+The checks (library layout, :mod:`.library_checks`):
 
-The checks:
+* **G1 provenance and scope** (hard). The manifest is well formed and its ids strict (:mod:`.manifest`); the
+  candidate descends from the parent; every file has mode 100644 and sits where the layout admits it; every changed
+  file is declared; every added, changed or removed item is listed; every item names source episodes that exist;
+  no commit writes a path the harness reserves for its generated files. Every new or changed fixture re-derives from
+  the recording's bytes (:func:`.fixtures.verify`); a parsed fixture (re-deriving it runs its reader) and a replay
+  case file (verifying it replays recorded code) are not run and are labelled. The links, ``When to use`` sections
+  and folder README files are checked for presence and form.
+* **G2 evidence** (labels). A function's typed covers name a recorded cell or work-tree diff that defines a function;
+  an ``episode`` cover is not re-run. A procedure names a recipe and the cases it is for, each read from its case
+  file (a failed source episode is a finding); the recipe is not run, and its record says so (``ran: false``). Each
+  function's examples (the calls its listed tests make) are not run. Its effect is derived from its recorded covers
+  (:func:`.library_checks.derive_effect`).
+* **G3 tests** (labels). An edited function needs a new or changed test listed under it, and every listed test must be
+  in the candidate; tests are plain pytest, and a test deleted or weakened needs a reason in ``tests_changed``. The
+  listed tests, each package's suite and every stored function whose module the pass changes (or that imports one)
+  are not run, and each is labelled.
+* **G4 size.** Over its soft budget, the index gets a ``note: G4 hygiene due``; growth is never refused.
+* **G5 items** (hard). A pass does not reduce the number of items, and does not drop an alias.
+* **G6 safety** (hard). No links, executables, submodules, or git, pytest or interpreter configuration files; no
+  bytecode or native code; no key-shaped string in a changed file or the manifest; every module parses and defines
+  each public function once.
 
-* **G1 provenance and scope.** The manifest is well formed and its ids strict (:mod:`.manifest`); the
-  candidate descends from the parent; every file has mode 100644 and sits where the layout admits it;
-  every changed file is declared by an item, a listed test, a ``support`` helper, a ``deleted``/
-  ``unlisted`` item, a ``skeleton`` channel (its ``__init__.py`` and its ``NOTES.md``) or a
-  ``deleted_tests`` entry; every added, changed or removed item (by id and body) is in ``items``,
-  ``deleted`` or ``unlisted``; deleted items are gone; unlisted ones are present, unlisted and otherwise
-  unchanged; a channel module's code outside its public functions (docstring, imports, helpers,
-  statements) changes only under ``skeleton``, which then lists every public function of that module in
-  ``items``; a notes file's preamble also changes only under ``skeleton``; a retired test file imports
-  only deleted items; every item names source episodes that exist; every new or changed environment
-  function declares its ``input`` form, and every declared form equals the function's docstring
-  ``Input:`` line. No commit writes a path the harness reserves for its generated catalogue
-  (``README.md``, ``memory.py``, ``.memory/``; :func:`.catalogue.reserved`), in every mode. With
-  ``docstring_standard`` (library mode), every new or changed environment
-  function's docstring meets the lean standard (:mod:`.docstrings`: summary, ``Args:`` naming each
-  parameter and the first one's input form, ``Returns:``, ``Raises:`` naming ``MemoryInputError``, an
-  ``Example:`` with a ``>>>`` example), and each ``raise MemoryInputError(...)`` in it carries a message of
-  at least :data:`.docstrings.MIN_REFUSAL_CHARS` characters; each missing part is its own reason.
-* **G2 evidence.** An ``env_function`` covers recorded actions on its own channel, each a real recorded
-  observation of its kind (:func:`.admission.cover_problem`): a tool call with status ``ok`` and a
-  response, a shell command with an output tail, a file read or write with a blob in the blob store, or a
-  dialogue action with an observation; or a recorded environment rejection (status ``error`` with its
-  error), never alone. Scope is shape, not observed values: run confined on each covered
-  input, passed in its declared ``input`` form (the docstring's ``Input:`` line for an unchanged function
-  without one; else the kind's convention), with one value at a time replaced by an unseen value of its
-  type (a field with one value across at least 3 recorded observations of its family and field-name set,
-  from at least 2 episodes of the whole evidence store, is identity or format and is kept, with a note)
-  (:mod:`.held_out`); a declared form a covered input cannot be given in fails; the item
-  must not raise its ``MemoryInputError`` before any environment call unless one of its covers is a
-  recorded rejection of the same family that varied that field (each such allowance is noted); the reason
-  names the field only. A field declared with a semantic type (``field_types``) is checked two-sided:
-  unseen in-domain values must be accepted and an out-of-domain value refused. Other exceptions, unused keywords, timeouts and refused baselines are notes.
-  Shell covers are skipped with a note. A ``workflow`` is promotable under the job-level rule over its recorded and source episodes.
-  An added or changed environment function that replaces a value it computed from its input under a condition
-  (:mod:`.analysis.overrides`; an expense case paid an over-cap claim 0 instead of the cap) encodes a
-  decision rule its recordings cannot mark wrong: its validated covers must come from at least
-  :data:`RULE_EPISODES` episodes, else it is refused with its first such line (a function the analysis cannot
-  bound is noted, not refused).
-* **Evidence levels (library mode).** A finding about how much an item's evidence shows does not refuse it: it
-  sets the item's evidence level (:mod:`.item_states`) through :meth:`_Run.cap`, and the item lands at
-  ``unchecked`` with the findings as its ``level_reasons``; an item with none lands at ``reproduces-its-case``.
-  Those findings are G2's grounding when some call that returns still uses a value from a recorded episode, the
-  episodes rule, the check with unseen values (special-cased, refused or unjudged), the literal and rule checks,
-  a typed cover that does not validate, the docstring's ``Example:`` line, the example-shape check, G3's exact
-  and oracle checks, and stage 5's drawn recorded inputs and mutation score. Every other check refuses as
-  before: layout, provenance (every fixture re-derives from the recording, parsed fixtures by their stored
-  reader), the manifest, safety (G6), tests that are not plain or not green, regressions, the behaviour check,
-  an edited function without a red test, deleted or weakened tests without a reason, an example call that
-  raises, an incomplete call record, and a function no call of which returns on a value from a recorded
-  episode in any form (it is not landed).
-* **G3 red→green and regression.** Every added or edited function has a new or changed listed test that passes on
-  the candidate and is red on the parent: it fails on the parent tree with the changed tests, their fixtures and
-  the ``support`` helpers copied in (a run there that times out counts as red once the candidate's run is green).
-  Other new or changed tests need only pass on the candidate; each is noted as a keeping test (it passes on the
-  parent, repairs a test the parent had red, or cannot be compared there). A pass that changes only tests or
-  only notes is judged by the checks that apply to what it changes. A listed function whose body is unchanged
-  (listed to change its tests) skips the checks that judge its own code (its source episodes, its stored typed
-  covers); the checks that judge its tests still apply.
+**Evidence levels.** The gate finds no level above ``unchecked`` (it runs nothing): every manifest function lands at
+``unchecked`` with its findings (``level_reasons``), or with :data:`.gate_policy.NOT_RUN_GATE` when it has none.
+Outcomes after use, never the gate, give ``confirmed-by-outcomes``.
 
-  **Behaviour check: any change in what a stored function returns on recorded inputs needs a
-  failing-then-passing test.** In every pass, for every channel it changes (any file under
-  ``env/<channel>/`` added, edited or deleted: a public function, a private helper, a constant, a
-  decorator, an alias or other module-level code), every public function of the parent's module (a
-  ``def``, or a name bound by assignment or import that has recorded covers) whose name the candidate's
-  module still binds (a ``def``, an assignment such as ``A = B`` or an import) runs confined on the
-  parent's and the candidate's version through G2's runner and replay. It runs on its recorded covers
-  (the evidence store's and this manifest's; beyond :data:`.held_out.MAX_OUTPUT_COVERS` a hash-seeded
-  sample) and on the recorded actions of its channel in the pass's own episodes (at most
-  :data:`MAX_EPISODE_INPUTS`, chosen by hash), each in the parent's declared input form. Both must
-  return the same value (canonical JSON), refuse alike, raise the same exception class and issue the
-  same environment calls. A function whose results differ on any of them, or cannot be compared (not
-  JSON, timed out, not run in time), or whose input form changed, must be listed in ``items`` with a
-  test of this pass that is red on the parent's library and green on the candidate's; otherwise the
-  pass is refused, naming the function and the number of differing inputs (ids, never values). A cover
-  that cannot be read or given is skipped with a note; an action that cannot be given in the declared
-  form is not compared; a deleted name is G5's. New functions have no parent version and are exempt
-  (G2 and the red run hold them). This replaces task-10's rule that a helper or constant change needs no
-  test: an unchanged body whose results change is a change. The check is bounded per pass at
-  :data:`BEHAVIOUR_BUDGET_S` seconds and :data:`BEHAVIOUR_MAX_CASES` compared inputs; exhausting either
-  refuses the pass ("behaviour check not completed"), never merges it unchecked.
+Per-item admission (:meth:`Gate.merge`): a hard failure that belongs to manifest items refuses those items (and what
+depends on them, :mod:`.reduction`) instead of the pass, when no failure is pass-wide; the reduced candidate passes
+the whole gate again before it lands.
 
-  A *clean-up pass* (it adds no item and the library shrinks: the channel modules' function
-  definitions or the AST nodes of those definitions fall, and neither they nor the nodes of other module
-  code grow; comments and docstrings never count) may exempt an edited function from the red run only
-  when the change keeps its behaviour: a parent test file that passed on the parent, calls it (an import
-  alone does not count) and still passes in both runs below; and the behaviour check above shows it
-  doing the same on every recorded cover (none unread or ungiven, at most the cap; a recorded rejection
-  that gives no input aside) and on the pass's recorded episode actions. Without it the function needs a
-  red test as in any pass (a repair changes behaviour, so it always does); new tests of a clean-up pass
-  need only be green. Then, per channel, against the parent's suite (the baseline):
-
-  - a readable baseline protects every test it passed (except in retired files). Each must still pass
-    twice: in the candidate's own suite and in an isolated regression run of the parent's own tests and
-    test kit against the candidate's channel modules and notes (nothing else from the candidate). The
-    candidate's suite must be readable and fail only tests the baseline already failed (no new failures);
-  - an unreadable or timed-out baseline protects nothing, and its regression run is skipped (a ``note:``
-    says so). If the pass touches the channel (any path under ``env/<channel>/``), the candidate's suite
-    must be readable and free of failures: that is the repair path;
-  - failures already on the parent that the candidate keeps, and an unreadable suite in a channel the pass
-    does not touch, are reported under ``note: pre-existing`` and do not fail the gate.
-
-  ``note:`` lines follow the failure reasons in :attr:`GateResult.reasons`. Every run is confined,
-  read-only at ``/memory`` with ``PYTHONPATH=/memory``, ``--import-mode=importlib`` and ``-c /dev/null`` (no
-  configuration discovery). A report :class:`PytestOutcome` marks invalid never counts as green, and
-  counts as red only for pytest's collection-error status (2) with the erroring module in the report, or
-  for a timed-out red run as above. Each run is bounded at 300 s. With ``docstring_standard``, every
-  ``>>>`` example of each new or changed environment function runs as a doctest in one more confined
-  pytest run of the same kind, on the candidate tree (the module's names in scope, ``/memory`` the
-  working directory, read-only); a failing or unrun example refuses that function, and so does an example
-  whose channel fixtures (the files its docstring names) include none shaped like an input the function
-  was admitted on (its validated covers' shapes: the same shape, or a structural match of keyed shapes; a
-  function without recorded shapes is not checked).
-* **G4 size budget.** By default (as in v2) :func:`.index.build_index`
-  of the candidate fits ``budget_tokens``, or the candidate is refused. With ``soft_budget`` the library's
-  surface is measured (:func:`.catalogue.catalogue_tokens`, the generated README and the channel lines,
-  under ``surfacing="catalogue"``; the index otherwise); over ``budget_tokens`` a ``note: G4 hygiene due``
-  records that a hygiene pass is due and growth is never refused; only a surface that cannot be built
-  fails.
-* **G5 description length.** If ``env/*/__init__.py`` grew, a cover G2 validated is new to the evidence
-  and is a successful observation (a recorded rejection cover, status ``error``, is not new coverage), or
-  the library shrinks by the clean-up measure above. Every recorded input a deleted item covered (except
-  recorded rejections) is covered by a remaining item: one of this pass's validated covers, or a recorded
-  cover of a kept item whose channel the pass leaves unchanged or that G3's behaviour check showed doing
-  the same. A function changed under a red test holds only the covers this manifest lists for it.
-* **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
-  bytecode or native code, ``__pycache__`` path, ``sitecustomize``/``usercustomize`` under any suffix or root
-  directory named like a standard-library or pytest module; and no other root entry than ``env/``,
-  ``workflows/`` and the test kit (G1) (:func:`.manifest.unsafe_path`, all refused before anything is
-  extracted or run); no key-shaped string in a changed file or the manifest; every public function of a
-  changed module declares ``Effect:`` and is defined once; every module parses. **Structural Effect:** an
-  environment function in ``items`` that covers a tool call whose recorded effect is ``write``
-  (:attr:`.episodes.Action.effect`, the effect the environment declared for the method; never inferred from
-  names) declares ``Effect: write``, unless its declared input is a recorded value (``path``, ``text``,
-  ``bytes``, ``observation``: it parses what a call returned and makes no call). A library function's effect
-  is derived, not declared (:func:`.library_checks.derive_effect`).
-
-Per-item admission (:meth:`Gate.merge`): a failure that belongs to manifest items refuses those items
-(and what depends on them, :mod:`.reduction`) instead of the pass, when no failure is pass-wide; the
-reduced candidate passes the whole gate again before it lands. The item-scoped checks are G1's per-item
-checks (and the docstring standard's), G2 (covers, held-out values, the rule check, workflow status),
-G3's per-item checks (an item's own tests, its examples and their fixtures, a clean-up edit no old test
-holds or that the behaviour check does not show doing the same, and new failures only in its own test
-files), the behaviour check's refusal of a function whose channel the pass changes only through one
-environment function in ``items`` (it belongs to that item; with a ``skeleton`` change, a deleted or
-unlisted item, or more than one such function in the channel it is pass-wide, as are the check's bounds),
-the stage-5 checks of one function or of tests only items list (drawn inputs, mutants, replay, truncation,
-determinism), and G6's ``Effect:`` checks.
-
-:meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
-uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
-
-Under ``surfacing="catalogue"`` a landed merge also freezes the candidate
-commit's input-shape snapshot (:mod:`.shape_rows`): per
-environment function, the parent's shapes for the same body plus the descriptors of the covers this merge
-validated (each covered file's blob, each covered observation), for the export's catalogue
-(:mod:`.catalogue`). Computing it never fails the gate. The examples run, like G3's runs, is a drift check
-under the threat model above, not a security boundary: module code the runner imports can patch ``doctest``.
-
-Stage-5 test checks (library mode, :mod:`.qa`) extend G3 when a :class:`.qa.QAConfig` switch is on: seeded
-random draws of recorded inputs, mutation testing, pinned determinism, replay fidelity and fixture size. Their
-reasons are G3 reasons tagged ``[qa:<check>]``; the static ones (fixture size, replay fidelity, cuts of
-truncated recordings) also run in :meth:`Gate.preview`. Every gate test run also mounts the library test kit
-(:mod:`.testkit`: ``memlab``, the pin plugin, the blobs the tests name) read-only at ``/inputs``
-(``PYTHONPATH=/memory:/inputs``) when a switch is on **or** a test-side file of the parent or the candidate
-uses the kit, so a stored library is checked the same way under every switch setting; library code that uses
-the kit is then refused (``[qa:kit]``). With every switch off (the default) and a library whose tests never
-use the kit, the gate is exactly as described above. The dynamic stage-5 checks run last, after G4 to G6, so
-they are spent only on a candidate the rest of the gate accepts.
+:meth:`Gate.preview` runs the cheap part (the manifest, G1, G2's covers, G4 to G6 and the static checks) on an
+uncommitted tree, for the writer's ``check`` tool; it never decides or records a merge. A landed merge also freezes
+the candidate's input-shape snapshot (:mod:`.shape_rows`) for the catalogue; computing it never fails the gate.
+Stage 5 (:mod:`.qa`) adds static checks of the tests (the test kit stays test-side; fixture size, replay fidelity
+and cuts of truncated recordings behind their switches), tagged ``[qa:<check>]``.
 """
 
 from __future__ import annotations
 
 import ast
-import hashlib
 import json
 import re
 import shutil
 import sys
 import tempfile
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -215,23 +71,10 @@ from . import docstrings, layout
 from .admission import cover_problem, is_rejection
 from .blobs import BlobStore
 from .catalogue import body_digest, reserved
-from .episodes import Action, env_channel
+from .episodes import Action
 from .evidence import EvidenceStore
 from .gitio import GitError, Repo
-from .held_out import (
-    MAX_ACTIONS_PER_EPISODE,
-    MAX_OUTPUT_COVERS,
-    MAX_POOL_ACTIONS,
-    MAX_POOL_EPISODES,
-    OUTPUTS_BUDGET_S,
-    Case,
-    _form,
-    _unfit_reason,
-    output_cases,
-    pool_actions,
-    run_outputs,
-    seen_actions,
-)
+from .cover_forms import unfit_reason as _unfit_reason
 from . import reduction
 from .library_checks import LibraryConfig
 from .manifest import (
@@ -247,20 +90,16 @@ from .manifest import (
     unsafe_path,
 )
 from .index import build_index, estimate_tokens
-from .memory_helper import compare, file_shape, same_shape, value_shape
+from .gate_policy import NOT_RUN_GATE
 from .shape_rows import descriptors, shapes_at, snapshot_rows
 from .memory_repo import ItemsReport, items
 from .item_states import UNCHECKED as _LOWEST_LEVEL
-from .qa import QAChecks, QAConfig, QAEnv
+from .qa import QAChecks, QAConfig
 from .redact import KEY_SHAPED
-from .sandbox_run import PYTHON, PytestOutcome, run_pytest
 from .signals import job_item_status
 from .snapshot import (
-    calls_item,
     code_size,
     duplicate_public_defs,
-    env_references,
-    library_references,
     listing,
     materialise,
     module_skeleton,
@@ -272,27 +111,15 @@ from .snapshot import (
 
 CHECKS = ("G1", "G2", "G3", "G4", "G5", "G6")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
-_COLLECTION_ERROR = (
-    2  # pytest's "interrupted" status, which a collection error produces
-)
-_TIMEOUT_S = 300.0
-# No configuration discovery and no sys.path insertion of test directories in any confined run.
-_PYTEST_ENV = {
-    "PYTHONPATH": "/memory",
-    "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
-}
 _REDACTED = "<redacted:key-shaped>"
-# G3's two per-function refusals (an edited function with no new or changed test, or with none red on the parent):
-# what would satisfy the rule, and what a test that already passes on the parent shows
+# G3's per-function finding (an edited function with no new or changed test): what would satisfy the rule. The gate
+# runs no test, so the writer runs it itself.
 RED_TEST_HINT = (
-    "A function you edit needs at least one listed test that fails on the parent's version and passes on yours. A "
-    "test that already passes on the parent is accepted, but it records existing behaviour and cannot show this "
-    "change."
+    "A function you edit needs at least one new or changed test listed under it. The gate does not run it: run it "
+    "yourself, and see it fail on the parent's version and pass on yours."
 )
 
 
-# The generated doctest runner of G3's examples run (a path the layout admits for no candidate file).
-EXAMPLES_TEST = "_memory_examples/test_examples.py"
 # Input-shape descriptors computed per item at a merge (the evidence store keeps at most its own cap).
 MAX_SHAPE_COVERS = 32
 
@@ -302,14 +129,6 @@ RULE_EPISODES = 2
 # A check (:meth:`Gate.preview`) examines at most this many covers, naming at most this many episodes.
 PREVIEW_MAX_COVERS = 500
 PREVIEW_MAX_EPISODES = 32
-
-# G3's behaviour check, per pass: the seconds its confined runs may take and the recorded inputs it may
-# compare (each run on both versions); either exhausted refuses the pass. Each changed channel's functions are
-# also run on at most this many recorded actions of the channel in the pass's own episodes (chosen by hash).
-BEHAVIOUR_BUDGET_S = 600.0
-BEHAVIOUR_MAX_CASES = 2000
-MAX_EPISODE_INPUTS = 64
-
 
 @dataclass
 class _Reduced:
@@ -353,10 +172,6 @@ class GateResult:
     verification: dict[str, dict] = field(default_factory=dict)
     # the candidate's renames; a landed merge records them (EvidenceStore.record_curations)
     curations: list[dict] = field(default_factory=list)
-    # Library mode: each failing run's whole output (sandbox_run.PytestOutcome.full_output: bounded
-    # only by the sandbox's marked capture), key-shaped strings redacted, by run label. Never stored in the pass
-    # row, whose reasons keep v2's 300-character tail.
-    outputs: dict[str, str] = field(default_factory=dict)
     # library layout: one ``{"item", "adopts"}`` row per landed item, the proposals (staged files, helper output,
     # pool entries) its manifest entry says it came from; empty when nothing landed
     provenance: list[dict] = field(default_factory=list)
@@ -365,13 +180,10 @@ class GateResult:
     # each refused item's own reason lines, as they stand in ``reasons`` (a failure attributed to items); the
     # writer pass's repair rounds compare them round to round (:func:`.repair.refusals`)
     item_reasons: dict[str, list[str]] = field(default_factory=dict)
-    # library mode: each manifest function's evidence level (:mod:`.item_states`; the gate gives ``unchecked`` or
-    # ``reproduces-its-case``) and the findings that set it (``level_reasons``: evidence findings, never refusals)
+    # library mode: each manifest function's evidence level (:mod:`.item_states`; the gate, which runs no code, gives
+    # ``unchecked``) and the findings that set it (``level_reasons``: evidence findings, never refusals)
     levels: dict[str, str] = field(default_factory=dict)
     level_reasons: dict[str, list[str]] = field(default_factory=dict)
-    # library mode: each parsed fixture G1 re-derived in this check: path -> {"parser" (the readers it names),
-    # "parser_sha256" (their digests as the candidate has them), "rederived" (it re-derived), "parse_seconds"}
-    parsed: dict[str, dict] = field(default_factory=dict)
 
 
 def _failed(reason: str, check: str | None = None) -> GateResult:
@@ -386,73 +198,6 @@ def _failed(reason: str, check: str | None = None) -> GateResult:
 # --- outcome rules -----------------------------------------------------------------------------------------
 
 
-def _red(o: PytestOutcome) -> bool:
-    """At least one failure in a trustworthy report, or a collection error naming the module."""
-    if o.timed_out or not o.failed:
-        return False
-    return o.valid or o.returncode == _COLLECTION_ERROR
-
-
-def _green(o: PytestOutcome) -> bool:
-    return (
-        o.valid
-        and not o.timed_out
-        and o.returncode == 0
-        and not o.failed
-        and bool(o.passed)
-    )
-
-
-def _shown(o: PytestOutcome) -> str:
-    """The output a reason quotes: v2's last 300 characters, or in library mode the head and the whole output's blob."""
-    blob = getattr(o, "output_blob", None)
-    if blob is None:
-        return o.output[-300:]
-    return o.output[:300] + f" [full output: blob {blob}]"
-
-
-def _describe(o: PytestOutcome) -> str:
-    return (
-        f"rc={o.returncode} valid={o.valid} timed_out={o.timed_out} "
-        f"failed={sorted(o.failed)[:5]} passed={len(o.passed)}"
-    )
-
-
-def _exercised(source: bytes, *bodies: dict) -> set[str] | None:
-    """The stored functions a test file imports, by id, by module or package, or all of them (None: unparsable).
-
-    v2: a channel or ``env`` import stands for every environment function of *bodies* in its scope. Library mode:
-    ``from memory.<package>.<module> import <name>`` names one function; an import of a module, of a package
-    (``from memory.<package> import <name>`` names the module or a function of that package by that name) or of
-    ``memory`` itself stands for every function of *bodies* in its scope.
-    """
-    refs = env_references(source)
-    lib = library_references(source)
-    if refs is None or lib is None:
-        return None
-    names, channels, everything = refs
-    functions = {i for b in bodies for i, v in b.items() if v[0] == "env_function"}
-    out = set(names) | {
-        i
-        for i in functions
-        if everything or i.split(":", 1)[0].split("/", 1)[1] in channels
-    }
-    lib_names, scopes, lib_all = lib
-    stored = {i for b in bodies for i, v in b.items() if v[0] == "function"}
-    for i in stored:
-        module, name = i.split(":", 1)
-        package = module.rsplit(".", 1)[0]
-        if (
-            lib_all
-            or i in lib_names
-            or module in scopes
-            or package in scopes
-            or f"{package}.{name}" in lib_names
-        ):
-            out.add(i)
-    return out
-
-
 def _unchanged(run: Any, it: Any) -> bool:
     """A listed function whose body (and kind) is the parent's: the pass lists it only to change its tests."""
     return (
@@ -461,11 +206,6 @@ def _unchanged(run: Any, it: Any) -> bool:
         and it.item in run.c_bodies
         and run.p_bodies[it.item][:2] == run.c_bodies[it.item][:2]
     )
-
-
-def _is_fixture(path: str) -> bool:
-    """A fixture path: a file under a ``tests/data/`` directory (library mode ``memory/<package>/tests/data/``)."""
-    return "/tests/data/" in f"/{path}"
 
 
 def _library_size(files: dict, tree: Path) -> tuple[int, int, int] | None:
@@ -509,25 +249,12 @@ def _covers_a_write(covers: list[tuple[str, int, Action]], form: str | None) -> 
     )
 
 
-def _test_file(test_id: str, tests_dir: str, library_layout: bool = False) -> str:
-    """The test file of a suite's test id, as a path from the tree's root (ids may be relative to *tests_dir*).
-
-    *library_layout* (library mode): a ``memory/`` id is already from the root; under v2 only ``env/`` is.
-    """
-    path = test_id.split("::", 1)[0]
-    roots = ("env/", "memory/") if library_layout else ("env/",)
-    return path if path.startswith(roots) else f"{tests_dir}/{path}"
-
-
 def _unfit_forms(
     covers: list[tuple[str, int, Action]],
     input_kind: str | None,
 ) -> list[str]:
-    """The reasons :func:`.held_out.plan` gives as ``unfit`` (run_plan's first failures), without planning.
-
-    The same covers in the same order (status ``ok``, not a rejection, not shell, each once) through the
-    same :func:`.held_out._unfit_reason`, deduplicated, so :meth:`Gate.preview` names exactly what G2 will.
-    """
+    """Why the covered inputs cannot be given in the declared *input_kind* (:func:`.cover_forms.unfit_reason`): the
+    covers with status ``ok``, not a rejection, not shell, each once, deduplicated."""
     out: list[str] = []
     done: set[tuple[str, int]] = set()
     for eid, idx, a in covers:
@@ -543,171 +270,6 @@ def _unfit_forms(
         if why is not None and why not in out:
             out.append(why)
     return out
-
-
-_EXAMPLES_RUNNER = """\
-import doctest
-import functools
-import importlib
-import io
-
-
-def _run(module, name):
-    mod = importlib.import_module(module)
-    fn = getattr(mod, name)
-    calls = []
-
-    @functools.wraps(fn)
-    def counted(*args, **kwargs):
-        calls.append(1)
-        return fn(*args, **kwargs)
-
-    setattr(mod, name, counted)  # an example that imports the function gets the counted one too
-    globs = dict(vars(mod))
-    tests = doctest.DocTestFinder(recurse=False).find(fn, name, module=False, globs=globs)
-    runner = doctest.DocTestRunner(optionflags=doctest.ELLIPSIS | doctest.NORMALIZE_WHITESPACE)
-    out = io.StringIO()
-    results = [runner.run(t, out=out.write) for t in tests]
-    assert sum(r.failed for r in results) == 0, out.getvalue()[-2000:]
-    assert sum(r.attempted for r in results) >= 1, f"no example of {module}.{name} ran"
-    assert calls, f"no example called {module}.{name}"
-"""
-
-
-#: At most this many elements of a collection fixture are shaped (:func:`_fixture_elements`).
-FIXTURE_ELEMENTS = 16
-
-
-def _fixture_elements(data: bytes) -> list:
-    """The first :data:`FIXTURE_ELEMENTS` elements of a fixture holding a collection of recorded inputs: the
-    items of a JSON list, the values of a JSON object, or the lines of a JSON-lines file; ``[]`` for anything
-    else. One level down, only a collection is opened as well (``{"rows": [...]}``, ``{"by_id": {"a": {...}}}``):
-    a member that is a list, or an object whose values are all objects or lists. A record (an object with any
-    other value) is one input and is never opened, so its field values are never elements. At most
-    ``2 * FIXTURE_ELEMENTS`` elements in all. Bounded and value-free."""
-    try:
-        text = bytes(data).decode("utf-8")
-    except UnicodeDecodeError:
-        return []
-    try:
-        top = json.loads(text)
-    except (ValueError, RecursionError):
-        out = []
-        for line in text.splitlines():
-            if len(out) >= FIXTURE_ELEMENTS:
-                break
-            if line.strip():
-                try:
-                    out.append(json.loads(line))
-                except (ValueError, RecursionError):
-                    return []
-        return out
-
-    def members(v):
-        if isinstance(v, list):
-            return v[:FIXTURE_ELEMENTS]
-        if isinstance(v, dict):
-            return list(v.values())[:FIXTURE_ELEMENTS]
-        return []
-
-    def collection(v) -> bool:
-        return isinstance(v, list) or (
-            isinstance(v, dict)
-            and bool(v)
-            and all(isinstance(x, (dict, list)) for x in v.values())
-        )
-
-    out = list(members(top))
-    for v in members(top):
-        if not collection(v):
-            continue  # a record is one input: its field values are not elements
-        if len(out) >= 2 * FIXTURE_ELEMENTS:
-            break
-        out += members(v)[: 2 * FIXTURE_ELEMENTS - len(out)]
-    return out
-
-
-def fixture_fits(mine: dict, recorded: dict) -> bool:
-    """Whether a fixture's descriptor fits a recorded input's: the same exact shape, or a structural match
-    of keyed shapes (see :meth:`Gate._fixture_shape`)."""
-    return same_shape(mine, recorded) or compare(mine, recorded) is not None
-
-
-def _examples_source(items: list[str]) -> str:
-    """A pytest module running each item's docstring examples as a doctest, one test per item, in order.
-
-    Each test fails unless no example fails, at least one example ran (a skipped one does not count) and
-    the function itself was called (it is wrapped by a counter in its module and the examples' globals).
-    """
-    out = [_EXAMPLES_RUNNER]
-    for n, item in enumerate(items):
-        channel, name = item.split(":", 1)
-        module = channel.replace("/", ".")
-        out.append(f"\n\ndef test_example_{n}():\n    _run({module!r}, {name!r})\n")
-    return "".join(out)
-
-
-@dataclass
-class _Probe:
-    """One function's behaviour check: the inputs to run on both versions and what they showed."""
-
-    item: str
-    strict: bool  # an edited function claiming the clean-up exemption: every recorded cover, none unread
-    cases: list[Case] = field(default_factory=list)
-    # recorded covers among the cases
-    covers: set[tuple[str, int]] = field(default_factory=set)
-    why: str | None = None  # not shown to do the same before anything runs
-    # recorded covers that cannot be read or given (not strict: noted, not compared)
-    skipped: int = 0
-    differ: list[tuple[str, int]] = field(default_factory=list)
-    unjudged: list[tuple[str, int]] = field(default_factory=list)
-
-    def verdict(self) -> str | None:
-        """None when it does the same on every compared input; else why not (cover ids, never a value)."""
-        if self.why is not None:
-            return self.why
-        parts = []
-        for ids, what in (
-            (self.differ, "its results differ from the parent's on {n} {of}"),
-            (
-                self.unjudged,
-                "its results on {n} {of} cannot be compared (not run in time, timed out or not JSON)",
-            ),
-        ):
-            for of, chosen in (
-                ("recorded covers", [c for c in ids if c in self.covers]),
-                (
-                    "recorded actions of this pass's episodes",
-                    [c for c in ids if c not in self.covers],
-                ),
-            ):
-                if chosen:
-                    parts.append(
-                        what.format(n=len(chosen), of=of)
-                        + f": {[list(c) for c in sorted(chosen)[:5]]}",
-                    )
-        return "; ".join(parts) or None
-
-
-class _Budget:
-    """G3's behaviour-check budget for one pass: wall-clock seconds left."""
-
-    def __init__(self, seconds: float) -> None:
-        self.end = time.monotonic() + seconds
-
-    def left(self) -> float:
-        return self.end - time.monotonic()
-
-
-def _sample(covers: set[tuple[str, int]], seed: str, n: int) -> set[tuple[str, int]]:
-    """At most *n* of *covers*, chosen by a hash seeded with *seed* (deterministic, independent of order)."""
-    if len(covers) <= n:
-        return set(covers)
-
-    def rank(c: tuple[str, int]) -> str:
-        return hashlib.sha256(f"{seed}\0{c[0]}\0{c[1]}".encode()).hexdigest()
-
-    return set(sorted(covers, key=rank)[:n])
 
 
 class _WithSources:
@@ -750,6 +312,14 @@ _HARD_MARKS = (
 )
 
 
+def _not_run(run: Any, item: str) -> str:
+    """Why the gate did not run *item* (:func:`.gate_policy.not_run_reason`, from its candidate source)."""
+    from .gate_policy import not_run_reason
+
+    body = run.c_bodies.get(item)
+    return not_run_reason(body[1] if body is not None and body[0] == "function" else None)
+
+
 def labelled(check: str, reason: str) -> bool:
     """Whether a finding of *check* about an item is a quality result its label carries
     rather than a refusal: G2 and G3, except syntax, imports that fail, missing paths and the gate's own kit."""
@@ -784,51 +354,22 @@ class _Run:
         default_factory=set,
     )  # validated covers that are recorded rejections, never new coverage for G5
     notes: list[str] = field(default_factory=list)  # informational; never fail the gate
-    # covered channels -> (the recorded observations pool of :mod:`.held_out`, whether the cap stopped it)
-    pools: dict[tuple[str, ...], tuple[list[tuple[str, Action]], bool]] = field(
-        default_factory=dict,
-    )
     # item -> (body digest, input-shape descriptors of its validated covers), recorded on a landed merge
     shapes: dict[str, tuple[str, list[dict]]] = field(default_factory=dict)
-    # stage 5 (:mod:`.qa`): the /inputs mount of the gate's runs (None: every switch off and the library's
-    # tests do not use the test kit), and G3's first candidate run of each new or changed test file
-    qa_env: QAEnv | None = None
-    qa_first: dict[str, PytestOutcome] = field(default_factory=dict)
     # environment functions that cover a recorded write call (structural Effect; G6)
     writes: set[str] = field(default_factory=set)
     # per-item admission: item -> the checks that refused it, and whether any failure is pass-wide
     item_fail: dict[str, list[str]] = field(default_factory=dict)
     pass_wide: bool = False
-    # functions of the changed channels that G3's behaviour check showed doing what their parent versions did
-    # on every compared input. None: not judged (a preview runs no G3).
-    same: set[str] | None = None
-    # the parent's declared input forms by function, read once (False: its library cannot be read)
-    p_inputs: dict[str, str] | bool | None = None
-    # changed channel -> recorded actions of the channel in the pass's own episodes (G3's behaviour check)
-    episode_inputs: dict[str, list[tuple[str, int, Action]]] = field(
-        default_factory=dict,
-    )
     # per item, what the checks measured (library_checks, qa)
     verification: dict[str, dict] = field(default_factory=dict)
     # the candidate's renames (LibraryChecks.aliases_kept)
     curations: list[dict] = field(default_factory=list)
-    # run label -> the whole recorded output of a failing run (GateResult.outputs; library mode)
-    outputs: dict[str, str] = field(default_factory=dict)
-    # the stage-5 seed (library mode: one per pass, so every round's check and the final merge draw the same
-    # recorded inputs and mutants); None: :func:`.qa.seed_of` the candidate, as in v2
-    seed: bytes | None = None
-    # library mode: the import graph of both versions (G3's behaviour scope; None in v2)
+    # library mode: the import graph of both versions (the scope of G3's not-run labels and of per-item reduction)
     graph: dict[str, set[str]] | None = None
     # library mode: the fixture provenance entries G1 verified in this pass (path -> (sha256, entry)), persisted on
     # merge
     fixtures_verified: dict[str, tuple[str, dict]] = field(default_factory=dict)
-    # library mode: each function's input fixtures (example_perturb.InputFixture), for stage 5's drawn inputs
-    input_fixtures: dict[str, list] = field(default_factory=dict)
-    # library mode: the call records of the parent's suites on the parent's library (baseline), on the
-    # candidate's library (regression run), and of the candidate's suites (suite path -> record; example_calls)
-    calls_base: dict[str, Any] = field(default_factory=dict)
-    calls_reg: dict[str, Any] = field(default_factory=dict)
-    calls_cand: dict[str, Any] = field(default_factory=dict)
     # library mode: evidence findings set an item's evidence level instead of refusing it (:meth:`cap`)
     levels_on: bool = False
     # a quality finding about an item is recorded on its label and
@@ -838,12 +379,9 @@ class _Run:
     label_findings: dict[str, list[str]] = field(default_factory=dict)
     # item -> the evidence findings that set its level (in order, each once)
     level_reasons: dict[str, list[str]] = field(default_factory=dict)
-    # library mode: per function listed only to change its tests, the episodes of the stored typed ``episode`` covers
-    # its manifest entry repeats; they were checked when it landed and are not run again
-    typed_kept: dict[str, list[str]] = field(default_factory=dict)
-    # (:mod:`.gate_policy`) every finding but the hard ones labels its item
-    # or notes the pass, and only a statically pure item's own tests run; None: as built
-    policy: Any = None
+    # (:mod:`.gate_policy`) every finding but the hard ones labels its item or notes the pass (:meth:`check`; a
+    # preview keeps its G2 and G3 labels only, :func:`labelled`)
+    labels_only: bool = False
 
     def cap(
         self,
@@ -880,7 +418,7 @@ class _Run:
         admission, :meth:`Gate.merge`); an unattributed failure refuses the whole pass.
         """
         owners = [item] if isinstance(item, str) else list(item or [])
-        if self.policy is not None:
+        if self.labels_only:
             from .gate_policy import hard
 
             if not hard(check, reason, owners):
@@ -932,19 +470,6 @@ class _Run:
                 found.append(line)
         self.note(f"{', '.join(owners) if owners else 'the pass'}: {line[:300]}")
 
-    def output(self, label: str, o: PytestOutcome) -> None:
-        """Keep a failing run's whole recorded output under *label* for the full gate result (library mode):
-        :attr:`.sandbox_run.PytestOutcome.full_output`, which only the sandbox's own marked capture bound cuts.
-
-        Never part of a reason: the reasons, and so the pass row, keep v2's 300-character tail.
-        """
-        text = KEY_SHAPED.sub(_REDACTED, o.full_output or o.output)
-        blob = getattr(o, "output_blob", None)
-        # library mode: the whole output, past the capture bound, is a blob
-        self.outputs[label] = (
-            text if blob is None else f"{text}\n[whole output: blob {blob}]"
-        )
-
     def stop(self, failures: list[tuple[str, str]]) -> None:
         for check, reason in failures:
             self.fail(check, reason)
@@ -962,33 +487,25 @@ class Gate:
         evidence: EvidenceStore,
         blobs: BlobStore,
         *,
-        python: Path = PYTHON,
         budget_tokens: int = 4000,
         reader_promotes: bool = False,
         action_lookup: Callable[[str, int], Action | None] | None = None,
-        pytest_runner: Callable[..., PytestOutcome] = run_pytest,
         qa: QAConfig | None = None,
         library_mode: LibraryConfig,
         segments_dir: Path | str | None = None,
     ) -> None:
         """*library_mode* is the library's checks' configuration (:class:`.library_checks.LibraryConfig`): covers have
-        no channel rule (G2), G3's behaviour check and per-item reduction are scoped by the import graph, and the
+        no channel rule (G2), G3's not-run labels and per-item reduction are scoped by the import graph, and the
         library gate checks (:mod:`.library_checks`) and stage 5's static checks run. Every finding but the hard ones
-        is a label on its item, and the gate runs no code (:mod:`.gate_policy`, rev 2.1); no recorded task data is
-        replayed. *budget_tokens* is G4's soft budget (a note, never a refusal). *qa* is the stage-5 test
+        is a label on its item, and the gate runs no code (:mod:`.gate_policy`, rev 2.1). *budget_tokens* is G4's soft budget (a note, never a refusal). *qa* is the stage-5 test
         checks' configuration (:class:`.qa.QAConfig`). *segments_dir* (``UNIFY_MEMORY=in_episode``):
         the state dir whose segment records (``<episode>.s<n>``) an item may cite as its source while their episode
         is still open; None: only recorded episodes.
         """
         self.mem, self.ev, self.blobs = memory, evidence, blobs
-        self.python, self.budget, self.reader_promotes = (
-            python,
-            budget_tokens,
-            reader_promotes,
-        )
+        self.budget, self.reader_promotes = budget_tokens, reader_promotes
         # Fail closed: without an episodes reader no covered call can be confirmed.
         self.lookup = action_lookup or (lambda eid, i: None)
-        self.pytest = pytest_runner
         from .qa import library_config
 
         self.qa = library_config(qa if qa is not None else QAConfig())
@@ -1001,16 +518,12 @@ class Gate:
         parent: str,
         candidate: str,
         manifest: dict,
-        *,
-        seed: bytes | None = None,
     ) -> GateResult:
         """The whole gate on *candidate*, without merging; no per-item reduction is tried.
 
-        ``items_refused`` names the items its failures belong to, as :meth:`merge` would refuse them. *seed*
-        (library mode): the pass's stage-5 seed, so a repair round's check and the final merge draw the same
-        sample; None draws by the candidate, as in v2.
+        ``items_refused`` names the items its failures belong to, as :meth:`merge` would refuse them.
         """
-        res, _, notes, _, _ = self._check(parent, candidate, manifest, seed=seed)
+        res, _, notes, _, _ = self._check(parent, candidate, manifest)
         res.reasons.extend(notes)
         return res
 
@@ -1038,9 +551,8 @@ class Gate:
         a :meth:`parent_snapshot` (then the preview runs no git at all) or a revision to snapshot now.
         Runs the manifest parse, the early layout and safety refusals, G1, G2's cover checks (each cover's
         kind, record and channel, and the structural check that the covers can give the declared ``input``
-        form, without the held-out perturbation; at most :data:`PREVIEW_MAX_COVERS` covers over
-        :data:`PREVIEW_MAX_EPISODES` episodes, each looked up once), G4, G5 and G6. Never G3 (no test runs),
-        G2's held-out runs or a workflow's signals (nothing about outcomes), and never writes:
+        form; at most :data:`PREVIEW_MAX_COVERS` covers over :data:`PREVIEW_MAX_EPISODES` episodes, each looked
+        up once), G4, G5 and G6. Never G3 or a workflow's signals (nothing about outcomes), and never writes:
         no commit, git object, evidence or pass row. A clean preview does not mean the gate will pass.
         """
         res = GateResult(True, {c: True for c in CHECKS})
@@ -1113,9 +625,7 @@ class Gate:
                 self._g5(run)  # needs G2's validated covers
             self._g4(run)
             self._g6(run)
-            v = self._library_mode(run)
-            if v is not None:
-                v.static()
+            self._library_mode(run).static()
             qa = QAChecks(self, run)
             qa.kit()  # library code never uses the test kit (static)
             if bounded:
@@ -1134,23 +644,16 @@ class Gate:
         kind: str,
         channel: str | None,
         usd: str,
-        *,
-        seed: bytes | None = None,
     ) -> GateResult:
         """Check, then fast-forward ``main``; evidence is recorded only for a landed candidate.
 
-        *seed*: as for :meth:`check` (library mode); the reduced candidate is checked with the same seed.
-
         Per-item admission (stage 7): when the candidate is refused and every failure belongs to manifest
-        items (an item's G1 checks, its G2 evidence and held-out runs, its own tests' red→green, examples
-        and new failures in its own test files under G3, a behaviour change G3's behaviour check attributes
-        to it (:meth:`_behaviour_owner`), its G6 ``Effect:`` checks), those items are refused with
+        items (an item's hard G1 checks, such as its fixtures' provenance, and its G6 ``Effect:`` checks; under the
+        labels-only gate a G2 or G3 finding labels its item instead), those items are refused with
         everything that depends on them (:mod:`.reduction`). The candidate reduced to the other items is
         committed as a child of *parent* and the whole gate runs on it once more; it lands if it passes,
         and otherwise the pass is refused whole. A pass-wide failure (layout, unsafe or forbidden files,
-        a malformed manifest, undeclared changes, the suites' lost tests and regression runs, the
-        behaviour check's bounds and the changes it cannot attribute to one item, G4, G5,
-        key-shaped strings, unparsable modules) refuses the whole pass at once. One round; no search over
+        a malformed manifest, undeclared changes, G4, G5, key-shaped strings, unparsable modules) refuses the whole pass at once. One round; no search over
         subsets. :attr:`GateResult.items_merged` and :attr:`GateResult.items_refused` (value-free codes)
         are recorded in the pass row.
         """
@@ -1175,36 +678,24 @@ class Gate:
             )
             return res
         landed, landed_manifest = c_sha, manifest
-        if seed is None:
-            from .qa import seed_of
-
-            seed = seed_of(
-                c_sha,
-            )  # the reduced re-check draws the candidate's sample
         try:
             res, covers, notes, shapes, reduced = self._check(
                 p_sha,
                 c_sha,
                 manifest,
                 reduce_as=pass_id,
-                seed=seed,
             )
             if reduced is not None:
                 again, covers2, notes2, shapes2, _ = self._check(
                     p_sha,
                     reduced.sha,
                     reduced.manifest,
-                    seed=seed,
                 )
                 if again.passed:
                     again.reasons = [
                         f"item refused: {r}" for r in res.reasons + reduced.reasons
                     ]
                     again.refused = []
-                    again.outputs = {
-                        **{f"item refused: {k}": v for k, v in res.outputs.items()},
-                        **again.outputs,
-                    }
                     res, covers, notes, shapes = again, covers2, notes2, shapes2
                     landed, landed_manifest = reduced.sha, reduced.manifest
                 else:
@@ -1213,9 +704,6 @@ class Gate:
                         f"({reduced.sha[:12]}) was refused too",
                     )
                     res.reasons += [f"reduced: {r}" for r in again.reasons]
-                    res.outputs.update(
-                        {f"reduced: {k}": v for k, v in again.outputs.items()},
-                    )
                     res.refused += [c for c in again.refused if c not in res.refused]
                 res.items_refused = reduced.refused
         except BaseException as exc:
@@ -1331,57 +819,6 @@ class Gate:
             return None
         return sha if _SHA.match(sha) else None
 
-    def _pytest(
-        self,
-        tree: Path,
-        target: str,
-        extra_env: dict[str, str] | None = None,
-        qa_env: QAEnv | None = None,
-        calls: list[str] | None = None,
-    ) -> PytestOutcome:
-        # library mode: the whole output is spooled and kept as a blob; v2 passes nothing new
-        spool = (
-            Path(tempfile.mkdtemp(prefix="memlib-out-"))
-        )
-        more: dict = {"spool_dir": spool} if spool is not None else {}
-        if calls is not None:
-            # library mode: record the calls test code makes of these functions (example_calls)
-            more["calls"] = list(calls)
-        try:
-            if qa_env is not None:
-                # a stage-5 switch is on or the library's tests use the test kit: memlab and the referenced
-                # blobs at /inputs, and a skip for a failed import fails (the kit must never be silently missing)
-                o = self.pytest(
-                    target,
-                    python=self.python,
-                    ro={tree: "/memory", qa_env.inputs: "/inputs"},
-                    rw={},
-                    cwd="/memory",
-                    timeout_s=_TIMEOUT_S,
-                    env={**qa_env.env, **(extra_env or {})},
-                    import_skips_fail=True,
-                    **more,
-                )
-            else:
-                o = self.pytest(
-                    target,
-                    python=self.python,
-                    ro={tree: "/memory"},
-                    rw={},
-                    cwd="/memory",
-                    timeout_s=_TIMEOUT_S,
-                    env={**_PYTEST_ENV, **(extra_env or {})},
-                    **more,
-                )
-            if spool is not None:
-                from .library_checks import keep_output
-
-                keep_output(o, spool, self.blobs)
-            return o
-        finally:
-            if spool is not None:
-                shutil.rmtree(spool, ignore_errors=True)
-
     def _record(
         self,
         parent: str,
@@ -1425,7 +862,6 @@ class Gate:
         candidate: str,
         manifest: dict,
         reduce_as: str | None = None,
-        seed: bytes | None = None,
     ) -> tuple[
         GateResult,
         set[tuple[str, str, int]],
@@ -1440,43 +876,27 @@ class Gate:
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memory-gate-"))
         run = _Run(res, Manifest(), manifest, parent, candidate, tmp)
-        run.seed = seed
         run.levels_on = True
         run.labels_on = True
         reduced = None
         try:
             if self._prepare(run):
-                from .gate_policy import Policy
-
-                run.policy = Policy(
-                    replays=False,
-                    bodies={i: b[1] for i, b in run.c_bodies.items() if b[0] == "function"},
-                )
+                run.labels_only = True
                 v = self._library_mode(run)
                 self._g1(run)
-                if v is not None:
-                    v.g1()
+                v.g1()
                 self._g2(run)
-                if v is not None:
-                    v.g2()
-                # stage 5: the test kit when a switch is on or the library's tests use it (else nothing)
+                v.g2()
+                # stage 5's static checks (the test kit stays test-side; fixture size, replay fidelity, cuts)
                 qa = QAChecks(self, run)
-                if qa.prepare():
-                    qa.kit()
-                    qa.static(self.lookup)
+                qa.kit()
+                qa.static(self.lookup)
                 self._g3(run)
-                if v is not None:
-                    v.g3()
-                    v.g4()
-                    v.aliases_kept()
-                else:
-                    self._g4(run)
+                v.g3()
+                v.g4()
+                v.aliases_kept()
                 self._g5(run)
-                if v is not None:
-                    v.g5()
                 self._g6(run)
-                # rev 2: stage 5's determinism, drawn-input and mutant runs replay recorded task data
-                run.note("stage 5 dynamic checks not run: recorded replays are off (rev 2)")
                 if reduce_as is not None and not res.passed:
                     reduced = self._reduce(run, reduce_as)
             snapshot = self._snapshot(run) if res.passed else {}
@@ -1487,7 +907,6 @@ class Gate:
         self._labels(run)
         res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
         res.curations = [dict(r) for r in run.curations]
-        res.outputs = dict(run.outputs)
         res.fixtures_verified = dict(run.fixtures_verified)
         passed = res.passed
         return res, (run.covers if passed else set()), run.notes, snapshot, reduced
@@ -1511,7 +930,6 @@ class Gate:
         go in the gate result and in the function's verification record (``level``, ``level_reasons``), from which the
         item records take them; outcomes after use, never the gate, give ``confirmed-by-outcomes``.
         """
-        from .gate_policy import NOT_RUN_GATE
         from .item_states import UNCHECKED
 
         res = run.res
@@ -2007,15 +1425,12 @@ class Gate:
         preview: bool = False,
         lookup: Callable[[str, int], Action | None] | None = None,
     ) -> None:
-        """*preview* (:meth:`preview`) checks the covers and their declared input form only: no held-out
-        runs, no workflow signals.
+        """*preview* (:meth:`preview`) checks the covers and their declared input form only, and no workflow
+        signals.
 
         *lookup* replaces the gate's action lookup (the preview's memoised one).
         """
         lookup = lookup or self.lookup
-        seen: list[Action] | None = (
-            None  # the recorded actions of every episode the manifest names
-        )
         library = True
         for n, it in enumerate(run.man.items):
             if library and it.kind == "function":
@@ -2064,29 +1479,19 @@ class Gate:
                         it.item,
                     )
                 elif valid and preview:
-                    # the structural input-form check only: no held-out perturbation
+                    # the structural input-form check only
                     for why in _unfit_forms(valid, form)[:5]:
                         run.fail("G2", f"{it.item} {why}", it.item)
                 elif valid:
-                    if seen is None:
-                        seen = seen_actions(self._named_episodes(run), self.lookup)
-                    # the catalogue's shapes and the examples' fixture check
+                    # the catalogue's shapes
                     self._record_shapes(
                         run,
                         it.item,
                         valid,
                         it.input or (declared if declared in INPUT_KINDS else None),
                     )
-                    self._held_out(
-                        run,
-                        it.item,
-                        valid,
-                        seen,
-                        run.tmp / f"held-out-{n}",
-                        it.field_types,
-                        form,
-                        self._pool(run, valid),
-                    )
+                    # unseen values of its covered inputs would be a rerun of the item: the gate runs no code
+                    run.not_run(it.item, f"G2 held-out values: {NOT_RUN_GATE}")
             elif it.kind == "workflow" and not preview:
                 status = job_item_status(
                     it.item,
@@ -2172,55 +1577,16 @@ class Gate:
         eids |= {e for it in run.man.items for e, _ in it.covers}
         return sorted(eids)
 
-    def _pool(
-        self,
-        run: _Run,
-        covers: list[tuple[str, int, Action]],
-    ) -> tuple[list[tuple[str, Action]], bool]:
-        """The recorded observations on the covered channels: per channel, the evidence store's most recent
-        :data:`.held_out.MAX_POOL_EPISODES` episodes touching it, in the store's order (independent of the
-        pass), then the manifest's other episodes (bounded; whether a cap stopped the read).
-        """
-        channels = tuple(sorted({a.channel for _, _, a in covers}))
-        if channels not in run.pools:
-            stored: set[str] = set()
-            for ch in channels:
-                stored.update(self.ev.episode_ids_since(ch, 0)[-MAX_POOL_EPISODES:])
-            eids = sorted(stored, key=self.ev.seq_of)
-            eids += [e for e in self._named_episodes(run) if e not in stored]
-            run.pools[channels] = pool_actions(eids, self.lookup, set(channels))
-        return run.pools[channels]
-
-    def _held_out(
-        self,
-        run: _Run,
-        item: str,
-        covers: list[tuple[str, int, Action]],
-        seen: list[Action],
-        work: Path,
-        field_types: dict[str, str],
-        input_kind: str | None = None,
-        pool: tuple[list[tuple[str, Action]], bool] | None = None,
-    ) -> None:
-        """Scope is shape: the item must not refuse unseen values of its covered inputs' types.
-
-        Each covered input reaches the item in its declared *input_kind* (None: the kind's convention). A
-        field's constancy (identity or format) is judged on *pool*, the recorded observations of the covered
-        channels across the evidence store, with whether its read cap was hit.
-
-        A field declared with a semantic type is checked two-sided instead: unseen in-domain values
-        accepted, an out-of-domain value refused before any environment call.
-        """
-        from .gate_policy import NOT_RUN_REPLAYS
-
-        run.not_run(item, f"G2 held-out values: {NOT_RUN_REPLAYS}")
-        return
-
     def _g3(self, run: _Run) -> None:
+        """G3 on the candidate's library, from its files only: an edited function needs a new or changed test listed
+        under it, and every listed test must be in the candidate.
+
+        The gate runs no code (rev 2.1, :data:`.gate_policy.NOT_RUN_GATE`): a listed test, a package's suite and a
+        stored function whose module the pass changes, or that imports one (:meth:`_call_scope`), are not run, and
+        each is recorded on its owners' labels (``not run: <why>``); a suite is noted.
+        """
         man, changed = run.man, set(run.changed)
         new_tests = sorted({t for it in man.items for t in it.tests if t in changed})
-        # an unchanged function listed under a skeleton change is held by the regression run and, if its
-        # results change, by the behaviour check
         edited = {
             it.item
             for it in man.items
@@ -2228,90 +1594,19 @@ class Gate:
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
         }
-        unseen: set[str] = set()
-        # already refused here: the behaviour check need not run them
         refused: set[str] = set()
         for it in man.items:
             if it.item in edited and not any(t in changed for t in it.tests):
                 refused.add(it.item)
                 run.fail("G3", f"{it.item} has no new or changed test. {RED_TEST_HINT}", it.item)
-        missing = [t for t in new_tests if t not in run.c_files]
-        for t in missing:
-            run.fail("G3", f"listed test {t} is not in the candidate", _owners(man, t))
-        runnable = [t for t in new_tests if t not in missing]
-        unran: set[str] = set()  # rev 2: tests the gate did not run (an impure item's)
-        classic: set[str] = (
-            set()
-        )  # red on the parent's library with the candidate's test copied in
-        if runnable:
-            red_tree = run.tmp / "red"
-            shutil.copytree(run.p_tree, red_tree)
-            # the changed fixtures go in too, so that a test is red on the parent because the behaviour it checks
-            # differs there, never because a fixture new in this pass is missing
-            fixtures = sorted(p for p in run.changed if p in run.c_files and _is_fixture(p))
-            for rel in runnable + man.support + fixtures:
-                if rel in run.c_files:
-                    (red_tree / rel).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(run.c_tree / rel, red_tree / rel)
-            targets = self._example_targets(run)
-            for t in runnable:
-                ok, why = run.policy.test(run.c_tree, t)
-                if not ok:
-                    # rev 2: a test of an impure item is never run by the gate
-                    run.not_run(_owners(man, t), f"G3 {t}: {why}")
-                    unran.add(t)
-                    continue
-                on_parent = self._pytest(red_tree, t, qa_env=run.qa_env)
-                on_cand = (
-                    self._pytest(run.c_tree, t, qa_env=run.qa_env, calls=targets)
-                    if targets is not None
-                    else self._pytest(run.c_tree, t, qa_env=run.qa_env)
-                )
-                run.qa_first[t] = on_cand
-                # a parent library that hangs on the test is red once the candidate's run is green
-                if _red(on_parent) or (on_parent.timed_out and _green(on_cand)):
-                    classic.add(t)
-                else:
-                    # not red on the parent: a keeping test, accepted once green on the candidate; it never stands
-                    # in for an edited function's red test
-                    self._keeping_note(run, t, edited, on_cand, on_parent)
-                if not _green(on_cand):
-                    run.output(f"{t} (candidate)", on_cand)
-                    run.fail(
-                        "G3",
-                        f"{t} is not green on the candidate ({_describe(on_cand)}) "
-                        f"{_shown(on_cand)}",
-                        _owners(man, t),
-                    )
-        # a function declared with a test that is red on the parent may change behaviour (each edited
-        # function is seen changing by at least one such test)
-        declared: set[str] = set()
-        for it in man.items:
-            tests = {t for t in it.tests if t in changed and t in run.c_files}
-            if tests & classic:
-                declared.add(it.item)
-            elif tests and tests <= unran:
-                continue  # rev 2: none of its tests ran, so whether one is red is not known (its label says why)
-            elif it.item in edited and tests:
-                refused.add(it.item)
-                run.fail(
-                    "G3",
-                    f"{it.item} is edited, but none of its tests is red on the parent's library. {RED_TEST_HINT}",
-                    it.item,
-                )
-        protected = self._suites(run)
-        self._behaviour(run, unseen, declared, refused, protected)
-
-    def _example_targets(self, run: _Run) -> list[str] | None:
-        """Library mode: the manifest's functions present in the candidate, whose calls G3's candidate runs record;
-        None otherwise (nothing is recorded)."""
-        return sorted(
-            {
-                it.item
-                for it in run.man.items
-                if it.kind == "function" and it.item in run.c_bodies
-            },
-        )
+        for t in new_tests:
+            if t not in run.c_files:
+                run.fail("G3", f"listed test {t} is not in the candidate", _owners(man, t))
+            else:
+                run.not_run(_owners(man, t), f"G3 {t}: {NOT_RUN_GATE}")
+        self._suites(run)
+        for item in sorted(self._call_scope(run) - refused):
+            run.not_run(item, f"G3 behaviour on its recorded calls: {_not_run(run, item)}")
 
     def _call_scope(self, run: _Run) -> set[str]:
         """Library mode: the stored functions of the parent in the changed modules and in every module importing
@@ -2347,573 +1642,23 @@ class Gate:
             and (item in run.c_bodies or still_bound(item))
         }
 
-    def _behaviour(
-        self,
-        run: _Run,
-        unseen: set[str],
-        declared: set[str],
-        refused: set[str],
-        protected: set[str],
-    ) -> None:
-        """G3's behaviour check: any change in what a stored function returns on recorded inputs needs
-        a failing-then-passing test.
-
-        For every channel the pass changes (any file under ``env/<channel>/``), every public function of the
-        parent's module (a ``def``, or a name bound by assignment or import that has recorded covers) whose
-        name the candidate's module still binds runs confined on both versions (:meth:`_probe`,
-        :meth:`_run_probe`), unless *declared* (a test of it in this pass is red on the parent) or already
-        *refused*. A function that differs, or cannot be compared, on any input is refused. An edited
-        function claiming the clean-up exemption (*unseen*) must also be called by a *protected* parent test
-        and is compared on every recorded cover (none unread, at most :data:`.held_out.MAX_OUTPUT_COVERS`).
-        Sets ``run.same``. A refused exemption belongs to its item; another refused function to the item
-        :meth:`_behaviour_owner` names, else to the pass; a budget run out refuses the pass.
-
-        Library mode: :meth:`_behaviour_library`, on the calls the parent's tests make.
-        """
-        self._behaviour_library(run, unseen, declared, refused, protected)
-        return
-
-    def _behaviour_library(
-        self,
-        run: _Run,
-        unseen: set[str],
-        declared: set[str],
-        refused: set[str],
-        protected: set[str],
-    ) -> None:
-        """Library mode's behaviour check (:meth:`.example_checks.ExampleChecks.behaviour`): every stored function of
-        the changed modules and their importers (:meth:`_call_scope`) must return, refuse and raise alike on every
-        call the parent's tests make of it, on the parent's library and on the candidate's, unless a test of it in
-        this pass is red on the parent (*declared*) or it is already *refused*. An edited function claiming the
-        clean-up exemption (*unseen*) must be called by a *protected* parent test and is compared strictly.
-
-        A stored function no parent test calls is compared on its stored covers as before when it has covers and
-        its parent docstring an ``Input:`` line (a transition for functions stored before tests were their
-        examples); with neither its behaviour cannot be compared, and it is refused.
-        """
-        from .example_checks import ExampleChecks
-
-        ex = ExampleChecks(self, run)
-        run.same = set()
-        strict: set[str] = set()
-        for item in sorted(unseen):
-            if self._held(run, item, protected):
-                strict.add(item)
-            else:
-                run.fail(
-                    "G3",
-                    self._exemption_refused(
-                        item,
-                        "no parent test that passed on the parent calls it",
-                    ),
-                    item,
-                )
-        scope = {
-            i
-            for i in self._call_scope(run)
-            if i not in declared and i not in refused and i not in unseen
-        }
-        ex.behaviour(
-            run.calls_base,
-            run.calls_reg,
-            scope | strict,
-            strict=strict,
-            owner=lambda i: self._behaviour_owner(run, i, _Probe(i, False)),
-        )
-        recorded: dict[str, set[tuple[str, int]]] = {}
-        for it, e, i in self.ev.covers():
-            recorded.setdefault(it, set()).add((e, i))
-        probes: dict[str, _Probe] = {}
-        for item in sorted(ex.uncalled):
-            if not run.policy.item(item)[0]:
-                # rev 2: an impure item is never run on its recorded covers; its label says so
-                run.not_run(item, f"G3 behaviour on its recorded calls: {run.policy.item(item)[1]}")
-                continue
-            if item in strict:
-                run.fail(
-                    "G3",
-                    self._exemption_refused(item, "no test of the parent calls it"),
-                    item,
-                )
-            elif recorded.get(item) and self._parent_input(run, item) is not None:
-                run.note(
-                    f"G3 behaviour check: {item} has no example call in the parent's tests; compared on its stored "
-                    "covers",
-                )
-                probes[item] = self._probe(run, item, recorded, strict=False)
-            else:
-                ex.no_comparison(item)
-        budget = _Budget(BEHAVIOUR_BUDGET_S)
-        for k, item in enumerate(sorted(probes)):
-            pr = probes[item]
-            if pr.why is None and not self._run_probe(
-                run,
-                pr,
-                run.tmp / f"same-{k}",
-                budget,
-            ):
-                run.fail(
-                    "G3",
-                    f"behaviour check not completed: its {BEHAVIOUR_BUDGET_S:g} s budget ran out at {item}",
-                )
-                break
-            why = pr.verdict()
-            if why is None:
-                run.same.add(item)
-            else:
-                run.fail(
-                    "G3",
-                    f"{item} changes behaviour without a test: {why}; any change in what a stored function "
-                    "returns on recorded inputs needs a test, listed under it in the manifest, that fails on "
-                    "the parent's library and passes on the candidate's",
-                    self._behaviour_owner(run, item, pr),
-                )
-
     @staticmethod
-    def _exemption_refused(item: str, why: str) -> str:
-        return (
-            f"{item} is edited in a clean-up pass without a red test, and {why}; a change of behaviour "
-            "needs a test that is red on the parent's library"
-        )
-
-    @staticmethod
-    def _source_channels(acts: list[tuple[str, int, Action]]) -> list[str]:
-        """Library mode: the memory channels (``env/<name>``) of a function's recorded covers. They stand for the channel
-        its path named in v2 (the source channel moves to the item's record).
-        """
-        out: set[str] = set()
-        for _, _, a in acts:
-            kind = getattr(a, "kind", "tool")
-            if kind == "shell":
-                continue
-            ch = env_channel(kind, a.channel)
-            if ch:
-                out.add(f"env/{ch}")
-        return sorted(out)
-
-    @staticmethod
-    def _behaviour_owner(run: _Run, item: str, pr: _Probe) -> str | None:
-        """The one manifest item a behaviour change of *item* found by :meth:`_behaviour` is attributable to
-        (per-item admission); None refuses the pass whole.
-
-        A function reaching this check without a red test is unchanged, or bound by assignment or import (an
-        edited function is red-tested, refused or held to the clean-up exemption before it), so the change
-        comes from elsewhere in its channel. It is attributable when the pass's only change to that channel's
-        module is one environment function in ``items`` whose body it adds or edits: no ``skeleton`` change of
-        the channel and no ``deleted`` or ``unlisted`` item there. Refusing that item restores the parent's
-        function and refuses its callers (:mod:`.reduction`), and the reduced candidate runs the behaviour
-        check again. A parent library that cannot be read is no item's. In library mode the edits that count are
-        those in the item's module or in a library module it imports, directly or through others.
-        """
-        if pr.why == "the parent's library cannot be read":
-            return None
-        if (
-            run.graph is not None
-        ):  # library mode: what the item's module imports, transitively
-            related = layout.imported_closure(run.graph, item.split(":", 1)[0])
-            touched = (*run.man.deleted, *run.man.unlisted)
-            if any(s in related for s in run.man.skeleton) or any(
-                o.split(":", 1)[0] in related for o in touched
-            ):
-                return None
-            owners = [e for e in Gate._edited(run) if e.split(":", 1)[0] in related]
-            return owners[0] if len(owners) == 1 else None
-        channel = item.split(":", 1)[0]
-        if channel in run.man.skeleton or any(
-            other.split(":", 1)[0] == channel
-            for other in (*run.man.deleted, *run.man.unlisted)
-        ):
-            return None
-        owners = [e for e in Gate._edited(run) if e.split(":", 1)[0] == channel]
-        return owners[0] if len(owners) == 1 else None
-
-    def _examples(self, run: _Run) -> None:
-        """Every ``>>>`` example of each new or changed environment function, run as a doctest in one
-        confined pytest run on the candidate tree (G3's runner); a failing or unrun example refuses it.
-        """
-        targets: list[str] = []
-        for item in self._edited(run):
-            node = self._function_node(run, item)
-            if node is not None and docstrings.has_example(
-                docstrings.parse(ast.get_docstring(node) or ""),
-            ):
-                targets.append(item)
-        for item in [t for t in targets if not run.policy.item(t)[0]]:
-            run.not_run(item, f"G3 docstring examples: {run.policy.item(item)[1]}")
-        targets = [t for t in targets if run.policy.item(t)[0]]
-        if not targets:
+    def _suites(run: _Run) -> None:
+        """The library's test suites (``memory/<package>/tests``) are not run (rev 2.1, the gate runs no code): each
+        suite of the parent or the candidate that holds a test module is noted, when the pass changes anything."""
+        if not run.changed:
             return
-        for item in targets:
-            self._fixture_shape(run, item)
-        tree = run.tmp / "examples"
-        shutil.copytree(run.c_tree, tree)
-        (tree / EXAMPLES_TEST).parent.mkdir(parents=True, exist_ok=True)
-        (tree / EXAMPLES_TEST).write_text(_examples_source(targets))
-        # set and dict orders in an example's output must not vary between runs
-        outcome = self._pytest(tree, EXAMPLES_TEST, {"PYTHONHASHSEED": "0"})
-        readable = outcome.valid and not outcome.timed_out
-
-        def ran(ids: set[str], n: int) -> bool:
-            return any(t.rsplit("::", 1)[-1] == f"test_example_{n}" for t in ids)
-
-        for n, item in enumerate(targets):
-            if not readable:
-                run.output("docstring examples (candidate)", outcome)
-                run.fail(
-                    "G3",
-                    f"the examples of {item} could not be run ({_describe(outcome)}) "
-                    f"{_shown(outcome)}",
-                )
-            elif ran(outcome.failed, n) or not ran(outcome.passed, n):
-                run.output("docstring examples (candidate)", outcome)
-                run.fail(
-                    "G3",
-                    f"an example in the docstring of {item} fails as a doctest "
-                    f"{_shown(outcome)}",
-                    item,
-                )
-
-    def _fixture_shape(self, run: _Run, item: str) -> None:
-        """An example's fixture must have the shape of an input *item* was admitted on (its validated
-        covers' shapes, :meth:`_record_shapes`); an item without recorded shapes (``env``) is not checked.
-
-        The shape is compared exactly (:func:`.memory_helper.same_shape`, no information floor, so a
-        headerless table, a raw grid or a list of scalars passes with an identical-shape fixture), or, for
-        keyed shapes, by ``find``'s structural match (:func:`.memory_helper.compare`), which admits a
-        fixture that is a partial copy of a recorded record.
-        """
-        recorded = run.shapes.get(item, ("", []))[1]
-        node = self._function_node(run, item)
-        if not recorded or node is None:
-            return
-        channel = item.split("/", 1)[1].split(":", 1)[0]
-        paths = [
-            p
-            for p in docstrings.fixture_paths(
-                docstrings.parse(ast.get_docstring(node) or ""),
-                channel,
-            )
-            if p in run.c_files
-        ]
-        for path in paths:
-            data = (run.c_tree / path).read_bytes()
-            mine = [
-                d for d in (file_shape(path, data), value_shape(data)) if d is not None
-            ]
-            # a fixture is also a collection of recorded inputs (a JSON list, records by name, one level of
-            # wrapping, or JSON lines) whose examples pick one: each element is shaped on its own
-            mine += [
-                d for d in map(value_shape, _fixture_elements(data)) if d is not None
-            ]
-            if any(fixture_fits(d, r) for d in mine for r in recorded):
-                return
-        if paths:
-            run.cap(
-                "G3",
-                f"the examples of {item} read no fixture shaped like an input it covers "
-                f"({', '.join(paths[:5])})",
-                item,
-            )
-
-    def _keeping_note(
-        self,
-        run: _Run,
-        test: str,
-        edited: set[str],
-        on_cand: PytestOutcome,
-        on_parent: PytestOutcome,
-    ) -> str:
-        """Note a new or changed test that is not red on the parent: a keeping test. It refuses nothing.
-
-        It is accepted once green on the candidate (checked by the caller), and it never counts as an edited
-        function's red test. The note names the test, which of three it is (it passes on the parent and records
-        existing behaviour; it repairs a test the parent had red, :meth:`_repaired`; or it cannot be compared on the
-        parent), and the library functions it exercises (:func:`_exercised`), with those this pass edits.
-        """
-        # a repaired test also passes on the parent's library once copied there: the repair is named first
-        if self._repaired(run, test, on_cand):
-            why = "repairs a test the parent had red"
-        elif _green(on_parent):
-            why = "passes on the parent: it records existing behaviour"
-        else:
-            why = f"not comparable on the parent ({_describe(on_parent)})"
-        try:
-            source = (run.c_tree / test).read_bytes()
-        except OSError:
-            source = b""
-        uses = _exercised(source, run.p_bodies, run.c_bodies)
-        shown = sorted(uses or ())
-        line = f"G3 keeping test: {test} {why}"
-        if shown:
-            line += f"; it exercises {', '.join(shown[:5])}" + (", …" if len(shown) > 5 else "")
-            carried = sorted(edited & set(shown))
-            if carried:
-                line += (
-                    f"; it is not the red test of {', '.join(carried[:5])}, which this pass edits"
-                )
-        run.note(line)
-        return why
-
-    def _repaired(self, run: _Run, test: str, on_cand: PytestOutcome) -> bool:
-        """The parent's own *test* file is already red on the parent and the candidate's version repairs it.
-
-        A readable parent report must name a failed test that passes on the candidate; a collection error
-        names no test, so it counts for the whole file. (The candidate's run must also be green.) Used
-        only for the keeping test's note (:meth:`_keeping_note`).
-        """
-        if test not in run.p_files:
-            return False
-        old = self._pytest(run.p_tree, test, qa_env=run.qa_env)
-        if not _red(old):
-            return False
-        return not old.valid or bool(old.failed & on_cand.passed)
-
-    def _regression_tree(self, run: _Run) -> Path | None:
-        """The parent tree (its tests and test kit) with only the candidate's channel modules and notes.
-
-        None when it would equal the parent tree. Retired test files are left out.
-
-        Library mode: the candidate's library modules, package inits and notes take the place of the parent's.
-        """
         from .layout import classify
 
-        def library(p: str) -> bool:
-            return classify(p) in ("module", "package_init", "note")
-
-        swapped = sorted(
-            p
-            for p in set(run.p_files) | set(run.c_files)
-            if library(p) and run.p_files.get(p) != run.c_files.get(p)
-        )
-        retired = set(run.man.deleted_tests)
-        if not swapped and not retired:
-            return None
-        tree = run.tmp / "regression"
-        shutil.copytree(run.p_tree, tree)
-        for rel in swapped:
-            if rel in run.c_files:
-                (tree / rel).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(run.c_tree / rel, tree / rel)
-            else:
-                (tree / rel).unlink()
-        for rel in retired:
-            if (tree / rel).exists():
-                (tree / rel).unlink()
-        return tree
-
-    def _suites(self, run: _Run) -> set[str]:
-        """Per channel, compare against the parent's suite (the baseline).
-
-        A readable baseline protects every test it passed outside retired files. Each must pass in two
-        runs:
-
-        * the candidate's own suite, on the candidate tree, which must also be readable and fail only
-          tests the baseline failed (a rewritten test file or test kit cannot shrink the net silently);
-        * the isolated regression run (:meth:`_regression_tree`): the parent's tests and test kit against
-          the candidate's library (a changed test kit or helper cannot mask a broken old contract).
-
-        An unreadable or timed-out baseline protects nothing and skips the regression run. In a channel the
-        pass touches, the candidate's suite must then be readable and free of failures (the repair path);
-        in an untouched channel, a suite that stays broken is noted as pre-existing. Failures the
-        baseline already had and the candidate keeps are noted, not failed. Each run is bounded separately.
-
-        Returns the parent test files with a protected test (a file whose protected tests are lost fails
-        here, so on a passing gate each still passes in both runs).
-
-        Library mode (``checks``; "no unexplained test loss"): each package's suite
-        ``memory/<package>/tests`` is compared the same way, its protected files are returned as paths from the
-        tree's root, and a deleted test file is retired only with a reason in the manifest's ``tests_changed``
-        (else its lost tests refuse here). A test of an alias is collected through the alias: listed under the
-        alias's target, its failures belong to that item.
-        """
-        protected: set[str] = set()
-        if not run.changed:
-            return protected
-        library_mode = True
-        retired = set(run.man.deleted_tests)
-        if library_mode:
-            raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
-            stated = (
-                raw.get("tests_changed")
-                if isinstance(raw.get("tests_changed"), dict)
-                else {}
-            )
-            retired = {
-                t
-                for t in retired
-                if isinstance(stated.get(t), str) and stated[t].strip()
-            }
-        regression = self._regression_tree(run)
-        touched = {p.split("/")[1] for p in run.changed if p.startswith("env/")}
-
-        def file_of(t: str, rel: str) -> str:
-            return (
-                _test_file(t, rel, True)
-                if library_mode
-                else t.split("::", 1)[0]
-            )
-
-        def kept(ids: set[str], rel: str) -> set[str]:
-            return {t for t in ids if file_of(t, rel) not in retired}
-
-        channels = sorted(
+        suites = sorted(
             {
-                p.split("/")[1]
+                "/".join(p.split("/")[:2]) + "/tests"
                 for p in set(run.p_files) | set(run.c_files)
-                if p.startswith("env/") and p.split("/")[2:3] == ["tests"]
+                if p.startswith("memory/") and classify(p) == "test"
             },
         )
-        suites = [(f"env/{ch}/tests", ch in touched, f"env/{ch}") for ch in channels]
-        if library_mode:
-            from .layout import classify
-
-            pkgs = sorted(
-                {
-                    p.split("/")[1]
-                    for p in set(run.p_files) | set(run.c_files)
-                    if classify(p) in ("test", "test_helper", "fixture")
-                },
-            )
-            changed_pkgs = {
-                p.split("/")[1]
-                for p in run.changed
-                if p.startswith("memory/") and p.count("/") >= 2
-            }
-            suites += [
-                (f"memory/{pkg}/tests", pkg in changed_pkgs, f"memory/{pkg}")
-                for pkg in pkgs
-            ]
-        # library mode: the calls of the stored functions in scope (and of deleted ones) that the parent's tests make,
-        # on the parent's library and on the candidate's (behaviour, G3), and of every candidate function in the
-        # candidate's suites when items are deleted (their fixtures stay used, G5); example_checks
-        scope = sorted(self._call_scope(run)) if library_mode else []
-        base_targets = sorted(
-            (
-                {*scope, *(d for d in run.man.deleted if d in run.p_bodies)}
-                if library_mode
-                else set()
-            ),
-        )
-        cand_targets = (
-            sorted(i for i, b in run.c_bodies.items() if b[0] == "function")
-            if library_mode and run.man.deleted
-            else []
-        )
-
-        def calls_for(rel: str, targets: list[str]) -> dict:
-            return {"calls": targets} if targets and rel.startswith("memory/") else {}
-
-        for rel, is_touched, area in suites:
-            ok, why = run.policy.suite(run.c_tree, rel)
-            ok_parent, why_parent = run.policy.suite(run.p_tree, rel) if ok else (ok, why)
-            if not (ok and ok_parent):
-                run.note(f"suite {rel} not run: {why or why_parent} (rev 2: the gate runs only pure items' tests)")
-                continue
-            before: set[str] = set()  # protected: passed on the parent
-            known_red: set[str] = set()  # failed on the parent
-            broken: str | None = None  # the baseline cannot be read
-            if (run.p_tree / rel).is_dir():
-                base = self._pytest(
-                    run.p_tree,
-                    rel,
-                    qa_env=run.qa_env,
-                    **calls_for(rel, base_targets),
-                )
-                if (
-                    getattr(base, "calls", None) is not None
-                    and not base.timed_out
-                    and base.valid
-                ):
-                    run.calls_base[rel] = base.calls
-                if base.timed_out or not base.valid:
-                    broken = _describe(base)
-                    run.note(
-                        f"the parent's suite {rel} is unreadable ({broken}): it protects no test "
-                        "and its regression run is skipped",
-                    )
-                else:
-                    before, known_red = kept(base.passed, rel), kept(base.failed, rel)
-                    protected |= {file_of(t, rel) for t in before}
-            after: set[str] = set()
-            if (run.c_tree / rel).is_dir():
-                suite = self._pytest(
-                    run.c_tree,
-                    rel,
-                    qa_env=run.qa_env,
-                    **calls_for(rel, cand_targets),
-                )
-                if getattr(suite, "calls", None) is not None:
-                    run.calls_cand[rel] = suite.calls
-                readable = suite.valid and not suite.timed_out
-                new_red = sorted(suite.failed - known_red)
-                if (
-                    broken is not None
-                    and not is_touched
-                    and not (readable and not suite.failed)
-                ):
-                    run.note(
-                        f"pre-existing: suite {rel} is still not green ({_describe(suite)}); "
-                        f"this pass does not touch {area}",
-                    )
-                elif not readable or new_red:
-                    run.output(f"suite {rel} (candidate)", suite)
-                    repair = (
-                        "; the parent's suite was unreadable, so the candidate's must be green"
-                        if broken is not None
-                        else ""
-                    )
-                    # new failures only in test files the manifest's items list are those items' own
-                    # (per-item admission); anything else refuses the whole pass
-                    owners = [
-                        _owners(run.man, _test_file(t, rel, True))
-                        for t in new_red
-                    ]
-                    run.fail(
-                        "G3",
-                        f"suite {rel} has new failures or is unreadable on the candidate "
-                        f"({_describe(suite)}; new {new_red[:5]}{repair}) {_shown(suite)}",
-                        (
-                            sorted({o for found in owners for o in found})
-                            if readable and all(owners)
-                            else None
-                        ),
-                    )
-                elif suite.failed:
-                    run.note(
-                        f"pre-existing: {rel} still fails {sorted(suite.failed)[:5]}, as on the parent",
-                    )
-                after = suite.passed
-            lost = sorted(before - after)
-            if lost:
-                run.fail(
-                    "G3",
-                    f"the candidate's suite {rel} no longer passes the parent's tests {lost[:5]}",
-                )
-            if regression is not None and (before or (rel in run.calls_base and scope)):
-                reg = self._pytest(
-                    regression,
-                    rel,
-                    qa_env=run.qa_env,
-                    **calls_for(rel, scope),
-                )
-                if getattr(reg, "calls", None) is not None:
-                    run.calls_reg[rel] = reg.calls
-                if reg.timed_out or not reg.valid:
-                    run.output(f"regression run of {rel}", reg)
-                    run.fail(
-                        "G3",
-                        f"the regression run of {rel} is unreadable ({_describe(reg)}) "
-                        f"{_shown(reg)}",
-                    )
-                lost = sorted(before - reg.passed)
-                if lost:
-                    run.output(f"regression run of {rel}", reg)
-                    run.fail(
-                        "G3",
-                        "the parent's tests no longer pass against the candidate's library: "
-                        f"{lost[:5]}",
-                    )
-        return protected
+        for rel in suites:
+            run.note(f"suite {rel} not run: {NOT_RUN_GATE}")
 
     @staticmethod
     def _shrinks(run: _Run) -> bool:
@@ -2924,210 +1669,10 @@ class Gate:
             return False
         return after[:2] != before[:2] and all(a <= b for a, b in zip(after, before))
 
-    @staticmethod
-    def _held(run: _Run, item: str, protected: set[str]) -> bool:
-        """A parent test file that passed on the parent, and still passes, calls *item*.
-
-        A call, not an import: :func:`.snapshot.calls_item`, or :func:`.aliases.calls_function` for a library id.
-        """
-        try:
-            from . import layout
-        except ImportError:  # a build without the library layout has no library ids
-            layout = None
-        if layout is not None and layout.FUNCTION_ID.match(item):
-            from .aliases import calls_function
-
-            return any(
-                rel in run.p_files
-                and calls_function(
-                    (run.p_tree / rel).read_bytes(),
-                    item,
-                    layout.package_of_path(rel),
-                )
-                for rel in sorted(protected)
-            )
-        return any(
-            rel in run.p_files and calls_item((run.p_tree / rel).read_bytes(), item)
-            for rel in sorted(protected)
-        )
-
     def _blob(self, sha: str) -> bytes:
         if not self.blobs.has(sha):
             raise KeyError(sha)
         return self.blobs.get(sha)
-
-    def _forms(self, run: _Run, item: str) -> tuple[str | None, str | None] | None:
-        """*item*'s declared input form in the parent and in the candidate (None: the kind's convention).
-
-        A candidate name bound by assignment or import has no docstring of its own and keeps the parent's
-        form. None when the parent's library cannot be read.
-
-        Library mode: each tree's function docstring ``Input:`` line (the manifest's declared input first, for the
-        candidate); v2's report reads only environment functions, which left every library-mode form unknown.
-        """
-        # library mode reads no Input: line, except the parent's for the behaviour check's transition path
-        form = self._parent_input(run, item)
-        return form, form
-
-    @staticmethod
-    def _parent_input(run: _Run, item: str) -> str | None:
-        """Library mode: the ``Input:`` line of *item*'s docstring in the parent, for a function stored before tests
-        were its examples (the behaviour check's transition path); None when it has none.
-        """
-        try:
-            module = ast.parse((Path(run.p_tree) / layout.item_path(item)).read_bytes())
-        except (OSError, SyntaxError, ValueError):
-            return None
-        name = item.split(":", 1)[1]
-        for node in module.body:
-            if (
-                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.name == name
-            ):
-                m = re.search(
-                    r"^\s*Input:\s*([a-z]+)\s*$",
-                    ast.get_docstring(node) or "",
-                    re.M,
-                )
-                return m.group(1) if m and m.group(1) in INPUT_KINDS else None
-        return None  # bound by assignment or import: no docstring of its own
-
-    def _episode_inputs(self, run: _Run, channel: str) -> list[tuple[str, int, Action]]:
-        """The recorded actions on *channel* (``env/<name>``) in the pass's own episodes (its manifest's source
-        and cover episodes), shell commands aside: at most :data:`MAX_EPISODE_INPUTS`, chosen by hash.
-        """
-        if channel not in run.episode_inputs:
-            name = channel.split("/", 1)[1]
-            found: list[tuple[str, int, Action]] = []
-            read = 0
-            for eid in self._named_episodes(run):
-                for i in range(MAX_ACTIONS_PER_EPISODE):
-                    if read >= MAX_POOL_ACTIONS:
-                        break
-                    a = self.lookup(eid, i)
-                    read += 1
-                    if a is None:
-                        break
-                    kind = getattr(a, "kind", "tool")
-                    if kind != "shell" and env_channel(kind, a.channel) == name:
-                        found.append((eid, i, a))
-            keep = _sample({(e, i) for e, i, _ in found}, channel, MAX_EPISODE_INPUTS)
-            run.episode_inputs[channel] = [c for c in found if (c[0], c[1]) in keep]
-        return run.episode_inputs[channel]
-
-    def _probe(
-        self,
-        run: _Run,
-        item: str,
-        recorded: dict[str, set[tuple[str, int]]],
-        *,
-        strict: bool,
-    ) -> _Probe:
-        """The recorded inputs *item* is compared on, without running anything.
-
-        Its recorded covers (the evidence store's, *recorded* by item, and this manifest's) and the recorded actions of its
-        channel in the pass's own episodes (:meth:`_episode_inputs`, so that a repair of an input no cover
-        holds is seen), each in the parent's declared input form. Not *strict*: beyond
-        :data:`.held_out.MAX_OUTPUT_COVERS` covers a hash-seeded sample, and a cover that cannot be read or
-        given is skipped (counted for a note). *strict* (an edited function claiming the clean-up exemption):
-        it needs a recorded cover, at most the cap, every one read and given (a recorded rejection that gives
-        no input aside). Either way an action that cannot be given in the declared form is not compared, and
-        a changed input form, or a parent library that cannot be read, is a difference.
-        """
-        pr = _Probe(item, strict)
-        covers = set(recorded.get(item, ()))
-        covers |= {
-            (e, i) for it in run.man.items if it.item == item for e, i in it.covers
-        }
-        if strict and not covers:
-            pr.why = "it has no recorded cover to compare its results on"
-            return pr
-        if strict and len(covers) > MAX_OUTPUT_COVERS:
-            pr.why = f"its {len(covers)} recorded covers exceed the {MAX_OUTPUT_COVERS} compared"
-            return pr
-        covers = _sample(covers, item, MAX_OUTPUT_COVERS)
-        forms = self._forms(run, item)
-        if forms is None:
-            pr.why = "the parent's library cannot be read"
-            return pr
-        p_form, c_form = forms
-        acts: list[tuple[str, int, Action]] = []
-        unread: list[list] = []
-        for e, i in sorted(covers):
-            a = self.lookup(e, i)
-            if a is None:
-                unread.append([e, i])
-            else:
-                acts.append((e, i, a))
-        if unread and strict:
-            pr.why = (
-                f"{len(unread)} of its recorded covers cannot be read: {unread[:5]}"
-            )
-            return pr
-        pr.skipped += len(unread)
-        given = {(e, i) for e, i, _ in acts}
-        pool = [
-            c
-            for ch in self._source_channels(acts)
-            for c in self._episode_inputs(run, ch)
-        ]
-        acts += [c for c in pool if (c[0], c[1]) not in given]
-        if any(_form(a, p_form) != _form(a, c_form) for _, _, a in acts):
-            pr.why = "its input form changed"
-            return pr
-        cases, unfit = output_cases(acts, self._blob, p_form)
-        rejected = {
-            (e, i)
-            for e, i, a in acts
-            if is_rejection(a) and getattr(a, "kind", "tool") != "shell"
-        }
-        unfit_covers = [list(c) for c in unfit if c in given and c not in rejected]
-        if unfit_covers and strict:
-            pr.why = (
-                f"{len(unfit_covers)} of its recorded covers cannot be given to it (a shell cover, another "
-                f"input form or an unreadable file): {unfit_covers[:5]}"
-            )
-            return pr
-        pr.skipped += len(unfit_covers)
-        pr.cases = cases
-        pr.covers = {c.cover for c in cases if c.cover in given}
-        if strict and not pr.covers:
-            pr.why = "none of its recorded covers gives it an input to compare its results on"
-        return pr
-
-    def _run_probe(self, run: _Run, pr: _Probe, work: Path, budget: _Budget) -> bool:
-        """Run *pr*'s cases confined on the parent's and the candidate's *item*, through G2's runner and
-        replay (:func:`.held_out.run_outputs`): the return value (canonical JSON), refusal, raised exception
-        class and issued environment calls must be equal. Records the differing and the uncomparable cases;
-        False when the *budget* ran out (the check is then not completed).
-        """
-        if not pr.cases:
-            return True
-        results = []
-        for side, tree in (("parent", run.p_tree), ("candidate", run.c_tree)):
-            left = budget.left()
-            if left <= 0:
-                return False
-            results.append(
-                run_outputs(
-                    pr.item,
-                    pr.cases,
-                    tree=tree,
-                    python=self.python,
-                    work=work / side,
-                    timeout_s=min(left, OUTPUTS_BUDGET_S),
-                ),
-            )
-        if budget.left() <= 0:
-            return False
-        before, after = results
-        pr.unjudged = sorted(
-            c for c in before if before[c] is None or after.get(c) is None
-        )
-        pr.differ = sorted(
-            c for c in before if c not in pr.unjudged and before[c] != after[c]
-        )
-        return True
 
     def _g4(self, run: _Run) -> None:
         """The size budget: a note that hygiene is due past it (never a refusal of growth)."""
@@ -3153,15 +1698,6 @@ class Gate:
                     "G5",
                     "the library grew without covering any new recorded call",
                 )
-        # library mode: a deleted function's fixtures stay used by a remaining function's examples
-        from .example_checks import ExampleChecks
-
-        parent_calls: dict[str, list] = {}
-        for rec in run.calls_base.values():
-            for c in rec.calls:
-                parent_calls.setdefault(c.item, []).append(c)
-        ExampleChecks(self, run).retained(parent_calls)
-        return
 
     def _g6(self, run: _Run) -> None:
         if run.report_error is not None:

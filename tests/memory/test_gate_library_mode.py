@@ -13,6 +13,7 @@ import pytest
 
 from tests.memory.library_example_world import library_example_world  # noqa: F401 - a fixture
 from tests.memory import library_example_world as w
+from unify.memory.gate_policy import NOT_RUN_GATE
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -45,40 +46,22 @@ def test_library_gate_passes_and_records_verification(library_example_world):
     res = _merge(library_example_world, files, w.manifest(fixtures))
     assert res.passed, res.reasons
     rec = res.verification[w.ITEM_ID]
-    # every evidence check holds: the function lands at the level the gate gives for that
-    assert res.levels == {w.ITEM_ID: "reproduces-its-case"} and res.level_reasons == {w.ITEM_ID: []}
-    assert rec["level"] == "reproduces-its-case" and rec["level_reasons"] == []
+    # rev 2.1: the gate runs no code, so the function lands unchecked; its labels say what was not run
+    assert res.levels == {w.ITEM_ID: "unchecked"}
+    assert rec["level"] == "unchecked" and rec["level_reasons"] == [f"not run: {NOT_RUN_GATE}"]
     assert rec["exact_assertions"] >= 2 and rec["tests"] == [w.TEST_FILE]
-    # rev 2: stage 5's dynamic checks (mutation score, guard, drawn inputs) and the perturbed reruns replay recorded
-    # task data, so they do not run; the gate says so
-    assert not {"mutation", "guard", "drawn_inputs", "drawn_inputs_read"} & set(rec), sorted(rec)
-    assert "note: stage 5 dynamic checks not run: recorded replays are off (rev 2)" in res.reasons, res.reasons
-    assert (
-        f"note: G2 examples: {w.ITEM_ID}: perturbed reruns not run: recorded replays are off (rev 2)"
-    ) in res.reasons, res.reasons
-    examples = rec["examples"]
-    assert (
-        examples["calls"],
-        examples["accepted"],
-        examples["refused"],
-        examples["raised"],
-    ) == (5, 4, 1, 0)
-    assert examples["grounded_calls"] == 4 and examples["episodes"] == ["e1", "e2"]
-    assert examples["fixtures"] == sorted([*w.FIXTURE_PATHS, w.INPUTS_PATH])
-    assert examples["perturbation"]["runs"] == 0 and examples["perturbation"]["judged"] == 0
-    first = w.recorded_calls(blobs.get)[0]
-    assert examples["example"] == {
-        "test": w.EXAMPLE_TEST,
-        "line": first.line,
-        "call": 'user_id(load("me_1.json"))',
-    }
+    assert f"not run: G3 {w.TEST_FILE}: {NOT_RUN_GATE}" in rec["label_findings"], rec["label_findings"]
+    assert f"not run: G2 examples: {NOT_RUN_GATE}" in rec["label_findings"], rec["label_findings"]
+    # nothing a run would have measured is in the record
+    assert not {"examples", "mutation", "guard", "drawn_inputs", "drawn_inputs_read"} & set(rec), sorted(rec)
     assert "cross_episode" not in rec and "input" not in rec
     reasons = json.loads(
         ev.db.execute("SELECT reasons FROM passes WHERE pass_id='p1'").fetchone()[0],
     )
     assert any(r.startswith("library_mode-verification ") for r in reasons)
-    # the landed commit's shapes are frozen under the item's id, for the actor's find
-    assert w.ITEM_ID in (ev.commit_shapes(res.merged) or {})
+    # the argument shapes the actor's find reads came from the gate's runs of the tests; rev 2.1's gate runs none, so a
+    # library function landed now has no recorded shape (the frozen snapshot holds none for it)
+    assert w.ITEM_ID not in (ev.commit_shapes(res.merged) or {})
 
 
 def test_a_fixture_not_made_by_fixture_tool_is_refused(library_example_world):
@@ -148,21 +131,6 @@ def test_a_function_whose_parameters_are_all_required_passes_the_gate(
     assert not any("unbound" in r or "default" in r for r in res.reasons)
 
 
-def test_a_function_grounded_on_one_episode_passes(
-    library_example_world,
-):
-    """One recorded episode is enough evidence for a function: the same request shape gets a reusable function even
-    if no other request is served by it."""
-    mem, ev, blobs, gate = library_example_world
-    files, fixtures = w.files_and_fixtures(blobs.get, sources=(w.E1, w.E1))
-    man = w.manifest(fixtures, w.item(source_episodes=["e1"]))
-    res = gate().check(mem.head(), w.candidate(mem, files), man)
-    assert res.passed, res.reasons
-    assert not any("[examples:episodes]" in r for r in res.reasons)
-    assert res.verification[w.ITEM_ID]["examples"]["episodes"] == ["e1"]
-    assert res.levels[w.ITEM_ID] == "reproduces-its-case", res.level_reasons
-
-
 #: user_id with a decision rule: a value computed from the input, replaced by a constant under a condition
 RULE_MODULE = w.MODULE_SOURCE.replace(
     '    return response["user_id"]\n',
@@ -213,18 +181,15 @@ def test_a_deleted_package_test_is_labelled_unless_a_reason_is_stated(
         "unlisted": [],
         "support": [],
     }
-    lost = "no longer passes the parent's tests"
     unstated = "is deleted without a stated reason"
     res = gate().check(
         mem.head(),
         w.candidate(mem, {w.TEST_FILE: None}),
         man,
     )
-    # rev 2: a weakened suite is a label on the pass, never a refusal
+    # rev 2: a weakened suite is a label on the pass, never a refusal (rev 2.1: the suite is not run, so a lost test
+    # is found only by its file's deletion)
     assert res.passed and not res.refused, res.reasons
-    assert any(
-        r.startswith("note: label: the pass: G3: ") and f"suite memory/acct/tests {lost}" in r for r in res.reasons
-    ), res.reasons
     assert any(r.startswith("note: label: the pass: G3: ") and unstated in r for r in res.reasons), res.reasons
     stated = {
         **man,
@@ -235,7 +200,6 @@ def test_a_deleted_package_test_is_labelled_unless_a_reason_is_stated(
         w.candidate(mem, {w.TEST_FILE: None}),
         stated,
     )
-    assert not any(lost in r for r in res.reasons), res.reasons
     assert not any(unstated in r for r in res.reasons), res.reasons
 
 

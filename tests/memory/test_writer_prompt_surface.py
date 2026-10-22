@@ -355,14 +355,7 @@ def test_a_use_record_loses_every_host_path():
     assert out["cell_status"][0]["where"] == f"{LIBRARY_COPY}/memory/text/dates.py"
 
 
-def test_the_briefs_pytest_command_has_the_gates_root_and_working_directory():
-    import inspect
-
-    from unify.memory import sandbox_run
-
-    gate_src = inspect.getsource(sandbox_run)
-    assert (
-        '"--rootdir",\n                cwd,' in gate_src
-    )  # the gate roots pytest at its working directory, /memory
+def test_the_briefs_pytest_command_roots_at_the_library_and_runs_there():
+    """The writer runs its own tests (the gate runs none, rev 2.1); the brief's command roots pytest at /memory."""
     for name, text in _briefs().items():
         assert '"--rootdir", "/memory"], cwd="/memory"' in text, name

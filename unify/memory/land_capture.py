@@ -12,7 +12,7 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
 - the recipe, ``apply_<name>(request)`` in the same module (:func:`recipe_block`): the capture's
   ``run(read_input(request))`` lifted into the library, the reader on the request it is handed, then the procedure,
   with ``applies`` as its precondition (a request it does not hold for is refused with ``MemoryInputError``);
-- the cases the recipe is checked on (:mod:`.recipes`), case files made by the fixture tool: the source case, the
+- the cases the recipe is for, case files made by the fixture tool: the source case, the
   recorded request with the value its episode handed back (``<name>.case<k>.source.case.json``), and each case the
   call names in *cases* (an input of the episode with the output the request or the environment showed for it,
   ``<name>.case<k>.shown<j>.case.json``);

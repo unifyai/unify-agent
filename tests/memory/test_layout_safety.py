@@ -89,10 +89,8 @@ RECORDED_V2_PATHS = [
 
 FIXTURE_MODULES = (
     "tests.memory.test_gate",
-    "tests.memory.test_gate_docstrings",
     "tests.memory.test_writer_pass",
     "tests.memory.test_kinds_gate",
-    "tests.memory.test_held_out",
     "tests.memory.test_memory_repo",
     "tests.memory.integration.test_checkout",
 )

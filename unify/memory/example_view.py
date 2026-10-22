@@ -1,18 +1,12 @@
 """One example call of a library function, quoted from its tests: what the index, ``memory.show`` and the
 docstring's ``Example:`` line show of how to call it.
 
-A function's examples are the calls its tests make (:mod:`.example_calls`). The harness picks one that returns on
-values loaded from recorded fixtures (:func:`pick_example`) and quotes its source text from the test file
-(:func:`call_text`): the call expression at the recorded line, whitespace runs collapsed to one space, comments
-dropped, cut past :data:`EXAMPLE_MAX_CHARS`. Only a call written in the test file itself is quoted (a call made
-inside a helper module under ``tests/`` would show the helper's parameters, not the test's values).
-
-The item record keeps the picked call (``{"test", "line", "call"}``). Whatever shows it re-quotes the call from the
-tree first (:func:`verified_example`): a test edited since gives other text at that line, and then nothing is shown,
-so a stale call is never quoted.
-
-A function's docstring names one of its tests on its ``Example:`` line (``memory/<package>/tests/test_x.py::
-test_name``); no doctest and no ``Input:`` line (:func:`docstring_problems`). Pure, standard library only.
+An item record may keep one example call of its function (``{"test", "line", "call"}``), picked by a gate before
+rev 2.1 from the calls its tests made; the gate now runs no test, so it picks none. Whatever shows a kept call
+re-quotes it from the tree first (:func:`verified_example`, :func:`call_text`: the call expression at the recorded
+line, whitespace runs collapsed to one space, comments dropped, cut past :data:`EXAMPLE_MAX_CHARS`): a test edited
+since gives other text at that line, and then nothing is shown, so a stale call is never quoted. Pure, standard
+library only.
 """
 
 from __future__ import annotations
@@ -24,8 +18,6 @@ import tokenize
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 
-from . import docstrings
-from .example_calls import CallKey, ExampleCall
 
 EXAMPLE_MAX_CHARS = 160
 CUT = " …"
@@ -35,8 +27,6 @@ TEST_ID = re.compile(
     r"^memory/[A-Za-z_][A-Za-z0-9_]*/tests/(?:[A-Za-z0-9_]+/)*test_[A-Za-z0-9_]*\.py"
     r"(?:::[A-Za-z_][A-Za-z0-9_]*)+$",
 )
-TEST_ID_FORM = "memory/<package>/tests/test_<name>.py::test_<case>"
-_INPUT_LINE = re.compile(r"^[ \t]*Input:", re.M)
 ReadFile = Callable[[str], "bytes | None"]
 
 
@@ -160,41 +150,6 @@ def _function_name(item: str) -> str:
     return item.split(":", 1)[1] if ":" in item else item
 
 
-def pick_example(
-    item: str,
-    calls: list[ExampleCall],
-    grounded: set[CallKey],
-    named: str | None,
-    tree: Path,
-) -> dict | None:
-    """``{"test", "line", "call"}``: the example call of *item* to show. Among its calls that returned and whose
-    arguments are grounded in recorded fixtures (*grounded*), written in their test's own file: the first of the
-    test *named* by the docstring's ``Example:`` line, else the first by (test, indices, ordinal). A call whose
-    text cannot be quoted from *tree* is passed over. None when no call qualifies."""
-    name = _function_name(item)
-    eligible = sorted(
-        (
-            c
-            for c in calls
-            if c.item == item
-            and c.outcome == "returned"
-            and c.key in grounded
-            and c.file == file_of_test(c.key.test)
-        ),
-        key=lambda c: c.key,
-    )
-    if named is not None:
-        eligible = [c for c in eligible if c.key.test == named] + [
-            c for c in eligible if c.key.test != named
-        ]
-    read = tree_reader(tree)
-    for c in eligible:
-        text = _quote_from(read, c.file, c.line, name)
-        if text is not None:
-            return {"test": c.key.test, "line": c.line, "call": text}
-    return None
-
-
 def verified_example(
     item: str,
     example: object,
@@ -266,50 +221,3 @@ def example_of(
     return get
 
 
-def docstring_example(doc: str) -> str | None:
-    """The one test id the docstring's ``Example:`` section names (backticks around it allowed); None when the
-    section is missing, holds anything else (a doctest, say) or more than one line."""
-    body = docstrings.parse(doc or "").sections.get("Example", "")
-    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
-    if len(lines) != 1:
-        return None
-    test = lines[0].strip("`").strip()
-    return test if TEST_ID.match(test) else None
-
-
-def docstring_problems(
-    item: str,
-    doc: str,
-    tests: list[str],
-    calls: list[ExampleCall],
-    grounded: set[CallKey],
-) -> list[str]:
-    """Why *item*'s docstring does not meet the library rule (``[]``: it does): its ``Example:`` line names one
-    test of its listed test files (*tests*) that makes a call of it returning on fixture values (*calls* that
-    returned and are in *grounded*), and it has no ``Input:`` line."""
-    out: list[str] = []
-    named = docstring_example(doc)
-    if named is None:
-        out.append(
-            f"{item} docstring has no Example: line naming one of its tests ({TEST_ID_FORM})",
-        )
-    elif file_of_test(named) not in set(tests):
-        out.append(
-            f"{item} docstring Example: names {named}, which is not a test of its listed test files",
-        )
-    elif not any(
-        c.item == item
-        and c.key.test == named
-        and c.outcome == "returned"
-        and c.key in grounded
-        for c in calls
-    ):
-        out.append(
-            f"{item} docstring Example: names {named}, which makes no call of it that returns on fixture values",
-        )
-    if _INPUT_LINE.search(doc or ""):
-        out.append(
-            f"{item} docstring has an Input: line; a function's inputs are shown by its tests' calls, so remove "
-            "the line",
-        )
-    return out

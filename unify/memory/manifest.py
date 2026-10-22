@@ -117,8 +117,8 @@ SEMANTIC_TYPES: dict[str, tuple[str, int | None, int | None]] = {
 _FIELD_NAME_MAX = 200
 
 # Declared input forms: what an environment function's first parameter takes (``input`` in its manifest item,
-# and an ``Input: <form>`` line in its docstring). The gate's held-out check passes each covered input in this
-# form, and the index shows it. This list grows only by a reviewed code change, never by a pass.
+# and an ``Input: <form>`` line in its docstring). A cover must be able to give its input in this form
+# (:func:`.cover_forms.unfit_reason`), and the index shows it. This list grows only by a reviewed code change, never by a pass.
 INPUT_KINDS: dict[str, str] = {
     "path": "a path to a work-tree file",
     "text": "the text of a file or of an output",
@@ -675,7 +675,7 @@ def _key_repr(key: object) -> str:
 def _library_field_types(raw: object, item: str, kind: str) -> dict[str, str]:
     """``{"<fixture path>#<field>": semantic type}``: a function's declared field types, each from SEMANTIC_TYPES.
     The path is a fixture of the item's own package (``memory/<package>/tests/data/...``); the field is named as
-    the held-out check names it (a JSON or YAML key path, a CSV column or ``#3``).
+    a JSON or YAML key path, a CSV column or ``#3``.
     """
     if raw is None:
         return {}

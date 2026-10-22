@@ -4,27 +4,24 @@ The library holds one function, ``memory.acct.users:user_id(response: dict)``. I
 each a whole copy of a recorded ``acct.me`` response made with :func:`unify.memory.fixtures.make` (by default one from
 episode ``e1`` and one from ``e2``), and calls the function on each. It also reads the function's recorded-inputs file
 (:func:`unify.memory.fixtures.inputs_file`, assembled with ``fixtures.make(..., append=True)`` from the same
-episodes), to which stage 5 appends its drawn inputs. The manifest item names the function's tests and source
+episodes). The manifest item names the function's tests and source
 episodes only: it has no ``input`` key and no action cover. The manifest's ``fixtures`` key carries the provenance
 entries ``fixtures.make`` returned.
 
 Public names:
 
-* episodes ``E1``, ``E2``, ``E3`` (three recorded ``acct.me`` responses; ``E3`` is copied by no default fixture, so
-  stage 5 can draw it), ``EPISODES`` (id to episode), and :func:`lookup` (the gate's ``action_lookup``);
+* episodes ``E1``, ``E2``, ``E3`` (three recorded ``acct.me`` responses; ``E3`` is copied by no default fixture), ``EPISODES`` (id to episode), and :func:`lookup` (the gate's ``action_lookup``);
 * ids and paths ``ITEM_ID``, ``PACKAGE_INIT``, ``MODULE``, ``TEST_FILE``, ``FIXTURE_PATHS`` (the two copies),
   ``INPUTS_PATH`` (the recorded-inputs file), and the test ids ``EXAMPLE_TEST``, ``INPUTS_TEST``, ``REFUSAL_TEST``;
 * sources ``MODULE_SOURCE``, ``TEST_SOURCE`` (:func:`example_test_source` for other fixture episodes) and
   ``WEAK_TEST_SOURCE`` (the same calls with no exact assertion in any test);
-* builders :func:`make_fixtures`, :func:`files_and_fixtures`, :func:`item`, :func:`manifest`, :func:`candidate`,
-  :func:`recorded_calls` (the example calls a complete call record of the test file holds);
+* builders :func:`make_fixtures`, :func:`files_and_fixtures`, :func:`item`, :func:`manifest`, :func:`candidate`;
 * the pytest fixture :func:`library_example_world` (a :class:`World`: memory repo, evidence store, blob store and a
   library-mode gate factory).
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any, Callable, NamedTuple
 
@@ -34,7 +31,6 @@ from unify.memory import fixtures as fx
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action, Episode
 from unify.memory.evidence import EvidenceStore
-from unify.memory.example_calls import ArgRecord, CallKey, ExampleCall
 from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
 from unify.memory.library_checks import LibraryConfig
@@ -251,94 +247,6 @@ class _Present:
 
     def __contains__(self, rel: object) -> bool:
         return isinstance(rel, str) and (self.root / rel).is_file()
-
-
-def _digest(value: Any) -> str:
-    return hashlib.sha256(fx.canonical(value).encode("utf-8")).hexdigest()
-
-
-def _call(
-    key: CallKey,
-    node: str,
-    line: int,
-    value: Any,
-    outcome: str,
-    result: Any,
-    opened: tuple[str, ...],
-) -> ExampleCall:
-    returned = outcome == "returned"
-    return ExampleCall(
-        item=ITEM_ID,
-        key=key,
-        node=node,
-        file=TEST_FILE,
-        line=line,
-        args=(ArgRecord("response", _digest(value), type(value).__name__, value, False, None),),
-        outcome=outcome,
-        raised=None,
-        result_sha=_digest(result) if returned else None,
-        result_type=type(result).__name__ if returned else None,
-        result_json=result if returned else None,
-        opened=opened,
-    )
-
-
-def recorded_calls(
-    blob: Callable[[str], bytes],
-    sources: tuple[Episode, ...] = (E1, E2),
-) -> list[ExampleCall]:
-    """The example calls a complete call record of :func:`example_test_source` holds, in file order: one accepted
-    call per copied fixture (ordinals 0, 1, ...), one per recorded-inputs line (parameter ``row`` index i), and the
-    refusal test's call on a literal. Every accepted call's argument is a view of a fixture; ``opened`` lists the
-    fixtures the test module opened up to the call (the inputs file at collection, then each copy as it is loaded).
-    """
-    lines = example_test_source(sources).splitlines()
-
-    def line_of(text: str) -> int:
-        return 1 + next(i for i, s in enumerate(lines) if text in s)
-
-    made = make_fixtures(blob, sources)
-    opened = [INPUTS_PATH]
-    out = []
-    for ordinal, (path, ep) in enumerate(zip(FIXTURE_PATHS, sources)):
-        opened.append(path)
-        name = path.rsplit("/", 1)[1]
-        out.append(
-            _call(
-                CallKey(EXAMPLE_TEST, (), ordinal),
-                EXAMPLE_TEST,
-                line_of(f'load("{name}")'),
-                json.loads(made[path][0]),
-                "returned",
-                _user(ep),
-                tuple(opened),
-            ),
-        )
-    rows = [json.loads(x) for x in made[INPUTS_PATH][0].decode().splitlines()]
-    for i, row in enumerate(rows):
-        out.append(
-            _call(
-                CallKey(INPUTS_TEST, (("row", i),), 0),
-                f"{INPUTS_TEST}[row{i}]",
-                line_of('user_id(row["input"])'),
-                row["input"],
-                "returned",
-                row["input"]["user_id"],
-                tuple(opened),
-            ),
-        )
-    out.append(
-        _call(
-            CallKey(REFUSAL_TEST, (), 0),
-            REFUSAL_TEST,
-            line_of('user_id({"name": "Ada"})'),
-            {"name": "Ada"},
-            "refused",
-            None,
-            tuple(opened),
-        ),
-    )
-    return out
 
 
 class World(NamedTuple):

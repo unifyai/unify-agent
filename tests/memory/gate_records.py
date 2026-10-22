@@ -12,13 +12,13 @@ after it run, in order:
    manifest entries;
    then, as a writer does, each new or changed function and note gets its "when to use" section and each folder
    its README.md (:func:`tests.memory.writer_sections.as_written`);
-4. the library gate's check of that candidate (``Gate.check``), whose verification records hold each function's
-   level, example and readers;
+4. the library gate's check of that candidate (``Gate.check``, which runs no code), whose verification records hold
+   each function's level (``unchecked``) and its labels;
 5. ``lifecycle.next_records`` over the candidate's tree, given the gate's verification and the capture store's
    landings (``captures.landed_items``).
 
-Nothing here sets a field of a record. The capture step, the landing, the parsed fixtures and the gate run code
-confined, so a world needs bubblewrap and prlimit (:data:`needs_box`).
+Nothing here sets a field of a record. The capture step, the landing and the parsed fixtures run code confined, so
+a world needs bubblewrap and prlimit (:data:`needs_box`).
 """
 
 from __future__ import annotations
@@ -127,8 +127,7 @@ def build(
     *files* (path -> text), makes *fixtures* (fixture tool arguments) and lists *items* beside the landings' manifest
     entries. *signals* are indexed for the gate to read; with *require_pass* off a refused check is returned too;
     *edit_manifest* (manifest -> manifest) changes the draft manifest as a writer would before the check; *gate_kwargs*
-    and *config_kwargs* are more fields of the gate and its library configuration (a ``pytest_runner`` or ``runner``
-    that records or refuses runs)."""
+    and *config_kwargs* are more fields of the gate and its library configuration."""
     root = Path(root)
     episodes = dict(episodes)
     batch = sorted(episodes)

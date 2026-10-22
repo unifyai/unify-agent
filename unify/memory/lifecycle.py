@@ -935,7 +935,7 @@ def next_records(
         )
         v = verification.get(item) or (old.get("verification") if same else None)
         rec["verification"] = v
-        # the example call the gate picked from the item's tests (example_view.pick_example); None: none
+        # the example call a gate before rev 2.1 picked from the item's tests, kept in its record; None: none
         examples = v.get("examples") if isinstance(v, dict) else None
         example = examples.get("example") if isinstance(examples, dict) else None
         rec["example"] = example if isinstance(example, dict) else None
@@ -1187,7 +1187,7 @@ def consolidate_records(
       new map (:meth:`.memory_repo.MemoryRepo.status_commit`). Otherwise nothing is written, and the use counts
       of this consolidation appear with the next commit's map.
     - An item whose last change is beyond :func:`.library_export.item_history`'s scan gets it from its own
-      file's history (:func:`.item_bisect.versions_of`). If that fails too, its version is unknown, and it is
+      file's history (:func:`.item_versions.versions_of`). If that fails too, its version is unknown, and it is
       never promoted to ``adopted`` (:func:`next_records`).
 
     Returns ``{"head", "noted", "changes"}``: ``noted`` is the commit whose map was written, or None.
@@ -1195,7 +1195,7 @@ def consolidate_records(
 
     from .captures import landed_items
     from .gitio import GitError
-    from .item_bisect import versions_of
+    from .item_versions import versions_of
     from .item_records import records_at
     from .layout import discover, import_graph
     from .library_export import item_history

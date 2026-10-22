@@ -20,7 +20,6 @@ from tests.memory import library_example_world as lw
 from tests.memory.library_example_world import library_example_world  # noqa: F401 - a fixture
 from unify.memory.gate import Gate
 from unify.memory.library_checks import LibraryConfig
-from unify.memory.sandbox_run import PytestOutcome
 from unify.memory.snapshot import listing, materialise
 
 pytestmark = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
@@ -98,32 +97,6 @@ def test_a_module_that_does_not_parse_is_refused(library_example_world):
     assert not res.passed and res.reasons[0] == f"G1: {lw.ITEM_ID} (function) is not in the candidate", res.reasons
 
 
-def test_a_failing_runs_output_is_kept_with_every_key_shaped_string_redacted(library_example_world):
-    """Rev 2's gate is labels only: a red test is a label on its item, never a refusal; its output reaches the
-    reasons and the stored pass row with the key-shaped string redacted."""
-    mem, ev, blobs, _ = library_example_world
-    files, fixtures = lw.files_and_fixtures(blobs.get)
-    ran: list[str] = []
-
-    def leaky(target, *, python, ro, rw, cwd, timeout_s=300.0, env=None, **kw):
-        ran.append(target)
-        return PytestOutcome(failed={"t::a"}, returncode=1, output=f"E   assert {KEY}")
-
-    gate = Gate(
-        mem,
-        ev,
-        blobs,
-        action_lookup=lw.lookup,
-        pytest_runner=leaky,
-        library_mode=LibraryConfig(episodes=lw.EPISODES.get),
-    )
-    res = gate.merge(mem.head(), lw.candidate(mem, files), lw.manifest(fixtures), "p3", "write", None, "0")
-    assert ran and any("<redacted:key-shaped>" in r for r in res.reasons), res.reasons
-    assert not any(KEY in r for r in res.reasons)
-    (stored,) = ev.db.execute("SELECT reasons FROM passes WHERE pass_id='p3'").fetchone()
-    assert KEY not in stored and "<redacted:key-shaped>" in stored
-
-
 def test_preview_refuses_links_and_executables_as_the_committed_listing_would(library_example_world, tmp_path):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = lw.files_and_fixtures(blobs.get)
@@ -193,16 +166,16 @@ def test_preview_judges_an_uncommitted_tree_without_running_or_writing_anything(
     files, fixtures = lw.files_and_fixtures(blobs.get)
 
     def boom(*a, **kw):
-        raise AssertionError("preview must not run tests or held-out values")
+        raise AssertionError("preview must not run anything")
 
-    # nothing confined may run (the held-out plan of the older gate is gone; tests run through the runner)
+    # nothing confined may run: no box is started at all
     monkeypatch.setattr("unify.memory.sandbox_run.run_confined", boom)
+    monkeypatch.setattr("unify.memory.sandbox_run._spawn_box", boom)
     gate = Gate(
         mem,
         ev,
         blobs,
         action_lookup=lw.lookup,
-        pytest_runner=boom,
         library_mode=LibraryConfig(episodes=lw.EPISODES.get),
     )
     tree = tmp_path / "tree"

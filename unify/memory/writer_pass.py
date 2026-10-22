@@ -453,7 +453,7 @@ _UNKNOWN = "unknown"
 PREVIOUS_GATE_LINES = 10
 PREVIOUS_GATE_SCAN = 200
 # The harness-written lines of a refused pass's reasons: the gate's checks and the pass's own structural
-# refusals. Notes, model or pass errors and held-out notes are left out.
+# refusals. Notes and model or pass errors are left out.
 _GATE_LINE = re.compile(r"^(?:G[1-6]: |no manifest\Z|over quota: |manifest: |layout: )")
 _NAMES_A_CHANNEL = re.compile(r"\benv[/.][a-z]")
 # per-item admission's prefixes on a gate line: an item refused in a pass that landed, or a reduction refused
@@ -3974,9 +3974,7 @@ class WriterPass:
             Decimal("0"),
             time.monotonic(),
         ]  # the current round's start: charge, clock
-        # Amendment A: one stage-5 seed per pass, from its first committed candidate, for every check and the
-        # merge; and the last checked candidate, which the merge lands itself when the box is unchanged since
-        pass_seed: list[bytes | None] = [None]
+        # the last checked candidate, which the merge lands itself when the box is unchanged since
         check_files = [
             0,
         ]  # Amendment B: /inputs/gate/check-<k>.md written for the writer's check calls
@@ -4241,23 +4239,14 @@ class WriterPass:
                 manifest: object,
                 box: Path = box,
             ) -> tuple[str, GateResult]:
-                """Library mode: the box as one commit on the parent, and the whole gate on it without merging, with
-                the pass's seed (set from the first candidate the pass commits; Amendment A).
-                """
+                """Library mode: the box as one commit on the parent, and the whole gate on it without merging."""
                 candidate = self._commit_round(box, parent, pass_id, summary, manifest)
-                if pass_seed[0] is None:
-                    pass_seed[0] = _qa.seed_of(candidate)
-                return candidate, self.gate.check(
-                    parent,
-                    candidate,
-                    manifest,
-                    seed=pass_seed[0],
-                )
+                return candidate, self.gate.check(parent, candidate, manifest)
 
             def check_tests(raw: object, box: Path = box) -> str:
-                """Amendment B: in library mode ``check`` also runs the items' own tests and the gate's drawn inputs
-                (``gate.check``, no merge, nothing written to the evidence store). A refusal is answered with
-                the gate's full result as a head-first view of /inputs/gate/check-<k>.md, which read pages.
+                """Amendment B: in library mode ``check`` is the whole gate (``gate.check``, no merge, nothing written
+                to the evidence store; it runs no code). A refusal is answered with the gate's full result as a
+                head-first view of /inputs/gate/check-<k>.md, which read pages.
                 """
                 manifest, problem = _check_manifest(raw)
                 if problem is not None:
@@ -4273,7 +4262,7 @@ class WriterPass:
                     )
                     return f"check error: {type(exc).__name__}"
                 if res.passed:
-                    return "ok: the static checks, the items' own tests and the gate's drawn inputs pass"
+                    return "ok: the gate's checks pass (the gate runs no code; your tests are the ones you run)"
                 text = _repair.render_result(
                     pass_id,
                     round_no,
@@ -4938,7 +4927,6 @@ class WriterPass:
             req.kind,
             req.channel,
             _usd(spend.usd),
-            **({"seed": pass_seed[0]} if pass_seed[0] is not None else {}),
         )
         if getattr(res, "manifest_invalid", False):
             cause(CODE_MANIFEST_INVALID)

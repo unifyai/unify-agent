@@ -1,4 +1,4 @@
-"""Covers without channel equality; the behaviour check and reduction by the import graph."""
+"""Covers without channel equality; the scope of G3's not-run labels and reduction by the import graph."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from tests.memory.test_layout import LIB
 from unify.memory import layout, reduction
 from unify.memory.admission import cover_problem
 from unify.memory.episodes import Action
-from unify.memory.gate import CHECKS, Gate, GateResult, _Probe, _Run
+from unify.memory.gate import CHECKS, Gate, GateResult, _Run
 from unify.memory.manifest import Manifest, ManifestItem
 
 TOKENS = "memory.text.parse:tokens"
@@ -41,7 +41,7 @@ def _run(
 
 
 def _scope(run: _Run) -> list[str]:
-    """The behaviour check's scope (:meth:`Gate._call_scope`), over the run's function bodies as the gate reads them."""
+    """G3's not-run scope (:meth:`Gate._call_scope`), over the run's function bodies as the gate reads them."""
     run.p_bodies = {i: ("function", b, True) for i, b in layout.function_bodies(run.p_tree).items()}
     run.c_bodies = {i: ("function", b, True) for i, b in layout.function_bodies(run.c_tree).items()}
     return sorted(Gate._call_scope(Gate.__new__(Gate), run))
@@ -93,51 +93,6 @@ def test_behaviour_scope_follows_imports_transitively(tmp_path):
     assert _scope(only) == [
         "memory.text.report:summary",
     ]
-
-
-def test_the_owner_is_the_one_edited_function_the_item_imports(tmp_path):
-    def run_with(edited, deleted=()):
-        man = Manifest(items=[_fn_item(i) for i in edited], deleted=list(deleted))
-        run = _run(tmp_path / str(len(edited)) / str(len(deleted)), LIB, LIB, [], man)
-        run.graph = layout.import_graph(run.c_tree)
-        for i in edited:
-            run.p_bodies[i], run.c_bodies[i] = ("old", "def", True), (
-                "new",
-                "def",
-                True,
-            )
-        return run
-
-    pr = _Probe(item="memory.text.report:summary", strict=False)
-    run = run_with([TOKENS])
-    assert Gate._behaviour_owner(run, "memory.text.report:summary", pr) == TOKENS
-    assert Gate._behaviour_owner(run, "memory.web.fetch:get", pr) == TOKENS
-    two = run_with([TOKENS, "memory.text.dates:week"])
-    assert (
-        Gate._behaviour_owner(two, "memory.text.report:summary", pr) is None
-    )  # which one is not known
-    assert (
-        Gate._behaviour_owner(two, "memory.web.fetch:get", pr) == TOKENS
-    )  # fetch does not import dates
-    gone = run_with([TOKENS], deleted=["memory.text.parse:old"])
-    assert Gate._behaviour_owner(gone, "memory.text.report:summary", pr) is None
-
-
-def test_source_channels_of_covers_stand_for_v2s_channel():
-    acts = [
-        ("e", 0, Action(0, "svc", "get", [], {}, None, "ok")),
-        (
-            "e",
-            1,
-            Action(0, "shell:uv", "run", [], {}, {"tail": ""}, "ok", kind="shell"),
-        ),
-        (
-            "e",
-            2,
-            Action(0, "worktree:workspace", "write", [], {}, {}, "ok", kind="worktree"),
-        ),
-    ]
-    assert Gate._source_channels(acts) == ["env/svc", "env/worktree_workspace"]
 
 
 def test_reduction_drops_importers_under_library_mode(tmp_path):

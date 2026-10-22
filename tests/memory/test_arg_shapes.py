@@ -1,7 +1,8 @@
-"""The shapes of the arguments a function's tests call it on: what ``memory.find`` matches, frozen per commit.
+"""Argument shapes as ``memory.find`` matches them, frozen per commit.
 
-Each descriptor names the parameter its argument was passed as, so ``find`` says which parameter a value fits.
-Rows recorded before arguments were shaped have no parameter; they are kept and still found.
+A row a gate before rev 2.1 recorded from a function's example calls names the parameter its argument was passed as,
+so ``find`` says which parameter a value fits; rows recorded from a function's covers have no parameter. Both are kept
+and still found. (The gate now runs no test, so it records no argument shapes.)
 """
 
 from __future__ import annotations
@@ -15,10 +16,9 @@ from unify.memory import library_export as lx
 from unify.memory import memory_helper
 from unify.memory.catalogue import body_digest, write_files
 from unify.memory.evidence import EvidenceStore
-from unify.memory.example_calls import ArgRecord, CallKey, ExampleCall
 from unify.memory.layout import function_bodies
 from unify.memory.library_helper import FIND_FILE
-from unify.memory.shape_rows import arg_descriptors, lookup_from, snapshot_rows
+from unify.memory.shape_rows import lookup_from, snapshot_rows
 
 FILL_ID = "memory.grid.fill:flood_fill"
 TOTAL_ID = "memory.grid.ledger:total"
@@ -45,34 +45,6 @@ FILES = {
 }
 
 
-def _arg(name: str, value=None, *, path: str | None = None, cut: bool = False):
-    return ArgRecord(
-        name=name,
-        sha="0" * 64,
-        type=type(value).__name__,
-        json=None if cut else value,
-        cut=cut,
-        path=path,
-    )
-
-
-def _call(item: str, *args: ArgRecord, outcome: str = "returned", ordinal: int = 0):
-    return ExampleCall(
-        item=item,
-        key=CallKey(f"{TEST_FILE}::test_fills", (), ordinal),
-        node=f"{TEST_FILE}::test_fills",
-        file=TEST_FILE,
-        line=5,
-        args=tuple(args),
-        outcome=outcome,
-        raised="KeyError" if outcome == "raised" else None,
-        result_sha=None,
-        result_type=None,
-        result_json=None,
-        opened=(),
-    )
-
-
 def _rows(root: Path, new: dict, prev: dict | None = None) -> dict:
     bodies = function_bodies(root)
     return snapshot_rows(
@@ -92,78 +64,18 @@ def _find(root: Path, rows: dict, value) -> list[list]:
     )
 
 
-def test_a_grid_argument_is_found_by_a_grid_and_names_its_parameter(tmp_path):
+#: the row a gate before rev 2.1 recorded for ``flood_fill(grid, colour)`` called on GRID and 3 (an int has no shape)
+GRID_ROW = [{**memory_helper.value_shape(GRID), "param": "grid"}]
+
+
+def test_a_recorded_grid_argument_is_found_by_a_grid_and_names_its_parameter(tmp_path):
     root = _tree(tmp_path / "lib", FILES)
-    calls = [_call(FILL_ID, _arg("grid", GRID), _arg("colour", 3))]
-    notes: list[str] = []
-    descs = arg_descriptors(calls, root, note=notes.append)
-    # the int has no shape and adds no descriptor
-    assert descs == [{**memory_helper.value_shape(GRID), "param": "grid"}]
-    assert notes == []
+    descs = GRID_ROW
     found = _find(root, _rows(root, {FILL_ID: descs}), [[5, 5, 5], [5, 0, 5]])
     assert [(f[0], f[2], f[3], f[5]) for f in found] == [
         (FILL_ID, "grid", "weak", "matched the whole shape (it has no named keys)"),
     ]
     assert _find(root, _rows(root, {FILL_ID: descs}), [{"a": 1}]) == []
-
-
-def test_only_returned_calls_are_shaped_and_drops_are_counted_in_a_note(tmp_path):
-    root = _tree(tmp_path / "lib", FILES)
-    key_shaped = {"AKIA" + "Q" * 16: 1, "rows": [1]}
-    calls = [
-        _call(FILL_ID, _arg("grid", [[1]]), outcome="refused", ordinal=1),
-        _call(FILL_ID, _arg("grid", {"x": [1]}), outcome="raised", ordinal=2),
-        _call(FILL_ID, _arg("grid", None, cut=True), ordinal=3),
-        _call(FILL_ID, _arg("grid", key_shaped), ordinal=4),
-        _call(FILL_ID, _arg("colour", 3), ordinal=5),
-    ]
-    notes: list[str] = []
-    assert arg_descriptors(calls, root, note=notes.append) == []
-    assert notes == [
-        f"G2 shapes: 2 argument shapes of {FILL_ID} dropped (key-shaped or over the size bound)",
-    ]
-    # the same call twice gives one descriptor
-    twice = [_call(FILL_ID, _arg("grid", GRID), ordinal=i) for i in range(2)]
-    assert len(arg_descriptors(twice, root)) == 1
-
-
-def test_a_path_argument_is_shaped_from_the_fixture_bytes(tmp_path):
-    root = _tree(tmp_path / "lib", FILES)
-    calls = [_call(TOTAL_ID, _arg("path", LEDGER_PATH, path=LEDGER_PATH))]
-    descs = arg_descriptors(calls, root)
-    assert descs == [
-        {
-            **memory_helper.file_shape(LEDGER_PATH, LEDGER.encode("utf-8")),
-            "param": "path",
-        },
-    ]
-    rows = _rows(root, {TOTAL_ID: descs})
-    found = _find(root, rows, "vendor,amount\nV-9,1\n")
-    assert [(f[0], f[2]) for f in found] == [(TOTAL_ID, "path")]
-    other = tmp_path / "other.csv"
-    other.write_text("vendor,amount\nV-3,8\n")
-    assert [(f[0], f[2]) for f in _find(root, rows, str(other))] == [
-        (TOTAL_ID, "path"),
-    ]
-
-
-def test_a_path_argument_outside_the_library_gives_no_shape_and_a_note(tmp_path):
-    root = _tree(tmp_path / "lib", FILES)
-    outside = tmp_path / "outside.csv"
-    outside.write_text(LEDGER)
-    link = "memory/grid/tests/data/link.csv"
-    (root / link).symlink_to(outside)
-    calls = [
-        _call(TOTAL_ID, _arg("path", "../outside.csv", path="../outside.csv")),
-        _call(TOTAL_ID, _arg("path", link, path=link), ordinal=1),
-        _call(TOTAL_ID, _arg("path", "memory/grid", path="memory/grid"), ordinal=2),
-    ]
-    notes: list[str] = []
-    assert arg_descriptors(calls, root, note=notes.append) == []
-    assert notes == [
-        f"G2 shapes: 3 path arguments of {TOTAL_ID} name no regular file of the library "
-        f"(../outside.csv, memory/grid, {link}); no shape is taken from them",
-    ]
 
 
 def test_snapshot_rows_are_frozen_with_param_and_legacy_rows_are_still_found(
@@ -180,7 +92,7 @@ def test_snapshot_rows_are_frozen_with_param_and_legacy_rows_are_still_found(
             "backfilled": True,
         },
     }
-    descs = arg_descriptors([_call(FILL_ID, _arg("grid", GRID))], root)
+    descs = GRID_ROW
     rows = _rows(root, {FILL_ID: descs}, prev)
     assert rows[FILL_ID]["shapes"] == descs and descs[0]["param"] == "grid"
     assert rows[TOTAL_ID]["shapes"] == [legacy] and "param" not in legacy

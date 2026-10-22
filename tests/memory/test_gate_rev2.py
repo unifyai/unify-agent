@@ -55,22 +55,13 @@ def test_purity_is_read_from_the_syntax(src, pure):
     assert (why == "") is pure
 
 
-def test_the_gate_runs_no_item_and_no_test_module_pure_or_not(tmp_path):
+def test_the_not_run_reason_keeps_purity_as_a_fact_and_runs_nothing():
     """Rev 2.1, fix 9: no capture or function is executed to classify, rank or test it, a statically pure one
-    included; whether an item is pure stays a fact on its label."""
-    bodies = {"memory.t.m:double": "def double(value):\n    return value * 2\n",
-              "memory.t.m:send": "def send(state, env):\n    env.mail.send(state.last)\n"}  # fmt: skip
-    policy = gp.Policy(bodies=bodies)
-    assert policy.item("memory.t.m:double") == (False, gp.NOT_RUN_GATE)
-    ok, why = policy.item("memory.t.m:send")
-    assert not ok and why.startswith(gp.NOT_RUN_GATE) and "state form" in why
-    (tmp_path / "memory" / "t" / "tests").mkdir(parents=True)
-    (tmp_path / "memory/t/tests/test_a.py").write_text("from memory.t.m import double\n\ndef test_a():\n    assert 1\n")
-    (tmp_path / "memory/t/tests/test_b.py").write_text("import memory.t.m as m\n\ndef test_b():\n    m.send\n")
-    for rel in ("memory/t/tests/test_a.py", "memory/t/tests/test_b.py"):
-        assert policy.test(tmp_path, rel) == (False, f"{rel}: {gp.NOT_RUN_GATE}")
-    assert policy.suite(tmp_path, "memory/t/tests") == (False, f"memory/t/tests: {gp.NOT_RUN_GATE}")
-    assert policy.suite(tmp_path, "memory/none") == (True, "")  # nothing there to run
+    included; whether an item is pure stays a fact on its label (the gate's not-run labels: test_gate_runs_nothing)."""
+    assert gp.not_run_reason("def double(value):\n    return value * 2\n") == gp.NOT_RUN_GATE
+    why = gp.not_run_reason("def send(state, env):\n    env.mail.send(state.last)\n")
+    assert why.startswith(gp.NOT_RUN_GATE + "; it is not pure: ") and "state form" in why
+    assert not hasattr(gp, "Policy")
 
 
 def test_the_hard_checks_stay_refusals():
@@ -107,16 +98,15 @@ def _items(item: str, test: str) -> list[dict]:
 
 
 def test_the_gate_runs_nothing_for_an_impure_item_and_labels_it(tmp_path, monkeypatch):
-    # every way the gate runs code is refused: its pytest runner, its library checks' runner, the sandbox's own
+    # every way code could be run is refused: the confined runner and every box it would start
     monkeypatch.setattr(sandbox_run, "run_confined", _refuse)
+    monkeypatch.setattr(sandbox_run, "_spawn_box", _refuse)
     built = build(
         tmp_path,
         episodes={"e7": recorded_episode("e7", rows=ROWS)},
         base={},
         files={"memory/ops/mail.py": IMPURE, "memory/ops/tests/test_mail.py": IMPURE_TEST},
         items=_items("memory.ops.mail:send", "memory/ops/tests/test_mail.py"),
-        gate_kwargs={"pytest_runner": _refuse},
-        config_kwargs={"runner": _refuse},
     )
     assert built.result.passed, built.result.reasons
     labels = built.result.verification["memory.ops.mail:send"]["label_findings"]
@@ -142,14 +132,13 @@ def test_a_pure_items_test_is_not_run_by_the_gate_and_its_label_says_so(tmp_path
     """Rev 2.1, fix 9: rev 2 ran a pure item's own tests (and labelled this one's failure); the gate now runs none of
     them, so a test the item lists is a claim, and the writer checks it with tools.test."""
     monkeypatch.setattr(sandbox_run, "run_confined", _refuse)
+    monkeypatch.setattr(sandbox_run, "_spawn_box", _refuse)
     built = build(
         tmp_path,
         episodes={"e7": recorded_episode("e7", rows=ROWS)},
         base={},
         files={"memory/calc/ops.py": PURE, "memory/calc/tests/test_ops.py": FAILING_TEST},
         items=_items("memory.calc.ops:double", "memory/calc/tests/test_ops.py"),
-        gate_kwargs={"pytest_runner": _refuse},
-        config_kwargs={"runner": _refuse},
     )
     assert built.result.passed, built.result.reasons
     labels = built.result.verification["memory.calc.ops:double"]["label_findings"]

@@ -4,7 +4,7 @@
 blobs and checks nothing else appeared; :func:`item_bodies` keys every memory item by id with the text that
 defines it; :func:`module_skeleton`, :func:`notes_preamble` and :func:`without_listed` give the parts of a
 file that belong to no item, so the gate can pin them; :func:`env_references` reads which library names a
-test file imports and :func:`calls_item` whether it calls one; :func:`code_size` measures a channel
+test file imports; :func:`code_size` measures a channel
 module's code and :func:`public_bindings` lists the public names it binds.
 """
 
@@ -310,117 +310,6 @@ def env_references(source: bytes) -> tuple[set[str], set[str], bool] | None:
                     else:
                         channels.add(parts[1])
     return names, channels, everything
-
-
-def library_references(source: bytes) -> tuple[set[str], set[str], bool] | None:
-    """What a test file imports from a memory library: names, scopes, and whether all of ``memory``.
-
-    Names are ``memory.<package>.<module>:<name>`` for ``from memory.<package>.<module> import <name>``, and
-    ``memory.<package>.<name>`` for ``from memory.<package> import <name>`` (a module or a function of the package
-    by that name; the caller resolves which). Scopes are the dotted modules and packages imported whole
-    (``import memory.<package>[.<module>]``, ``from memory.<package>.<module> import *``, ``from memory import
-    <package>``). None when the file does not parse.
-    """
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return None
-    names: set[str] = set()
-    scopes: set[str] = set()
-    everything = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            parts = node.module.split(".")
-            if parts[0] != "memory":
-                continue
-            star = any(a.name == "*" for a in node.names)
-            if len(parts) == 1:
-                everything = everything or star
-                scopes.update(f"memory.{a.name}" for a in node.names if a.name != "*")
-            elif star:
-                scopes.add(".".join(parts[:3]))
-            elif len(parts) == 2:
-                for a in node.names:
-                    names.add(f"{node.module}.{a.name}")
-                    scopes.add(f"{node.module}.{a.name}")
-            else:
-                module = ".".join(parts[:3])
-                names.update(f"{module}:{a.name}" for a in node.names)
-        elif isinstance(node, ast.Import):
-            for a in node.names:
-                parts = a.name.split(".")
-                if parts[0] == "memory":
-                    if len(parts) == 1:
-                        everything = True
-                    else:
-                        scopes.add(".".join(parts[:3]))
-    return names, scopes, everything
-
-
-def _dotted(node: ast.expr) -> str | None:
-    """``a.b.c`` for a chain of names and attributes, else None."""
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if not isinstance(node, ast.Name):
-        return None
-    parts.append(node.id)
-    return ".".join(reversed(parts))
-
-
-def calls_item(source: bytes, item: str) -> bool:
-    """Whether a test file calls the environment function *item* (``env/<channel>:<name>``).
-
-    A call counts only when its callee resolves to the function imported from its module: a name bound by
-    ``from env.<channel> import <name>`` (under its alias, if any) or by ``from env.<channel> import *``, or
-    the attribute ``<name>`` of the module bound by ``import env.<channel>`` (``env.<channel>.<name>``),
-    ``import env.<channel> as m`` or ``from env import <channel> [as m]`` (``m.<name>``). Importing the
-    function, or its channel, without calling it does not count; nor does an unparsable file. Rebinding a
-    name after import is not tracked (the consolidator is assumed careless, not malicious).
-    """
-    channel, _, name = item.partition(":")
-    channel = channel.split("/", 1)[1] if "/" in channel else channel
-    if not channel or not name:
-        return False
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return False
-    module = f"env.{channel}"
-    names: set[str] = set()  # local names bound to the function
-    modules: set[str] = set()  # dotted local names bound to its module
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 0:
-            if node.module == module:
-                for a in node.names:
-                    if a.name == "*":
-                        names.add(name)
-                    elif a.name == name:
-                        names.add(a.asname or a.name)
-            elif node.module == "env":
-                modules.update(
-                    a.asname or a.name for a in node.names if a.name == channel
-                )
-        elif isinstance(node, ast.Import):
-            for a in node.names:
-                if a.name == module:
-                    modules.add(a.asname or module)
-                elif a.name == "env" and a.asname is None:
-                    modules.add(module)
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        f = node.func
-        if isinstance(f, ast.Name) and f.id in names:
-            return True
-        if (
-            isinstance(f, ast.Attribute)
-            and f.attr == name
-            and _dotted(f.value) in modules
-        ):
-            return True
-    return False
 
 
 def public_bindings(source: bytes | None) -> dict[str, bool] | None:

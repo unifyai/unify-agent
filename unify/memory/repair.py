@@ -39,11 +39,6 @@ REPAIR_ROUNDS = 2
 STUCK_REPEATS = 3
 #: The item of a refusal no manifest item owns (it refuses the whole pass).
 PASS_WIDE = "(pass-wide)"
-#: The sandbox keeps each of a run's stdout and stderr up to this many bytes, from the end, and marks any
-#: bytes it drops (sandbox_run.CAPTURE_MAX_BYTES); the result says so.
-OUTPUT_CAPTURE_BYTES = 1024**2
-
-
 def _money(value: Decimal) -> str:
     return format(value, "f")
 
@@ -98,12 +93,6 @@ def may_repair(
     return None
 
 
-def _fence(text: str) -> str:
-    """A code fence longer than any backtick run in *text*, so the output can never close it early."""
-    longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
-    return "`" * max(3, longest + 1)
-
-
 def render_result(
     pass_id: str,
     n: int,
@@ -113,7 +102,7 @@ def render_result(
     candidate: str | None = None,
     pass_notes: Iterable[str] = (),
 ) -> str:
-    """The gate's full result for round *n* as markdown: every check line, note and kept test output, whole.
+    """The gate's full result for round *n* as markdown: every check line and note, whole.
 
     Lines starting ``note: `` are the gate's notes; every other reason is a check line (``item refused:`` and
     ``reduced:`` lines of a reduced merge included). *pass_notes* are the pass's own notes (deadline, unpriced
@@ -160,18 +149,6 @@ def render_result(
             f"- {item}: {level} ({len(found.get(item, []))} findings)"
             for item, level in sorted(levels.items())
         ]
-    outputs = sorted(getattr(res, "outputs", {}).items())
-    lines += [
-        "",
-        f"## Test output ({len(outputs)})",
-        "",
-        "Each failing run's whole output, stdout then stderr. The sandbox keeps each stream's last "
-        f'{OUTPUT_CAPTURE_BYTES:,} bytes and marks any it drops ("[N earlier bytes dropped]").',
-    ]
-    for label, raw in outputs:
-        text = redact_error(raw)
-        fence = _fence(text)
-        lines += ["", f"### {label}", "", fence + "text", text, fence]
     return "\n".join(lines) + "\n"
 
 
@@ -224,8 +201,6 @@ def repair_message(
 
 # --- stuck refusals -----------------------------------------------------------------------------------------
 
-# where a reason's quoted output starts: a run summary "(rc=...", a blob pointer, or a new line
-_OUTPUT_AT = re.compile(r"\s*\(rc=-?\d|\s*\[(?:full|whole) output: blob |\n")
 _TMP_PATH = re.compile(r"/tmp/\S*")
 _HEX_ID = re.compile(r"\b[0-9a-f]{12,}\b")
 _SECONDS = re.compile(r"\b\d+(?:\.\d+)?\s?s\b")
@@ -233,10 +208,9 @@ _CHECK = re.compile(r"(G[1-6]): ")
 
 
 def refusal_reason(line: str) -> str:
-    """A refusal line's comparable text: what precedes any quoted output, with temporary paths, commit or blob
-    ids and second counts replaced, so the output, timings and paths that vary from round to round never hide a
-    repeat."""
-    text = _OUTPUT_AT.split(line, maxsplit=1)[0]
+    """A refusal line's comparable text: its first line, with temporary paths, commit or blob ids and second counts
+    replaced, so the timings and paths that vary from round to round never hide a repeat."""
+    text = line.split("\n", 1)[0]
     text = _TMP_PATH.sub("<tmp>", text)
     text = _HEX_ID.sub("<id>", text)
     text = _SECONDS.sub("<s>", text)

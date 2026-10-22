@@ -1,7 +1,7 @@
 """The one comparison of an expected value with an actual one, and the difference report it gives.
 
-Used wherever a value a function returned is checked against a value the recording shows: the gate's run of a
-procedure's recipe on its cases (:mod:`.recipes`) and any later check of a candidate against shown examples.
+Used wherever a value a function returned is checked against a value the recording shows: the writer's
+``check_examples`` in its box, which embeds this module's source (:func:`unify.common.tool_registry.comparison_source`).
 
 * **Same** (:func:`same`): the two values are equal as JSON (canonical form: sorted keys, no spacing). Text and a
   JSON value meet halfway: text that parses as JSON is compared as the value it parses to, and other text is compared

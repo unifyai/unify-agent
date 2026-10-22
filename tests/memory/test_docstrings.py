@@ -54,7 +54,6 @@ def test_parse_reads_every_section_and_the_line_fields():
     assert d.sections["Use when"] == "you hold the ledger file."
     assert d.sections["Don't use when"] == "the file is another register."
     assert d.lines == {"Effect": "read", "Input": "path"}
-    assert docstrings.has_example(d)
 
 
 def test_a_complete_docstring_has_no_problems():

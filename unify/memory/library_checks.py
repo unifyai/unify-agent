@@ -1,7 +1,5 @@
-"""The library-mode gate checks, run by :class:`.gate.Gate` with ``library_mode``.
-
-With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is v2's. With a :class:`LibraryConfig`, the gate
-(``checks`` on, which needs the library layout, ``layout``) adds these checks:
+"""The library-mode gate checks, run by :class:`.gate.Gate` with a :class:`LibraryConfig`. Nothing here runs code
+(rev 2.1, :mod:`.gate_policy`): a check that would need a run labels the items it concerns ``not run: <why>``.
 
 * **G1:**
   - scope: only ``memory/`` and ``notes/``, never the harness-generated paths;
@@ -10,33 +8,26 @@ With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is
     ``README.md`` with some text;
   - links: no dangling ``uses:``/``Notes:`` target;
   - fixture provenance: every new or changed file under ``tests/data/`` came through ``fixture()`` and re-derives
-    from the recording (:mod:`.fixtures`).
+    from the recording's bytes (:mod:`.fixtures`); a parsed fixture (its reader would run) and a replay case file
+    (its recorded code would run) are labelled, not run.
 * **G2:**
-  - typed covers: an actor cell or work-tree diff that defines a function, or an ``episode`` cover verified by its
-    procedure runner (:mod:`.procedures`);
-  - the generalisation check: a procedure (``role: procedure``) carries its recipe, and the recipe, run confined,
-    gives the expected output on every case it lists, each re-derived from the recording (:mod:`.recipes`); a
-    source case (its request with the value it handed back) counts only from an episode that did not fail, and no
-    procedure lands from a failed episode. Each failing case refuses the procedure and its recipe with the case and
-    the difference report; the counts go to the procedure's verification record (``recipe``);
-  - the cross-episode held-out check, for inputs with nothing to perturb;
-  - the literal lint (:mod:`.code_lint`).
+  - typed covers: an actor cell or work-tree diff that defines a function; an ``episode`` cover is labelled, not
+    re-run;
+  - a procedure (``role: procedure``) carries its recipe and the cases it lists, each read from the recording; a
+    source case counts only from an episode that did not fail, and no procedure lands from a failed episode. The
+    recipe is not run: its verification record says so (``recipe``: ``ran: false`` and why);
+  - each function's examples (the calls its listed tests make) are labelled, not run.
 * **G3:**
   - plain pytest: no test-kit import;
   - per changed function, at least one exact assertion against a trust 1–3 value on a recorded fixture, and no
     self-reimplementing oracle (:mod:`.quality`);
   - no test deleted or weakened without a reason in the manifest's ``tests_changed``;
   - for WRITE, no fewer tests.
-  - a stored function's episode covers re-run on the parent and the candidate: green to red is a behaviour change
-    (the covers are persisted at merge, :meth:`.evidence.EvidenceStore.add_typed_cover`).
 * **G4** never refuses growth: over the index view budget it notes the index's size.
-* **G5:**
-  - no fewer items;
-  - a deleted function's typed episode covers stay covered by a remaining item.
+* **G5:** no fewer items, and no alias dropped.
 
-The stage-5 checks run with drawn inputs ``strict`` and mutation gated at :data:`.qa.MUTATION_MIN`
-(:func:`.qa.library_config`). Measures go to the item verification record (``GateResult.verification``). The merge
-also appends that record to the pass row as one ``library_mode-verification`` line, for the item records.
+Measures go to the item verification record (``GateResult.verification``). The merge also appends that record to the
+pass row as one ``library_mode-verification`` line, for the item records.
 """
 
 from __future__ import annotations
@@ -44,34 +35,24 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from .admission import is_rejection
 from .batch_map import actor_functions
-from .code_lint import LINT_MIN
 from .episodes import Action, Episode
-from .fixtures import DATA_PATH, DRAWN_DIR, HashIndex, module_path, package_dir, verify
-from .gitio import Repo
-from .held_out import OUTPUTS_BUDGET_S
+from .fixtures import DATA_PATH, DRAWN_DIR, HashIndex, module_path, package_dir, readers_of, verify
+from .gate_policy import NOT_RUN_GATE, not_run_reason
 from .catalogue import estimate_tokens
 from . import layout
 from . import when_to_use
 from .aliases import forwards, uses_name
-from .layout import classify, discover, misplaced
+from .layout import discover, misplaced
 from .library_index import INDEX_VIEW_TOKENS, build_links, render_index
 from .procedures import (
-    PROCEDURE_S,
-    cover_raw,
     parse_cover,
-    run_procedure,
-    snapshot_files,
 )
-from .sandbox_run import SandboxResult, run_confined
-from .redact import KEY_SHAPED
 from .quality import (
     TEST_FILE,
     count_items,
@@ -82,49 +63,8 @@ from .quality import (
 )
 from .testkit import imports_kit
 
-CROSS_CASES = (
-    16  # recorded inputs from other episodes per function (cross-episode held-out)
-)
-# the procedure re-runs of the behaviour check, bounded like v2's (held_out.OUTPUTS_BUDGET_S)
-BEHAVIOUR_MAX_PROCEDURES = 16
 # a function's replay case file under tests/data/ (fixtures.REPLAY_SUFFIX), verified by replay, not by its bytes
 REPLAY_SUFFIX = ".replay.jsonl"
-OUTPUT_VIEW_BYTES = (
-    4000  # the head of a test run's output kept in memory and quoted (explicit, marked)
-)
-_KEY_SHAPED_BYTES = re.compile(KEY_SHAPED.pattern.encode())
-
-
-def keep_output(outcome: Any, spool: Path, blobs: Any) -> None:
-    """In library mode, a test run's whole output (stdout, then stderr, as v2 joins them; each spooled up to
-    :data:`.sandbox_run.SPOOL_MAX_BYTES`, marked past it) is kept as a blob, with key-shaped strings redacted line
-    by line. The outcome's ``output`` becomes a head-first view of at most :data:`OUTPUT_VIEW_BYTES` bytes, marked
-    with the whole size and the blob id. Nothing is kept when the run printed nothing.
-    """
-    combined = spool / "combined"
-    with open(combined, "wb") as out:
-        for name in ("stdout", "stderr"):
-            part = spool / name
-            if part.is_file():
-                with open(part, "rb") as f:
-                    for line in f:
-                        out.write(_KEY_SHAPED_BYTES.sub(b"<redacted:key-shaped>", line))
-    n = combined.stat().st_size
-    if n == 0:
-        return
-    sha = blobs.put_file(combined)
-    with open(combined, "rb") as f:
-        head = f.read(OUTPUT_VIEW_BYTES)
-    text = head.decode("utf-8", "replace")
-    if n > len(head):
-        outcome.output = (
-            text + f"\n[… shown bytes 0–{len(head)} of {n}; full output: blob {sha}]"
-        )
-    else:
-        outcome.output = text + f"\n[full output: blob {sha}]"
-    outcome.output_blob = sha
-
-
 def _no_episode(eid: str) -> Episode | None:
     return None
 
@@ -171,10 +111,6 @@ def derive_effect(
     return None
 
 
-def _no_snapshot(sha: str, dest: Path) -> Path | None:
-    return None
-
-
 def _index_tokens(tree: Path, examples: dict[str, dict] | None = None) -> int:
     """The tokens of the ``INDEX.md`` the harness would generate for *tree* (the layout's renderer and estimator),
     with each function's example line when *examples* (item -> its recorded example) holds one the tree still
@@ -194,15 +130,11 @@ def _index_tokens(tree: Path, examples: dict[str, dict] | None = None) -> int:
 
 @dataclass(frozen=True)
 class LibraryConfig:
-    """The library checks' configuration (``Gate(library_mode=LibraryConfig(...))``): how to read an episode and a
-    recorded work tree, and the checks' bounds."""
+    """The library checks' configuration (``Gate(library_mode=LibraryConfig(...))``): how to read an episode, and
+    the index view's budget."""
 
     episodes: Callable[[str], Episode | None] = _no_episode
-    worktree_files: Callable[[str, Path], Path | None] = _no_snapshot
     index_tokens: int = INDEX_VIEW_TOKENS
-    cross_cases: int = CROSS_CASES
-    lint_min: int = LINT_MIN
-    runner: Callable[..., SandboxResult] = run_confined
 
 
 def config_for(
@@ -217,9 +149,7 @@ def config_for(
         except Exception:  # noqa: BLE001 - unknown or unreadable: no episode
             return None
 
-    git = Path(stores.paths.worktree_git)
-    reader = snapshot_files(Repo(git)) if (git / "HEAD").is_file() else _no_snapshot
-    return LibraryConfig(episodes=episodes, worktree_files=reader)
+    return LibraryConfig(episodes=episodes)
 
 
 def cap(run: Any, check: str, reason: str, item: Any) -> None:
@@ -378,7 +308,7 @@ class LibraryChecks:
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         entries = raw.get("fixtures") if isinstance(raw.get("fixtures"), dict) else {}
         index: HashIndex | None = None
-        replays: dict[str, bytes] = {}
+        replays: list[str] = []
         for p in run.changed:
             if (
                 p not in run.c_files
@@ -397,33 +327,19 @@ class LibraryChecks:
                 )
                 continue
             data = (run.c_tree / p).read_bytes()
-            if getattr(run, "policy", None) is not None and self._readers_of(entries.get(p)):
-                # rev 2: re-deriving a parsed fixture would run its reader; the gate runs none
-                run.not_run(owners, f"G1 parsed fixture {p}: re-deriving it would run its reader")
+            if readers_of(entries.get(p)):
+                # re-deriving a parsed fixture would run its reader: the gate runs no code
+                run.not_run(owners, f"G1 parsed fixture {p}: re-deriving it would run its reader; {NOT_RUN_GATE}")
                 continue
             if p.endswith(REPLAY_SUFFIX):
-                replays[p] = (
-                    data  # verified by replaying its instances again, not by its bytes
-                )
+                # a replay case file is verified by replaying its instances, which runs recorded code
+                replays.append(p)
                 continue
-            started = time.monotonic()
-            problem = verify(
-                p,
-                data,
-                entries.get(p),
-                self.ep,
-                self.gate._blob,
-                parse=self._parse,
-            )
-            self._parsed(p, entries.get(p), problem, time.monotonic() - started)
+            problem = verify(p, data, entries.get(p), self.ep, self.gate._blob)
             if problem is None:
                 if isinstance(entries.get(p), dict):
-                    # verified this pass: the examples checks' provenance, persisted on merge
-                    run.fixtures_verified[p] = (
-                        hashlib.sha256(data).hexdigest(),
-                        self._current(entries[p]),
-                    )
-                    self._reads_for(p, entries[p])
+                    # verified this pass from the recording's bytes, persisted on merge
+                    run.fixtures_verified[p] = (hashlib.sha256(data).hexdigest(), dict(entries[p]))
                 continue
             if entries.get(p) is None:
                 if index is None:
@@ -439,167 +355,8 @@ class LibraryChecks:
                     problem += f" (its bytes equal source {hits[0][1]} of {hits[0][0]}: make it with fixture())"
             run.fail("G1", f"fixture provenance: {problem}", owners)
         if replays:
-            self._replays(raw, replays)
-        self._readers_changed()
-
-    # -- stored readers (parsed fixtures) -------------------------------------------------------------------
-    def _reader_allowed(self, reader: str) -> str | None:
-        """A reader a fixture names is admitted in this pass (a manifest function) or already landed (the parent's),
-        and is in the candidate; None when it may be used, else why not (a G1 reason)."""
-        run = self.run
-        if run.c_bodies.get(reader, ("",))[0] != "function":
-            return f"reader {reader} is not a function of the candidate's library"
-        listed = any(it.item == reader and it.kind == "function" for it in run.man.items)
-        if not listed and reader not in run.p_bodies:
-            return f"reader {reader} is neither listed in this pass's manifest nor stored in the library"
-        return None
-
-    def _parse(self, reader: str, text: str) -> tuple[str, str]:
-        """Run *reader* confined on the candidate's library (:func:`.procedures.reader_parse`), once per text."""
-        if getattr(self, "_parser", None) is None:
-            from .procedures import reader_parse
-
-            self._parser = reader_parse(
-                self.run.c_tree,
-                python=self.gate.python,
-                work=self.run.tmp / "readers",
-                runner=self.cfg.runner,
-                allowed=self._reader_allowed,
-            )
-        return self._parser(reader, text)
-
-    @staticmethod
-    def _readers_of(entry: object) -> list[str]:
-        from .fixtures import readers_of
-
-        return readers_of(entry)
-
-    def _current(self, entry: dict) -> dict:
-        """*entry* with each named reader's digest as the candidate has it (the version that re-derived it)."""
-        from .procedures import reader_digest
-
-        def fix(row: dict) -> dict:
-            if isinstance(row.get("parser"), str):
-                return {**row, "parser_sha256": reader_digest(self.run.c_tree, row["parser"])}
-            return row
-
-        if isinstance(entry.get("lines"), list):
-            return {**entry, "lines": [fix(r) if isinstance(r, dict) else r for r in entry["lines"]]}
-        return fix(dict(entry))
-
-    def _parsed(self, path: str, entry: object, problem: str | None, seconds: float) -> None:
-        """The gate result's evidence fields of a parsed fixture G1 re-derived (``GateResult.parsed``)."""
-        from .procedures import reader_digest
-
-        readers = self._readers_of(entry)
-        res = getattr(self.run, "res", None)
-        if not readers or res is None or not hasattr(res, "parsed"):
-            return
-        res.parsed[path] = {
-            "parser": readers,
-            "parser_sha256": {r: reader_digest(self.run.c_tree, r) for r in readers},
-            "rederived": problem is None,
-            "parse_seconds": round(max(0.0, seconds), 3),
-        }
-
-    def _reads_for(self, path: str, entry: object) -> None:
-        """Record on each reader *entry* names that it produced the fixture at *path* (``reads_for``). Only a
-        reader this pass lists gets a verification record; another keeps the record it landed with."""
-        listed = {it.item for it in self.run.man.items}
-        for reader in self._readers_of(entry):
-            if reader not in listed:
-                continue
-            found = self._record(reader).setdefault("reads_for", [])
-            if path not in found:
-                found.append(path)
-                found.sort()
-
-    def _readers_changed(self) -> None:
-        """Every unchanged parsed fixture of the candidate whose reader's code changed in this pass is re-derived
-        with the reader as it now is; one whose bytes no longer re-derive is refused (re-make it), so a reader
-        cannot change what its fixtures say unseen."""
-        from .fixtures import REMAKE
-        from .procedures import reader_digest
-
-        run = self.run
-        if getattr(run, "policy", None) is not None:
-            run.note("G1: parsed fixtures of changed readers not re-derived (rev 2: re-deriving runs the reader)")
-            return
-        modules = {layout.module_of(p) for p in run.changed}
-        if not any(modules):
-            return
-        stored = getattr(self.gate.ev, "fixture_provenance", None)
-        if not callable(stored):
-            return
-        changed = set(run.changed)
-        for p in sorted(run.c_files):
-            if p in changed or not p.startswith("memory/") or "/tests/data/" not in p:
-                continue
-            try:
-                data = (run.c_tree / p).read_bytes()
-            except OSError:
-                continue
-            entry = stored(p, hashlib.sha256(data).hexdigest())
-            readers = self._readers_of(entry)
-            if not readers:
-                continue
-            rows = entry.get("lines") if isinstance(entry.get("lines"), list) else [entry]
-            recorded = {
-                r.get("parser"): r.get("parser_sha256") for r in rows if isinstance(r, dict) and r.get("parser")
-            }
-            if all(reader_digest(run.c_tree, r) == recorded.get(r) for r in readers):
-                self._reads_for(p, entry)
-                continue
-            started = time.monotonic()
-            problem = verify(p, data, entry, self.ep, self.gate._blob, parse=self._parse)
-            self._parsed(p, entry, problem, time.monotonic() - started)
-            if problem is None:
-                run.fixtures_verified[p] = (hashlib.sha256(data).hexdigest(), self._current(entry))
-                self._reads_for(p, entry)
-                continue
-            if REMAKE not in problem:
-                problem += f"; {REMAKE}"
-            run.fail(
-                "G1",
-                f"fixture provenance: its reader changed in this pass: {problem}",
-                self._owners(p),
-            )
-
-    def _replays(self, raw: dict, replays: dict[str, bytes]) -> None:
-        """New or changed replay case files: their instances are replayed again (:func:`.replay_verify.reverify`);
-        a file whose every line verifies is verified provenance this pass, any other is refused.
-        """
-        from . import replay_verify
-
-        run = self.run
-        policy = getattr(run, "policy", None)
-        if policy is not None and not policy.replays:
-            from .gate_policy import NOT_RUN_REPLAYS
-
             owners = sorted({o for p in replays for o in (self._owners(p) or [])})
-            run.not_run(owners or None, f"G1 replay case files: {NOT_RUN_REPLAYS}")
-            return
-        replaces_of = {
-            r["item"]: r["replaces"]
-            for r in (raw.get("items") if isinstance(raw.get("items"), list) else [])
-            if isinstance(r, dict)
-            and isinstance(r.get("item"), str)
-            and isinstance(r.get("replaces"), list)
-        }
-        scratch = run.tmp / "replay-reverify"
-        scratch.mkdir(parents=True, exist_ok=True)
-        found, reasons = replay_verify.reverify(
-            self.ep,
-            replays,
-            replaces_of,
-            run.c_tree,
-            scratch=scratch,
-        )
-        for p, entry in sorted(found.items()):
-            run.fixtures_verified[p] = (hashlib.sha256(replays[p]).hexdigest(), entry)
-        owners = sorted({o for p in replays for o in (self._owners(p) or [])})
-        for r in reasons:
-            run.fail("G1", r, owners or None)
+            run.not_run(owners or None, f"G1 replay case files: {NOT_RUN_GATE}")
 
     # -- G2 -------------------------------------------------------------------------------------------------
     def effects(self) -> None:
@@ -612,7 +369,6 @@ class LibraryChecks:
 
     def g2(self) -> None:
         self.effects()
-        n = 0
         stored: dict[str, list[Any]] | None = None
         run = self.run
         for it in self._functions():
@@ -623,18 +379,13 @@ class LibraryChecks:
             )
             for cover in getattr(it, "typed_covers", []):
                 if unchanged:
-                    # a function listed only to change its tests: the typed covers it landed with judge its own
-                    # code, which did not change, so they are not run again; a new cover is checked as usual
+                    # a function listed only to change its tests: the typed covers it landed with were checked
+                    # then, and its code did not change; a new cover is checked as usual
                     if stored is None:
                         stored = self._stored_typed()
                     if cover in stored.get(it.item, []):
-                        if cover.type == "episode":
-                            kept = getattr(run, "typed_kept", None)
-                            if isinstance(kept, dict):
-                                kept.setdefault(it.item, []).append(cover.episode)
                         continue
-                self._typed_cover(it, cover, n)
-                n += 1
+                self._typed_cover(it, cover)
         self._recipes()
 
     # -- the generalisation check ---------------------------------------------------------------------------
@@ -659,11 +410,10 @@ class LibraryChecks:
     def _recipes(self) -> None:
         """The generalisation check (module docstring, G2) on every procedure of the manifest."""
         from .fixtures import read_case
-        from .recipes import check_cases
 
         run = self.run
         listed = {it.item for it in run.man.items}
-        for k, it in enumerate(self._functions()):
+        for it in self._functions():
             if getattr(it, "role", None) != "procedure":
                 continue
             recipe = getattr(it, "recipe", None)
@@ -713,44 +463,12 @@ class LibraryChecks:
                     "output, each made with fixture(..., expected=...)",
                     owners,
                 )
-            policy = getattr(run, "policy", None)
-            if policy is not None:
-                ok, why = policy.item(it.item)
-                if ok:
-                    ok, why = policy.item(recipe)
-                if not ok:
-                    # the gate runs no recipe (rev 2.1: no code at all), so its label says why
-                    run.not_run(owners, f"G2 recipe {recipe}: {why}")
-                    self._record(it.item)["recipe"] = {"item": recipe, "cases": len(it.cases), "ran": False,
-                                                       "why": why}  # fmt: skip
-                    continue
-            reports = check_cases(
-                recipe,
-                [c for _, c in cases],
-                tree=run.c_tree,
-                python=self.gate.python,
-                work=run.tmp / f"recipe-{k}",
-                runner=self.cfg.runner,
-            )
-            kinds = {kind: 0 for kind in ("source", "shown")}
-            for _, case in cases:
-                kinds[case["kind"]] = kinds.get(case["kind"], 0) + 1
-            self._record(it.item)["recipe"] = {
-                "item": recipe,
-                "cases": len(it.cases),
-                "passed": sum(1 for r in reports if r is None),
-                "kinds": kinds,
-            }
-            for (path, case), report in zip(cases, reports):
-                if report is not None:
-                    run.fail(
-                        "G2",
-                        f"{it.item}: its recipe {recipe} does not give the expected output of case {path} (a "
-                        f"{case['kind']} case of {case['episode']}):\n{report}",
-                        owners,
-                    )
+            # the gate runs no recipe (rev 2.1: no code at all), so its label says why
+            why = self._not_run(it.item)
+            run.not_run(owners, f"G2 recipe {recipe}: {why}")
+            self._record(it.item)["recipe"] = {"item": recipe, "cases": len(it.cases), "ran": False, "why": why}
 
-    def _typed_cover(self, it: Any, cover: Any, n: int) -> None:
+    def _typed_cover(self, it: Any, cover: Any) -> None:
         run = self.run
         ep = self.ep(cover.episode)
         if ep is None:
@@ -780,39 +498,11 @@ class LibraryChecks:
                     it.item,
                 )
         elif cover.type == "episode":
-            policy = getattr(run, "policy", None)
-            if policy is not None and not policy.replays:
-                from .gate_policy import NOT_RUN_REPLAYS
-
-                run.not_run(it.item, f"G2 episode cover {cover.episode}: {NOT_RUN_REPLAYS}")
-                self._record(it.item).setdefault("procedures", []).append(
-                    {"episode": cover.episode, "runner": cover.runner, "ok": None, "ran": False},
-                )
-                return
-            out = run_procedure(
-                it.item,
-                cover,
-                ep=ep,
-                tree=run.c_tree,
-                python=self.gate.python,
-                work=run.tmp / f"procedure-{n}",
-                blob=self.gate._blob,
-                worktree_files=self.cfg.worktree_files,
-                signals=self.gate.ev.signals_for,
-                runner=self.cfg.runner,
-            )
+            # re-running the procedure on its recorded episode runs code: the gate runs none
+            run.not_run(it.item, f"G2 episode cover {cover.episode}: {NOT_RUN_GATE}")
             self._record(it.item).setdefault("procedures", []).append(
-                {"episode": cover.episode, "runner": cover.runner, "ok": out.ok},
+                {"episode": cover.episode, "runner": cover.runner, "ok": None, "ran": False},
             )
-            for note in out.notes:
-                run.note(f"G2 procedure: {it.item} on {cover.episode}: {note}")
-            if not out.ok:
-                cap(
-                    run,
-                    "G2",
-                    f"{it.item} procedure on {cover.episode} ({cover.runner}): {out.reason}",
-                    it.item,
-                )
 
     # -- G3 -------------------------------------------------------------------------------------------------
     def g3(self) -> None:
@@ -820,11 +510,15 @@ class LibraryChecks:
         self._test_changes()
         for it in self._edited():
             self._exact(it)
-        self._procedure_behaviour()
-        # last: the examples checks read G3's candidate runs (example_checks)
-        from .example_checks import ExampleChecks
+        # a function's examples are the calls its listed tests make: the gate runs none of them
+        for it in self._functions():
+            if it.item in self.run.c_bodies:
+                self.run.not_run(it.item, f"G2 examples: {self._not_run(it.item)}")
 
-        ExampleChecks(self.gate, self.run).judge()
+    def _not_run(self, item: str) -> str:
+        """Why the gate did not run *item* (:func:`.gate_policy.not_run_reason`, from its candidate source)."""
+        body = self.run.c_bodies.get(item)
+        return not_run_reason(body[1] if body is not None and body[0] == "function" else None)
 
     def _plain(self) -> None:
         run = self.run
@@ -1124,246 +818,3 @@ class LibraryChecks:
             if not isinstance(c, tuple):
                 out.setdefault(item, []).append(c)
         return out
-
-    def _procedure_behaviour(self) -> None:
-        """A stored function's ``episode`` covers re-run on the parent's and the candidate's
-        library when the pass changes a library module. A procedure green on the parent and red on the
-        candidate is a behaviour change: the function now does its recorded job differently.
-
-        Every runner compares with the same recording, so "a different confirmed effect" is green to red. The
-        scope is the import graph's: the stored functions of each changed module and of every module importing one
-        (``run.graph``, built by the gate's own behaviour check, :meth:`.gate.Gate._call_scope`), and
-        the owner is :meth:`.gate.Gate._behaviour_owner`'s. Without a graph (a run that built none) every stored
-        procedure is in scope and the owner is the pass's one edited function, else the pass.
-        """
-        run = self.run
-        if not any(classify(p) in ("module", "package_init") for p in run.changed):
-            return
-        policy = getattr(run, "policy", None)
-        if policy is not None and not policy.replays:
-            run.note("G3: stored procedures' episode covers not re-run (rev 2: recorded replays are off)")
-            return
-        graph = getattr(run, "graph", None)
-        scope: set[str] | None = None
-        if graph is not None:
-            from . import layout
-
-            changed = {m for p in run.changed if (m := layout.module_of(p)) is not None}
-            scope = layout.dependants(graph, changed)
-        edited = {it.item for it in self._edited()}
-        targets = [
-            (item, c)
-            for item, covers in sorted(self._stored_typed().items())
-            if item in run.p_bodies
-            and item in run.c_bodies
-            and item not in edited
-            and item not in run.item_fail
-            and (scope is None or item.split(":", 1)[0] in scope)
-            for c in covers
-            if c.type == "episode"
-        ]
-        if not targets:
-            return
-        if len(targets) > BEHAVIOUR_MAX_PROCEDURES:
-            run.fail(
-                "G3",
-                f"behaviour check not completed: {len(targets)} stored procedures exceed the "
-                f"{BEHAVIOUR_MAX_PROCEDURES} re-run in one pass; change fewer modules",
-            )
-            return
-        fallback = sorted(edited)[0] if len(edited) == 1 else None
-
-        def owner_of(item: str) -> str | None:
-            if graph is None:
-                return fallback
-            from types import SimpleNamespace
-
-            from .gate import Gate
-
-            return Gate._behaviour_owner(run, item, SimpleNamespace(why=None))
-
-        started = time.monotonic()
-        for n, (item, cover) in enumerate(targets):
-            ep = self.ep(cover.episode)
-            if ep is None:
-                # fail closed, as _reproduced does: a stored procedure that cannot be compared refuses
-                run.fail(
-                    "G3",
-                    f"behaviour check not completed: {item}'s procedure on {cover.episode} cannot be read",
-                    owner_of(item),
-                )
-                continue
-            outcome = []
-            for side, tree in (("parent", run.p_tree), ("candidate", run.c_tree)):
-                left = OUTPUTS_BUDGET_S - (time.monotonic() - started)
-                if left <= 1:
-                    run.fail(
-                        "G3",
-                        f"behaviour check not completed: its {OUTPUTS_BUDGET_S:g} s procedure budget ran out "
-                        f"at {item}",
-                    )
-                    return
-                outcome.append(
-                    run_procedure(
-                        item,
-                        cover,
-                        ep=ep,
-                        tree=tree,
-                        python=self.gate.python,
-                        work=run.tmp / f"procedure-behaviour-{n}-{side}",
-                        blob=self.gate._blob,
-                        worktree_files=self.cfg.worktree_files,
-                        signals=self.gate.ev.signals_for,
-                        runner=self.cfg.runner,
-                        timeout_s=min(PROCEDURE_S, left),
-                    ),
-                )
-                if side == "parent" and not outcome[0].ok:
-                    break  # red on the parent already: nothing the candidate can break
-            if len(outcome) == 2 and not outcome[1].ok:
-                run.fail(
-                    "G3",
-                    f"{item} changes behaviour without a test: its procedure on {cover.episode} ({cover.runner}) "
-                    f"passes on the parent's library and fails on the candidate's ({outcome[1].reason}); any "
-                    "change in what a stored function does on its recorded work needs a test that fails on the "
-                    "parent's library and passes on the candidate's",
-                    owner_of(item),
-                )
-
-    def g5(self) -> None:
-        """A deleted function's typed ``episode`` covers stay covered by a remaining item.
-
-        As in the behaviour check, a remaining item vouches for a deleted item's procedure only when
-        :func:`.procedures.run_procedure` gives on the candidate's library the same outcome (``ok``) as the deleted
-        item gave on the parent's. The holders tried are the remaining items that list or store the same cover and,
-        for a deleted item that is a live alias, its target: an alias forwarding a
-        procedure is held by that re-run. Bounded like the behaviour check, never silently.
-        """
-        run = self.run
-        deleted = set(run.man.deleted)
-        if not deleted:
-            return
-        policy = getattr(run, "policy", None)
-        if policy is not None and not policy.replays:
-            run.note("G5: deleted procedures' episode covers not re-run (rev 2: recorded replays are off)")
-            return
-
-        def key(c: Any) -> str:
-            return json.dumps(
-                {k: v for k, v in cover_raw(c).items() if k not in ("params", "paths")},
-                sort_keys=True,
-            )
-
-        stored = self._stored_typed()
-        holders: dict[str, list[str]] = {}
-        for it in self._functions():
-            if it.item in deleted:
-                continue
-            for c in getattr(it, "typed_covers", []):
-                if c.type == "episode":
-                    holders.setdefault(key(c), []).append(it.item)
-        for item, covers in stored.items():
-            if item in deleted or item not in run.c_bodies:
-                continue
-            for c in covers:
-                if c.type == "episode":
-                    holders.setdefault(key(c), []).append(item)
-        targets = self._alias_targets()
-        started = time.monotonic()
-        tried = 0
-        for item in sorted(deleted & set(stored)):
-            lost = []
-            for c in stored[item]:
-                if c.type != "episode":
-                    continue
-                cands = [targets[item]] if item in targets else []
-                cands += [
-                    h for h in sorted(set(holders.get(key(c), []))) if h not in cands
-                ]
-                cands = [h for h in cands if h in run.c_bodies and h not in deleted]
-                if not cands:
-                    lost.append(c.episode)
-                    continue
-                tried += 1
-                if tried > BEHAVIOUR_MAX_PROCEDURES:
-                    run.fail(
-                        "G5",
-                        f"take-over check not completed: more than {BEHAVIOUR_MAX_PROCEDURES} deleted procedures "
-                        "to re-run in one pass; delete fewer items",
-                    )
-                    return
-                verdict = self._reproduced(item, c, cands, started, tried)
-                if verdict is None:
-                    return  # the budget ran out (already refused)
-                if not verdict:
-                    lost.append(c.episode)
-            if lost:
-                run.fail(
-                    "G5",
-                    f"{item} is deleted, but its procedures on {', '.join(sorted(set(lost))[:5])} are reproduced by "
-                    "no remaining item; a kept function must take over each recorded job with the same outcome",
-                    item,
-                )
-
-    def _alias_targets(self) -> dict[str, str]:
-        """Deleted name -> the function it forwards to: the live aliases."""
-        out: dict[str, str] = {}
-        try:
-            live = dict(self.gate.ev.aliases())
-        except AttributeError:
-            live = {}
-        for a, row in live.items():
-            if isinstance(row, dict) and isinstance(row.get("target"), str):
-                out[a] = row["target"]
-        return out
-
-    def _reproduced(
-        self,
-        item: str,
-        cover: Any,
-        cands: list[str],
-        started: float,
-        n: int,
-    ) -> bool | None:
-        """Whether one of *cands* gives on the candidate the outcome *item* gave on the parent for *cover*.
-        None when the budget ran out (refused)."""
-        run = self.run
-        ep = self.ep(cover.episode)
-        if ep is None:
-            run.note(
-                f"G5 take-over check: {item}'s procedure on {cover.episode} cannot be read; not reproduced",
-            )
-            return False
-
-        def outcome(who: str, tree: Path, side: str) -> Any:
-            left = OUTPUTS_BUDGET_S - (time.monotonic() - started)
-            if left <= 1:
-                run.fail(
-                    "G5",
-                    f"take-over check not completed: its {OUTPUTS_BUDGET_S:g} s procedure budget ran out at {item}",
-                )
-                return None
-            return run_procedure(
-                who,
-                cover,
-                ep=ep,
-                tree=tree,
-                python=self.gate.python,
-                work=run.tmp / f"procedure-takeover-{n}-{side}",
-                blob=self.gate._blob,
-                worktree_files=self.cfg.worktree_files,
-                signals=self.gate.ev.signals_for,
-                runner=self.cfg.runner,
-                timeout_s=min(PROCEDURE_S, left),
-            )
-
-        before = outcome(item, run.p_tree, "parent")
-        if before is None:
-            return None
-        for k, who in enumerate(cands):
-            after = outcome(who, run.c_tree, f"candidate-{k}")
-            if after is None:
-                return None
-            if bool(after.ok) == bool(before.ok):
-                return True
-        return False

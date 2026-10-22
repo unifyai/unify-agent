@@ -11,8 +11,8 @@ each a top-level binding of the old name in its module, where the last binding o
 
 A name imported through a package's re-export (``from memory.p import f``) resolves to the package, not to the
 function; an alias imports from the function's own module. :func:`forwards` lists every forwarding binding of a
-module; the gate (:mod:`.library_checks`) checks a declared alias against it. :func:`calls_function` is the library-mode
-form of :func:`.snapshot.calls_item`.
+module; the gate (:mod:`.library_checks`) checks a declared alias against it. :func:`calls_function` says whether
+a test calls a function.
 """
 
 from __future__ import annotations

@@ -425,13 +425,12 @@ def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch
         "landed": PROCEDURE_ITEM,
         "superseded_by": None,
     }, out.pool
-    # the gate admitted it at its evidence level. Rev 2 makes no parsed fixture at a landing (that would run the
-    # reader), so the procedure's own test computes its argument from the request's fixture through the reader: the
-    # grounded rule caps such a call at unchecked, with the reason as its label, until a test calls it on a fixture
+    # the gate admitted it at its evidence level: rev 2.1's gate runs no code, so it lands unchecked, and its label
+    # says its tests and its examples were not run
     final = results[-1]
     assert gate_level(final, PROCEDURE_ITEM) == LEVEL_CAPTURE, getattr(final, "level_reasons", None)
-    reasons = (getattr(final, "level_reasons", None) or {}).get(PROCEDURE_ITEM) or []
-    assert any("[examples:grounded]" in r for r in reasons), reasons
+    labels = final.verification[PROCEDURE_ITEM]["label_findings"]
+    assert any(r.startswith("not run: G2 examples: ") for r in labels), labels
     # the landed library lists it as a new item: its status is the new-item status
     from unify.memory.library_export import generated_library_mode
 

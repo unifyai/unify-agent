@@ -277,24 +277,6 @@ def safety(source: str, rel: str = PROCEDURE_FILE) -> str | None:
 
 # --- the confined run -----------------------------------------------------------------------------------------
 
-def _read_result(path: Path) -> dict | None:
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
-        return None
-    with os.fdopen(fd, "rb") as fh:
-        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-            return None
-        data = fh.read(MAX_RESULT_BYTES + 1)
-    if len(data) > MAX_RESULT_BYTES:
-        return None
-    try:
-        doc = json.loads(data.decode("utf-8", "replace"))
-    except ValueError:
-        return None
-    return doc if isinstance(doc, dict) else None
-
-
 # --- what the episode handed back -----------------------------------------------------------------------------
 
 

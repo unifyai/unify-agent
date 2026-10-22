@@ -59,15 +59,13 @@ def test_may_repair_reserve_rule():
 
 
 def test_render_keeps_every_line_whole_and_redacts():
-    long = "G3: env/venmo/tests/test_me.py is not green on the candidate " + "y" * 5000
-    out = "E   KeyError: 'user'\n" + ("`" * 3 + "\n") * 2 + "z" * 6000 + KEY
+    long = "G1: fixture provenance: memory/acct/tests/data/me_1.json does not re-derive " + "y" * 5000
     res = GateResult(
         False,
         {"G3": False},
         [long, "G2: secret " + KEY, "note: pre-existing: x"],
         ["G3", "G2"],
         items_refused={"env/venmo:me": ["G3"]},
-        outputs={"env/venmo/tests/test_me.py (candidate)": out},
     )
     text = render_result("p1", 0, res, final=False, candidate="c" * 40)
     assert text.startswith("# Gate result: pass p1, round 0, check (not merged)\n")
@@ -79,12 +77,8 @@ def test_render_keeps_every_line_whole_and_redacts():
     )
     assert "- refused checks: G3, G2" in text and "  - env/venmo:me: G3" in text
     assert "- candidate: " + "c" * 40 in text
-    # fenced with four backticks, past the output's own runs of three
-    assert "z" * 6000 in text and "`" * 4 + "text\nE   KeyError" in text
-    assert (
-        "earlier bytes dropped" in text
-    )  # the runner's own bound is stated, never silent
     assert KEY not in text
+    assert "## Test output" not in text  # the gate runs no test, so there is no output to keep
     final = render_result(
         "p1",
         1,
@@ -94,7 +88,7 @@ def test_render_keeps_every_line_whole_and_redacts():
     )
     assert final.startswith("# Gate result: pass p1, round 1, final (merge)\n")
     assert "- items merged: env/venmo:me" in final and "## Pass notes (1)" in final
-    assert "- items refused: none" in final and "## Test output (0)" in final
+    assert "- items refused: none" in final
 
 
 def test_repair_message_points_at_the_full_result():

@@ -38,8 +38,8 @@ KEYED_BAD = {**wl.FILES, wl.MODULE: wl.MODULE_BAD + f'\nTOKEN = "{wl.KEY}"\n'}
 
 
 def _count(gate, seen=None):
-    """Count the pass's gate calls, passing each through to the real gate; *seen* collects (name, candidate,
-    seed) per call."""
+    """Count the pass's gate calls, passing each through to the real gate; *seen* collects (name, candidate) per
+    call."""
     calls = {"check": 0, "merge": 0}
     for name in ("check", "merge"):
         real = getattr(gate, name)
@@ -47,7 +47,7 @@ def _count(gate, seen=None):
         def wrapped(*args, _real=real, _name=name, **kwargs):
             calls[_name] += 1
             if seen is not None:
-                seen.append((_name, args[1], kwargs.get("seed")))
+                seen.append((_name, args[1]))
             return _real(*args, **kwargs)
 
         setattr(gate, name, wrapped)
@@ -108,12 +108,9 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
     assert mem.head() == out.commit
     assert mem.run("rev-list", "--count", f"{parent}..{out.commit}").strip() == "1"
     assert "Round:" not in mem.run("log", "-1", "--format=%B", out.commit)
-    # Amendment A: one seed for the pass (its first candidate's), and the merge lands the last checked commit
-    from unify.memory.qa import seed_of
-
+    # the merge lands the last checked commit
     c0, c1, m = seen
-    assert [n for n, _, _ in seen] == ["check", "check", "merge"]
-    assert c0[2] == c1[2] == m[2] == seed_of(c0[1])
+    assert [n for n, _ in seen] == ["check", "check", "merge"]
     assert m[1] == c1[1] == out.commit
     (row,) = ev.pass_rounds()
     assert row["pass_id"] == "p1" and row["rounds"] == 2 and len(row["round_blobs"]) == 1
@@ -121,8 +118,7 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
     full = writer.gate.blobs.get(row["round_blobs"][0]).decode()  # the same text, kept whole
     assert full.startswith(result.split("\n[… shown bytes ")[0])
     assert f"G6: key-shaped string in {wl.MODULE}" in full and wl.KEY not in full
-    # the failing test's own output, not only the reason's 300-character tail
-    assert "## Test output" in full and "def test_reads_the_recorded_user_ids():" in full and "KeyError" in full
+    assert "## Test output" not in full  # the gate runs no test (rev 2.1): there is no output to keep
 
 
 @needs_bwrap
@@ -172,7 +168,7 @@ def test_gate_time_counts_against_the_deadline(tmp_path):
 
     def slow_check(parent, candidate, manifest, **kwargs):
         seen.append(candidate)
-        time.sleep(4.0)  # the jail's time: the gate's test runs
+        time.sleep(4.0)  # the gate's time
         return GateResult(
             False,
             {"G1": False},
@@ -197,9 +193,9 @@ def test_gate_time_counts_against_the_deadline(tmp_path):
 
 
 @needs_bwrap
-def test_check_runs_the_items_own_tests_under_library_mode(tmp_path):
-    """``check`` runs the items' own tests (gate.check, no merge). In rev 2 a failing test is a label on its item,
-    so the check passes; the pass lands once the writer has fixed the function."""
+def test_check_is_the_whole_gate_and_runs_no_test_under_library_mode(tmp_path):
+    """``check`` is the whole gate (gate.check, no merge), which runs no code (rev 2.1): a wrong function's test is
+    not run, so the check passes and says the writer's tests are its own; the pass lands."""
     mem, ev, ep, gate = _store(tmp_path)
     calls = _count(gate)
     model = Turns(
@@ -222,9 +218,7 @@ def test_check_runs_the_items_own_tests_under_library_mode(tmp_path):
     out = asyncio.run(
         writer.run(PassRequest("incremental", "acct", ["e1"], False), "p1"),
     )
-    # rev 2's gate is labels only: the red test is a label on the item, so the check passes and says so (the
-    # failing test's output reaches the pass's gate result as a label, never a refusal for the writer to repair)
-    assert model.outputs["c0"] == "ok: the static checks, the items' own tests and the gate's drawn inputs pass"
+    assert model.outputs["c0"] == wl.CHECK_OK
     assert calls["check"] == 2 and out.passed and calls["merge"] == 1
     assert len(ev.pass_rounds()) == 1  # the check tool wrote nothing of its own to the evidence store
 

@@ -168,10 +168,6 @@ def examples(d: Docstring) -> list[doctest.Example]:
         return []
 
 
-def has_example(d: Docstring) -> bool:
-    return bool(examples(d))
-
-
 def _tree(source: str) -> ast.AST | None:
     try:
         return ast.parse(source)

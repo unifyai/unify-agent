@@ -265,12 +265,6 @@ def test_import_graph_resolves_absolute_relative_and_package_imports(tmp_path):
     }
     assert layout.dependants(graph, {"memory.text.parse"}) == set(graph)
     assert layout.dependants(graph, {"memory.text.report"}) == {"memory.text.report"}
-    assert layout.imported_closure(graph, "memory.text.report") == {
-        "memory.text.report",
-        "memory.text",
-        "memory.text.dates",
-        "memory.text.parse",
-    }
     refs = layout.imports(
         b"from memory.text.parse import words\nimport memory.web.fetch\n",
         "memory.text.tests",

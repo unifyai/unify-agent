@@ -26,8 +26,8 @@ from tests.memory.test_writer_pass import Turns, _call, _run, _write, _writer, n
 ME, OTHER = wl.ITEM_ID, "memory.acct.users:other"
 TEST_PATH = f"/memory/{wl.TEST_FILE}"
 TEST = wl.TEST_SOURCE
-# a refusal that remains under any-edit landing: an edited function none of whose tests is red on the parent
-NOT_RED = f"G3: {ME} is edited, but none of its tests is red on the parent's library. " + RED_TEST_HINT
+# a refusal that stays hard under the labels-only gate (rev 2.1): a test the item lists that the candidate lacks
+NOT_RED = f"G3: listed test {wl.TEST_FILE} is not in the candidate"
 
 
 def _refused(lines: dict[str, str]) -> GateResult:
@@ -56,19 +56,14 @@ def _edits(rounds: int) -> list[dict]:
 # --- the comparable reason and the tracker -------------------------------------------------------------
 
 
-def test_the_comparable_reason_ignores_output_timings_ids_and_paths():
-    a = (
-        "env/venmo/tests/test_me.py is not green on the candidate (rc=1 valid=True timed_out=False "
-        "failed=['test_me'] passed=0) E   KeyError: 'user'\n  at line 3 [full output: blob " + "a1" * 32 + "]"
-    )
-    b = (
-        "env/venmo/tests/test_me.py is not green on the candidate (rc=2 valid=False timed_out=True "
-        "failed=[] passed=4) Timeout"
-    )
-    assert refusal_reason(a) == refusal_reason(b) == "env/venmo/tests/test_me.py is not green on the candidate"
+def test_the_comparable_reason_ignores_later_lines_timings_ids_and_paths():
+    a = "fixture provenance: memory/acct/tests/data/me_1.json does not re-derive\n  expected 12 bytes, got 14"
+    b = "fixture provenance: memory/acct/tests/data/me_1.json does not re-derive\n  the recording is unreadable"
+    first = "fixture provenance: memory/acct/tests/data/me_1.json does not re-derive"
+    assert refusal_reason(a) == refusal_reason(b) == first
     assert refusal_reason(
-        "behaviour check not completed after 12.5 s in /tmp/gate-x1/run at 0123456789abcdef",
-    ) == refusal_reason("behaviour check not completed after 13 s in /tmp/gate-y2/run at fedcba9876543210")
+        "index not built after 12.5 s in /tmp/gate-x1/run at 0123456789abcdef",
+    ) == refusal_reason("index not built after 13 s in /tmp/gate-y2/run at fedcba9876543210")
     # a different item or wording is a different reason
     assert refusal_reason("the tests in a.py already pass") != refusal_reason("the tests in b.py already pass")
 
@@ -78,7 +73,7 @@ def test_refusals_are_keyed_by_check_and_item():
     res.reasons += ["G1: undeclared change memory/x.py", "note: pre-existing: y"]
     got = refusals(res)
     assert set(got) == {("G3", ME), ("G2", OTHER), ("G1", PASS_WIDE)}  # notes are not refusals
-    assert got[("G3", ME)].startswith(f"{ME} is edited, but none of its tests is red on the parent's library")
+    assert got[("G3", ME)].startswith(f"listed test {wl.TEST_FILE} is not in the candidate")
     # without attributed lines, the lines of each check an item is refused under stand for it
     bare = GateResult(False, {}, ["G2: covers no recorded action"], ["G2"], items_refused={ME: ["G2"]})
     assert refusals(bare) == {("G2", ME): "covers no recorded action"}
@@ -91,7 +86,7 @@ def test_the_same_refusal_becomes_stuck_after_its_repeats_and_a_change_resets_it
     (held,) = t.update(_refused({ME: NOT_RED}), ("tree", "last"))
     assert held[:2] == ("G3", ME) and t.all_stuck() and t.report()["refusals"][0]["rounds"] == STUCK_REPEATS
     # another refusal of the same item and check is a new one: its count starts again
-    assert t.update(_refused({ME: "G3: env/venmo/tests/test_me.py is not green on the candidate"}), 1) == []
+    assert t.update(_refused({ME: "G3: listed test memory/acct/tests/test_other.py is not in the candidate"}), 1) == []
     assert not t.all_stuck()
     # one stuck refusal beside a fresh one: not every refusal is stuck
     t2 = StuckRefusals()
@@ -130,14 +125,14 @@ def test_the_repair_message_names_the_stuck_items_and_why():
     msg = repair_message(4, "/inputs/gate/result-3.md", res, None, stuck=held)
     assert msg.startswith(plain)
     assert f"No further repair round is offered for {ME} (G3)" in msg
-    assert f"in {STUCK_REPEATS} rounds in a row" in msg and "none of its tests is red on the parent's library" in msg
+    assert f"in {STUCK_REPEATS} rounds in a row" in msg and f"listed test {wl.TEST_FILE} is not in the candidate" in msg
     assert "kept as a draft" in msg and "this round is for the other refusals" in msg
 
 
 def test_the_red_test_hint_says_what_satisfies_the_rule():
-    assert "needs at least one listed test that fails on the parent's version and passes on yours" in RED_TEST_HINT
-    assert "already passes on the parent is accepted" in RED_TEST_HINT
-    assert "cannot show this change" in RED_TEST_HINT
+    assert "needs at least one new or changed test listed under it" in RED_TEST_HINT
+    assert "The gate does not run it: run it yourself" in RED_TEST_HINT
+    assert "fail on the parent's version and pass on yours" in RED_TEST_HINT
 
 
 def test_the_end_event_carries_the_stuck_refusals(tmp_path):
@@ -202,7 +197,7 @@ def test_a_repeated_refusal_stops_repair_and_the_rest_of_the_manifest_lands(tmp_
     assert out.repair_stuck["stopped"] is True and out.repair_stuck["repeats"] == STUCK_REPEATS
     (row,) = out.repair_stuck["refusals"]
     assert (row["check"], row["item"], row["rounds"]) == ("G3", ME, 5)
-    assert row["reason"].startswith(f"{ME} is edited, but none of its tests is red on the parent's library")
+    assert row["reason"].startswith(f"listed test {wl.TEST_FILE} is not in the candidate")
     # the writer was told, in the rounds after it became stuck, that the item gets no further round
     msgs = [m["content"] for m in model.seen if m.get("role") == "user" and "This is repair round" in m["content"]]
     assert len(msgs) == 4

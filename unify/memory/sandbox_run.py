@@ -13,7 +13,6 @@ shell is involved.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import platform
 import json
@@ -27,8 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -45,7 +43,7 @@ except ImportError:  # run as a script outside the package: the stdlib-only modu
     _spec.loader.exec_module(process_tree)
 
 if TYPE_CHECKING:
-    from .example_calls import CallRecord
+    pass
 
 
 def _account_home() -> Path:
@@ -90,12 +88,8 @@ RLIMIT_FSIZE_BYTES = 512 * 1024**2
 RLIMIT_NOFILE_COUNT = 1024
 PRLIMIT = "/usr/bin/prlimit"
 
-JUNIT_MAX_BYTES = 8 * 1024**2
 # Each of stdout and stderr keeps at most its last CAPTURE_MAX_BYTES; the rest is read and dropped.
 CAPTURE_MAX_BYTES = 1024**2
-# library mode: a spooled stream keeps at most SPOOL_MAX_BYTES on the harness's disk
-# (each of stdout and stderr of one run); past it the spool stops and ends with a marker naming the bytes not kept.
-SPOOL_MAX_BYTES = 64 * 1024**2
 
 _KILL_GRACE_S = 10.0
 
@@ -306,26 +300,17 @@ class _Tail:
 
     The box can always reach the host's pipes (its pid 1 holds them, and ``/proc/1/fd/1`` is open to the
     same user), so the host must never buffer them whole or decode them strictly: the text is decoded as
-    UTF-8 with replacement characters, prefixed by a marker when bytes were dropped. With *spool* (library
-    mode) every byte is also written to that harness-side file, up to *spool_max* (:data:`SPOOL_MAX_BYTES`),
-    after which it ends with ``[spool limit reached: N further bytes not kept]``; memory stays bounded.
+    UTF-8 with replacement characters, prefixed by a marker when bytes were dropped.
     """
 
     def __init__(
         self,
         stream,
         cap: int = CAPTURE_MAX_BYTES,
-        spool: Path | None = None,
-        spool_max: int | None = None,
     ) -> None:
         self._stream, self._cap = stream, cap
         self._buf = bytearray()
         self._dropped = 0
-        self._spool = (
-            open(spool, "wb") if spool is not None else None
-        )  # noqa: SIM115 - closed by the drain
-        self._spool_room = SPOOL_MAX_BYTES if spool_max is None else spool_max
-        self._unspooled = 0
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._thread.start()
 
@@ -335,12 +320,6 @@ class _Tail:
                 chunk = self._stream.read1(1 << 16)
                 if not chunk:
                     break
-                if self._spool is not None:
-                    kept = chunk[: self._spool_room]
-                    if kept:
-                        self._spool.write(kept)
-                        self._spool_room -= len(kept)
-                    self._unspooled += len(chunk) - len(kept)
                 self._buf += chunk
                 if len(self._buf) > 2 * self._cap:
                     cut = len(self._buf) - self._cap
@@ -353,15 +332,6 @@ class _Tail:
                 self._stream.close()
             except OSError:
                 pass
-            if self._spool is not None:
-                try:
-                    if self._unspooled:
-                        self._spool.write(
-                            f"\n[spool limit reached: {self._unspooled} further bytes not kept]\n".encode(),
-                        )
-                    self._spool.close()
-                except OSError:
-                    pass
 
     def text(self, timeout: float) -> str:
         self._thread.join(timeout)
@@ -556,7 +526,6 @@ def run_confined(
     cwd: str = "/tmp",
     timeout_s: float = 120.0,
     env: dict[str, str] | None = None,
-    spool: tuple[Path, Path] | None = None,
     late_ro: dict[Path, str] | None = None,
     pass_fds: tuple[int, ...] = (),
     on_spawn: Callable[[], None] | None = None,
@@ -575,8 +544,6 @@ def run_confined(
     *env* is the box's whole environment beyond PATH, HOME and PYTHONDONTWRITEBYTECODE. It reaches
     bubblewrap through an unlinked file (``--args``), not its command line; it must never hold credentials.
     ``stdout`` and ``stderr`` are bounded tails (:data:`CAPTURE_MAX_BYTES` each), decoded with replacement.
-    *spool* (library mode) also writes every byte of stdout and stderr to those two harness-side files (each at
-    most :data:`SPOOL_MAX_BYTES`, marked past it); it changes nothing about the box.
     """
     proc = _spawn_box(
         argv,
@@ -602,8 +569,8 @@ def run_confined(
 
     try:
         # inside the try: a failure to start a drain thread still kills the box
-        tails.append(_Tail(proc.stdout, spool=spool[0] if spool is not None else None))
-        tails.append(_Tail(proc.stderr, spool=spool[1] if spool is not None else None))
+        tails.append(_Tail(proc.stdout))
+        tails.append(_Tail(proc.stderr))
         proc.wait(timeout=timeout_s)
         # the box ended by itself: its namespace went with it, and its pin is released
         _release_namespace(proc)
@@ -934,374 +901,3 @@ def append_open_rows(path: Path, rows: list[dict]) -> bool:
     except OSError:
         return False
 
-
-# --- pytest --------------------------------------------------------------------------------------------
-
-
-@dataclass
-class PytestOutcome:
-    """Test ids are ``<path relative to the tests dir>::[Class::]test``.
-
-    Untrusted when model code runs in the tested process: that code shares pytest's process and can
-    rewrite the junit report or the exit status. ``valid`` is False when the report is missing, a link or
-    another non-regular file, too large, malformed, or contradicts pytest's exit status (0 needs no failure, 1
-    at least one, 5 no test; any other status is invalid); a gate must then treat the run as failed. With
-    ``import_skips_fail`` (:func:`run_pytest`) a skip caused by a failed import is a failure, 5 is also valid
-    when every collected entry is a module skipped for an import (:data:`MODULE_SKIPPED`), and a report the
-    marking plugin did not write is invalid.
-    """
-
-    passed: set[str] = field(default_factory=set)
-    failed: set[str] = field(default_factory=set)
-    skipped: set[str] = field(default_factory=set)
-    returncode: int = 0
-    timed_out: bool = False
-    output: str = ""
-    valid: bool = True
-    # library mode: the run's output uncut by this module: stdout then stderr as run_confined kept
-    # them (each its last CAPTURE_MAX_BYTES, prefixed "[N earlier bytes dropped]" when bytes were dropped, so
-    # nothing is cut silently). ``output`` stays the 4,000-character tail every v2 reason quotes; empty means
-    # the same text as ``output``.
-    full_output: str = ""
-    # library mode: the whole output's blob id (the gate sets it; :func:`.library_checks.keep_output`)
-    output_blob: str | None = None
-    # library mode: the calls of the observed functions this run recorded (:mod:`.example_calls`), when the run
-    # asked for them; None otherwise
-    calls: "CallRecord | None" = None
-
-    def __post_init__(self) -> None:
-        if not self.full_output:
-            self.full_output = self.output
-
-
-def _case_id(case: ET.Element, rootdir: str, tests_dir: str) -> str:
-    name = case.get("name") or "?"
-    classname = case.get("classname") or ""
-    file = case.get("file")
-    classes: list[str] = []
-    if file:
-        module = file[:-3].replace("/", ".") if file.endswith(".py") else file
-        if classname.startswith(module + "."):
-            classes = classname[len(module) + 1 :].split(".")
-    else:
-        parts = classname.split(".") if classname else []
-        while len(parts) > 1 and parts[-1].startswith("Test"):
-            classes.insert(0, parts.pop())
-        file = "/".join(parts) + ".py"
-    path = posixpath.normpath(posixpath.join(rootdir, file))
-    base = posixpath.normpath(tests_dir)
-    if path.startswith(base.rstrip("/") + "/"):
-        file = posixpath.relpath(path, base)
-    return "::".join([file, *classes, name])
-
-
-def _read_junit(junit_dir: Path) -> ET.Element | None:
-    """The root element of ``r.xml`` in the junit directory, or None when it cannot be trusted as a report.
-
-    The box can replace ``r.xml`` with anything, so the host never follows it: it is opened with
-    O_NOFOLLOW (a link is refused, not read) and O_NONBLOCK (a FIFO cannot stall the harness); the raw
-    descriptor must be a regular file (not a directory, FIFO or device) of at most JUNIT_MAX_BYTES, is
-    parsed from that descriptor and is closed on every path. The directory itself is
-    the host's own temporary directory, bind-mounted into the box, so only its entries can change.
-    """
-    try:
-        fd = os.open(
-            junit_dir / "r.xml",
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-        )
-    except OSError:
-        return None
-    try:
-        st = os.fstat(
-            fd,
-        )  # the raw descriptor: a directory or FIFO is refused before any read
-        if not stat.S_ISREG(st.st_mode) or st.st_size > JUNIT_MAX_BYTES:
-            return None
-        chunks: list[bytes] = []
-        size = 0
-        while size <= JUNIT_MAX_BYTES:
-            chunk = os.read(fd, JUNIT_MAX_BYTES + 1 - size)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            size += len(chunk)
-        if size > JUNIT_MAX_BYTES:
-            return None
-        return ET.fromstring(b"".join(chunks))
-    except (ET.ParseError, OSError, ValueError):
-        return None
-    finally:
-        os.close(fd)
-
-
-# --- skips caused by a failed import (opt-in) ----------------------------------------------------------------
-#
-# A test whose import is missing in one place it runs must not pass there silently; the gate counts such a skip
-# as a failure when it asks to (``import_skips_fail``: a stage-5 switch is on or the library's tests use the
-# test kit). The signal is structural, never pytest's message text: a plugin loaded into the box's pytest marks
-# a skip whose exception came from ``pytest.importorskip`` or was raised while an ImportError was being
-# handled (its ``__cause__``/``__context__`` chain), with the junit property SKIP_PROPERTY: value "test" on a
-# test's entry, "collect" on the entry of a module or package skipped at collection. It also writes the
-# suite property SKIPMARK_LOADED, and a report without it is invalid (the plugin did not run). The plugin
-# reaches pytest's junit writer through its stash key (``_pytest.junitxml.xml_key``); a pytest without it is a
-# usage error, so the run is invalid, never silently unmarked. Model code shares pytest's process and could
-# forge the properties, as it could the report (model code is assumed careless, not malicious).
-SKIP_PROPERTY = "memory_import_skip"
-SKIPMARK_LOADED = "memory_skipmark"
-SKIPMARK_MODULE = "_memory_skipmark"
-SKIPMARK_DIR = "/memory-skipmark"  # the plugin's read-only directory in the box (on PYTHONPATH, last)
-MODULE_SKIPPED = "test module skipped"
-# The plugin, written into a fresh host directory per run; the host never imports it (importing it patches
-# pytest.importorskip in that process).
-SKIPMARK_SOURCE = r'''"""Mark skips caused by a failed import in the junit report (the memory gate's runs; see sandbox_run)."""
-import unittest
-
-import pytest
-from _pytest import outcomes as _outcomes
-from _pytest.junitxml import xml_key
-
-PROPERTY = "memory_import_skip"
-LOADED = "memory_skipmark"
-_MARK = "_memory_import_skip"
-_SKIPS = (_outcomes.Skipped, unittest.SkipTest)
-_importorskip = _outcomes.importorskip
-
-
-def importorskip(*args, **kwargs):
-    __tracebackhide__ = True
-    try:
-        return _importorskip(*args, **kwargs)
-    except _outcomes.Skipped as exc:
-        setattr(exc, _MARK, True)  # the module is missing (or older than minversion)
-        raise
-
-
-pytest.importorskip = importorskip
-_outcomes.importorskip = importorskip
-
-
-def _from_import(exc):
-    seen = set()
-    while exc is not None and id(exc) not in seen:
-        seen.add(id(exc))
-        if getattr(exc, _MARK, False) or isinstance(exc, ImportError):
-            return True
-        exc = exc.__cause__ or exc.__context__
-    return False
-
-
-def _writer(config):
-    xml = config.stash.get(xml_key, None)
-    if xml is None or not hasattr(xml, "node_reporter") or not hasattr(xml, "add_global_property"):
-        raise pytest.UsageError("_memory_skipmark needs pytest's junit writer (--junitxml)")
-    return xml
-
-
-@pytest.hookimpl(trylast=True)
-def pytest_configure(config):
-    _writer(config).add_global_property(LOADED, "1")
-
-
-@pytest.hookimpl(wrapper=True)
-def pytest_runtest_makereport(item, call):
-    rep = yield
-    exc = call.excinfo.value if call.excinfo is not None else None
-    if (
-        rep.skipped
-        and not hasattr(rep, "wasxfail")
-        and isinstance(exc, _SKIPS)
-        and _from_import(exc)
-        and (PROPERTY, "test") not in item.user_properties
-    ):
-        item.user_properties.append((PROPERTY, "test"))  # junit writes them with the teardown report
-    return rep
-
-
-@pytest.hookimpl(wrapper=True)
-def pytest_make_collect_report(collector):
-    rep = yield
-    if rep.skipped:
-        call = rep.__dict__.get("call")  # pytest keeps the collection's CallInfo here until it is reported
-        exc = call.excinfo.value if call is not None and call.excinfo is not None else None
-        if exc is None or _from_import(exc):  # unreachable exception: counted, never silently a skip
-            _writer(collector.config).node_reporter(rep).add_property(PROPERTY, "collect")
-    return rep
-'''
-
-
-def _skip_mark(case: ET.Element) -> str | None:
-    """The plugin's mark on a junit entry: ``"test"``, ``"collect"`` or None."""
-    props = case.find("properties")
-    for p in props.iter("property") if props is not None else ():
-        if p.get("name") == SKIP_PROPERTY and p.get("value") in ("test", "collect"):
-            return p.get("value")
-    return None
-
-
-def _suite_property(root: ET.Element, name: str) -> bool:
-    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
-    for suite in suites:
-        props = suite.find("properties")
-        for p in props.iter("property") if props is not None else ():
-            if p.get("name") == name:
-                return True
-    return False
-
-
-def _skipmark_loaded(root: ET.Element) -> bool:
-    return _suite_property(root, SKIPMARK_LOADED)
-
-
-def run_pytest(
-    tests_dir_in_box: str,
-    *,
-    python: Path,
-    ro: dict[Path, str],
-    rw: dict[Path, str],
-    cwd: str,
-    timeout_s: float = 300.0,
-    env: dict[str, str] | None = None,
-    import_skips_fail: bool = False,
-    spool_dir: Path | None = None,
-    calls: list[str] | None = None,
-) -> PytestOutcome:
-    """Run pytest on *tests_dir_in_box* in the box; see :class:`PytestOutcome` for ids and validity.
-
-    *import_skips_fail* (default off: a skip is a skip): load the skip-marking plugin and count a skip caused
-    by a failed import as a failure, ``<file>::test module skipped`` for a module skipped at collection and
-    the test's id for a test. *spool_dir* (library mode) receives the run's whole ``stdout`` and ``stderr``
-    (:func:`run_confined`'s *spool*); without it the call is v2's.
-
-    *calls* (library mode): the function ids whose calls from test code the run records. The observe-only plugin
-    (:data:`.example_calls.CALLS_SOURCE`) is mounted read-only and loaded like the skip-marking plugin, a fresh host
-    directory is mounted read-write at ``/calls`` for its record, and :attr:`PytestOutcome.calls` holds the parsed
-    record. A report without the plugin's suite property is invalid: nothing goes unrecorded silently.
-    """
-    more = (
-        {"spool": (spool_dir / "stdout", spool_dir / "stderr")}
-        if spool_dir is not None
-        else {}
-    )
-    if spool_dir is not None:
-        spool_dir.mkdir(parents=True, exist_ok=True)
-    with contextlib.ExitStack() as stack:
-        tmp = stack.enter_context(tempfile.TemporaryDirectory(prefix="memory-junit-"))
-        rw2 = dict(rw)
-        rw2[Path(tmp)] = "/junit"
-        ro2, env2, plugin = ro, env, []
-        if import_skips_fail:
-            plug = Path(
-                stack.enter_context(
-                    tempfile.TemporaryDirectory(prefix="memory-skipmark-"),
-                ),
-            )
-            (plug / f"{SKIPMARK_MODULE}.py").write_text(SKIPMARK_SOURCE)
-            ro2 = {**ro, plug: SKIPMARK_DIR}
-            env2 = dict(env or {})
-            path = env2.get("PYTHONPATH")
-            env2["PYTHONPATH"] = f"{path}:{SKIPMARK_DIR}" if path else SKIPMARK_DIR
-            plugin = ["-p", SKIPMARK_MODULE]
-        record_dir: Path | None = None
-        if calls is not None:
-            from . import example_calls
-
-            plug = Path(
-                stack.enter_context(
-                    tempfile.TemporaryDirectory(prefix="memory-calls-plugin-"),
-                ),
-            )
-            example_calls.plugin_files(plug)
-            record_dir = Path(
-                stack.enter_context(
-                    tempfile.TemporaryDirectory(prefix="memory-calls-"),
-                ),
-            )
-            ro2 = {**ro2, plug: example_calls.CALLS_DIR}
-            rw2[record_dir] = posixpath.dirname(example_calls.CALLS_OUT)
-            env2 = {**(env2 or {}), **example_calls.calls_env(calls)}
-            path = env2.get("PYTHONPATH")
-            env2["PYTHONPATH"] = (
-                f"{path}:{example_calls.CALLS_DIR}" if path else example_calls.CALLS_DIR
-            )
-            plugin = [*plugin, "-p", example_calls.CALLS_MODULE]
-        r = run_confined(
-            [
-                str(python),
-                "-m",
-                "pytest",
-                tests_dir_in_box,
-                "-q",
-                "-p",
-                "no:cacheprovider",
-                *plugin,
-                "--rootdir",
-                cwd,
-                "--junitxml",
-                "/junit/r.xml",
-                "-o",
-                "addopts=",
-                "-o",
-                "junit_family=xunit1",
-            ],
-            ro=ro2,
-            rw=rw2,
-            cwd=cwd,
-            timeout_s=timeout_s,
-            env=env2,
-            **more,
-        )
-        out = PytestOutcome(
-            returncode=r.returncode,
-            timed_out=r.timed_out,
-            output=(r.stdout + r.stderr)[-4000:],
-            full_output=r.stdout + r.stderr,
-        )
-        root = None if r.timed_out else _read_junit(Path(tmp))
-        if record_dir is not None:
-            from .example_calls import CALLS_LOADED, CALLS_OUT, read_calls
-
-            loaded = root is not None and _suite_property(root, CALLS_LOADED)
-            out.calls = read_calls(
-                record_dir / posixpath.basename(CALLS_OUT),
-                loaded_property=loaded,
-            )
-            if not loaded:
-                out.valid = False
-        if r.timed_out or root is None:
-            out.valid = False
-            return out
-        cases = list(root.iter("testcase"))
-        # skipped for a failed import: failures, as an ImportError would be
-        missing: set[str] = set()
-        module_skips = 0
-        for case in cases:
-            name = _case_id(case, cwd, tests_dir_in_box)
-            tags = {child.tag for child in case}
-            if tags & {"failure", "error"}:
-                out.failed.add(name)
-            elif "skipped" in tags:
-                mark = _skip_mark(case) if import_skips_fail else None
-                if mark == "collect":
-                    module_skips += 1
-                    missing.add(name.split("::", 1)[0] + "::" + MODULE_SKIPPED)
-                elif mark == "test":
-                    missing.add(name)
-                else:
-                    out.skipped.add(name)
-            else:
-                out.passed.add(name)
-        out.passed -= out.failed
-        out.skipped -= out.failed
-        rc = r.returncode
-        out.valid = (
-            (rc == 0 and not out.failed and bool(cases))
-            or (rc == 1 and bool(out.failed))
-            # pytest exits 5 when no test was collected: no entry, or (marked) only modules skipped for an import
-            or (rc == 5 and len(cases) == module_skips)
-        )
-        if import_skips_fail and not _skipmark_loaded(root):
-            out.valid = False
-        if record_dir is not None and not _suite_property(root, CALLS_LOADED):
-            out.valid = False
-        out.failed |= missing
-        return out

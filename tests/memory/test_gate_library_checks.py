@@ -1,7 +1,6 @@
 """LibraryChecks on stub runs: no jail, no git."""
 
 import json
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,12 +10,9 @@ from unify.memory import library_checks
 from unify.memory.episodes import Cell
 from unify.memory.library_checks import LibraryChecks, LibraryConfig
 from unify.memory.evidence import EvidenceStore
-from unify.memory.example_calls import MAX_CALL_LINES
-from unify.memory.example_perturb import PERTURB_BUDGET_S
-from unify.memory.library_prompts import UNJUDGED_FIX
+from unify.memory.gate_policy import NOT_RUN_GATE
 from unify.memory.manifest import ManifestError, parse_manifest
-from unify.memory.procedures import Cover, Outcome, cover_raw, parse_cover
-from unify.memory.sandbox_run import PYTHON
+from unify.memory.procedures import Cover, cover_raw, parse_cover
 from tests.memory.test_episodes import _ep
 
 EP = _ep(
@@ -35,6 +31,9 @@ class _Run(SimpleNamespace):
     def note(self, reason):
         self.notes.append(reason)
 
+    def not_run(self, item, why):
+        self.labels.append((item, why))
+
 
 def _item(**kw):
     base = dict(
@@ -52,7 +51,6 @@ def _item(**kw):
 def _checks(tmp_path, items, cfg=None, **run):
     gate = SimpleNamespace(
         library_mode=cfg or LibraryConfig(episodes={"e1": EP}.get),
-        python=Path("/usr/bin/python3"),
         _blob=lambda s: b"",
         ev=SimpleNamespace(signals_for=lambda e: []),
         lookup=lambda e, i: None,
@@ -61,6 +59,7 @@ def _checks(tmp_path, items, cfg=None, **run):
         man=SimpleNamespace(items=items, deleted=[], unlisted=[], skeleton=[]),
         fails=[],
         notes=[],
+        labels=[],
         verification={},
         curate_due=False,
         item_fail={},
@@ -90,7 +89,7 @@ def test_cell_and_diff_covers_need_a_defined_function(tmp_path):
     v = _checks(tmp_path, [ok, bad])
     for it in (ok, bad):
         for c in it.typed_covers:
-            v._typed_cover(it, c, 0)
+            v._typed_cover(it, c)
     reasons = [r for _, r, _ in v.run.fails]
     assert reasons == [
         "memory.calc.sums:other covers cell 1 of e1, which defines no Python function",
@@ -99,24 +98,16 @@ def test_cell_and_diff_covers_need_a_defined_function(tmp_path):
     ]
 
 
-def test_episode_cover_runs_its_procedure_and_records_it(tmp_path, monkeypatch):
-    calls = []
-
-    def fake(item, cover, **kw):
-        calls.append((item, cover.runner, kw["tree"]))
-        return Outcome(False, "its result differs from the recorded action")
-
-    monkeypatch.setattr(library_checks, "run_procedure", fake)
+def test_an_episode_cover_is_labelled_not_run_and_recorded(tmp_path):
+    """Rev 2.1: the gate runs no procedure on its recorded episode; the cover is recorded as not run and labelled."""
     it = _item(typed_covers=[Cover("e1", "episode", runner="dialogue", action=0)])
     v = _checks(tmp_path, [it])
-    v._typed_cover(it, it.typed_covers[0], 0)
-    assert calls == [("memory.calc.sums:total", "dialogue", tmp_path / "c")]
+    v._typed_cover(it, it.typed_covers[0])
+    assert v.run.fails == []
+    assert v.run.labels == [("memory.calc.sums:total", f"G2 episode cover e1: {NOT_RUN_GATE}")]
     assert v.run.verification["memory.calc.sums:total"]["procedures"] == [
-        {"episode": "e1", "runner": "dialogue", "ok": False},
+        {"episode": "e1", "runner": "dialogue", "ok": None, "ran": False},
     ]
-    assert (
-        v.run.fails[0][0] == "G2" and "procedure on e1 (dialogue)" in v.run.fails[0][1]
-    )
 
 
 def test_g4_notes_and_never_refuses(tmp_path, monkeypatch):
@@ -302,184 +293,3 @@ def test_cover_raw_round_trips_and_the_typed_covers_table_is_lazy(tmp_path):
     assert ev.typed_covers() == [
         ("memory.a.b:f", "e2", json.dumps(cover_raw(covers[3]), sort_keys=True)),
     ]
-
-
-def _stored(*rows):
-    return SimpleNamespace(
-        typed_covers=lambda: [
-            (i, c.episode, json.dumps(cover_raw(c))) for i, c in rows
-        ],
-        signals_for=lambda e: [],
-    )
-
-
-def test_a_deleted_procedure_must_stay_covered(tmp_path):
-    proc = Cover("e1", "episode", runner="worktree", params={})
-    gone = "memory.calc.sums:total"
-    v = _checks(tmp_path, [], c_bodies={})
-    v.gate.ev, v.run.man.deleted = _stored((gone, proc)), [gone]
-    v.g5()
-    # a remaining item holds a procedure only by reproducing it
-    assert [(c, r.split(";")[0], i) for c, r, i in v.run.fails] == [
-        (
-            "G5",
-            f"{gone} is deleted, but its procedures on e1 are reproduced by no remaining item",
-            gone,
-        ),
-    ]
-
-
-JOBS = """from pathlib import Path
-
-from memory.proc.util import amount
-
-
-def total_amounts(root, src, dst):
-    rows = [line.split(",") for line in (Path(root) / src).read_text().splitlines()]
-    (Path(root) / dst).write_text(str(sum(amount(r) for r in rows)) + "\\n")
-"""
-UTIL = "def amount(row):\n    return int(row[1])\n"
-
-
-def _lib(root, util):
-    for rel, text in {
-        "memory/__init__.py": "",
-        "memory/proc/__init__.py": '"""Procedures."""\n',
-        "memory/proc/jobs.py": JOBS,
-        "memory/proc/util.py": util,
-    }.items():
-        (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        (root / rel).write_text(text)
-    return root
-
-
-@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
-def test_a_helper_edit_that_breaks_a_stored_procedure_is_refused(tmp_path):
-    from tests.memory.test_procedures import _wt
-
-    ep, cover, files = _wt(tmp_path)
-    job, helper = "memory.proc.jobs:total_amounts", "memory.proc.util:amount"
-    for util, refused in (
-        (UTIL, False),
-        (UTIL.replace("int(row[1])", "int(row[1]) + 1"), True),
-    ):
-        case = tmp_path / ("bad" if refused else "ok")
-        v = _checks(
-            case,
-            [_item(item=helper)],
-            cfg=LibraryConfig(episodes={"e1": ep}.get, worktree_files=files),
-            p_tree=_lib(case / "p", UTIL),
-            c_tree=_lib(case / "c", util),
-            changed=["memory/proc/util.py"],
-            p_bodies={job: ("function", "j", True), helper: ("function", "a", True)},
-            c_bodies={job: ("function", "j", True), helper: ("function", "b", True)},
-        )
-        v.gate.ev, v.gate.python = _stored((job, cover)), PYTHON
-        v._procedure_behaviour()
-        if not refused:
-            assert v.run.fails == []
-        else:
-            [(check, reason, owner)] = v.run.fails
-            assert check == "G3" and owner == helper
-            assert reason.startswith(
-                f"{job} changes behaviour without a test: its procedure on e1 (worktree) passes",
-            )
-
-
-@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
-def test_an_init_rebinding_that_breaks_a_stored_procedure_is_refused(tmp_path):
-    """The scope comes from the import graph, where a module depends on its package init."""
-    from tests.memory.test_procedures import _wt
-    from unify.memory import layout
-
-    ep, cover, files = _wt(tmp_path)
-    job = "memory.proc.jobs:total_amounts"
-    init = '"""Procedures."""\nfrom . import util\n\nutil.amount = lambda row: int(row[1]) + 1\n'
-    p_tree, c_tree = _lib(tmp_path / "p", UTIL), _lib(tmp_path / "c", UTIL)
-    (c_tree / "memory/proc/__init__.py").write_text(init)
-    v = _checks(
-        tmp_path,
-        [],
-        cfg=LibraryConfig(episodes={"e1": ep}.get, worktree_files=files),
-        p_tree=p_tree,
-        c_tree=c_tree,
-        changed=["memory/proc/__init__.py"],
-        p_bodies={job: ("function", "j", True)},
-        c_bodies={job: ("function", "j", True)},
-        graph=layout.merge_graphs(
-            layout.import_graph(p_tree),
-            layout.import_graph(c_tree),
-        ),
-    )
-    v.gate.ev, v.gate.python = _stored((job, cover)), PYTHON
-    v._procedure_behaviour()
-    assert [c for c, _, _ in v.run.fails] == ["G3"]
-    assert v.run.fails[0][1].startswith(f"{job} changes behaviour without a test")
-
-
-def test_a_check_with_unseen_fixture_values_that_cannot_complete_refuses(tmp_path):
-    """Replaces test_cross_episode_runs_that_do_not_complete_refuse. The rule that replaces it: the check with
-    unseen fixture values fails closed when it does not complete; a function is admitted only once it is judged.
-    Here the budget is spent before the control run.
-    """
-    from unify.memory import example_perturb
-    from unify.memory.blobs import BlobStore
-    from tests.memory import library_example_world as w
-
-    blobs = BlobStore(tmp_path / "b")
-    files, fixtures = w.files_and_fixtures(blobs.get)
-    tree = tmp_path / "cand"
-    for rel, text in files.items():
-        (tree / rel).parent.mkdir(parents=True, exist_ok=True)
-        (tree / rel).write_text(text)
-    runs = []
-
-    def run_tests(root, tests):
-        runs.append(tests)
-        raise AssertionError("no test run once the budget is spent")
-
-    inputs = [
-        example_perturb.InputFixture(path, files[path].encode(), fixtures[path], None)
-        for path in w.FIXTURE_PATHS
-    ]
-    verdict = example_perturb.check(
-        w.ITEM_ID,
-        calls=w.recorded_calls(blobs.get),
-        fixtures=inputs,
-        tree=tree,
-        tests=[w.TEST_FILE],
-        run_tests=run_tests,
-        pool=[],
-        pool_capped=False,
-        seen=[],
-        blob=blobs.get,
-        field_types={},
-        work=tmp_path / "work",
-        deadline=0.0,  # already past on any clock
-    )
-    assert runs == [] and verdict.refused == [] and verdict.special == []
-    assert verdict.unjudged == [
-        f"[examples:unjudged] {w.ITEM_ID}: the check with unseen fixture values did not complete (the budget ran "
-        "out before the control run); a function is admitted only once it is judged: "
-        + UNJUDGED_FIX["budget"].format(
-            budget_s=PERTURB_BUDGET_S,
-            max_calls=MAX_CALL_LINES,
-        ),
-    ], verdict.unjudged
-
-
-def test_an_unreadable_stored_procedure_refuses_the_behaviour_check(tmp_path):
-    """A stored procedure the behaviour check cannot compare fails closed, as _reproduced does."""
-    job = "memory.calc.sums:total"
-    v = _checks(
-        tmp_path,
-        [],
-        changed=["memory/calc/sums.py"],
-        p_bodies={job: ("function", "a", True)},
-        c_bodies={job: ("function", "a", True)},
-    )
-    v.gate.ev = _stored((job, Cover("e9", "episode", runner="worktree", params={})))
-    v._procedure_behaviour()
-    assert [c for c, _, _ in v.run.fails] == [
-        "G3",
-    ] and "e9 cannot be read" in v.run.fails[0][1]

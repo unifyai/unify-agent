@@ -144,12 +144,6 @@ RULES: tuple[tuple[str, str, str], ...] = (
     ("T58", "writer", "a fixture that did not come through `tools.fixture` unchanged"),
     ("B247", "helper", "a `tools.done` without them is refused"),
     ("B268", "fork", "at most 200 files and 4 MiB in all are kept"),
-    ("B300", "refusals", "add a test call that returns on values loaded from a fixture of a recorded episode"),
-    ("B302", "refusals", "make one call that returns take each structured argument"),
-    ("B303", "refusals", "make those tests quicker"),
-    ("B304", "refusals", "must pass, within their time limit, when run on their own"),
-    ("B305", "refusals", "must end normally (no exit, no killed process)"),
-    ("B306", "refusals", "must still be reached when the fixture values change"),
     ("T74a", "refusals", "a link is on the way to"),
     ("A2", "actor", "Your answer is your final reply: a message without a tool call."),
     ("A8", "actor_structured", "answer by calling `tools.answer(answer)`"),
@@ -233,9 +227,6 @@ def _texts() -> dict[str, str]:
         "inputs_readme": files[lp.INPUTS_README_FILE],
         "refusals": "\n".join(
             [
-                lp.EPISODES_FIX,
-                lp.GROUNDED_FIX,
-                *lp.UNJUDGED_FIX.values(),
                 _sources(
                     "unify.memory.writer_pass",
                     "unify.common._async_tool.loop",

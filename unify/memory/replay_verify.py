@@ -33,9 +33,9 @@ taken as reproduced.
 The equivalence needs no reward signal. A verified instance becomes a case of the item's harness-written test
 (:func:`test_source`): the call's inputs as recorded at line ``a`` go to the item's replay case file
 (:func:`case_file`, ``tests/data/<function>.replay.jsonl``, one line per instance naming its episode, cell and lines),
-which the test reads, and its call and expected results stay in the test. The gate re-verifies a new or changed case
-file by replaying the instances its lines name (:func:`reverify`), so the inputs a test loads from it are recorded
-values. Nothing staged or written by the model runs on the host.
+which the test reads, and its call and expected results stay in the test. The gate does not replay a case file (it
+runs no code, rev 2.1): it labels a new or changed one as not run. Nothing staged or written by the model runs on the
+host.
 """
 
 from __future__ import annotations
@@ -357,10 +357,6 @@ def verify(
     return out
 
 
-#: At most this many recorded instances of new or changed replay case files are replayed again in one gate run;
-#: past it the files are not judged.
-MAX_REPLAY_REVERIFY = 8
-
 _TEST = '''"""Harness-written: {item} reproduces the recorded instances it replaces."""
 
 import json
@@ -458,74 +454,3 @@ def _instance(replaces: list, episode: str, at: tuple[int, int, int]) -> dict | 
     return None
 
 
-def reverify(
-    load: Callable,
-    files: dict[str, bytes],
-    replaces_of: dict[str, list],
-    tree: Path,
-    *,
-    trees: dict[str, Path] | None = None,
-    scratch: Path,
-) -> tuple[dict[str, dict], list[str]]:
-    """Replay again the instances that the new or changed replay case *files* (path -> bytes) name: (path -> its
-    provenance entry, for each file whose every line verifies now with the inputs it holds; reasons). *replaces_of*:
-    each function item's manifest ``replaces``. More than :data:`MAX_REPLAY_REVERIFY` instances in all are not
-    judged (a reason). Reasons name paths, lines, episodes and cells, never a value."""
-    entries: dict[str, dict] = {}
-    reasons: list[str] = []
-    plan = []
-    for path in sorted(files):
-        item = next(
-            (i for i in sorted(replaces_of) if _ITEM.match(i) and case_path(i) == path),
-            None,
-        )
-        if item is None:
-            reasons.append(
-                f"[examples:replay] {path}: no function item lists replaces for this case file; replay writes it "
-                "from an item's replaces",
-            )
-            continue
-        entry = _fx.assembled_entry(files[path])
-        if entry is None or entry.get("kind") != "replay":
-            reasons.append(f"[examples:replay] {path} is not a file of replay case lines")
-            continue
-        inputs = [json.loads(x)["input"] for x in files[path].decode("utf-8").splitlines() if x.strip()]
-        insts = []
-        for n, row in enumerate(entry["lines"], 1):
-            at = _fx.replay_source(row.get("source"))
-            inst = _instance(replaces_of[item], str(row.get("episode")), at) if at else None
-            if inst is None:
-                reasons.append(
-                    f"[examples:replay] {path} line {n} names an instance ({row.get('episode')} "
-                    f"{row.get('source')}) that {item}'s replaces does not list",
-                )
-                break
-            insts.append(inst)
-        else:
-            plan.append((path, item, inputs, insts, entry))
-    total = sum(len(p[3]) for p in plan)
-    if total > MAX_REPLAY_REVERIFY:
-        reasons.append(
-            f"[examples:replay] {total} recorded instances are named by new or changed replay case files "
-            f"({', '.join(p[0] for p in plan)}); at most {MAX_REPLAY_REVERIFY} are replayed again in one pass, so "
-            "they are not judged",
-        )
-        return {}, reasons
-    for path, item, inputs, insts, entry in plan:
-        got = verify(load, item, insts, tree, trees=trees, scratch=scratch)
-        bad = None
-        if len(got) != len(insts):
-            bad = f"[examples:replay] {path}: {len(got)} of {len(insts)} instances were replayed"
-        for n, (g, want) in enumerate(zip(got, inputs), 1):
-            if bad is not None:
-                break
-            verdict_ = str(g.get("verdict", "")).split(":", 1)[0]
-            if verdict_ != "verified":
-                bad = f"[examples:replay] {path} line {n}: its instance does not verify by replay now ({verdict_})"
-            elif _fx.canonical((g.get("case") or {}).get("inputs")) != _fx.canonical(want):
-                bad = f"[examples:replay] {path} line {n}: its inputs differ from the inputs the replay records"
-        if bad is None:
-            entries[path] = entry
-        else:
-            reasons.append(bad)
-    return entries, reasons

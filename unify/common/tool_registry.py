@@ -128,10 +128,10 @@ _OFFSET = {
 CHECK = RegisteredTool(
     name="check",
     description=(
-        "Check the manifest at /memory/.pass/manifest.json against your current /memory files: the gate's static "
-        "checks (the manifest, the layout and links, fixtures, covers and safety), then the items' own tests and "
-        "the recorded inputs the gate draws. Returns 'ok' or the gate's reasons, with the output of any failing "
-        "test; the full result is saved under /inputs/gate/ and the reply names the file. With `manifest` given, "
+        "Check the manifest at /memory/.pass/manifest.json against your current /memory files: the gate's "
+        "checks (the manifest, the layout and links, fixtures, covers and safety). The gate runs no code, so your "
+        "items' tests are the ones you run. Returns 'ok' or the gate's reasons and labels; the full result is saved "
+        "under /inputs/gate/ and the reply names the file. With `manifest` given, "
         "that JSON is first written to /memory/.pass/manifest.json (replacing it), so check, finish and the gate "
         "always judge the same file. Changes nothing else."
     ),
@@ -2245,7 +2245,7 @@ def check_source() -> str:
 def comparison_source() -> str:
     """The module source of the one comparison of an expected value with an actual one
     (:mod:`unify.memory.value_diff`), byte for byte: the stub runs it in its own namespace, so ``check_examples`` in a
-    box compares with the same function the gate uses (standard library only, pure)."""
+    box compares with this one function (standard library only, pure)."""
     from unify.memory import value_diff
 
     return inspect.getsource(value_diff)
