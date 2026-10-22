@@ -1235,7 +1235,7 @@ class Ledger:
         return tuple(out)
 
     def open_entries(self, *, goal: Callable[[AttentionEntry], str] | None = None) -> list[OpenEntry]:
-        """Every open entry: id, kind, age in seconds, a one-line goal with identifiers stripped (:func:`goal_line`)."""
+        """Every open entry: id, kind, age in seconds, a one-line goal as written (:func:`goal_line`)."""
         now = self._clock()
         out = []
         for e in self._order(e for e in self.entries().values() if e.state == "open"):
@@ -1245,7 +1245,7 @@ class Ledger:
         return out
 
     def goal_line(self, e: AttentionEntry) -> str:
-        """The ``Asked`` line of the entry's first episode's summary, identifiers stripped; else the kind in words."""
+        """The ``Asked`` line of the entry's first episode's summary, as written; else the kind in words."""
         from .captures import asked
 
         for ep in e.refs.episodes:

@@ -1,5 +1,5 @@
 """The capture store: every completed attempt captured at once, by the harness, outside the library; its signature
-holds no identifier; a failure is negative knowledge; outcomes join one record; the writer reads the store and stays
+holds no request text and keeps every key as written (rev 2.1: no identifier is stripped or masked); a failure is negative knowledge; outcomes join one record; the writer reads the store and stays
 the only agent that edits the library. Rev 2 (the trace contract): a capture is never run; its outcome comes from the
 episode's signals only."""
 
@@ -22,7 +22,6 @@ from unify.memory.signals import Signal
 
 needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
 
-IDS = ("0f3a9c7e1b", "ab12cd34ef", "run_000123", "lunar-otter")
 REQUEST = json.dumps(
     {"ticket": "lunar-otter", "case": "0f3a9c7e1b", "rows": {"ab12cd34ef": [1, 2, 3], "run_000123": [4, 5]}},
 )
@@ -83,7 +82,7 @@ def _checker(eid, label, regime="dense"):
 # --- capture at once, outside the library ------------------------------------------------------------------------
 
 
-def test_a_completed_attempt_is_captured_with_its_signature_and_holds_no_identifiers(tmp_path):
+def test_a_completed_attempt_is_captured_with_its_signature_keys_as_written(tmp_path):
     staging = _staging(tmp_path, "e1", {"procedure.py": PROC, "broke.md": "none\n"})
     store = cp.store_dir(tmp_path)
     row = cp.capture_trace_step(
@@ -102,13 +101,14 @@ def test_a_completed_attempt_is_captured_with_its_signature_and_holds_no_identif
     d = store / cid
     assert sorted(os.listdir(d)) == [cp.OCCURRENCES_FILE, "procedure.py", "record.json", "saved.json", "signature.json"]
     assert staging not in d.parents and store.parent == tmp_path
-    saved_text = (d / cp.SAVED_FILE).read_text()  # what the capture was saved against, stripped like the signature
-    for ident in IDS:
-        assert ident not in saved_text, ident
+    saved_text = (d / cp.SAVED_FILE).read_text()  # what the capture was saved against: never the request text
     assert REQUEST not in saved_text
     sig_text = (d / "signature.json").read_text()
-    for ident in IDS:
-        assert ident not in sig_text, ident
+    # rev 2.1: the recorded data's keys are its own, kept as written (the rows' names here), never a placeholder
+    tree = json.dumps(json.loads(sig_text)["input"])
+    for key in ("ab12cd34ef", "run_000123"):
+        assert key in tree, key
+    assert "<id>" not in sig_text
     assert REQUEST not in sig_text and "rows" not in json.loads(sig_text)["input"].get("lengths", {})
     sig = json.loads(sig_text)
     # rev 2: nothing read the request (read_input never ran), so the input is described by the recording alone

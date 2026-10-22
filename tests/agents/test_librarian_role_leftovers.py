@@ -34,7 +34,8 @@ def test_keep_note_appends_to_the_roles_notes_and_nothing_else(tmp_path):
     text = notes.read_text()
     lines = text.splitlines()
     assert len(lines) == 2 and "librarian-1a2b: Readers of tabular text" in lines[0] and "librarian-3c4d" in lines[1]
-    assert KEY not in text and "<id>" in lines[1]  # identifiers stripped
+    # rev 2.1: a note is kept as written (whitespace folded), identifiers included; nothing strips or masks one
+    assert f"Ignore the item made for {KEY}: it overlaps." in lines[1] and "<id>" not in text
     # append-only: the first note is still the file's start; no other file of the role changed but the notes' lock
     assert text.startswith(lines[0])
     for p, size in before.items():

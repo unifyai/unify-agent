@@ -294,15 +294,6 @@ def read_dispatch(copy: Path) -> dict[str, dict]:
     }
 
 
-def _stripped(text: str | None) -> str:
-    """*text* through the identifier rule (:func:`.signatures.strip_identifiers`, with the values it labels as
-    identifiers itself): the librarian never reads an identifier of the request, so no item is named for one."""
-    from .signatures import strip_identifiers
-
-    value = text if isinstance(text, str) else ""
-    return strip_identifiers(value, request=value)
-
-
 def catalogue_line(rows: int) -> str:
     """The line that names the structural catalogue (:data:`.library_export.DISPATCH_FILE`) for one question."""
     return (
@@ -342,14 +333,16 @@ def sent_to_librarian(
     """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening and the brief, the same
     for every ask and every library): the user message (:func:`question_message`: the question and the catalogue
     line) and the library it reads in its box with its tools (*library*: the copy's commit and its catalogue's
-    digest as the ask read it). The question and the situation's message go through the identifier rule
-    (:func:`_stripped`). :func:`answer_key` is this structure's digest, and the message the session sends is its
-    ``message``, so nothing the librarian reads can be missing from the key. With *evidence* (the copy's item
+    digest as the ask read it). The question and the situation's message are sent as the asker wrote them,
+    identifiers included (rev 2.1: the librarian sees the same identifiers the library's items carry, so it can tell
+    an item keyed on another request's identifier from a fit). :func:`answer_key` is this structure's digest, and
+    the message the session sends is its ``message``, so nothing the librarian reads can be missing from the key. With *evidence* (the copy's item
     evidence: the harness's evidence serving on) the message is :func:`evidence_question_message`, with
     *last_message* as the situation's latest message."""
-    q = _stripped(question)
+    q = question if isinstance(question, str) else ""
     if evidence is not None:
-        message = evidence_question_message(q, _stripped(last_message) if last_message else None, rows)
+        situation = last_message if isinstance(last_message, str) and last_message else None
+        message = evidence_question_message(q, situation, rows)
     else:
         message = question_message(q, rows)
     if schema is None:
@@ -555,8 +548,8 @@ NOTES_MAX_BYTES = 256 * 1024
 def keep_note(ctx: Any, args: dict) -> Any:
     """The librarian's ``tools.keep_note(text)``: append one note for the later instances of the run's librarian role
     to ``memory-state/agents/roles/librarian/notes.md`` in the run's memory home (``run_record.role_dir``), and nothing
-    else: append-only, one line, at most :data:`NOTE_CHARS` characters, identifiers stripped
-    (:func:`.signatures.strip_identifiers`), refused when it holds a key-shaped string, when the run has no librarian
+    else: append-only, one line, at most :data:`NOTE_CHARS` characters, as written, refused when it holds a
+    key-shaped string, when the run has no librarian
     role, or when the notes are full (:data:`NOTES_MAX_BYTES`)."""
     import fcntl
     import os
@@ -565,7 +558,6 @@ def keep_note(ctx: Any, args: dict) -> Any:
     from unify.memory import writer_tools as _wt
 
     from .redact import KEY_SHAPED
-    from .signatures import strip_identifiers
 
     state = ctx.state
     text = args.get("text")
@@ -576,7 +568,7 @@ def keep_note(ctx: Any, args: dict) -> Any:
         return _wt.refused("keep_note", "no_role")
     if KEY_SHAPED.search(str(text)):
         return _wt.refused("keep_note", "key_shaped")
-    line = " ".join(strip_identifiers(str(text)).split())[:NOTE_CHARS]
+    line = " ".join(str(text).split())[:NOTE_CHARS]
     row = f"- {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {getattr(state, 'instance', '') or AGENT}: {line}\n"
     folder = _rr.role_dir(home, AGENT)
     path = folder / _rr.ROLE_NOTES

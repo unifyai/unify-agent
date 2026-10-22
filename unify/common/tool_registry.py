@@ -924,7 +924,7 @@ KEEP_NOTE = RegisteredTool(
     description=(
         "Append one note to what the librarians of this run keep for each other: something about the library that "
         "would save a later librarian time (where a kind of item lives, which items overlap, what a search misses). "
-        "It is appended, never changed or removed, one line of at most 1000 characters; identifiers are stripped. "
+        "It is appended, never changed or removed, one line of at most 1000 characters. "
         "A later librarian of this run reads every note when it starts."
     ),
     parameters={
@@ -1076,7 +1076,7 @@ OPEN_ENTRIES = RegisteredTool(
     summary="list every open entry that needs attention: its id, kind, age and a one-line goal.",
     description=(
         "List every entry of the attention ledger that is open (not yet handed to a pass): its id, its kind, its age "
-        "in seconds and a one-line goal (the Asked line of its episode's summary, identifiers stripped). Entries "
+        "in seconds and a one-line goal (the Asked line of its episode's summary). Entries "
         "beside the ones handed to you may share a rule with them; take those that do with take."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},

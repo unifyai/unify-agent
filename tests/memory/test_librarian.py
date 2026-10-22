@@ -65,7 +65,7 @@ FAILED = "fedcba9876543210"
 PLANTED_FACTOR = 7919
 REQUEST = "4096 8191 3\n5 7 11"
 PLANTED_VALUE = str(4096 * PLANTED_FACTOR)
-#: Identifiers by their form alone (signatures.strip_identifiers): never in the catalogue.
+#: Identifiers the episode's summary printed: rev 2.1 shows them in the catalogue as written.
 IDS = ("run_000123", "0f3a9c7e1b", "123e4567-e89b-12d3-a456-426614174000")
 #: The request the landed procedure's episode answered and the total it handed back: only that episode and the
 #: library's fixtures hold them, never the catalogue.
@@ -228,11 +228,15 @@ def _copy(tmp_path: Path, librarian: bool = True, name: str = "copy") -> Path:
 
 
 @needs_box
-def test_the_catalogue_holds_no_identifier_answer_or_request_and_is_byte_stable(tmp_path):
+def test_the_catalogue_holds_no_answer_or_request_keeps_identifiers_and_is_byte_stable(tmp_path):
     root = _copy(tmp_path)
     text = (root / lx.CATALOGUE_FILE).read_bytes()
-    for value in (*IDS, RECORDED_TOTAL, RECORDED_REQUEST, REQUEST, PLANTED_VALUE):
+    for value in (RECORDED_TOTAL, RECORDED_REQUEST, REQUEST, PLANTED_VALUE):
         assert value.encode() not in text, value
+    # rev 2.1: nothing strips or masks an identifier; the summary's and what-broke's identifiers are as written
+    for value in IDS:
+        assert value.encode() in text, value
+    assert b"<id>" not in text
     again = lx.librarian_files(root, records=_records(), summary_of=_summary, captures=_captures())
     assert again[lx.CATALOGUE_FILE] == text
     assert again[lx.DISPATCH_FILE] == (root / lx.DISPATCH_FILE).read_bytes()

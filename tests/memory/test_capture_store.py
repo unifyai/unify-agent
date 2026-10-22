@@ -7,8 +7,8 @@ When the episode-end fork settles, the harness (never an agent) captures the att
 and its outcome comes from the episode's signals only. The
 store is not the library: only the writer edits the library, and the writer reads captures as pool entries.
 
-The applicability signature is computed by the harness and holds no identifier and no request text, even when the
-request prints aliases or ids. An attempt with a contrary signal is captured as negative knowledge
+The applicability signature is computed by the harness and holds no request text. Rev 2.1: an identifier is never
+stripped or masked, so the goal (the summary's Asked line) keeps the ids it states, as written. An attempt with a contrary signal is captured as negative knowledge
 (``outcome: "contrary"``).
 
 Every name this file assumes for code that does not exist yet is in the block of constants below, so the code's
@@ -364,23 +364,27 @@ def test_a_completed_attempt_is_captured_with_its_procedure_signature_and_record
 
 
 @needs_bwrap
-def test_the_signature_carries_no_identifier_or_request_text(tmp_path):
+def test_the_signature_carries_no_request_text_and_keeps_its_goals_identifiers(tmp_path):
     store, cid = _captured(tmp_path)
     text = _signature_bytes(store, cid)
-    for ident in IDS:
-        assert ident not in text, ident
     assert "5 3 9 1" not in text
     assert "Sort the numbers below" not in text
+    goal = json.loads(text)["goal"]
+    for ident in IDS:
+        assert ident in goal, ident
+    assert "<id>" not in text
 
 
 @needs_bwrap
-def test_the_signature_is_the_same_when_only_printed_identifiers_change(tmp_path):
+def test_the_signature_is_the_same_when_only_printed_identifiers_change_but_its_goal(tmp_path):
+    """The structure is the same; the goal states each episode's own identifiers (rev 2.1: never masked)."""
     a, cid = _captured(tmp_path / "a", ids=IDS)
     b, cid_b = _captured(tmp_path / "b", ids=OTHER_IDS)
     assert cid == cid_b
-    assert json.loads(_signature_bytes(a, cid)) == json.loads(_signature_bytes(b, cid))
+    sig_a, sig_b = json.loads(_signature_bytes(a, cid)), json.loads(_signature_bytes(b, cid))
+    assert {k: v for k, v in sig_a.items() if k != "goal"} == {k: v for k, v in sig_b.items() if k != "goal"}
     for ident in OTHER_IDS:
-        assert ident not in _signature_bytes(b, cid)
+        assert ident in sig_b["goal"] and ident not in sig_a["goal"]
 
 
 @needs_bwrap

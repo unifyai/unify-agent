@@ -55,7 +55,7 @@ INDEX_HEAD_INPUT = "`input:`"
 def _export(root: Path) -> str:
     """``INDEX.md`` of a copy at *root* of the library the gate checked, exported with the item records production
     writes for it: a landed procedure's record carries its capture's applicability signature, which the export reads
-    through ``saved_against_of`` (with the one identifier rule applied as the export applies it)."""
+    through ``saved_against_of``, as written."""
     built = _built()
     _tree(root, built.files)
     files = lx.generated_library_mode(root, records=built.records, saved_against=lx.saved_against_of(built.records))
@@ -70,7 +70,8 @@ WEEK = "memory.text.dates:week"
 ALIAS = "3f2c8a10-9b7e-4c51-a2d4-6e0f1b9c7d35"
 #: The procedure the pass lands from its capture, as ``land_capture`` names it.
 STAMP = "memory.stamps.procedures:stamp"
-#: What its episode was given: a date and its zone, and rows under a key that is a printed identifier.
+#: What its episode was given: a date and its zone, and rows under a key that is a printed identifier (rev 2.1: the
+#: key is shown as written).
 RECORDED = {"date": "2026-10-09", "zone": "UTC", ALIAS: [{"item": "case-0093", "amount": 3}]}
 STAMP_PROCEDURE = '''"""Write a recorded date with its zone."""
 
@@ -256,11 +257,12 @@ def test_the_index_with_signatures_is_byte_stable(tmp_path):
 
 
 @needs_box
-def test_no_identifier_or_recorded_value_appears_in_a_signature_line(tmp_path):
-    """A signature is structure: no recorded value, and no printed identifier even where one was a key."""
+def test_no_recorded_value_appears_in_a_signature_line_and_its_keys_are_as_written(tmp_path):
+    """A signature is structure: no recorded value; a key is shown as written, even an identifier's (rev 2.1)."""
     root = tmp_path / "lib"
     index = _export(root)
     shown = "\n".join(_input_lines(index, STAMP))
     assert shown
-    assert ALIAS not in index and "case-0093" not in index and "2026-10-09 UTC" not in index
+    assert "case-0093" not in index and "2026-10-09 UTC" not in index
+    assert ALIAS in shown and "<id>" not in index
     assert str(root) not in index

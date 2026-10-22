@@ -25,10 +25,10 @@ earlier contract, :func:`negative`) is never offered to run; it reaches the writ
 ``broke.md`` lines, and the writer may land a note of what broke or a test that records the failure.
 
 **The applicability signature** (:func:`signature`) is computed here, never written by the model, and holds no
-identifier and no request text: the shapes of the recorded input and the handed-back value (key paths with
-identifier-shaped keys replaced, leaf types, length classes), the structural relations between them, whether the
-stated conditions exist (with their source digests), and the goal, the ``## Asked`` section of the fork's
-``summary.md`` with every identifier-shaped token replaced, which is shown and never compared.
+request text: the shapes of the recorded input and the handed-back value (key paths, leaf types, length classes),
+the structural relations between them, whether the stated conditions exist (with their source digests), and the
+goal, the ``## Asked`` section of the fork's ``summary.md``, which is shown and never compared. Nothing here strips
+or masks an identifier: a key, a goal or a docstring is kept as written (rev 2.1).
 
 **Trust.** ``record.json`` keeps the capture's cases and uses (:class:`.trust.Use` rows), the status (``on-trial``,
 ``adopted``, ``retired``) and the evidence level that :mod:`.trust` gives from them; a capture's own level is
@@ -63,7 +63,6 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import signatures as _signatures
 from . import trust
 from .fixtures import canonical
 from .redact import KEY_SHAPED
@@ -78,8 +77,8 @@ SIGNATURE_FILE = "signature.json"
 RECORD_FILE = "record.json"
 SUMMARY_FILE = "summary.md"
 #: What a capture was saved against besides its signature (``memory.match`` hands it to its matcher): its
-#: procedure's docstring and its episode's Asked and Approach sections, identifiers stripped; the actor's snapshot
-#: adds what broke.
+#: procedure's docstring and its episode's Asked and Approach sections, as written; the actor's snapshot adds what
+#: broke.
 SAVED_FILE = "saved.json"
 #: Written by ``land_capture`` when it lands the capture (:func:`record_landing`): the procedure item it became, its
 #: reader, the item that is its stated ``applies``, the episode it was landed from, the pass that landed it, its
@@ -122,38 +121,6 @@ _ID = re.compile(r"[0-9a-f]{16}\Z")
 _EPISODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 STATE_FUNCTIONS = ("read_input", "run", "applies", "holds")
 
-# --- identifiers (the one rule: :mod:`.signatures`) ---------------------------------------------------------------
-
-ID_MARK = _signatures.ID_MARK
-is_identifier = _signatures.is_identifier
-strip_identifiers = _signatures.strip_identifiers
-
-
-def _is_id(key: Any, printed: frozenset[str]) -> bool:
-    return str(key) in printed or is_identifier(str(key))
-
-
-def _strip_keys(tree: Any, printed: frozenset[str] = frozenset()) -> Any:
-    """A shape tree with every identifier key (:mod:`.signatures`, and the values the request labels as ids,
-    *printed*) replaced by :data:`ID_MARK` (the first such key's subtree is kept; the shape of a mapping keyed by ids
-    is the shape of one of its entries)."""
-    if isinstance(tree, dict):
-        out: dict = {}
-        for k in sorted(tree, key=str):
-            name = ID_MARK if _is_id(k, printed) else k
-            if name not in out:
-                out[name] = _strip_keys(tree[k], printed)
-        return out
-    if isinstance(tree, list):
-        return [_strip_keys(t, printed) for t in tree]
-    return tree
-
-
-def _strip_path(path: str, printed: frozenset[str] = frozenset()) -> str:
-    parts = re.split(r"(\.|\[\])", path)
-    return "".join(ID_MARK if p not in (".", "[]", "") and _is_id(p, printed) else p for p in parts)
-
-
 # --- the signature --------------------------------------------------------------------------------------------
 
 
@@ -161,10 +128,10 @@ def _length_class(n: int) -> str:
     return "0" if n == 0 else "1" if n == 1 else "2-9" if n < 10 else "10-99" if n < 100 else "100+"
 
 
-def shape(value: Any, printed: frozenset[str] = frozenset()) -> dict:
-    """The shape of a JSON value, without any value or identifier: a mapping or list as its key tree and length
-    classes (:func:`.memory_helper.value_shape`, identifier-shaped keys replaced), text as its length class, any
-    other value as its type."""
+def shape(value: Any) -> dict:
+    """The shape of a JSON value, without its leaf values: a mapping or list as its key tree and length classes
+    (:func:`.memory_helper.value_shape`, every key as written), text as its length class, any other value as its
+    type."""
     from .memory_helper import value_shape
 
     if isinstance(value, (dict, list)):
@@ -172,10 +139,8 @@ def shape(value: Any, printed: frozenset[str] = frozenset()) -> dict:
         if desc is not None:
             out = {
                 "kind": "value",
-                "tree": _strip_keys(desc.get("tree"), printed),
-                "lengths": {
-                    _strip_path(p, printed): c for p, c in sorted((desc.get("lengths") or {}).items())
-                },
+                "tree": desc.get("tree"),
+                "lengths": dict(sorted((desc.get("lengths") or {}).items())),
             }
             if desc.get("truncated"):
                 out["truncated"] = True
@@ -234,9 +199,9 @@ def function_digests(source: str) -> dict[str, str | None]:
     return out
 
 
-def asked(summary: str, request: str = "") -> str:
-    """The ``## Asked`` section of a fork's ``summary.md`` (its text up to the next heading), identifiers replaced
-    and clipped; ``""`` when it has none."""
+def asked(summary: str) -> str:
+    """The ``## Asked`` section of a fork's ``summary.md`` (its text up to the next heading), as written and clipped;
+    ``""`` when it has none."""
     lines, on = [], False
     for line in str(summary).splitlines():
         if line.startswith("#"):
@@ -247,7 +212,6 @@ def asked(summary: str, request: str = "") -> str:
         if on:
             lines.append(line)
     text = " ".join(" ".join(lines).split())
-    text = strip_identifiers(text, request=request)
     return text if len(text) <= GOAL_CHARS else text[: GOAL_CHARS - 1].rstrip() + "…"
 
 
@@ -260,15 +224,12 @@ def signature(
     holds: bool | None,
     digests: Mapping[str, str | None],
     goal: str = "",
-    request: str = "",
 ) -> dict:
     """The applicability signature (module docstring). *returned*: the run returned a result (else ``output`` and
-    ``relations`` are empty). *request* is read only for the values it labels as identifiers
-    (:func:`.signatures.printed_ids`), which are stripped with every identifier-shaped token; it is never kept."""
-    printed = frozenset(_signatures.printed_ids(request))
+    ``relations`` are empty)."""
     return {
-        "input": shape(value, printed),
-        "output": shape(result, printed) if returned else None,
+        "input": shape(value),
+        "output": shape(result) if returned else None,
         "relations": relations(value, result) if returned else [],
         "constraints": {
             "applies": {
@@ -282,7 +243,7 @@ def signature(
                 "sha256": digests.get("holds"),
             },
         },
-        "goal": strip_identifiers(goal, request=request) if goal else "",
+        "goal": goal or "",
     }
 
 
@@ -680,16 +641,15 @@ def load(store: Path | str) -> dict[str, dict]:
     return out
 
 
-def saved_against(source: str, summary: str, request: str = "") -> dict:
+def saved_against(source: str, summary: str) -> dict:
     """What a capture was saved against besides its signature (:data:`SAVED_FILE`): its procedure's docstring and
-    its episode's ``summary.md`` Asked and Approach sections, every identifier stripped (with the values *request*
-    labels as identifiers)."""
+    its episode's ``summary.md`` Asked and Approach sections, as written."""
     from .library_export import _docstring_of, _section
 
     return {
-        "docstring": strip_identifiers(_docstring_of(source), request=request),
-        "asked": asked(summary, request),
-        "approach": strip_identifiers(_section(str(summary), "Approach"), request=request),
+        "docstring": _docstring_of(source),
+        "asked": asked(summary),
+        "approach": _section(str(summary), "Approach"),
     }
 
 
@@ -828,11 +788,9 @@ def capture_trace_step(
     if broke is not None and (KEY_SHAPED.search(broke) or not _broke_lines(broke)):
         broke = None  # nothing broke ("none"), or a key-shaped string, which never enters the store
     summary = _staged(staging, SUMMARY_FILE) or ""
-    request_text = ep.request[0] if getattr(ep, "request", None) else ""
     entry = ct.entry_point(source) or {"name": "run", "params": [], "form": "state"}
     form = entry["form"]
-    printed = frozenset(_signatures.printed_ids(request_text))
-    value_doc, value = ct.value_of(ep, printed)
+    value_doc, value = ct.value_of(ep)
     case_doc = ct.case_doc(form, ep)
     # rev 2: the procedure is never run to classify it; its own check is recorded as not run
     check = dict(ct.NOT_RUN)
@@ -852,8 +810,7 @@ def capture_trace_step(
         applies=None,
         holds=None,
         digests=function_digests(source),
-        goal=asked(summary, request_text),
-        request=request_text,
+        goal=asked(summary),
     )
     constant = fixed_answer(source)
     raw_cid = capture_id(source)
@@ -905,7 +862,7 @@ def capture_trace_step(
         if not (d / SIGNATURE_FILE).exists():
             _write(d / SIGNATURE_FILE, _json(sig))
         if not (d / SAVED_FILE).exists():
-            _write(d / SAVED_FILE, _json(saved_against(source, summary, request_text)))
+            _write(d / SAVED_FILE, _json(saved_against(source, summary)))
         if broke is not None and broke.strip():
             old = _read_text(d / BROKE_FILE) or ""
             if broke.strip() not in old:
@@ -1188,7 +1145,7 @@ def export_files(
     With *withdrawn* (:func:`.pool.withdrawn_captures`, capture
     id -> ``{"status", "by", "reason"}``) those captures are left out of the snapshot, so nothing offers them, and
     ``.memory/captures/withdrawn.json`` names each with what is offered in its place and what it was saved against
-    (its signature and ``saved.json`` texts, identifiers already stripped), so the item that superseded it is offered
+    (its signature and ``saved.json`` texts), so the item that superseded it is offered
     where it would have been."""
     from .fixed_answer import fixed_answer
 
@@ -1219,7 +1176,7 @@ def export_files(
                 "docstring": str(saved.get("docstring") or ""),
                 "asked": str(saved.get("asked") or ""),
                 "approach": str(saved.get("approach") or ""),
-                "broke": [strip_identifiers(line) for line in _broke_lines(broke)] if broke else [],
+                "broke": list(_broke_lines(broke)) if broke else [],
             },
         )
     if withdrawn is not None:
@@ -1233,7 +1190,7 @@ def export_files(
             rows[cid] = {
                 "status": str(why.get("status") or ""),
                 "by": by if isinstance(by, str) and by else None,
-                "reason": strip_identifiers(str(why.get("reason") or "")),
+                "reason": str(why.get("reason") or ""),
                 "signature": doc.get("signature") if isinstance(doc.get("signature"), dict) else None,
                 "docstring": str(saved.get("docstring") or ""),
                 "asked": str(saved.get("asked") or ""),

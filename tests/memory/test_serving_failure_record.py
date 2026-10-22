@@ -141,9 +141,9 @@ def test_an_item_with_two_failures_shows_them_on_its_card_and_in_the_librarians_
         and "Status by evidence: on-trial: 3 clean" in card
     )
     rows = {r["id"]: r for r in json.loads(files[".memory/search.json"])["items"]}
-    # the search card is embedded and matched on, so its identifiers are masked (rev 2: nothing is found by an id)
-    assert "recorded failures: 2: error in episode <id> (version <id>)" in rows[PARSE_DATE]["card"]
-    assert "a1b2c3d4" not in rows[PARSE_DATE]["card"]
+    # rev 2.1: the search card is as written, identifiers included; nothing strips or masks one
+    assert "recorded failures: 2: error in episode a1b2c3d4 (version 1a2b3c4)" in rows[PARSE_DATE]["card"]
+    assert "<id>" not in rows[PARSE_DATE]["card"]
     # rev 2: no reader runs, so the message carries the situation and names the catalogue; the failures are on the
     # cards (above), never reader facts
     sent = librarian.sent_to_librarian(

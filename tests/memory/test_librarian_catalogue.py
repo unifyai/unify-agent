@@ -4,11 +4,12 @@ system prompt carries, and ``.memory/dispatch.json``, the readers and ``applies`
 Both are written by the harness at each export, with no model call, only while ``UNIFY_MEMORY_LIBRARIAN=on``:
 
 * one card per stored function, in module-path order (never a score), each with its id, signature, the first
-  paragraph of its docstring, what it was saved against (the identifier-stripped ``## Asked`` and ``## Approach``
-  lines of its episodes' ``summary.md``), its evidence (level, status, reader, whether it has ``applies``, input
+  paragraph of its docstring, what it was saved against (the ``## Asked`` and ``## Approach`` lines of its
+  episodes' ``summary.md``, as written), its evidence (level, status, reader, whether it has ``applies``, input
   line) and the notes it links to;
 * the notes after the functions, and the captured procedures last, at level ``unchecked``;
-* no answer value, no raw request text, no printed identifier; the same bytes for the same commit.
+* no answer value and no raw request text; identifiers as written (rev 2.1: none is stripped or masked); the same
+  bytes for the same commit.
 
 The item records are what production writes (``librarian_world``: a landing, the library gate's check and
 ``lifecycle.next_records``), so a function's reader is the one the records name: a landed procedure's is the reader
@@ -29,7 +30,6 @@ from tests.memory import librarian_world as w
 from tests.memory.librarian_world import needs_box
 from unify.memory import captures
 from unify.memory.library_index import signature_text
-from unify.memory.signatures import strip_identifiers
 from unify.settings import SETTINGS
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
@@ -140,16 +140,17 @@ def test_a_card_holds_its_id_signature_first_docstring_paragraph_and_notes(tmp_p
 
 
 @needs_box
-def test_a_card_shows_what_it_was_saved_against_without_identifiers(tmp_path):
+def test_a_card_shows_what_it_was_saved_against_as_written(tmp_path):
+    """Rev 2.1: the card shows the summary's Asked and Approach as written, identifiers included."""
     _, files, _ = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
     card = _flat(_card(text, w.TOTAL))
     assert SAVED_AGAINST_LABEL in card.lower()
-    assert _flat(strip_identifiers(w.TOTAL_ASKED)) in card
-    assert _flat(strip_identifiers(w.TOTAL_APPROACH)) in card
+    assert _flat(w.TOTAL_ASKED) in card
+    assert _flat(w.TOTAL_APPROACH) in card
     ledger = _flat(_card(text, w.RECONCILE))
-    assert _flat(strip_identifiers(w.LEDGER_ASKED)) in ledger
-    assert _flat(strip_identifiers(w.LEDGER_APPROACH)) in ledger
+    assert _flat(w.LEDGER_ASKED) in ledger
+    assert _flat(w.LEDGER_APPROACH) in ledger
 
 
 @needs_box
@@ -187,13 +188,15 @@ def test_captured_procedures_come_last_at_level_unchecked(tmp_path):
 
 
 @needs_box
-def test_the_catalogue_carries_no_answer_raw_request_or_printed_identifier(tmp_path):
+def test_the_catalogue_carries_no_answer_or_raw_request_and_keeps_identifiers(tmp_path):
     _, files, _ = _world(tmp_path)
     text = files[CATALOGUE].decode("utf-8")
     assert w.ANSWER not in text
     assert w.RAW_REQUEST not in text and "attached order sheet" not in text
+    # rev 2.1: the summaries' identifiers are shown as written, never as a placeholder
     for ident in w.IDENTIFIERS:
-        assert ident not in text, ident
+        assert ident in text, ident
+    assert "<id>" not in text
     # the summaries' other sections are not cards' fields
     assert "The total came to" not in text and "accepted:" not in text
 
@@ -255,10 +258,11 @@ def test_the_dispatch_file_is_one_structural_row_per_listed_procedure(tmp_path):
     grid, marked = (f"capture:{w.capture_id(s)}" for s in (w.CAPTURE_GRID, w.CAPTURE_MARKED))
     assert by_id[grid]["kind"] == by_id[marked]["kind"] == "capture-shape"
     assert by_id[grid]["applies_text"].startswith("def applies(") and by_id[marked]["applies_text"] == ""
-    # rows carry no request text, answer, identifier or host path
+    # rows carry no request text, answer or host path; an identifier a row shows is as written (rev 2.1)
     blob = files[DISPATCH].decode("utf-8")
-    for planted in (w.ANSWER, w.RAW_REQUEST, *w.IDENTIFIERS, str(tmp_path)):
+    for planted in (w.ANSWER, w.RAW_REQUEST, str(tmp_path)):
         assert planted not in blob
+    assert "<id>" not in blob
 
 
 # --- each function's reader, as the records production writes name it -------------------------------------------

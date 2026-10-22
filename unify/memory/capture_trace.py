@@ -192,7 +192,7 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value).encode("utf-8", "surrogatepass")).hexdigest()[:16]
 
 
-def value_of(ep: Any, printed: frozenset[str] = frozenset()) -> tuple[dict, Any]:
+def value_of(ep: Any) -> tuple[dict, Any]:
     """``({"present": false}, None)``, or ``({"present": true, "digest", "shape"}, value)`` for the value the episode
     handed back (:func:`.captures.handed_back`)."""
     from .captures import handed_back, shape
@@ -200,7 +200,7 @@ def value_of(ep: Any, printed: frozenset[str] = frozenset()) -> tuple[dict, Any]
     found, value = handed_back(ep)
     if not found:
         return {"present": False}, None
-    return {"present": True, "digest": digest(value), "shape": shape(value, printed)}, value
+    return {"present": True, "digest": digest(value), "shape": shape(value)}, value
 
 
 # --- the confined run ----------------------------------------------------------------------------------------------------

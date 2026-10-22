@@ -17,10 +17,11 @@ verification and the capture store's landing. By what production writes, the lib
 
 Only :data:`TOTAL`'s status and use are set by hand, as three accepted episodes would leave them.
 
-Planted on purpose, so the tests can show that none of them reaches what an agent sees:
+Planted on purpose, so the tests can show what reaches what an agent sees:
 
 * printed identifiers in the summaries' ``## Asked`` and ``## Approach`` sections and in one docstring: a UUID, an
-  alias of the ``TASK-4471`` form and a recorded key of an identifier's form;
+  alias of the ``TASK-4471`` form and a recorded key of an identifier's form (rev 2.1: shown as written, never
+  stripped or masked);
 * an answer value, in the summaries' ``## Worked`` and ``## Outcome`` sections and as the value the landed
   procedure's episode handed back (its recorded-result fixture);
 * a raw request text, as a module constant, in the landed procedure's code and a captured procedure's, and in the

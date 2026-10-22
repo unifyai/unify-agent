@@ -2,7 +2,8 @@
 
 ``memory.match(request=None, inputs=None)`` is a seam: it tells the agent which stored procedures and captures
 fit what it holds, through a pluggable matching hook whose default compares structure only. It never matches by
-words, never runs stored code and never shows an identifier printed in a request.
+words and never runs stored code; what it shows of a stored procedure is as it was recorded, identifiers included
+(rev 2.1: none is stripped or masked).
 
 ``memory.run(item, *args, **kwargs)`` runs one stored procedure (a library function, or a captured procedure) on
 the agent's inputs in the caller's process and reports how the run went: its outcome, its result, whether its
@@ -94,21 +95,15 @@ CAPTURE_SAVED = "saved.json"
 
 def export_capture_files(d: Path, signature, summary: str) -> None:
     """Write a capture's signature and what it was saved against as the harness exports them into the actor's copy
-    (``captures.export_files``): the store builds a signature with identifiers stripped (the one rule,
-    ``signatures``), and ``saved.json`` holds the procedure's docstring and the summary's Asked and Approach,
-    stripped (``captures.saved_against``, as the capture step writes it). The summary itself stays beside them, as
-    written."""
+    (``captures.export_files``): the signature as the store built it, and ``saved.json`` with the procedure's
+    docstring and the summary's Asked and Approach (``captures.saved_against``, as the capture step writes it). Rev
+    2.1: nothing strips an identifier, so all of them are as written."""
     from unify.memory import captures
-    from unify.memory.library_export import strip_signature
-    from unify.memory.signatures import strip_identifiers
 
     if isinstance(signature, str):  # a malformed file, as written
         (d / CAPTURE_SIGNATURE).write_text(signature)
     else:
-        sig = strip_signature(signature)
-        if isinstance(sig.get("goal"), str):
-            sig["goal"] = strip_identifiers(sig["goal"])
-        (d / CAPTURE_SIGNATURE).write_text(json.dumps(sig))
+        (d / CAPTURE_SIGNATURE).write_text(json.dumps(signature))
     (d / CAPTURE_SUMMARY).write_text(summary)
     proc = d / "procedure.py"
     source = proc.read_text() if proc.is_file() else ""
@@ -117,8 +112,8 @@ def export_capture_files(d: Path, signature, summary: str) -> None:
 
 # ==============================================================================================================
 
-#: A request in plain prose with a table of records in it, and a printed identifier the harness must never use
-#: or show (design I.10).
+#: A request in plain prose with a table of records in it, and a printed identifier (rev 2.1: kept as written
+#: wherever a stored procedure recorded it, never a placeholder).
 ALIAS = "3f2c8a10-9b7e-4c51-a2d4-6e0f1b9c7d35"
 ALIAS_SHORT = "TASK-4471"
 ROWS = [{"item": "pen", "amount": 3}, {"item": "ink", "amount": 4}]
@@ -368,9 +363,10 @@ def test_match_raises_its_helper_event_and_no_use(tmp_path):
     assert [e for e in evs if e[0] == CALL_EVENT] == []
 
 
-def test_no_identifier_from_a_request_or_a_summary_appears_in_what_match_shows(tmp_path):
-    """Printed identifiers are stripped from signatures and from what matching shows (design I.10), wherever they
-    were recorded: in the source episode's summary, in a goal line, or as a key of the recorded input."""
+def test_what_match_shows_keeps_the_identifiers_a_procedure_recorded(tmp_path):
+    """Rev 2.1: identifiers are never stripped or masked; what matching shows of a stored procedure carries the ids it
+    recorded (in its source episode's summary, in its goal line, or as a key of its recorded input) as written, so
+    an item keyed on another request's id is visibly so and never a wildcard."""
     root = _library(tmp_path)
     keyed = {ALIAS: ROWS}
     sig = _signature(keyed, 7, goal=f"Total the order table of {ALIAS_SHORT} ({ALIAS}).")
@@ -382,8 +378,9 @@ def test_no_identifier_from_a_request_or_a_summary_appears_in_what_match_shows(t
         f"inputs={ROWS!r}))]))",
     )
     for shown in got:
-        assert ALIAS not in shown and ALIAS_SHORT not in shown, shown
-        assert str(root) not in shown  # no host path either
+        assert "<id>" not in shown, shown
+        assert str(root) not in shown  # no host path
+    assert any(ALIAS in shown and ALIAS_SHORT in shown for shown in got), got
     assert cid  # the capture exists; whether it is listed for a keyed input is the matcher's to decide
 
 
@@ -423,7 +420,7 @@ def test_concurrent_matches_agree(tmp_path):
 # --- match: the pluggable hook -------------------------------------------------------------------------------
 
 
-def test_the_hook_gets_each_candidates_signature_docstring_and_summary_without_identifiers(tmp_path):
+def test_the_hook_gets_each_candidates_signature_docstring_and_summary_as_written(tmp_path):
     root = _library(
         tmp_path,
         shapes=lambda item, digest: (
@@ -453,9 +450,9 @@ def test_the_hook_gets_each_candidates_signature_docstring_and_summary_without_i
     assert "Totals of order tables" in seen or "Sum the amount column" in seen
     assert "Add up the amounts in the order table" in seen  # the summary's Asked
     assert "summed the amount column with a plain loop" in seen  # the summary's Approach
-    # with no identifiers, and no host path
-    assert ALIAS not in seen.replace(json.dumps(REQUEST)[1:-1], "").replace(REQUEST, "")
-    assert ALIAS_SHORT not in seen.replace(json.dumps(REQUEST)[1:-1], "").replace(REQUEST, "")
+    # rev 2.1: with the summary's identifiers as written (never a placeholder), and no host path
+    beyond_request = seen.replace(json.dumps(REQUEST)[1:-1], "").replace(REQUEST, "")
+    assert ALIAS in beyond_request and ALIAS_SHORT in beyond_request and "<id>" not in seen
     assert str(root) not in seen
     # what the hook returns is what match tells the agent
     assert table in listed

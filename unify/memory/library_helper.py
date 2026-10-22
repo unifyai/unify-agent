@@ -39,7 +39,7 @@ the aliases under their own names (``memory:index``, ``memory:show``, ``memory:f
 
 ``Item.fits`` and ``match`` read what each stored procedure was saved against (the landed procedures in
 ``.memory/find.json``'s ``procedures``, the harness's captured attempts under ``.memory/captures/``) and pass it,
-identifiers masked, to :data:`MATCHER`, a replaceable module-level hook; the default compares structure only and runs
+as written, to :data:`MATCHER`, a replaceable module-level hook; the default compares structure only and runs
 nothing. No reader and no ``applies`` runs to recognise or rank a procedure (rev 2); running stays the caller's own
 ``memory.run``. Each raises
 ``memory.match_result`` with the ids it listed. A tracked call (``run``, or calling a
@@ -424,8 +424,8 @@ def _find(value: Any) -> list[Found]:
 # ``match`` informs and runs no procedure: it reads what each stored procedure was saved against and asks the matcher
 # (:data:`MATCHER`, a module-level hook) which of them fit what the caller passed, structure only (rev 2: no reader or
 # ``applies`` runs to recognise or rank anything). ``run`` is the agent's own call of one procedure, in its own cell; nothing here runs on its own. Everything
-# read here was built by the harness with identifiers already removed (signatures, docstrings, summary sections, what
-# broke); this file strips nothing.
+# read here was built by the harness as written (signatures, docstrings, summary sections, what broke); nothing
+# strips or masks an identifier (rev 2.1).
 
 #: Captured attempts the harness exported beside the package, one directory per capture id (written by the capture
 #: store, never by this file): ``signature.json``, ``record.json``, ``procedure.py`` and ``saved.json`` (what the
@@ -467,7 +467,7 @@ _RUN_MARK = "\x1ememory-run-report\x1e"
 
 
 class Candidate(NamedTuple):
-    """One stored procedure as the matcher sees it: what it was saved against, identifiers already removed."""
+    """One stored procedure as the matcher sees it: what it was saved against, as written."""
 
     id: str  # an item id (memory.<package>.<module>:<name>) or capture:<16 hex digits>
     source: str  # library | capture

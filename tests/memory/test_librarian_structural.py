@@ -102,30 +102,36 @@ def test_a_constant_is_marked_and_reads_no_input():
     assert _rows()["capture:" + "b" * 16]["constant"] is False
 
 
-def test_an_identifier_keyed_applies_never_carries_its_identifier():
-    """The analysis found a capture whose applies tested a task's identifier in the request; the librarian served it.
-    The catalogue row keeps the code's structure, never the identifier."""
+def test_an_identifier_keyed_applies_keeps_its_identifier():
+    """The analysis found a capture whose applies tested a task's identifier in the request; with the identifier
+    replaced by a placeholder on both sides the librarian served it for another request (rev 2). Rev 2.1: the
+    catalogue row shows the applies as written, so the identifier it keys on is visible and is never a wildcard."""
     row = _rows()["capture:" + "e" * 16]
-    assert KEY not in json.dumps(row) and "<id>" in row["applies_text"]
-    assert KEY not in json.dumps(le.dispatch_data(Library(), captures=_captures()))
+    assert KEY in row["applies_text"] and "<id>" not in json.dumps(row)
+    assert "<id>" not in json.dumps(le.dispatch_data(Library(), captures=_captures()))
 
 
-def test_the_question_the_librarian_is_sent_carries_no_identifier():
+def test_the_question_the_librarian_is_sent_keeps_its_identifiers():
+    """Rev 2.1: the asker's question (and its situation) reach the librarian as written, so it sees the same
+    identifier on both sides and can tell an item keyed on another request's identifier from a fit."""
     for evidence in (None, {}):
         sent = lib_mod.sent_to_librarian(f"Please handle {KEY} as before", {"commit": "c", "dispatch": "d"},
                                          evidence=evidence, last_message=f"About {KEY}: done?", rows=5)  # fmt: skip
-        assert KEY not in json.dumps(sent) and "<id>" in sent["message"]
+        assert f"Please handle {KEY} as before" in sent["message"] and "<id>" not in sent["message"]
+        if evidence is not None:
+            assert f"About {KEY}: done?" in sent["message"]
         assert "dispatch.json, 5 row(s)" in sent["message"] and "reader" not in sent["message"]
 
 
-def test_searched_cards_carry_no_identifier(tmp_path):
+def test_searched_cards_keep_their_identifiers_as_written(tmp_path):
+    """Rev 2.1: a card shows what its procedure says, identifiers included, never a placeholder."""
     from unify.memory import library_search
 
     caps = _captures()
     cid = "e" * 16
     caps[f".memory/captures/{cid}/procedure.py"] = f'"""Reply to {KEY}."""\n\n\ndef run(state):\n    return 1\n'.encode()
     rows = library_search.rows(tmp_path, Library(), captures=caps)
-    assert rows and KEY not in json.dumps(rows)
+    assert rows and KEY in json.dumps(rows) and "<id>" not in json.dumps(rows)
 
 
 def test_a_function_row_reads_its_code_and_its_named_applies():
@@ -139,7 +145,8 @@ def test_a_function_row_reads_its_code_and_its_named_applies():
     data = le.dispatch_data(Library(functions=[fn, check]), records=records, bodies=bodies)
     row = {r["id"]: r for r in data["procedures"]}[fn.item_id]
     assert row["kind"] == "function" and row["form"] == "function" and row["effects"] == ["env.store.put"]
-    assert row["applies_text"].startswith("def fits(value):") and KEY not in row["applies_text"]
+    # rev 2.1: the named applies as written, the identifier it tests included (never masked)
+    assert row["applies_text"] == bodies[check.item_id]
 
 
 # --- nothing runs on ask or match ---------------------------------------------------------------------------------------

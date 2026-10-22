@@ -91,7 +91,7 @@ def _no_ledger(tool: str) -> "_wt.Reply":
 
 def open_entries(ctx: Any, args: dict) -> "_wt.Reply":
     """``tools.open_entries()``: every open entry of the ledger (not yet handed to a pass): its id, kind, age in
-    seconds and a one-line goal with identifiers stripped."""
+    seconds and a one-line goal, as its episode's summary states it."""
     _writer, att = _state(ctx)
     if att is None:
         return _no_ledger("open_entries")
@@ -164,7 +164,7 @@ def decide(ctx: Any, args: dict) -> "_wt.Reply":
 
 
 def _summary_rows(att: AttentionPass) -> list[dict]:
-    from .captures import asked, strip_identifiers
+    from .captures import asked
     from .library_export import _section
 
     root = att.ledger.state_dir / "memory-staging"
@@ -180,7 +180,7 @@ def _summary_rows(att: AttentionPass) -> list[dict]:
         except OSError:
             continue
         goal = asked(text)
-        body = " ".join(strip_identifiers(_section(text, s)) for s in ("Asked", "Approach", "Worked", "Failed"))
+        body = " ".join(_section(text, s) for s in ("Asked", "Approach", "Worked", "Failed"))
         readable = (att.inputs / "staging" / name / "summary.md").is_file()
         out.append({
             "id": name, "kind": "summary",
