@@ -4095,7 +4095,7 @@ class WriterPass:
                     )
                 }
                 | {"files": len(r.get("files") or [])}
-                for r in self._helper_rows
+                for r in sorted(self._helper_rows, key=_started_order)
             ]
             o.nothing_to_store = bool(
                 phase["finish_accepted"] and phase["nothing_to_store"],
@@ -5396,6 +5396,14 @@ def _install_writer_gateway() -> None:
         gateway._memory_writer = True  # type: ignore[attr-defined]
         gateway.__wrapped__ = lookup  # type: ignore[attr-defined]
         uni_llm._llm_gateway = gateway
+
+
+def _started_order(row: dict) -> tuple[int, str]:
+    """A helper row's place in the pass outcome: the order the writer started its helpers (``call-<n>``, numbered as
+    they start), whatever order they ended in."""
+    call = str(row.get("call") or "")
+    n = call.rsplit("-", 1)[-1]
+    return (int(n) if n.isdigit() else 1 << 30, call)
 
 
 def unillm_turn(
