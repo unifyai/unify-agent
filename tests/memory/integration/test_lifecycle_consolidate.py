@@ -1,4 +1,5 @@
-"""Item records at consolidation: one map per commit, status commits, bisect, copies."""
+"""Item records at consolidation: one map per commit, status commits, copies. Rev 2 bisects no retired item (a bisect
+would replay recorded task data)."""
 
 from __future__ import annotations
 
@@ -13,7 +14,6 @@ from tests.memory.test_episodes import _ep
 from tests.memory.test_layout import LIB
 from tests.memory.test_library_helper import _commit
 from unify.memory import lifecycle
-from unify.memory.history_probe import ProbeRow
 from unify.memory.integration import consolidate
 from unify.memory.integration.checkout import export_actor_library_mode
 from unify.memory.item_records import read_records, records_at, status_of
@@ -24,19 +24,6 @@ PD, WEEK, SUM = (
     "memory.text.report:summary",
 )
 DATES_TEST = "memory/text/tests/test_dates.py"
-
-
-class _Probe:
-    def __init__(self):
-        self.calls = []
-
-    def __call__(self, mem, versions, later, tests, *, work):
-        self.calls.append((list(versions), list(tests)))
-        return [
-            ProbeRow(label, sha, t, failed=["test_dates.py::test_week"])
-            for label, sha in versions
-            for t in tests
-        ]
 
 
 def _episode(stores, eid, main, rows, regime="none"):
@@ -53,13 +40,8 @@ def _episode(stores, eid, main, rows, regime="none"):
     )
 
 
-def _consolidate(stores, tmp_path, probe=None):
-    return lifecycle.consolidate_records(
-        stores,
-        work=tmp_path / "w",
-        probe=probe or _Probe(),
-        refused=lambda ev, m, i: [],
-    )
+def _consolidate(stores):
+    return lifecycle.consolidate_records(stores)
 
 
 def _copy(stores, sha, dest):
@@ -99,12 +81,12 @@ def test_status_change_lands_as_a_commit_and_notes_are_never_rewritten(lib, tmp_
     stores, head = lib
     for i in range(2):
         _episode(stores, f"e{i}", head, {WEEK: {"called": 1, "errored": 1}})
-    _consolidate(stores, tmp_path)
+    _consolidate(stores)
     note = stores.memory.run("notes", "--ref=items", "show", head)
     copy = _copy(stores, head, tmp_path / "a")
     for i in range(3):
         _episode(stores, f"c{i}", head, {PD: {"called": 1}})
-    out = _consolidate(stores, tmp_path)
+    out = _consolidate(stores)
     status = stores.memory.head()
     assert out["noted"] == status != head and out["changes"] == {PD: "adopted"}
     assert stores.memory.run("rev-parse", f"{status}^").strip() == head
@@ -123,7 +105,7 @@ def test_status_change_lands_as_a_commit_and_notes_are_never_rewritten(lib, tmp_
         _copy(stores, head, tmp_path / "b") == copy
     )  # the copy of a commit never changes
     assert read_records(stores.memory, status)[PD]["status"] == "adopted"
-    again = _consolidate(stores, tmp_path)
+    again = _consolidate(stores)
     assert (
         again["noted"] is None
         and again["changes"] == {}
@@ -135,7 +117,7 @@ def test_a_new_version_lands_with_its_pass_commit_and_restarts_its_count(lib, tm
     stores, head = lib
     for i in range(2):
         _episode(stores, f"e{i}", head, {WEEK: {"called": 1, "errored": 1}})
-    _consolidate(stores, tmp_path)
+    _consolidate(stores)
     dates = (
         stores.memory.show(head, "memory/text/dates.py")
         .decode()
@@ -146,7 +128,7 @@ def test_a_new_version_lands_with_its_pass_commit_and_restarts_its_count(lib, tm
         read_records(stores.memory, new) is None
         and records_at(stores.memory, new)[1] == head
     )
-    out = _consolidate(stores, tmp_path)
+    out = _consolidate(stores)
     recs = read_records(stores.memory, new)
     assert out["noted"] == new and out["changes"] == {
         WEEK: "on-trial",
@@ -156,23 +138,19 @@ def test_a_new_version_lands_with_its_pass_commit_and_restarts_its_count(lib, tm
     assert recs[WEEK]["bisect"] is None
 
 
-def test_after_passes_runs_only_under_library_and_after_a_recorded_pass(
+def test_after_passes_runs_only_after_a_recorded_pass(
     lib,
     monkeypatch,
 ):
+    from unify.memory.captures import store_dir
     stores, _ = lib
     seen = []
 
     def spy(stores, **kw):
         seen.append(kw)
-        return {"head": "h", "noted": None, "changes": {}, "bisected": []}
+        return {"head": "h", "noted": None, "changes": {}}
 
     monkeypatch.setattr(lifecycle, "consolidate_records", spy)
-    consolidate.after_passes(
-        stores,
-        ["p1"],
-        None,
-    )
     consolidate.after_passes(
         stores,
         [],
@@ -184,162 +162,10 @@ def test_after_passes_runs_only_under_library_and_after_a_recorded_pass(
         ["p1"],
         None,
     )
-    assert [kw["checker_visible"] for kw in seen] == [False]
-
-
-# --- the bisect bound (bounded runtime) ----------------------------------------------------------------------
-
-
-class _Clock:
-    def __init__(self):
-        self.t = 0.0
-
-    def __call__(self):
-        return self.t
-
-
-def test_the_bisect_budget_is_shared_across_items_and_the_records_are_written(
-    lib,
-    tmp_path,
-):
-    stores, head = lib
-    for eid in ("e1", "e2"):
-        _episode(
-            stores,
-            eid,
-            head,
-            {WEEK: {"called": 1, "errored": 1}, PD: {"called": 1, "errored": 1}},
-        )
-    clock, calls = _Clock(), []
-
-    def slow(mem, versions, later, tests, *, work, deadline, stop=None):
-        calls.append(deadline)
-        clock.t += 700.0  # one bisect spends the whole budget
-        return [
-            ProbeRow(label, sha, t, failed=["x"])
-            for label, sha in versions
-            for t in tests
-        ]
-
-    out = lifecycle.consolidate_records(
-        stores,
-        work=tmp_path / "w",
-        probe=slow,
-        refused=lambda ev, m, i: [],
-        clock=clock,
-    )
-    recs = {
-        i: r["bisect"] for i, r in out["bisects"].items()
-    }  # published before the bisect
-    assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "retired"
-    assert calls == [
-        600.0,
-    ]  # PD first (sorted), with the call's whole budget as its deadline
-    assert "introduced" in recs[PD] and recs[WEEK] == {
-        "skipped": "budget",
-        "at": head,
-    }
-
-
-def test_a_stop_between_probe_runs_ends_the_bisect_and_the_records_are_written(
-    lib,
-    tmp_path,
-):
-    from functools import partial
-
-    from unify.memory import history_probe
-    from unify.memory.sandbox_run import PytestOutcome
-
-    stores, head = lib
-    for eid in ("e1", "e2"):
-        _episode(
-            stores,
-            eid,
-            head,
-            {WEEK: {"called": 1, "errored": 1}, PD: {"called": 1, "errored": 1}},
-        )
-    stopped, runs = [], []
-
-    def runner(target, **kw):  # SIGTERM arrives while the first run is in flight
-        runs.append(target)
-        stopped.append(True)
-        return PytestOutcome(failed={"test_dates.py::test_week"}, returncode=1)
-
-    out = lifecycle.consolidate_records(
-        stores,
-        work=tmp_path / "w",
-        probe=partial(history_probe.probe, pytest_runner=runner),
-        refused=lambda ev, m, i: [],
-        stop=lambda: bool(stopped),
-    )
-    recs = {
-        i: r["bisect"] for i, r in out["bisects"].items()
-    }  # published before the bisect
-    assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "retired"
-    assert runs == [DATES_TEST]  # no run starts after the stop
-    assert "introduced" in recs[PD] and recs[WEEK] == {
-        "skipped": "stopped",
-        "at": head,
-    }
-
-
-def test_an_item_is_not_bisected_again_at_the_same_retired_version(lib, tmp_path):
-    from unify.memory.item_records import empty_record, write_records
-
-    stores, head = lib
-    rec = {
-        **empty_record(WEEK, "function"),
-        "changed_at": head,
-        "bisect": {"skipped": "budget", "at": head},
-    }
-    write_records(
-        stores.memory,
-        head,
-        {WEEK: rec},
-    )  # an earlier consolidation's map at this version
-    for eid in ("e1", "e2"):
-        _episode(stores, eid, head, {WEEK: {"called": 1, "errored": 1}})
-    probe = _Probe()
-    out = _consolidate(stores, tmp_path, probe)
-    recs = read_records(stores.memory, out["noted"])
-    assert recs[WEEK]["status"] == "retired" and probe.calls == []
-    assert recs[WEEK]["bisect"] == {"skipped": "budget", "at": head}
-
-
-def test_the_records_are_published_before_the_bisect_and_a_killed_bisect_runs_again(
-    lib,
-    tmp_path,
-):
-    """A kill during the bisect never holds back the map; the item is bisected next time, and its
-    result reaches the next map written (a commit's map is never rewritten)."""
-    stores, head = lib
-    for eid in ("e1", "e2"):
-        _episode(stores, eid, head, {WEEK: {"called": 1, "errored": 1}})
-
-    def killed(*a, **k):
-        raise KeyboardInterrupt  # SIGINT/SIGKILL mid-bisect
-
-    with pytest.raises(KeyboardInterrupt):
-        _consolidate(stores, tmp_path / "a", killed)
-    recs = read_records(stores.memory, head)
-    assert recs[WEEK]["status"] == "retired" and recs[WEEK]["bisect"] is None
-    probe = _Probe()
-    out = _consolidate(stores, tmp_path / "b", probe)
-    assert out["noted"] is None and out["bisected"] == [WEEK] and len(probe.calls) == 1
-    again = _Probe()
-    for i in range(3):
-        _episode(
-            stores,
-            f"c{i}",
-            head,
-            {PD: {"called": 1}},
-        )  # a status change: the next map is written
-    later = _consolidate(stores, tmp_path / "c", again)
-    assert again.calls == [] and later["noted"] not in (None, head)
-    assert (
-        read_records(stores.memory, later["noted"])[WEEK]["bisect"]["introduced"]
-        == head
-    )
+    # the library is always on in rev 2: a recorded pass computes the records, with the episodes' actions and the
+    # capture store
+    assert [sorted(kw) for kw in seen] == [["action_lookup", "captures"]]
+    assert seen[0]["captures"] == store_dir(stores.paths.state_dir) and callable(seen[0]["action_lookup"])
 
 
 def test_an_item_whose_last_change_is_beyond_the_scan_is_not_promoted(
@@ -360,7 +186,7 @@ def test_an_item_whose_last_change_is_beyond_the_scan_is_not_promoted(
         lambda mem, sha, **k: ({}, False),
     )
     monkeypatch.setattr(item_bisect, "versions_of", lambda *a, **k: [])
-    out = _consolidate(stores, tmp_path / "a")
+    out = _consolidate(stores)
     rec = read_records(stores.memory, out["noted"])[PD]
     assert (
         rec["status"] == "on-trial"
@@ -398,6 +224,6 @@ def test_the_last_change_comes_from_the_items_own_history_when_the_scan_misses_i
         "item_history",
         lambda mem, sha, **k: ({}, False),
     )
-    out = _consolidate(stores, tmp_path / "a")
+    out = _consolidate(stores)
     rec = read_records(stores.memory, out["noted"])[PD]
     assert rec["changed_at"] == head and rec["status"] == "adopted"

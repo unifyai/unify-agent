@@ -1,4 +1,4 @@
-"""Memory during an episode (``UNIFY_MEMORY_IN_EPISODE=on``): checkpoints, segment forks and a re-pin at the next cell.
+"""Memory during an episode (``UNIFY_MEMORY=in_episode``): checkpoints, segment forks and a re-pin at the next cell.
 
 Each checkpoint source starts one segment fork for the cells since the last pause, with its own staging dir, and a
 settled segment becomes an attention entry; a commit the writer lands is served from the next cell boundary, never
@@ -88,7 +88,7 @@ class _Forks:
         self.calls: list[dict] = []
         self.pending: list = []
 
-    def start(self, paths, handle, eid, settings, *, reservation=None, parts=None, instruction=None, **_kw):
+    def start(self, paths, handle, eid, *, reservation=None, parts=None, instruction=None, **_kw):
         self.calls.append({"eid": eid, "handle": handle, "parts": parts, "instruction": instruction,
                            "staging": reservation.staging})  # fmt: skip
 
@@ -238,7 +238,7 @@ def test_a_pause_the_actor_marks_at_the_end_is_left_to_the_episode_fork(tmp_path
     run, ie = _ie(tmp_path, {C1: _tree(LIB)})
     _cells(run, ie, 1)
     ie.mark("actor_call")
-    ie.finish(SETTINGS)
+    ie.finish()
     assert ie.events[-1]["skipped"].startswith("the episode ended first") and not ie.pending
 
 
@@ -283,9 +283,9 @@ def test_the_actor_gets_checkpoint_only_with_in_episode(monkeypatch, flagged):
     from unify.actor import tool_handlers as th
 
     monkeypatch.setattr(th, "_in_episode", lambda settings: flagged)
-    flags = th.actor_flags("actor", can_store=False, librarian=False)
+    flags = th.actor_flags("actor", librarian=False)
     assert ("checkpoint" in flags) is flagged
-    assert "checkpoint" not in th.actor_flags("teammate", can_store=False, librarian=False)
+    assert "checkpoint" not in th.actor_flags("teammate", librarian=False)
 
 
 def test_an_in_episode_verdict_marks_a_signal_pause(tmp_path, monkeypatch):
@@ -555,7 +555,7 @@ def test_on_with_no_pause_and_no_commit_nothing_changes(tmp_path, monkeypatch, f
         ie.after_cell()
         _cells(run, ie, 1)
         assert ie.at_boundary() is None
-    ie.finish(SETTINGS)
+    ie.finish()
     assert forks.calls == [] and ie.events == [] and ie.pin_rows() == [{"from_cell": 0, "commit": C1}]
     assert not (run.paths.state_dir / "memory-staging").exists()
     assert sorted(p.name for p in (ie.checkout / ".pins").iterdir()) == [f"0-{C1[:12]}"]
@@ -573,9 +573,9 @@ def test_a_segment_fork_still_running_at_the_end_settles_and_its_entry_comes_aft
     assert ie.at_boundary()["fork"] == "started"
     # the episode ends: its own fork reserves its own staging dir beside the segment's
     ended = datetime.now(timezone.utc)
-    own = fork_mod.reserve(run.paths, EID, SETTINGS)
+    own = fork_mod.reserve(run.paths, EID)
     assert own is not None and own.staging != forks.calls[0]["staging"]
-    ie.finish(SETTINGS)
+    ie.finish()
     clock = {"now": ended + timedelta(seconds=1)}
     ledger = Ledger(run.paths.home, clock=lambda: clock["now"])
     assert ledger.sync(_ForksOnly(run.paths.home)) == []  # not settled yet: no entry
@@ -613,9 +613,8 @@ def test_after_a_compaction_the_forks_continue_the_compacted_session_only_in_epi
         return None, "stop"
 
     monkeypatch.setattr(caa, "_session_fork_source", fake)
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    for on in ("off", "on"):
-        monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_IN_EPISODE", on)
+    for mode in ("on", "in_episode"):
+        monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", mode)
         fork_mod.request_doc(SimpleNamespace(_inner=inner, _actor=actor), EID, "http://127.0.0.1:1", "t")
     assert seen == [{}, {"allow_compressed": True}]
 
