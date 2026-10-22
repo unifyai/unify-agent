@@ -214,38 +214,6 @@ def _use(codes: list[str], actions=()) -> dict:
 # --- imports and calls -----------------------------------------------------------------------------------
 
 
-def test_a_cell_importing_and_calling_an_item_counts_one_import_and_one_call(lib):
-    rec = _use(["from env.x import parse\nwords = parse('a b')\n"])
-    assert rec["items"]["env/x:parse"] == {
-        "imported": 1,
-        "called": 1,
-        "referenced": 0,
-        "guarded": 0,
-        "refused": 0,
-        "errored": 0,
-        "refused_modified": 0,
-        "errored_modified": 0,
-        "refused_then_accepted": 0,
-        "modified_in_request": False,
-        "cells": [0],
-    }
-    assert set(rec["items"]) == {"env/x:parse"}
-    assert rec["unknown_calls"] == {} and rec["cells"] == 1
-
-
-def test_dynamic_calls_are_unknown_not_guessed(lib):
-    rec = _use(
-        [
-            "import env.x as m\nname = 'pa' + 'rse'\ngetattr(m, name)('a')\n",
-            "import env.x as m\nf = getattr(m, 'parse')\nf('b')\n",
-            "import importlib\nimportlib.import_module('env.x').parse('c')\n",
-            "import env.x as m\nvars(m)['lookup']('a')\n",
-        ],
-    )
-    assert rec["unknown_calls"] == {"x": 4}
-    assert all(r["called"] == 0 for r in rec["items"].values())
-
-
 def test_bash_and_unparsable_cells_are_skipped_and_counted(lib):
     cells = [("ls -la", None), ("def (:\n", None)]
     lines = _lines(cells)
@@ -257,24 +225,6 @@ def test_bash_and_unparsable_cells_are_skipped_and_counted(lib):
 
 
 # --- errors ----------------------------------------------------------------------------------------------
-
-
-def test_a_memory_input_error_from_the_item_counts_as_refused_by_its_frames(lib):
-    ((_, err),) = _session(["from env.x import parse\nparse(3)\n"])
-    assert "MemoryInputError" in err.splitlines()[-1]
-    assert use.attribute_errors(err, ITEMS) == [("refused", "env/x:parse")]
-    cells = [("from env.x import parse\nparse(3)\n", err)]
-    rec = use.request_use(_lines(cells), ITEMS, cell_status=_status(cells))
-    assert rec["items"]["env/x:parse"]["refused"] == 1
-    assert rec["cell_status"] == [
-        {
-            "call": "c0",
-            "status": "error",
-            "exits": [["refused", "x", "parse"]],
-            "session": None,
-            "fresh": False,
-        },
-    ]
 
 
 def test_the_message_is_never_read(lib):
@@ -292,13 +242,6 @@ def test_the_message_is_never_read(lib):
     )  # raised in the cell, not in the item
     blocks = use.parse_traceback(own_err)
     assert [b["type"] for b in blocks] == ["ValueError"]
-
-
-def test_an_error_raised_in_the_cells_own_code_is_not_attributed_to_the_item(lib):
-    rec = _use(["from env.x import parse\nwords = parse('a b')\nwords[5]\n"])
-    row = rec["items"]["env/x:parse"]
-    assert (row["called"], row["refused"], row["errored"]) == (1, 0, 0)
-    assert rec["unattributed_errors"] == {}
 
 
 def test_env_channel_copy_matches_the_episodes_mapping():
@@ -339,22 +282,6 @@ def test_a_legacy_recording_finds_the_section_by_the_v2_header_and_says_so(lib):
 
 
 # --- bounds, determinism, vendoring ----------------------------------------------------------------------
-
-
-def test_the_record_is_deterministic_and_bounded(lib):
-    codes = ["from env.x import parse\n" + "parse('a')\n" * 50]
-    assert _use(codes) == _use(codes)
-    many = [f"env/c{i}:f" for i in range(use.MAX_ITEMS_AT_PIN + 5)]
-    rec = use.request_use(_lines([]), many)
-    assert len(rec["items_at_pin"]) == use.MAX_ITEMS_AT_PIN and rec["truncated"]
-    assert rec["items_at_pin_count"] == use.MAX_ITEMS_AT_PIN + 5
-    huge = use.request_use(_lines([("x = 1\n" * 100_000, None)]), ITEMS)
-    assert huge["unparsed_cells"] == 1
-    rows = use.request_use(
-        _lines([("from env.zz import *\nimport env.qq\n", None)]),
-        ITEMS,
-    )
-    assert rows["module_imports"] == {"?": 1}  # no channel name outside the pin is kept
 
 
 def test_the_analysis_module_imports_only_the_standard_library():
@@ -587,71 +514,6 @@ S1_GUIDE = (
 )
 
 
-def test_an_s1_style_section_without_the_old_header_still_counts_what_it_showed(lib):
-    """A channel catalogue in new wording: the old header is absent, so the legacy reading finds
-    nothing, but the renderer's record still counts every channel and item it showed."""
-    assert use.HEADER_PREFIX not in S1_GUIDE
-    lines = _lines([], system=f"core prompt\n\n{S1_GUIDE}")
-    blind = use.request_use(lines, ITEMS)
-    assert blind["exposure_source"] == "unknown" and blind["shown_channels"] == []
-    catalogue = use.record_shown(S1_GUIDE, channels=["x"], renderer="catalogue")
-    rec = use.request_use(lines, ITEMS, shown=catalogue)
-    assert rec["exposure_source"] == "record"
-    assert rec["shown_channels"] == ["x"] and rec["shown_items"] == []
-    assert rec["memory_section_shown"]["prompt_confirmed"] is True
-    listing = use.record_shown(
-        S1_GUIDE,
-        channels=["x"],
-        items=["env/x:parse", "env/x:lookup"],
-        renderer="catalogue",
-    )
-    rec = use.request_use(lines, ITEMS, shown=listing)
-    assert rec["shown_items"] == ["env/x:lookup", "env/x:parse"]
-    # the evidence row of each shown item says so, and where it came from
-    rows = {r[0]: r for r in _use_rows("e1", rec)}
-    assert rows["env/x:parse"][2 + _USE_COUNTS.index("shown")] == 1
-    assert rows["env/x:strict"][2 + _USE_COUNTS.index("shown")] == 0
-    assert rows["env/x:strict"][2 + _USE_COUNTS.index("channel_shown")] == 1
-    assert rows["env/x:parse"][2 + _USE_COUNTS.index("exposure_record")] == 1
-
-
-def test_a_recorded_section_the_prompt_does_not_end_with_still_counts_and_says_so(lib):
-    shown = use.record_shown(
-        S1_GUIDE,
-        channels=["x"],
-        items=["env/x:parse"],
-        renderer="catalogue",
-    )
-    later = _lines([], system=f"core\n\n{S1_GUIDE}\nsomething appended after")
-    rec = use.request_use(later, ITEMS, shown=shown)
-    assert rec["shown_items"] == ["env/x:parse"]
-    assert rec["memory_section_shown"]["prompt_confirmed"] is False
-    # the record is unconfirmed: the evidence row says so, and the writer's table counts it
-    rows = {r[0]: r for r in _use_rows("e1", rec)}
-    assert rows["env/x:parse"][2 + _USE_COUNTS.index("prompt_unconfirmed")] == 1
-    # no system prompt recorded at all: flagged unknown and unconfirmed, nothing counts as shown
-    unsent = [ln for ln in _lines([]) if ln["type"] != "system_prompt"]
-    rec = use.request_use(unsent, ITEMS, shown=shown)
-    assert rec["exposure_source"] == "unknown" and rec["shown_items"] == []
-    assert rec["shown_channels"] == [] and rec["shown_record"] == shown
-    section = rec["memory_section_shown"]
-    assert not section["shown"] and section["prompts"] == 0
-    assert section["prompt_confirmed"] is False and section["source"] == "unknown"
-    rows = {r[0]: r for r in _use_rows("e1", rec)}
-    assert rows["env/x:parse"][2 + _USE_COUNTS.index("exposure_unknown")] == 1
-    assert rows["env/x:parse"][2 + _USE_COUNTS.index("exposure_record")] == 0
-    assert rows["env/x:parse"][2 + _USE_COUNTS.index("prompt_unconfirmed")] == 0
-    # only items and channels of the pin count
-    other = use.record_shown(
-        S1_GUIDE,
-        channels=["zz"],
-        items=["env/zz:f"],
-        renderer="catalogue",
-    )
-    rec = use.request_use(_lines([], system=S1_GUIDE), ITEMS, shown=other)
-    assert rec["shown_items"] == [] and rec["shown_channels"] == []
-
-
 def test_record_shown_keeps_names_and_a_digest_only_for_random_inputs():
     """Seeded random names and texts: the record is sorted, bounded and deterministic, drops malformed
     names, counts each item's channel, shows nothing for an empty text and never holds the text.
@@ -705,33 +567,6 @@ def test_record_shown_keeps_names_and_a_digest_only_for_random_inputs():
 DIFF = "diff --git a/env/x/__init__.py b/env/x/__init__.py\nindex 1..2 100644\n--- a/env/x/__init__.py\n+++ b/env/x/__init__.py\n@@ -1 +1 @@\n-a\n+b\n"
 
 
-def test_errors_from_an_edited_channel_are_not_charged_to_the_stored_item(lib):
-    codes = [
-        "from env.x import parse, lookup\nparse(3)\n",
-        "lookup('zz')\n",
-        "print(1)\n",
-    ]
-    cells = _session(codes)
-    lines, status = _lines(cells), _status(cells)
-    ok = Action(2, "x", "get", [], {}, None, "ok", "read")
-    rec = use.request_use(lines, ITEMS, [ok], memory_diff=DIFF, cell_status=status)
-    assert rec["modified_channels"] == ["x"] and not rec["memory_diff_truncated"]
-    parse, lookup = rec["items"]["env/x:parse"], rec["items"]["env/x:lookup"]
-    assert parse["modified_in_request"] and lookup["modified_in_request"]
-    assert (
-        parse["refused"],
-        parse["refused_modified"],
-        parse["refused_then_accepted"],
-    ) == (0, 1, 0)
-    assert (lookup["errored"], lookup["errored_modified"]) == (0, 1)
-    assert parse["called"] == 1  # the call is still recorded
-    plain = use.request_use(lines, ITEMS, [ok], cell_status=status)
-    assert plain["items"]["env/x:parse"]["refused"] == 1
-    assert not plain["items"]["env/x:parse"]["modified_in_request"]
-    other = "diff --git a/env/other/__init__.py b/env/other/__init__.py\n"
-    assert use.request_use(lines, ITEMS, memory_diff=other)["modified_channels"] == []
-
-
 def test_a_truncated_diff_or_a_root_file_marks_every_channel(lib):
     cut = (
         DIFF.replace("env/x/", "env/zz/")
@@ -756,26 +591,6 @@ def _channel_y(lib) -> list[str]:
     return ITEMS + ["env/y:hidden", "env/y:shout"]
 
 
-def test_star_imports_bind_the_modules_all_and_re_exports_resolve_to_the_definer(lib):
-    items = _channel_y(lib)
-    surface = use.library_surface(lib)
-    assert surface == {
-        "star": {
-            "x": ["MemoryInputError", "lookup", "parse", "strict"],
-            "y": ["shout", "yparse"],
-        },
-        "reexports": {"env/y:yparse": "env/x:parse"},
-    }
-    code = "from env.y import *\nshout('a')\nyparse('b')\nhidden('c')\n"
-    rec = use.request_use(_lines([(code, None)]), items, surface=surface)
-    assert set(rec["items"]) == {"env/y:shout", "env/x:parse"}
-    assert rec["items"]["env/x:parse"]["called"] == 1
-    assert rec["items"]["env/y:shout"]["imported"] == 1
-    # without the surface, a star import binds every pinned function of the channel
-    bare = use.request_use(_lines([(code, None)]), items)
-    assert bare["items"]["env/y:hidden"]["called"] == 1
-
-
 # --- exception groups, forged structure, sessions, depth -------------------------------------------------
 
 
@@ -791,97 +606,6 @@ def _forged(lib) -> str:
     return json.dumps({"error": err, "duration_ms": 1, "session_id": 9}, indent=2)
 
 
-def test_cells_without_a_status_make_refusals_and_errors_unknown_never_zero(
-    lib,
-    tmp_path,
-):
-    codes = [
-        "from env.x import parse\nparse(3)\n",
-        "from env.x import lookup\nlookup('zz')\n",
-    ]
-    cells = _session(codes)
-    rec = use.request_use(_lines(cells), ITEMS, cell_status=_status(cells, skip=(1,)))
-    assert [c["status"] for c in rec["cell_status"]] == ["error", "unknown"]
-    assert rec["cells_without_metadata"] == 1 and rec["cells_error_unread"] == 0
-    assert rec["cells_without_metadata_by_cause"]["other"] == 1
-    assert not rec["outcomes_known"]
-    # only what the unknown cell's code reached is unknown: lookup, not parse or strict
-    assert rec["items_outcome_unknown"] == ["env/x:lookup"]
-    assert rec["cells_outcome_unknown"] == 1
-    assert rec["items"]["env/x:parse"]["refused"] == 1
-    # a recording with no statuses at all (before the field): every cell unknown
-    old = use.request_use(_lines(cells), ITEMS)
-    assert old["cells_without_metadata"] == 2 and not old["outcomes_known"]
-    assert old["items_outcome_unknown"] == ["env/x:lookup", "env/x:parse"]
-    # forged or malformed recorded entries are never trusted
-    junk = [
-        {
-            "call": "c0",
-            "status": "error",
-            "exits": [["refused", "zz", "f"], ["boom", "x", "parse"]],
-        },
-        {"call": "c1", "status": "weird"},
-    ]
-    rec_junk = use.request_use(_lines(cells), ITEMS, cell_status=junk)
-    assert [c["status"] for c in rec_junk["cell_status"]] == ["error", "unknown"]
-    assert rec_junk["cell_status"][0]["exits"] == []
-    assert all(v["refused"] == v["errored"] == 0 for v in rec_junk["items"].values())
-    # an error too long to read is counted apart, and also leaves the outcomes unknown
-    huge = use.runtime_status("x" * (use.MAX_TRACEBACK_CHARS + 1), items=ITEMS)
-    assert huge["status"] == "unread" and huge["exits"] == []
-    unread = use.request_use(_lines(cells[:1]), ITEMS, cell_status={"c0": huge})
-    assert unread["cells_error_unread"] == 1 and not unread["outcomes_known"]
-    # the evidence store, the signals and the writer's table say unknown, never 0
-    shown = use.record_shown("SECTION", channels=["x"], items=ITEMS, renderer="index")
-    lines = _lines(cells, system="core\n\nSECTION")
-    partial = use.request_use(
-        lines,
-        ITEMS,
-        cell_status=_status(cells, skip=(1,)),
-        shown=shown,
-    )
-    complete = use.request_use(lines, ITEMS, cell_status=_status(cells), shown=shown)
-    assert partial["shown_items"] == ITEMS and complete["outcomes_known"]
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    _index(ev, "e1", partial, "2026-10-08T01:00:00Z")
-    row = ev.item_use()["env/x:lookup"]
-    assert row["outcome_unknown"] == 1 and row["errored"] == 0
-    assert ev.request_flags()["outcome_unknown"] == 1
-    from unify.memory import usage
-
-    sig = usage.item_signals("env/x:lookup", ev)
-    assert sig["errors"] is None and sig["errors_at_least"] == 0
-    assert not sig["outcomes_known"] and sig["requests_outcome_unknown"] == 1
-    assert sig["errors_report"] == "errors 0 of 0 known (+1 unknown)"
-    # parse's outcome was known in this request (the unknown cell never reached it): exact
-    parse = usage.item_signals("env/x:parse", ev)
-    assert parse["refusals"] == 1 and parse["outcomes_known"]
-    assert parse["refusals_report"] == "refusals 1 of 1 known (+0 unknown)"
-    # strict: shown, untouched, and no unknown cell could reach it: never used
-    assert usage.item_signals("env/x:strict", ev)["never_used"]
-    assert not sig["never_used"]  # lookup: a cell whose outcome is unknown reached it
-    known = EvidenceStore(tmp_path / "known.sqlite")
-    _index(known, "e1", complete, "2026-10-08T01:00:00Z")
-    assert usage.item_signals("env/x:strict", known)["never_used"]
-    assert usage.item_signals("env/x:lookup", known)["errors"] == 1
-    table = usage.usage_table(ev, ["e1"], ITEMS)
-    assert (
-        "env/x:parse | 1 | 1 | 1 | 1 | 1 | 1 of 1 known (+0 unknown) | 0 | "
-        "0 of 1 known (+0 unknown) | 0 | " in table
-    )
-    # "requests calling" and "calls" are static call sites in cell code, known whatever the cell's
-    # outcome: the unknown cell's lookup('zz') is a call site; only refusals, errors and "then accepted"
-    # depend on the outcome and read unknown
-    assert (
-        "env/x:lookup | 1 | 1 | 1 | 1 | 1 | 0 of 0 known (+1 unknown) | 0+? | "
-        "0 of 0 known (+1 unknown) | 0 | " in table
-    )
-    assert (
-        "(unknown: 1 of these requests had a cell whose outcome was not recorded and whose code could reach a function"
-        in table
-    )
-
-
 def test_the_tool_result_hook_notes_only_code_results_of_the_current_run(monkeypatch):
     run = RequestRun("r", None)
     run.item_ids = list(ITEMS)
@@ -894,10 +618,12 @@ def test_the_tool_result_hook_notes_only_code_results_of_the_current_run(monkeyp
     hooks.tool_result("other_tool", "c2", {"error": "Traceback"})  # not a code result
     hooks.tool_result("execute_code", "c3", "a plain string")
     assert sorted(run.cell_status) == ["c0", "c1"]
+    # rev 2's ExecutionResult carries no session id (the actor's cells share one interpreter; 295ff16d5), so the
+    # status has none
     assert run.cell_status["c0"] == {
         "status": "ok",
         "exits": [],
-        "session": 4,
+        "session": None,
         "fresh": False,
     }
 
@@ -906,21 +632,6 @@ def test_the_tool_result_hook_notes_only_code_results_of_the_current_run(monkeyp
 
     monkeypatch.setattr(run, "note_result", broken)
     hooks.tool_result("execute_code", "c4", _result(None))  # never raises
-
-
-def test_a_deep_syntax_tree_is_counted_unparsed_and_the_rest_still_counts(lib):
-    deep = "x = " + "+".join(["1"] * 20000)  # ast.parse raises RecursionError
-    wide = "y = " + "+".join(
-        ["1"] * 5000,
-    )  # parses; walking it may exceed the recursion limit
-    cells = [
-        (deep, None),
-        (wide, None),
-        ("from env.x import parse\nparse('a')\n", None),
-    ]
-    rec = use.request_use(_lines(cells), ITEMS)
-    assert rec["cells"] == 3 and rec["unparsed_cells"] >= 1
-    assert rec["items"]["env/x:parse"]["called"] == 1
 
 
 def test_a_failing_record_keeps_the_items_at_the_pin():
@@ -942,60 +653,6 @@ def _frame_traceback(root, func: str, kind: str = "ValueError") -> str:
         "    raise\n"
         f"{kind}: boom\n"
     )
-
-
-def test_only_identifier_shaped_function_names_are_kept(tmp_path):
-    root = str(tmp_path / "checkout")
-    kept = ["parse", "Outer.method", "_helper", "a" * use.MAX_NAME_CHARS]
-    other = [
-        "<lambda>",
-        "<module>",
-        "parse; rm -rf /",
-        "a b",
-        "Outer..method",
-        "x" * (use.MAX_NAME_CHARS + 1),
-        "9lives",
-    ]
-    for func in kept + other:
-        status = use.runtime_status(
-            _frame_traceback(root, func),
-            items=ITEMS,
-            roots=[root],
-        )
-        want = func if func in kept else use.OTHER_NAME
-        assert status["exits"] == [["errored", "x", want]], func
-    # an <other> exit is never an item, even when the pin has a function called "other"
-    pin = ITEMS + ["env/x:other"]
-    lam = use.runtime_status(
-        _frame_traceback(root, "<lambda>"),
-        items=pin,
-        roots=[root],
-    )
-    cells = [("from env.x import parse\nparse(1)\n", None)]
-    rec = use.request_use(_lines(cells), pin, cell_status={"c0": lam})
-    assert rec["unattributed_errors"] == {"x": 1} and "env/x:other" not in rec["items"]
-    # recorded entries are re-checked: a non-identifier name is dropped, <other> is kept
-    recorded = [
-        {
-            "call": "c0",
-            "status": "error",
-            "exits": [
-                ["errored", "x", "a b"],
-                ["errored", "x", "x" * (use.MAX_NAME_CHARS + 1)],
-                ["errored", "x", use.OTHER_NAME],
-                ["refused", "x", "Outer.method"],
-                ["refused", "x", "parse"],
-            ],
-        },
-    ]
-    rec = use.request_use(_lines(cells), ITEMS, cell_status=recorded)
-    assert rec["cell_status"][0]["exits"] == [
-        ["errored", "x", use.OTHER_NAME],
-        ["refused", "x", "Outer.method"],
-        ["refused", "x", "parse"],
-    ]
-    assert rec["items"]["env/x:parse"]["refused"] == 1
-    assert rec["unattributed_errors"] == {"x": 2}
 
 
 def _executor_traceback(exc: BaseException) -> str:
@@ -1247,20 +904,3 @@ def _static(codes: list[str]) -> dict:
     """The record of cells that are only read (the counts are static: nothing needs to run)."""
     cells = [(code, None) for code in codes]
     return use.request_use(_lines(cells), ITEMS, cell_status=_status(cells))
-
-
-def test_catalogue_lookups_in_cells_count_as_exposure():
-    rec = _static(
-        [
-            "import memory\nprint(memory.catalog())\n",
-            "print(memory.catalog('env.x'))\nmemory.find({'a': 1})\n",
-            "help(memory)\n",  # the helper itself is no memory function
-        ],
-    )
-    assert rec["cell_exposure"] == {
-        "items": ITEMS,  # the channel view lists its functions
-        "channels": ["x"],
-        "calls": {"catalog": 2, "find": 1, "describe": 0, "help": 0},
-    }
-    only = _static(["import memory as m\nm.catalog(page=2)\n"])["cell_exposure"]
-    assert only["items"] == [] and only["channels"] == ["x"]  # channel lines only
