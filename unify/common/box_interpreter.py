@@ -103,7 +103,8 @@ START_TIMEOUT_S = 60.0
 SETTLE_S = 1.0
 _SETTLE_STEP_S = 0.05
 _CLOCK_TICK_S = 0.1
-#: Requests a memory agent's worker may send that would reach a harness object; each is refused.
+#: Requests a memory agent's worker may send that would reach a harness object; each is refused, as is any other
+#: request (a message with an id) the host does not serve, so a cell never waits on an answer that cannot come.
 _PROXY_OPS = frozenset({"call", "describe", "dir", "doc"})
 _NO_PROXY = (
     "no harness object is reachable from this interpreter; the agent's tools are the functions of the "
@@ -573,8 +574,8 @@ class _MemoryBackend:
         await self.send({"op": "exec", "id": cid, "source": source, "sync": {}})
 
     async def poll(self, cid: int, timeout: float) -> Optional[dict]:
-        """The cell's ``done`` message, or None when nothing ends it within *timeout*; refuses every proxy request
-        on the way."""
+        """The cell's ``done`` message, or None when nothing ends it within *timeout*; refuses every proxy request,
+        and every other request the host does not serve, on the way."""
         try:
             msg = await self._next(timeout)
         except asyncio.TimeoutError:
@@ -582,7 +583,7 @@ class _MemoryBackend:
         op = msg.get("op")
         if op == "done" and msg.get("id") == cid:
             return msg
-        if op in _PROXY_OPS:
+        if op in _PROXY_OPS or (op != "done" and msg.get("id") is not None):
             await self.send(
                 {
                     "op": "reply",
