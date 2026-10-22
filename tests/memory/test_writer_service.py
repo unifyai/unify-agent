@@ -1217,3 +1217,27 @@ def test_a_service_restart_within_a_run_keeps_the_runs_spend_total(svc, monkeypa
     assert sum(1 for r in ws._rows(spend) if r.get("op") == "run") == 1
     ws.begin_run(home)  # the next run's controller
     assert ws.spend_totals(home) == (Decimal(0), Decimal(0))
+
+
+@pytest.mark.parametrize("visible", [True, False])
+def test_a_running_service_is_found_and_never_started_twice(tmp_path, visible):
+    """A harness may run the service as its own foreground process (``python -m unify.memory.writer_service --home H``,
+    no ``--daemon``). While its lock is held and its heartbeat is fresh, ensure_service reports it ``running`` and starts
+    no second one, whether or not its pid is visible from the caller (a sandbox with its own pid namespace)."""
+    home = tmp_path / "home"
+    fd = _lock(home)
+    pid = os.getpid() if visible else 2**22 + 7  # a pid no process of this namespace has
+    doc = {"v": 1, "pid": pid, "pgid": os.getpgid(0) if visible else pid,
+           "proc_start": ws.proc_start(os.getpid()) if visible else "1", "heartbeat_at": ws.stamp(ws._now()),
+           "state": "idle"}  # fmt: skip
+    (ws.service_dir(home) / ws.STATE_FILE).write_text(json.dumps(doc))
+
+    def refuse(*a, **k):
+        raise AssertionError("a second service was started")
+
+    try:
+        got = ws.ensure_service(home, settings=_settings(), popen=refuse, wait_s=0.0)
+    finally:
+        os.close(fd)
+    assert got.status == "running" and got.pid == pid
+    assert ws.owns(doc) is visible
