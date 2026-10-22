@@ -186,11 +186,19 @@ def _actor_only() -> dict[tuple[str, str], str]:
     return out
 
 
+def _memory_tools() -> set[str]:
+    """The tools a memory agent calls through its channel: tool_handlers' own and the run record's (answered by
+    unify.agents.run_record_tools for every agent)."""
+    from unify.common import tool_registry
+
+    return set(tool_handlers.HANDLED) | set(tool_registry.RUN_RECORD_TOOLS)
+
+
 def _required() -> set[tuple[str, str]]:
     codes = tool_spec.refusal_codes()
     out = {("*", f) for f in codes[tool_spec.GENERAL]}
     for tool, forms in codes.items():
-        if tool in tool_handlers.HANDLED:
+        if tool in _memory_tools():
             out.update((tool, f) for f in forms)
     return out
 
@@ -200,7 +208,7 @@ def test_the_coverage_table_names_every_form_of_every_memory_tool():
     table = {**_actor_only(), **COVERAGE}
     assert _required() <= set(table), sorted(_required() - set(table))
     assert all(table[k] != R for k in set(table) - _required())
-    assert set(tool_handlers.HANDLED) | NOT_CHANNEL_TOOLS >= {t for t, _ in _required()} - {"*"}
+    assert _memory_tools() | NOT_CHANNEL_TOOLS >= {t for t, _ in _required()} - {"*"}
     for key, how in COVERAGE.items():
         assert how == R or len(how) > 40, key  # an unreachable form says why
 

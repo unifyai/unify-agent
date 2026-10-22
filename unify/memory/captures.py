@@ -1,51 +1,49 @@
-"""The capture store: every completed attempt's working procedure, captured by the harness at once.
+"""The capture store: every completed attempt's working procedure, captured by the harness as it was recorded.
 
 A *completed attempt* is an episode that handed back a result: an answered dialogue action, a final reply, or a
 change to the work tree. Whether it succeeded is not part of the definition. When the episode-end fork settles, it has
 written, beside its other files, ``procedure.py`` (the procedure that produced the result, from code that ran in the
-attempt) and ``broke.md`` (what broke). :func:`capture` then, without waiting for a writer pass:
+attempt) and ``broke.md`` (what broke). :func:`capture_settled` captures each settled episode (and, with
+``UNIFY_MEMORY=in_episode``, each segment) under the trace contract (:func:`capture_trace_step`,
+:mod:`.capture_trace`):
 
-1. **checks safety first**: no key-shaped string, a file that parses as Python, and the gate's path rules; a file that
-   fails is not captured, and the reason is recorded;
-2. **runs it confined** (:func:`.sandbox_run.run_confined`: no network, an empty environment, the procedure and the
-   request read-only, only ``/out`` writable): ``read_input`` on the request (its text, with ``.text`` and ``.data``,
-   the JSON values it contains: :mod:`.request_value`), ``applies`` on the value, ``run`` twice and ``holds`` on the
-   value and the result. Model-written code never runs on the host;
-3. **compares** the result with the value the episode handed back, by the digest of their canonical JSON:
-   ``reproduces``, ``differs`` or ``unknown`` (the attempt handed back no value, for example a work-tree change);
-4. **writes the capture** to ``<state>/memory-captures/<capture id>/``: ``procedure.py``, ``signature.json``,
-   ``record.json`` and ``broke.md``. The capture id is the first 16 hex digits of the sha256 of ``procedure.py``'s
-   bytes, so two attempts that produce the same code share one capture and their outcomes join one record;
-5. **recognises recurrence by content**: every existing capture whose input signature is this one's is run on this
-   request, confined; each that gives the handed-back value is listed in ``same_as`` and gains a use.
+1. **safety first**: no key-shaped string, a file that parses as Python, a ``run`` to call and the gate's path rules;
+   a file that fails is not captured, and the reason is recorded;
+2. **never run**: a capture is never executed to classify, compare or rank it. Its form is read from its code, its
+   own check records that nothing ran, and its signature describes the input the episode recorded and the value it
+   handed back;
+3. **the outcome from signals only**: ``positive``, ``none`` (no signal the actor could see) or ``contrary``;
+4. **same shape, one capture**: a procedure whose syntax-only shape address (:func:`.capture_shape.shape_of`) is
+   already stored folds into that capture as one more occurrence (``occurrences.jsonl``, its raw bytes kept); otherwise
+   it is written to ``<state>/memory-captures/<capture id>/`` (``procedure.py``, ``signature.json``, ``record.json``,
+   ``broke.md``), the id being the first 16 hex digits of the sha256 of ``procedure.py``'s bytes.
 
-**Negative knowledge.** An attempt whose episode carries a contrary signal, or whose capture ``differs``, is captured
-with ``outcome: "failed"``. It is never offered to run; it reaches the writer as a ``failure`` pool entry with its
+No recurrence step runs and nothing credits a use here: the writer reads the captures and groups them.
+
+**Negative knowledge.** A capture whose episode carries a contrary signal (``contrary``; ``failed`` in a record of the
+earlier contract, :func:`negative`) is never offered to run; it reaches the writer as a ``failure`` pool entry with its
 ``broke.md`` lines, and the writer may land a note of what broke or a test that records the failure.
 
 **The applicability signature** (:func:`signature`) is computed here, never written by the model, and holds no
-identifier and no request text: the shapes of the read value and the result (key paths with identifier-shaped keys
-replaced, leaf types, length classes), the structural relations between them, whether the stated conditions exist and
-held (with their source digests), and the goal, the ``## Asked`` section of the fork's ``summary.md`` with every
-identifier-shaped token replaced, which is shown and never compared.
+identifier and no request text: the shapes of the recorded input and the handed-back value (key paths with
+identifier-shaped keys replaced, leaf types, length classes), the structural relations between them, whether the
+stated conditions exist (with their source digests), and the goal, the ``## Asked`` section of the fork's
+``summary.md`` with every identifier-shaped token replaced, which is shown and never compared.
 
-**Trust.** ``record.json`` keeps every use (:class:`.trust.Use` rows), the track record per kind of signal, the
-status (``on-trial``, ``adopted``, ``retired``) and the evidence level (``unchecked``, ``reproduces-its-case``,
-``confirmed-by-outcomes``) that :mod:`.trust` gives from them.
+**Trust.** ``record.json`` keeps the capture's cases and uses (:class:`.trust.Use` rows), the status (``on-trial``,
+``adopted``, ``retired``) and the evidence level that :mod:`.trust` gives from them; a capture's own level is
+``unchecked``, and the levels above it are the gate's to give when the capture is landed.
 
 **Where it lives.** ``<state>/memory-captures/`` is written only by the harness. It is outside every box-writable
-root (the fork's box binds only its own staging dir; the writer, curator and helper boxes bind none of the state
-dir), so no agent edits it, and it is not the library: the writer reads it as input (pool entries of kind
-``capture`` and ``failure``, and ``/inputs/captures/``) and promotes from it by landing library items, and stays
-the only agent that edits the library. The actor's copy gets a snapshot under ``.memory/captures/`` at each request
-start (:func:`export_files`); captures never enter ``INDEX.md`` or the prompt.
+root (the fork's box binds only its own staging dir; the writer and helper boxes bind none of the state dir), so no
+agent edits it, and it is not the library: the writer reads it as input (pool entries of kind ``capture`` and
+``failure``, and ``/inputs/captures/``) and promotes from it by landing library items, and stays the only agent that
+edits the library. The actor's copy gets a snapshot under ``.memory/captures/`` at each request start
+(:func:`export_files`); captures never enter ``INDEX.md`` or the prompt.
 
-Evidence: ``captures-events.jsonl`` holds one row per capture step (``capture_id``, ``episode``, ``safety``,
-``reproduces``, ``deterministic``, ``applies``, ``holds``, ``outcome``, ``same_as``, ``seconds``,
-``published_at``); an episode with a row there is done. A row whose outcome is positive and whose capture reproduced
-the handed-back value is a *verdict* (:func:`verdict`): a writer pass covering its episode starts at once
-(``trigger.Trigger``'s ``verdict``), without waiting for the batch.
-Nothing here keys on a task id, a stream boundary or a position.
+Evidence: ``captures-events.jsonl`` holds one row per capture step; an episode with a row there is done, and the
+attention ledger reads these rows (:func:`episode_rows`). Nothing here keys on a task id, a stream boundary or a
+position.
 """
 
 from __future__ import annotations
@@ -104,8 +102,6 @@ OCCURRENCES_DIR = "occurrences"
 #: The key of an exported record that offers its capture as a worked example
 #:: ``{"why", "returns"}`` (:mod:`.fixed_answer`).
 EXAMPLE_KEY = "worked_example"
-#: Each confined run's wall bound (the procedure runners' own, :data:`.procedures.PROCEDURE_S`).
-RUN_S = 60.0
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_BYTES = 1024 * 1024
 GOAL_CHARS = 600
@@ -449,16 +445,6 @@ def completed(ep: Any) -> bool:
     return found or (after is not None and after != before)
 
 
-def compare(run: Mapping[str, Any], found: bool, value: Any) -> str:
-    """``reproduces`` when the run returned the handed-back value, ``differs`` when it returned another or failed,
-    ``unknown`` when the episode handed back no value."""
-    if not found:
-        return UNKNOWN
-    if run.get("outcome") != "returned":
-        return DIFFERS
-    return REPRODUCES if digest(run.get("result")) == digest(value) else DIFFERS
-
-
 # --- the store ------------------------------------------------------------------------------------------------
 
 
@@ -726,23 +712,6 @@ def episode_rows(store: Path | str) -> dict[str, dict]:
     return out
 
 
-def verdict(row: Any) -> bool:
-    """Whether a capture step's row makes a writer pass due at once: its capture reproduced the value its attempt
-    handed back, and nothing contradicted the attempt (outcome positive, or none where the environment gives no
-    signal; never failed). A positive signal only orders what is captured first
-    (:func:`.integration.consolidate.verdict_candidates`), it never gates a pass, so the passes run where no reward or
-    feedback exists."""
-    return isinstance(row, Mapping) and row.get("reproduces") == REPRODUCES and row.get("outcome") in ("positive", "none")
-
-
-def stored(row: Any) -> bool:
-    """Whether a capture step's row stored a capture (it names one), whatever its outcome or whether it reproduced
-    its value: each such row makes a writer pass due at once
-    (:class:`.trigger.Trigger`'s ``per_pass``). A step that refused the staged procedure stored nothing."""
-    cid = row.get("capture_id") if isinstance(row, Mapping) else None
-    return isinstance(cid, str) and _ID.fullmatch(cid) is not None
-
-
 def episode_row(store: Path | str, eid: str) -> dict | None:
     """The capture step's row for episode *eid*, or None when it has none."""
     if not _EPISODE_ID.fullmatch(eid or ""):
@@ -819,8 +788,7 @@ def capture_trace_step(
        answer).
 
     No recurrence step runs and nothing credits a use: the writer reads and groups. Returns the step's row, also
-    appended to ``captures-events.jsonl``; never raises for what the staging holds. *runner*, *python* and *work* are
-    kept for the callers and never used: nothing is run."""
+    appended to ``captures-events.jsonl``; never raises for what the staging holds."""
     from . import capture_trace as ct
     from .capture_shape import shape_of
     from .fixed_answer import fixed_answer

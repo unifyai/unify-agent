@@ -1132,7 +1132,7 @@ class LibraryChecks:
 
         Every runner compares with the same recording, so "a different confirmed effect" is green to red. The
         scope is the import graph's: the stored functions of each changed module and of every module importing one
-        (``run.graph``, built by the gate's own behaviour check, :meth:`.gate.Gate._behaviour_targets`), and
+        (``run.graph``, built by the gate's own behaviour check, :meth:`.gate.Gate._call_scope`), and
         the owner is :meth:`.gate.Gate._behaviour_owner`'s. Without a graph (a run that built none) every stored
         procedure is in scope and the owner is the pass's one edited function, else the pass.
         """

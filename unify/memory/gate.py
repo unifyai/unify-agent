@@ -2475,60 +2475,6 @@ class Gate:
         )
 
     @staticmethod
-    def _changed_channels(run: _Run) -> set[str]:
-        """``env/<channel>`` of every channel with an added, edited or deleted file."""
-        return {
-            "/".join(p.split("/")[:2])
-            for p in run.changed
-            if p.startswith("env/") and p.count("/") >= 2
-        }
-
-    @staticmethod
-    def _behaviour_targets(
-        run: _Run,
-        recorded: dict[str, set[tuple[str, int]]],
-        library_mode: bool = False,
-    ) -> list[str]:
-        """The functions G3's behaviour check compares, in order, before :meth:`_behaviour`'s skips.
-
-        **v2:** for each changed channel, every public function of its parent module whose name the candidate's
-        module still binds: a ``def``, or a name bound by assignment or import that has recorded covers.
-
-        **Library mode**: the same rule over each changed library module and every module that imports
-        one, directly or through others. The scope uses :func:`..layout.dependants` over the import graphs of
-        both versions. The graph is kept on the run for :meth:`_behaviour_owner`.
-        """
-        if library_mode:
-            run.graph = layout.merge_graphs(
-                layout.import_graph(run.p_tree),
-                layout.import_graph(run.c_tree),
-            )
-            changed = {m for p in run.changed if (m := layout.module_of(p)) is not None}
-            scope = [
-                (m, layout.module_path(m))
-                for m in sorted(layout.dependants(run.graph, changed))
-            ]
-        else:
-            scope = [
-                (ch, f"{ch}/__init__.py") for ch in sorted(Gate._changed_channels(run))
-            ]
-        out: list[str] = []
-        for prefix, module in scope:
-            before = public_bindings(
-                (run.p_tree / module).read_bytes() if module in run.p_files else None,
-            )
-            after = public_bindings(
-                (run.c_tree / module).read_bytes() if module in run.c_files else None,
-            )
-            for name, is_def in sorted((before or {}).items()):
-                item = f"{prefix}:{name}"
-                if after is None or name not in after:
-                    continue  # deleted: its recorded covers stay covered under G5
-                if is_def or item in recorded:
-                    out.append(item)
-        return out
-
-    @staticmethod
     def _source_channels(acts: list[tuple[str, int, Action]]) -> list[str]:
         """Library mode: the memory channels (``env/<name>``) of a function's recorded covers. They stand for the channel
         its path named in v2 (the source channel moves to the item's record).

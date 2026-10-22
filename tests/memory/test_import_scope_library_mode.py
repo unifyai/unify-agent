@@ -40,6 +40,13 @@ def _run(
     return run
 
 
+def _scope(run: _Run) -> list[str]:
+    """The behaviour check's scope (:meth:`Gate._call_scope`), over the run's function bodies as the gate reads them."""
+    run.p_bodies = {i: ("function", b, True) for i, b in layout.function_bodies(run.p_tree).items()}
+    run.c_bodies = {i: ("function", b, True) for i, b in layout.function_bodies(run.c_tree).items()}
+    return sorted(Gate._call_scope(Gate.__new__(Gate), run))
+
+
 def _fn_item(item: str, tests: list[str] | None = None) -> ManifestItem:
     return ManifestItem(
         item,
@@ -61,21 +68,6 @@ def test_a_cover_on_any_channel_is_admitted_under_library_mode():
     )
 
 
-def test_behaviour_targets_keep_v2s_channel_loop(tmp_path):
-    parent = {
-        "env/a/__init__.py": "def f(x):\n    return 1\n\ndef g(x):\n    return 2\n\nh = f\ni = g\n",
-        "env/b/__init__.py": "def k(x):\n    return 3\n",
-    }
-    cand = {
-        "env/a/__init__.py": "def f(x):\n    return 10\n\ndef g(x):\n    return 2\n\nh = f\ni = g\n",
-        "env/b/__init__.py": "def k(x):\n    return 3\n",
-    }
-    run = _run(tmp_path, parent, cand, ["env/a/__init__.py"])
-    recorded = {"env/a:h": {("e1", 0)}}
-    assert Gate._behaviour_targets(run, recorded) == ["env/a:f", "env/a:g", "env/a:h"]
-    assert run.graph is None
-
-
 def test_behaviour_scope_follows_imports_transitively(tmp_path):
     cand = dict(LIB)
     cand["memory/text/parse.py"] = LIB["memory/text/parse.py"].replace(
@@ -83,7 +75,7 @@ def test_behaviour_scope_follows_imports_transitively(tmp_path):
         "return s.split(' ')",
     )
     run = _run(tmp_path, LIB, cand, ["memory/text/parse.py"])
-    assert Gate._behaviour_targets(run, {}, library_mode=True) == [
+    assert _scope(run) == [
         "memory.text.dates:parse_date",  # imports parse by name
         "memory.text.dates:week",
         "memory.text.parse:tokens",
@@ -98,7 +90,7 @@ def test_behaviour_scope_follows_imports_transitively(tmp_path):
         LIB,
         ["memory/text/report.py", "memory/text/tests/test_dates.py"],
     )
-    assert Gate._behaviour_targets(only, {}, library_mode=True) == [
+    assert _scope(only) == [
         "memory.text.report:summary",
     ]
 
@@ -230,9 +222,5 @@ def test_an_init_change_puts_its_packages_modules_in_scope(tmp_path):
         LIB["memory/text/__init__.py"] + "\nparse.tokens = lambda s: []\n"
     )
     run = _run(tmp_path, LIB, cand, ["memory/text/__init__.py"])
-    assert "memory.text.parse:tokens" in Gate._behaviour_targets(
-        run,
-        {},
-        library_mode=True,
-    )
+    assert "memory.text.parse:tokens" in _scope(run)
     assert "memory.text" in layout.import_graph(tmp_path / "c")["memory.text.parse"]

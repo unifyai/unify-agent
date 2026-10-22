@@ -559,7 +559,8 @@ def test_every_memory_tool_has_a_handler_named_as_the_tool():
     # rev 2: every agent is on the run record, whose own tools (send, messages, wait, who) the run record's handlers
     # answer (unify.agents.run_record_tools); every other tool tool_handlers handles is its own
     record_tools = {"send", "messages", "wait", "who"}
-    assert set(mine) == set(tool_handlers.HANDLED) - record_tools
+    assert set(mine) == set(tool_handlers.HANDLED) and not set(tool_handlers.HANDLED) & record_tools
+    assert not any(hasattr(tool_handlers, name) for name in record_tools)
     for name in record_tools:
         assert tool_registry.registry()[name].handler == f"unify.agents.run_record_tools:{name}"
     for name, spec in mine.items():

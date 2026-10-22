@@ -490,10 +490,6 @@ def _record_call(name: str) -> Callable[[Any, dict], Any]:
     return handler
 
 
-send = _record_call("send")
-messages = _record_call("messages")
-wait = _record_call("wait")
-who = _record_call("who")
 reply = _record_call("reply")
 stop = _record_call("stop")
 ask = _record_call("ask")
@@ -620,7 +616,8 @@ def thread_reads(*stores: Any) -> Callable[[], None]:
     return undo
 
 
-#: The memory tools this module answers (each registry spec's handler names one of them).
+#: The memory tools this module answers (each registry spec's handler names one of them). The run record's own tools
+#: (``send``, ``messages``, ``wait``, ``who``) are answered by :mod:`unify.agents.run_record_tools` for every agent.
 HANDLED = (
     "read",
     "grep",
@@ -634,10 +631,6 @@ HANDLED = (
     "check",
     "finish",
     "delegate",
-    "send",
-    "messages",
-    "wait",
-    "who",
     "reply",
     "stop",
     "ask",
