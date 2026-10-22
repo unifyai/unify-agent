@@ -151,7 +151,7 @@ unillm's `main` on GitHub: before pushing, check
 ```
 unify/
 ├── unify/                   # Main package
-│   ├── cli.py               # Terminal chat (`python -m unify`)
+│   ├── cli.py               # The command line (`unify act`)
 │   ├── actor/               # CodeAct Actor, central orchestrator
 │   ├── legacy/              # Legacy, unused, unsupported (conversation_manager)
 │   ├── db.py                # The local SQLite store: five tables, two views
