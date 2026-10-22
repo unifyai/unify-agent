@@ -725,9 +725,9 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
     # the librarian's box: the library read-only, no network, an empty environment, no workspace
     tool_out = "\n".join(m["content"] for m in model.calls[1].messages if m.get("role") == "tool")
     assert "def total(value):" in tool_out
-    # the librarian's tools, in its box: search over the when-to-use text (lexical: no embedding backend here),
+    # the librarian's tools, in its box: search over the when-to-use text (not ranked: no embedding backend here),
     # read and grep inside the library only
-    assert "search: " in tool_out and "ranked by a lexical score" in tool_out and TOTAL in tool_out
+    assert "search: " in tool_out and "not ranked, because" in tool_out and TOTAL in tool_out
     assert recipe_call(RECIPE) in tool_out  # the procedure's card carries its recipe's call
     assert "/memory/memory/tables/procedures.py:" in tool_out and "def apply_total(request):" in tool_out
     assert "READ OUTSIDE" in tool_out and "is outside the library, /memory" in tool_out

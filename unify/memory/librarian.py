@@ -111,9 +111,10 @@ BRIEF = (
     "request. The procedure's card in a search result shows the call that applies the recipe.\n"
     "\n"
     "## Your tools\n"
-    "- `tools.search` ranks every item of the library by how close its When to use text is to a situation, best "
-    "first, with each item's path, id and one-line card. Search first, with the situation the question describes; "
-    "search again in other words when the first ranking does not settle it.\n"
+    "- `tools.search` lists every item of the library with its path, id and one-line card, ranked by how close its "
+    "When to use text is to a situation when the library has an embedding index, else in the library's order (the "
+    "result says which). Search first, with the situation the question describes; read the cards, and search again "
+    "in other words when a ranking does not settle it.\n"
     "- `tools.read` reads a file or lists a folder of the library. Before you name an item, read the README of its "
     "folder and the item's When to use section.\n"
     "- `tools.grep` finds where a name or a call occurs in the library's files: which functions call a function, "
@@ -600,8 +601,8 @@ def _offset(args: dict) -> int:
 def search(ctx: Any, args: dict) -> Any:
     """The librarian's ``tools.search(query, offset=None)``: every item of the library ranked by its "When to use"
     text against *query* (:func:`.library_search.search_text`, over the copy's index), by meaning with the run's
-    embedding backend (each request it sends booked: ``integration.cost.book_embedding``), else by a lexical score,
-    and the result says which. Runs in the worker pool."""
+    embedding backend (each request it sends booked: ``integration.cost.book_embedding``), else not ranked (every
+    item listed in the library's order), and the result says which. Runs in the worker pool."""
     from unify.memory import writer_tools as _wt
 
     from .integration.cost import book_embedding

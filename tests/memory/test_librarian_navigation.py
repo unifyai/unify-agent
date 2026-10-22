@@ -226,28 +226,33 @@ def test_search_finds_items_by_their_when_to_use_text_with_the_local_embedder(tm
     assert len(lines) == 4 and f"/memory/{TONE}  {TONE} (note, score " in lines[0]
 
 
-def test_search_ranks_lexically_without_an_embedding_backend_and_says_so(tmp_path, no_backend):
+def test_search_ranks_nothing_without_an_embedding_backend_and_says_so(tmp_path, no_backend):
+    """Rev 2.1, fix 8: no word matching ranks anything. Without an embedding backend every item is listed in the
+    library's order, with no score, and the result says why; the librarian judges by the cards."""
     copy = _copy(tmp_path / "lib", {**WEB, **DOCS})
     index = ls.read_index(copy)
-    assert index["backend"] == "lexical" and index["why"] == ls.NOT_CONFIGURED
+    assert index["backend"] == "none" and index["why"] == ls.NOT_CONFIGURED
     assert all("vector" not in r for r in index["items"])
     got = L.search(_state(copy), {"query": API_REQUEST})
     head = got.text.splitlines()[0]
-    assert "ranked by a lexical score" in head and "because no embedding backend is configured" in head
-    assert _first(got.text) == PAGES
-    assert _first(L.search(_state(copy), {"query": DOCUMENT_REQUEST}).text) == OUTLINE
+    assert "not ranked, because no embedding backend is configured" in head
+    lines = [ln for ln in got.text.splitlines()[1:] if ln[:1].isdigit()]
+    assert len(lines) == len(index["items"]) and not any(", score " in ln for ln in lines)
+    # the same list, in the same order, whatever the query: nothing about its words moves an item
+    other = L.search(_state(copy), {"query": DOCUMENT_REQUEST}).text.splitlines()[1:]
+    assert other == got.text.splitlines()[1:]
     assert no_backend == []  # no embedding was made, at the export or at the search
     refused = L.search(_state(copy), {"query": "  "})
     assert refused.status == "refused" and refused.form == "no_query"
 
 
-def test_an_embedding_that_fails_leaves_a_lexical_index_that_says_why(tmp_path, no_backend):
+def test_an_embedding_that_fails_leaves_an_unranked_index_that_says_why(tmp_path, no_backend):
     def broken(texts):
         raise ConnectionError("unreachable")
 
     copy = _copy(tmp_path / "lib", WEB, search=ls.Backend("some-model", "", broken))
     index = ls.read_index(copy)
-    assert index["backend"] == "lexical" and index["why"] == "the embedding call failed (ConnectionError)"
+    assert index["backend"] == "none" and index["why"] == "the embedding call failed (ConnectionError)"
     assert "the embedding call failed (ConnectionError)" in L.search(_state(copy), {"query": API_REQUEST}).text
 
 

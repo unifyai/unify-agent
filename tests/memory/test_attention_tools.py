@@ -137,9 +137,11 @@ def test_find_lists_summaries_entries_and_items_unranked_without_an_embedding_ro
     ctx, att, writer = _ctx(tmp_path, home, [])
     hits = json.loads(tools.find(ctx, {"query": "total the rows", "scope": "summaries", "k": 2}).text)
     assert hits["scope"] == "summaries" and len(hits["hits"]) == 2
-    assert {h["id"] for h in hits["hits"]} == {"e1", "e2"} and "lexical" in hits["ranked"]
-    entries = json.loads(tools.find(ctx, {"query": "book a room", "scope": "open_entries", "k": 1}).text)
-    assert led.get(entries["hits"][0]["id"]).refs.episodes == ("e3",)
+    assert [h["id"] for h in hits["hits"]] == ["e1", "e2"] and hits["ranked"].startswith("not ranked, because")
+    assert all(h["score"] is None for h in hits["hits"])
+    entries = json.loads(tools.find(ctx, {"query": "book a room", "scope": "open_entries", "k": 3}).text)
+    # the open entries in the ledger's own order, whatever the query's words
+    assert [h["id"] for h in entries["hits"]] == [o.entry for o in led.open_entries()]
     items = json.loads(tools.find(ctx, {"query": "anything"}).text)
     assert items["scope"] == "items" and items["hits"] == []
     for bad, words in (({"query": ""}, "query is"), ({"query": "x", "scope": "all"}, "scope is one of"),

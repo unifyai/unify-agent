@@ -8,19 +8,18 @@ is a procedure's recipe has no row of its own (its procedure's card names it), a
 
 With an embedding backend (:func:`backend`), the export also stores one vector per row, computed with the harness's
 embedder (:func:`unify.common.embeddings.embed`, whose cache makes a commit's vectors a one-time cost) and labelled
-with its model; the vectors live only in the copy, never in a prompt. Without one (no backend configured, the paper
-profile, or an embedding call that failed) the index holds the rows alone and says why, and :func:`search_text`
-ranks by a lexical score over the same text (:func:`lexical_scores`) and says so in its result. Each request an
-embedding sends to a provider is told to *on_call* (:func:`backend`), which books it (``integration.cost``).
+with its model; the vectors live only in the copy, never in a prompt, and a search ranks by meaning. Without one (no
+backend configured, the paper profile, or an embedding call that failed) the index holds the rows alone and says why,
+and :func:`search_text` ranks nothing: it lists every row in the library's order, says why, and leaves the judgement to
+the reader of the cards (rev 2.1: no word matching ranks anything). Each request an embedding sends to a provider is
+told to *on_call* (:func:`backend`), which books it (``integration.cost``).
 
-Nothing here caps what is returned: every row is ranked, and a long result is paged.
+Nothing here caps what is returned: every row is listed, and a long result is paged.
 """
 
 from __future__ import annotations
 
 import json
-import math
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,10 +31,9 @@ INDEX_FILE = ".memory/search.json"
 LIBRARY_ROOT = "/memory"
 #: The bytes of one page of a result (as a cell's output is shown).
 PAGE_BYTES = 8000
-#: Why a ranking is lexical.
+#: Why the rows are not ranked.
 NOT_CONFIGURED = "no embedding backend is configured"
 OTHER_MODEL = "the index was built with another embedding model"
-_WORD = re.compile(r"[^\W_]+")
 _ROUND = 6
 
 
@@ -49,7 +47,7 @@ class Backend:
     embed: Callable[[list[str]], Any] | None = None
 
 
-LEXICAL = Backend(None, NOT_CONFIGURED)
+NO_BACKEND = Backend(None, NOT_CONFIGURED)
 
 
 def backend(on_call: Callable[[dict], None] | None = None) -> Backend:
@@ -174,11 +172,11 @@ def rows(
     return out
 
 
-def index_data(items: list[dict], use: Backend = LEXICAL) -> dict:
+def index_data(items: list[dict], use: Backend = NO_BACKEND) -> dict:
     """``.memory/search.json``: the rows, with one vector each when *use* embeds (rounded, so the same vectors give
-    the same bytes); else the reason the ranking is lexical. An embedding that fails leaves the index lexical, with
-    the failure's kind as the reason."""
-    out = {"version": 1, "backend": "lexical", "model": None, "why": use.why or NOT_CONFIGURED, "items": items}
+    the same bytes); else the reason it holds none (then nothing is ranked). An embedding that fails leaves the index
+    without vectors, with the failure's kind as the reason."""
+    out = {"version": 1, "backend": "none", "model": None, "why": use.why or NOT_CONFIGURED, "items": items}
     if use.embed is None or use.model is None or not items:
         if use.embed is not None and use.model is not None:
             out.update(backend="embedding", model=use.model, why="")
@@ -186,7 +184,7 @@ def index_data(items: list[dict], use: Backend = LEXICAL) -> dict:
     try:
         vectors = use.embed([r["text"] or r["card"] or r["id"] for r in items])
         rowed = [[round(float(x), _ROUND) for x in v] for v in vectors]
-    except Exception as exc:  # noqa: BLE001 - the ranking falls back to lexical, and says why
+    except Exception as exc:  # noqa: BLE001 - nothing is ranked then, and the index says why
         out["why"] = f"the embedding call failed ({type(exc).__name__})"
         return out
     if len(rowed) != len(items):
@@ -224,7 +222,7 @@ def index_files(
         captures=captures,
         **({"serving": serving} if serving else {}),
     )
-    return {INDEX_FILE: index_bytes(index_data(found, use or LEXICAL))}
+    return {INDEX_FILE: index_bytes(index_data(found, use or NO_BACKEND))}
 
 
 def read_index(copy: Path) -> dict | None:
@@ -239,43 +237,14 @@ def read_index(copy: Path) -> dict | None:
 # --- the ranking -------------------------------------------------------------------------------------------------
 
 
-def words(text: str) -> list[str]:
-    """The words of *text*, lower case (letters and digits, any script)."""
-    return [w.lower() for w in _WORD.findall(text or "")]
-
-
-def lexical_scores(query: str, texts: list[str]) -> list[float]:
-    """A score per text: the words it shares with *query*, each weighted by how rare it is among *texts* (its
-    inverse document frequency) and by how often it occurs, over the text's length (BM25, k1 1.2, b 0.75)."""
-    docs = [words(t) for t in texts]
-    asked = set(words(query))
-    n = len(docs)
-    if not n or not asked:
-        return [0.0] * n
-    avg = sum(len(d) for d in docs) / n or 1.0
-    df = {w: sum(1 for d in docs if w in d) for w in asked}
-    scores = []
-    for d in docs:
-        counts: dict[str, int] = {}
-        for w in d:
-            if w in asked:
-                counts[w] = counts.get(w, 0) + 1
-        s = 0.0
-        for w, tf in counts.items():
-            idf = math.log(1 + (n - df[w] + 0.5) / (df[w] + 0.5))
-            s += idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * len(d) / avg))
-        scores.append(s)
-    return scores
-
-
 def _dot(a: list, b: list) -> float:
     return float(sum(x * y for x, y in zip(a, b)))
 
 
-def ranking(data: dict, query: str, use: Backend = LEXICAL) -> tuple[list[tuple[float, dict]], str]:
+def ranking(data: dict, query: str, use: Backend = NO_BACKEND) -> tuple[list[tuple[float | None, dict]], str]:
     """Every row of the index *data* with its score, best first (ties in index order), and how they were ranked:
-    by meaning when the index holds vectors of *use*'s model and the query embeds; else by a lexical score, with
-    the reason."""
+    by meaning when the index holds vectors of *use*'s model and the query embeds; else not ranked at all: every row
+    in the index's own order with no score, and the reason (rev 2.1: no word matching ranks anything)."""
     items = [r for r in data.get("items") or [] if isinstance(r, dict)]
     why = ""
     if data.get("backend") == "embedding":
@@ -289,13 +258,12 @@ def ranking(data: dict, query: str, use: Backend = LEXICAL) -> tuple[list[tuple[
                 scored = [(_dot(q, r.get("vector") or []), r) for r in items]
                 how = f"ranked by meaning (the embedding model {use.model}), best first"
                 return _sorted(scored), how
-            except Exception as exc:  # noqa: BLE001 - falls back to lexical, and says why
+            except Exception as exc:  # noqa: BLE001 - nothing is ranked then, and the result says why
                 why = f"the embedding call failed ({type(exc).__name__})"
     else:
         why = str(data.get("why") or NOT_CONFIGURED)
-    scores = lexical_scores(query, [str(r.get("text") or r.get("card") or "") for r in items])
-    how = f"ranked by a lexical score (shared words, rarer words weighing more), best first, because {why}"
-    return _sorted(list(zip(scores, items))), how
+    how = f"not ranked, because {why}: every item in the library's order; judge by the cards"
+    return [(None, r) for r in items], how
 
 
 def _sorted(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
@@ -303,10 +271,10 @@ def _sorted(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
     return [scored[i] for i in order]
 
 
-def search_text(data: dict | None, query: str, use: Backend = LEXICAL, offset: int = 0) -> str:
-    """The result of ``search(query)``: how the items were ranked, then one line per item from *offset*, best
-    first (its rank, its path in the box, its id, kind and score, and its card), one page of :data:`PAGE_BYTES`;
-    a last line says where the next page starts."""
+def search_text(data: dict | None, query: str, use: Backend = NO_BACKEND, offset: int = 0) -> str:
+    """The result of ``search(query)``: how the items were ranked (or why they were not), then one line per item from
+    *offset*, best first (its rank, its path in the box, its id, kind and score when there is one, and its card), one
+    page of :data:`PAGE_BYTES`; a last line says where the next page starts."""
     if data is None:
         return "search: the library's search index cannot be read; use tools.grep and tools.read instead."
     ranked, how = ranking(data, query, use)
@@ -319,8 +287,9 @@ def search_text(data: dict | None, query: str, use: Backend = LEXICAL, offset: i
     end = offset
     for i in range(offset, total):
         score, r = ranked[i]
+        scored = f", score {score:.3f}" if score is not None else ""
         line = (
-            f"{i + 1}. {LIBRARY_ROOT}/{r.get('path')}  {r.get('id')} ({r.get('kind')}, score {score:.3f}): "
+            f"{i + 1}. {LIBRARY_ROOT}/{r.get('path')}  {r.get('id')} ({r.get('kind')}{scored}): "
             f"{r.get('card') or '(no summary)'}"
         )
         if end > offset and size + len(line.encode("utf-8")) + 1 > PAGE_BYTES:
@@ -336,17 +305,15 @@ def search_text(data: dict | None, query: str, use: Backend = LEXICAL, offset: i
 __all__ = [
     "Backend",
     "INDEX_FILE",
-    "LEXICAL",
+    "NO_BACKEND",
     "NOT_CONFIGURED",
     "OTHER_MODEL",
     "backend",
     "index_bytes",
     "index_data",
     "index_files",
-    "lexical_scores",
     "ranking",
     "read_index",
     "rows",
     "search_text",
-    "words",
 ]

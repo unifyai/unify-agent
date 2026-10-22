@@ -888,9 +888,9 @@ SEARCH = RegisteredTool(
     summary="find the library's items whose when-to-use text is closest to a situation.",
     description=(
         "Rank every item of the library (functions, notes and captured procedures) by how close its \"When to "
-        "use\" text is to the query: by meaning when the library has an embedding index, else by the words they "
-        "share, and the result says which. Each line is one item: its rank, its path under /memory (for read), "
-        "its id, kind and score, and its one-line card; a procedure with a recipe has on its card the call that "
+        "use\" text is to the query: by meaning when the library has an embedding index; else every item is listed "
+        "in the library's order, unranked, and the result says which. Each line is one item: its rank, its path "
+        "under /memory (for read), its id, kind and score (when ranked), and its one-line card; a procedure with a recipe has on its card the call that "
         "applies it to the agent's current request. Every item is listed, best first, one page of 8000 bytes at a "
         "time; the last line names the offset of the next page."
     ),
@@ -1165,11 +1165,12 @@ DECIDE = RegisteredTool(
 
 FIND = RegisteredTool(
     name="find",
-    summary="rank the library's items, the episodes' summaries or the open entries against a situation.",
+    summary="find the library's items, the episodes' summaries or the open entries closest to a situation.",
     description=(
-        "Rank against a query: the library's items by their When to use text (scope items), the episodes' summaries "
-        "(scope summaries) or the open entries' goals (scope open_entries); the best k, with how they were ranked. "
-        "A hit's path is where you can read it, when you can."
+        "Against a query: the library's items by their When to use text (scope items), the episodes' summaries "
+        "(scope summaries) or the open entries' goals (scope open_entries); the first k, ranked by meaning when the "
+        "run has an embedding route, else listed in their own order unranked, and the result says which. A hit's "
+        "path is where you can read it, when you can."
     ),
     parameters={
         "type": "object",

@@ -225,10 +225,11 @@ def _box_of(writer: Any) -> Path | None:
 
 
 def find(ctx: Any, args: dict) -> "_wt.Reply":
-    """``tools.find(query, scope="items", k=10)``: rank the library's items by their "When to use" text (the
-    librarian's ranking), the episodes' summaries, or the open entries, against *query*; the best *k*. The writer
-    drives it: nothing here proposes a group."""
-    from .library_search import LEXICAL, index_data, ranking
+    """``tools.find(query, scope="items", k=10)``: the library's items by their "When to use" text, the episodes'
+    summaries, or the open entries, against *query*; the first *k*. Ranked by meaning with the run's embedding backend
+    (:func:`.library_search.backend`, the librarian's), else not ranked at all: listed in their own order, the result
+    saying why (rev 2.1: no word matching ranks anything). The writer drives it: nothing here proposes a group."""
+    from .library_search import NO_BACKEND, backend, index_data, ranking
 
     writer, att = _state(ctx)
     if att is None:
@@ -244,11 +245,15 @@ def find(ctx: Any, args: dict) -> "_wt.Reply":
     if isinstance(k, bool) or not isinstance(k, int) or k < 1:
         return _refused("find", f"k is a positive whole number of hits, given {k!r}")
     found = _item_rows(writer) if scope == "items" else _summary_rows(att) if scope == "summaries" else _entry_rows(att)
-    # the same ranking as the librarian's search; the writer's search makes no embedding call (no route for one here)
-    ranked, how = ranking(index_data(found, LEXICAL), query, LEXICAL)
+    # the same ranking as the librarian's search: by meaning when the run has an embedding route, else none
+    try:
+        use = backend()
+    except Exception:  # noqa: BLE001 - no embedder: nothing is ranked, and the result says why
+        use = NO_BACKEND
+    ranked, how = ranking(index_data(found, use), query, use)
     hits = [
-        {"id": r.get("id"), "kind": r.get("kind"), "path": r.get("path"), "score": round(float(s), 4),
-         "card": r.get("card")}
+        {"id": r.get("id"), "kind": r.get("kind"), "path": r.get("path"),
+         "score": round(float(s), 4) if s is not None else None, "card": r.get("card")}
         for s, r in ranked[:k]
     ]  # fmt: skip
     return _wt.Reply(_json({"scope": scope, "ranked": how, "hits": hits, "of": len(ranked)}))

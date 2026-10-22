@@ -962,7 +962,7 @@ def librarian_files(
 ) -> dict[str, bytes]:
     """The librarian's generated files of the copy at *tree*: ``catalogue.md``,
     ``dispatch.json``, ``search.json`` (:func:`.library_search.index_files`, its vectors made with *search*, a
-    :class:`.library_search.Backend`; None: none, the ranking lexical), and the package with ``memory.ask``
+    :class:`.library_search.Backend`; None: none, and a search then ranks nothing), and the package with ``memory.ask``
     (:data:`ASK_SOURCE` after :mod:`.library_helper`) and its stub."""
     from .library_search import index_files
 
