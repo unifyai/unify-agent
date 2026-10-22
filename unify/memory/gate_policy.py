@@ -52,7 +52,7 @@ def _function(source: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
 def purity(source: Any) -> tuple[bool, str]:
     """Whether the one function *source* defines (a library function's definition, as the gate reads it) is
     statically pure (module docstring), and why not."""
-    from .fixed_answer import NEVER_READS, fixed_answer
+    from .fixed_answer import reads_input
 
     if not isinstance(source, str):
         return False, "its code cannot be read"
@@ -80,8 +80,7 @@ def purity(source: Any) -> tuple[bool, str]:
             return False, "it writes a name outside itself"
         if isinstance(node, (ast.Yield, ast.YieldFrom, ast.Await)):
             return False, "it is a generator or async"
-    fixed = fixed_answer(source)
-    if fixed is not None and fixed.get("why") == NEVER_READS:
+    if reads_input(source) is False:
         return False, "it never reads its input (a constant)"
     return True, ""
 

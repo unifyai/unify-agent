@@ -815,12 +815,12 @@ def _code_facts(source: str | None, applies_source: str | None) -> dict:
     (``reads_input``) and whether it gives a fixed answer (``constant``, :func:`.fixed_answer.fixed_answer`), and its
     ``applies`` source as written (``applies_text``)."""
     from .capture_shape import entry_env_chains
-    from .fixed_answer import NEVER_READS, fixed_answer
+    from .fixed_answer import fixed_answer, reads_input
 
     fixed = fixed_answer(source) if isinstance(source, str) else None
     return {
         "effects": entry_env_chains(source) if isinstance(source, str) else [],
-        "reads_input": not (fixed is not None and fixed.get("why") == NEVER_READS),
+        "reads_input": reads_input(source) is not False,
         "constant": fixed is not None,
         "applies_text": applies_source if isinstance(applies_source, str) and applies_source else "",
     }

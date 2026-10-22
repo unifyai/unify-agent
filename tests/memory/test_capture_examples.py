@@ -153,6 +153,47 @@ def test_a_procedure_that_reads_its_input_is_no_fixed_answer(source):
     assert fixed_answer(source) is None
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        # no value handed back: the outcome is what it did (return None, a bare return, no return)
+        "def run(value):\n    return None\n",
+        "def run(value):\n    print('done')\n    return\n",
+        "def run(value):\n    print('done')\n",
+        "def run():\n    return None\n",
+        "def run(v):\n    if v:\n        return 1\n    return None\n",
+        # it acts: the state and the environment, the work being the calls
+        "def run(state, env):\n    env.board.move(1)\n    env.board.move(2)\n    return None\n",
+        "def run(state, env):\n    env.mail.send('a@b.c', 'hello')\n    return 'sent'\n",
+        "def run(state, env):\n    return 42\n",
+        "def run(value):\n    tools.install(['x'])\n    return 'ok'\n",
+        "def run():\n    primitives.files.write('a', 'b')\n    return True\n",
+    ],
+)
+def test_a_procedure_that_gives_no_value_or_acts_is_never_a_fixed_answer(source):
+    """Rev 2.1, fix 3: in tool, action and conversation worlds the work is the calls and ``run`` returns None; such a
+    procedure is never served as a worked example."""
+    assert fixed_answer(source) is None
+
+
+def test_whether_the_entry_reads_its_input_is_its_own_fact():
+    from unify.memory.fixed_answer import reads_input
+
+    assert reads_input("def run(state, env):\n    env.a.b()\n") is True
+    assert reads_input("def run(value):\n    return None\n") is False
+    assert reads_input("def run(v:\n") is None and reads_input("x = 1\n") is None
+
+
+def test_a_state_env_procedure_is_a_procedure_in_the_dispatch_file():
+    from unify.memory.library_export import _code_facts
+
+    acting = "def run(state, env):\n    env.mail.send(state['to'], 'hi')\n    return None\n"
+    facts = _code_facts(acting, None)
+    assert facts["constant"] is False and facts["reads_input"] is True and facts["effects"] == ["env.mail.send"]
+    quiet = "def run(state, env):\n    env.board.step('left')\n    return None\n"
+    assert _code_facts(quiet, None)["constant"] is False
+
+
 # --- the actor's snapshot ---------------------------------------------------------------------------------------------
 
 
