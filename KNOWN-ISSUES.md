@@ -1,7 +1,7 @@
 # Known issues
 
-Behaviour that main ships as rev 2 was evaluated, recorded here with the fix proposed for a later run. Main does not
-change any of it until that run has tested the fix.
+Behaviour that main ships as rev 2 was evaluated, recorded here with the fix proposed for a later run, or the direction
+when no fix is settled. Main does not change any of it until a later run has tested the fix.
 
 ## A long read can use up the writer's repair reserve
 
@@ -21,8 +21,7 @@ A parsed fixture (`fixture(..., parser=...)`) is a recorded text block parsed by
 re-derived it: it ran the reader confined on the recorded text and refused a fixture whose bytes differed. In rev 2
 the gate runs no reader to check a fixture (`library_checks`: "re-deriving it would run its reader"), so it labels
 the fixture's owners `not run` and leaves the bytes unverified. An unverified parsed fixture grounds no argument, so
-the most it can do is leave its item at the lowest evidence level; it cannot raise an item's level. A writer can still
-store a parsed fixture whose bytes its reader would not produce, and readers of the library see it as recorded data.
+its item stays at the lowest evidence level.
 
-Proposed fix, to evaluate in a later run: re-derive a parsed fixture when its reader is statically pure
-(`gate_policy.purity`), as the gate already runs a pure item's own tests, and keep the `not run` label otherwise.
+Direction: open. Any fix must be static, with no execution: no mechanism may run a capture or a function to classify,
+dedupe, rank or test it.
