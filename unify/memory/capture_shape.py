@@ -17,12 +17,14 @@ Nothing is run, imported or evaluated, and no world name, word, task id or value
 the procedure's syntax only. A procedure that does not parse has no address (it is not captured anyway).
 
 **Work** (:func:`computes`): a pause's cells did work when one of them binds a name, defines a function or class,
-loops, comprehends, branches, calls with an argument that is not a literal, or calls into the environment at all: any
-call whose name is not the harness's own (:data:`HARNESS_NAMES`: ``tools``, ``memory``, ``display``, ``query_llm``)
-or a Python builtin, such as ``env.board.step("left")`` or ``primitives.mail.send("a@b.c", "hi")`` with literal
-arguments (rev 2.1: in action and tool worlds a run of literal action calls is the work). A cell in another language,
-or one that does not parse, counts as work. Only cells with no call into the environment and no computation (literal
-calls of builtins or of the harness's own tools, such as ``print("x")`` or ``tools.wait()``) start no segment fork
+loops, comprehends, branches, calls with an argument that is not a literal, or calls into the environment or through
+an action surface at all: any call through :data:`.fixed_answer.ACTION_SURFACES` (``tools``, ``primitives``), the
+same surfaces that make a stored procedure an action, and any call whose name is neither the harness's own
+read-only names (:data:`HARNESS_NAMES`: ``memory``, ``display``, ``query_llm``) nor a Python builtin, such as
+``env.board.step("left")`` or ``tools.wait()`` with literal arguments (rev 2.1: in action and tool worlds a run of
+literal action calls is the work). A cell in another language, or one that does not parse, counts as work. Only cells
+with no call into the environment or an action surface and no computation (literal calls of builtins or of the
+harness's read-only names, such as ``print("x")`` or ``memory.items()``) start no segment fork
 (:meth:`.integration.in_episode.InEpisode.segment`).
 """
 
@@ -33,7 +35,7 @@ import hashlib
 import json
 from typing import Any, Iterable
 
-from .fixed_answer import is_literal
+from .fixed_answer import ACTION_SURFACES, is_literal
 
 SHAPE_VERSION = 1
 
@@ -266,9 +268,9 @@ if hasattr(ast, "TryStar"):
     _COMPUTES = (*_COMPUTES, ast.TryStar)
 
 
-#: The names a cell calls that are the harness's own, not the environment: a literal call of one of them (or of a
-#: Python builtin) is no work.
-HARNESS_NAMES = frozenset({"tools", "memory", "display", "query_llm"})
+#: The harness's own read-only names a cell calls: a literal call of one of them (or of a Python builtin) is no work.
+#: The action surfaces (:data:`.fixed_answer.ACTION_SURFACES`) are never among them: a call through one acts.
+HARNESS_NAMES = frozenset({"memory", "display", "query_llm"})
 
 
 def _call_root(node: ast.AST) -> str | None:
@@ -281,6 +283,7 @@ def cell_computes(code: Any, language: str = "python") -> bool:
     """Whether one cell did work (module docstring): computed something or called into the environment; a cell that
     is not Python, or does not parse, does."""
     import builtins
+
     if (language or "python") != "python" or not isinstance(code, str):
         return True
     try:
@@ -292,6 +295,8 @@ def cell_computes(code: Any, language: str = "python") -> bool:
             return True
         if isinstance(node, ast.Call):
             root = _call_root(node.func)
+            if root in ACTION_SURFACES:
+                return True  # an action, whatever its arguments (as fixed_answer counts it)
             if root is not None and root not in HARNESS_NAMES and not hasattr(builtins, root):
                 return True  # a call into the environment is work, whatever its arguments
             if any(not is_literal(a) for a in node.args):

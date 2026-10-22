@@ -262,18 +262,28 @@ def test_only_cells_with_no_computation_and_no_environment_call_do_no_work():
     def cells(*codes, language="python"):
         return [Cell(i, c, "", language=language) for i, c in enumerate(codes)]
 
-    # no work: literal calls of the harness's own names or of builtins, and expressions that call nothing
-    assert not cs.computes(cells("tools.note(3)", 'print("hi")', "state.last", "tools.wait()"))
-    # rev 2.1: a call into the environment is work, even with literal arguments (in action and tool worlds a run of
-    # literal action calls is the work)
+    # no work: literal calls of the harness's read-only names or of builtins, and expressions that call nothing
+    assert not cs.computes(cells('memory.items("grid")', 'print("hi")', "state.last", 'display("x")'))
+    # rev 2.1: a call into the environment or through an action surface is work, even with literal arguments (in
+    # action and tool worlds a run of literal action calls is the work), as fixed_answer counts an action
     for code in ("env.files.list()", 'env.chat.say("hi", n=-1)', 'env.board.step("left")',
-                 'primitives.mail.send("a@b.c", "hi")'):  # fmt: skip
+                 'primitives.mail.send("a@b.c", "hi")', "tools.note(3)", "tools.wait()",
+                 'tools.files.read("a.txt")'):  # fmt: skip
         assert cs.computes(cells(code)), code
     for code in ("x = 1", "print(state.last)", "for r in rows: pass", "[r for r in rows]", "def f(): pass",
                  "env.files.write(path, text)", "if ok: env.a.b()", "import json", "env.a.b(*args)"):  # fmt: skip
-        assert cs.computes(cells("tools.note(3)", code)), code
+        assert cs.computes(cells('print("hi")', code)), code
     assert cs.computes(cells("ls -la", language="bash"))  # another language: counted as computing
     assert cs.computes(cells("def broken(:"))  # does not parse: counted as computing
+
+
+def test_work_and_acting_agree_on_the_action_surfaces():
+    """A cell that calls an action surface did work exactly when a procedure making that call acts."""
+    from unify.memory.fixed_answer import ACTION_SURFACES
+
+    assert not cs.HARNESS_NAMES & ACTION_SURFACES
+    for surface in sorted(ACTION_SURFACES):
+        assert cs.computes([Cell(0, f'{surface}.x.y("literal")', "", language="python")]), surface
 
 
 def test_a_pause_with_no_work_starts_no_fork_and_its_cells_wait_for_the_next(tmp_path, monkeypatch):
@@ -285,7 +295,7 @@ def test_a_pause_with_no_work_starts_no_fork_and_its_cells_wait_for_the_next(tmp
     forks = TIE._Forks()
     monkeypatch.setattr(fork_mod, "start", forks.start)
     run, ie = TIE._ie(tmp_path, {TIE.C1: TIE._tree(TIE.LIB)})
-    for code in ('print("checking")', "tools.note(3)"):
+    for code in ('print("checking")', 'memory.items("grid")'):
         run.code.append(code)
         ie.cell_done()
     ie.mark("actor_call")
