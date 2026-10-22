@@ -20,7 +20,6 @@ from unify.memory.integration import hooks
 from unify.memory.integration import request as request_mod
 from unify.memory.integration.checkout import (
     export_actor_library_mode,
-    export_checkout,
     remove_checkout,
 )
 from unify.memory.integration.paths import Paths
@@ -87,7 +86,6 @@ def test_the_export_is_read_only_and_still_removable(tmp_path):
     assert (
         export_actor_library_mode(mem.git_dir, sha, dest) == first
     )  # replaces a read-only export
-    export_checkout(mem.git_dir, sha, dest)  # so does v2's export
     remove_checkout(dest)
     assert not dest.exists()
 

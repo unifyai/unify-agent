@@ -96,11 +96,8 @@ def _copy() -> Path | None:
 
 
 def worker_paths() -> list[str]:
-    """Import paths the worker puts first: the run's memory export, then the library test kit beside it when
-    the export holds one (:mod:`..testkit`; ``memlab`` for the library's tests). Under ``UNIFY_MEMORY=in_episode``
-    the current pin's own directory (the link's target): a re-pin gives the worker the new one."""
-    from ..testkit import EXPORT_DIR
-
+    """Import paths the worker puts first: the run's memory export. Under ``UNIFY_MEMORY=in_episode`` the current
+    pin's own directory (the link's target): a re-pin gives the worker the new one."""
     path = _copy()
     if path is None:
         return []
@@ -108,8 +105,7 @@ def worker_paths() -> list[str]:
         # each pin is imported from its own directory, so a function's code names the pin it came from, and a
         # re-pin moves the import path (Worker.repin_modules)
         path = path.resolve()
-    kit = path / EXPORT_DIR
-    return [str(path)] + ([str(kit)] if kit.is_dir() else [])
+    return [str(path)]
 
 
 def worker_globals() -> dict[str, list]:

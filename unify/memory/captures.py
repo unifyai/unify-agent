@@ -259,7 +259,7 @@ def safety(source: str, rel: str = PROCEDURE_FILE) -> str | None:
         return "key-shaped string"
     if forbidden(rel):
         return f"forbidden path {rel}"
-    bad = unsafe_path(f"env/captured/{rel}")
+    bad = unsafe_path(rel)
     if bad is not None:
         return bad[1]
     if len(source.encode("utf-8", "surrogatepass")) > MAX_SOURCE_BYTES:

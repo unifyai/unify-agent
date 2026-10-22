@@ -58,10 +58,7 @@ def test_library_first_message_points_to_the_index_and_no_library_json(
     tmp_path,
     monkeypatch,
 ):
-    def refuse(*a, **k):
-        raise AssertionError("library.json is v2's; library mode reads the tree")
-
-    monkeypatch.setattr(WriterPass, "_stage_context", refuse)
+    assert not hasattr(WriterPass, "_stage_context")  # library.json was v2's; library mode reads the tree
     _, _, writer = _writer(tmp_path, Turns([]), max_calls=1)
     _run(writer)
     first = writer.messages[1]["content"]

@@ -53,10 +53,7 @@ EARLY = [
     ({"notes.txt": "x"}, [f"G1: file notes.txt: {_ROOT_RULE}"]),
     (
         {"json/notes.txt": "x"},
-        [
-            f"G1: file json/notes.txt: {_ROOT_RULE}",
-            "G6: root package json/ (json/notes.txt) shadows the json module",
-        ],
+        [f"G1: file json/notes.txt: {_ROOT_RULE}"],
     ),
     ({"helpers.py": "x = 1\n"}, [f"G1: file helpers.py: {_ROOT_RULE}"]),
     ({"memory/acct/util/__init__.py": "x = 1\n"}, [f"G1: file memory/acct/util/__init__.py: {_NO_SUBPACKAGES}"]),

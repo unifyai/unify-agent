@@ -20,10 +20,7 @@ The gate-level cases (a candidate refused before anything runs) are on rev 2's l
 
 import pytest
 
-from unify.memory.manifest import (
-    TESTKIT,
-    forbidden,
-)
+from unify.memory.manifest import forbidden
 
 # --- the policy function itself -------------------------------------------------------------------------
 
@@ -42,12 +39,6 @@ from unify.memory.manifest import (
         ("env/venmo/tests/a.cpython-312.py", "G6", "bytecode or native code file"),
         ("workflows/__pycache__/x.md", "G6", "bytecode cache path"),
         ("env/venmo/tests/sitecustomize/d.txt", "G6", "interpreter start-up hook"),
-        ("_pytest/x.txt", "G6", "shadows the _pytest module"),
-        ("pluggy/x.txt", "G6", "shadows the pluggy module"),
-        ("env", "G1", "outside the layout"),
-        ("workflows", "G1", "outside the layout"),
-        ("README.md", "G1", "outside the layout"),
-        ("conftest/x.txt", "G1", "outside the layout"),
     ],
 )
 def test_unsafe_path_classes(path, check, fragment):
@@ -57,9 +48,5 @@ def test_unsafe_path_classes(path, check, fragment):
     assert got is not None and got[0] == check and fragment in got[1] and path in got[1]
 
 
-def test_root_allow_list_shadows_nothing_and_root_conftest_stays_forbidden():
-    from unify.memory.manifest import ROOT_DIRS, root_shadowed
-
-    assert not {*ROOT_DIRS, TESTKIT.removesuffix(".py")} & root_shadowed()
-    assert {"json", "pytest", "_pytest", "pluggy", "site"} <= root_shadowed()
+def test_root_conftest_stays_forbidden():
     assert forbidden("conftest.py") and forbidden("sitecustomize.py")

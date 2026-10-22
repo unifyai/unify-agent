@@ -40,7 +40,6 @@ def test_git_entries_links_hard_links_and_specials_are_named(tmp_path):
     assert msg.startswith(
         "layout: the library is taken as regular files and directories only",
     )
-    assert writer_pass._GATE_LINE.match(msg)
 
 
 def test_the_pass_folder_is_not_part_of_the_candidate(tmp_path):

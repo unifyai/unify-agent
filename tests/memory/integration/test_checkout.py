@@ -1,20 +1,12 @@
-"""The per-request export of memory main, its diff, the state file and the request lock (integration Task 18)."""
+"""The memory home's fixed paths, hardened git, the state file and the request lock (integration Task 18)."""
 
-import os
 import subprocess
-import sys
 
 import pytest
 
-from unify.memory.blobs import BlobStore
 from unify.memory.fingerprint import Generations
 from unify.memory.gitio import GitError, Repo
 from unify.memory.integration import hardgit
-from unify.memory.integration.checkout import (
-    checkout_diff,
-    export_checkout,
-    remove_checkout,
-)
 from unify.memory.integration.paths import Paths
 from unify.memory.integration.state import State, acquire_lock, release_lock
 
@@ -66,99 +58,6 @@ def test_paths_are_fixed_under_home(tmp_path):
     assert p.state == p.state_dir / "state.json"
     assert p.errors == p.state_dir / "errors.jsonl"
     assert p.worktree_git == tmp_path / "worktree.git"
-
-
-def test_export_has_no_git_and_diff_sees_new_changed_and_ignored(tmp_path):
-    mem, sha = _seed(tmp_path)
-    dest = tmp_path / "memory-checkout"
-    export_checkout(mem.git_dir, sha, dest)
-    assert (dest / "env/spotify/__init__.py").read_text() == MOD
-    assert not (dest / ".git").exists()
-    (dest / "env/spotify/scratch.py").write_text("x = 1\n")
-    (dest / "env/spotify/__init__.py").write_text(MOD + "\nY = 2\n")
-    (dest / ".gitignore").write_text("hidden.py\n")
-    (dest / "hidden.py").write_text("y = 2\n")
-    (dest / "env/spotify/__pycache__").mkdir()
-    (dest / "env/spotify/__pycache__/a.pyc").write_bytes(b"\0")
-    (dest / "top.pyc").write_bytes(b"\0")
-    d = checkout_diff(mem.git_dir, sha, dest, BlobStore(tmp_path / "b"))
-    assert "scratch.py" in d and "hidden.py" in d and "+Y = 2" in d
-    assert "__pycache__" not in d and "top.pyc" not in d
-    assert mem.head() == sha  # the memory repo is untouched
-
-
-def test_unchanged_export_diffs_empty(tmp_path):
-    mem, sha = _seed(tmp_path)
-    dest = tmp_path / "co"
-    export_checkout(mem.git_dir, sha, dest)
-    assert checkout_diff(mem.git_dir, sha, dest, BlobStore(tmp_path / "b")) == ""
-
-
-def test_export_ignores_gitattributes_export_rules(tmp_path):
-    mem, sha = _seed(
-        tmp_path,
-        {".gitattributes": "env/** export-ignore\n"},
-    )
-    dest = tmp_path / "co"
-    export_checkout(mem.git_dir, sha, dest)
-    assert (dest / "env/spotify/__init__.py").read_text() == MOD
-
-
-def test_planted_git_file_never_runs_code(tmp_path):
-    mem, sha = _seed(tmp_path)
-    dest = tmp_path / "co"
-    export_checkout(mem.git_dir, sha, dest)
-    evil = tmp_path / "evil"
-    evil.mkdir()
-    marker = tmp_path / "ran"
-    (evil / "config").write_text(f"[core]\n\tfsmonitor = touch {marker}\n")
-    (dest / ".git").write_text(f"gitdir: {evil}\n")
-    checkout_diff(mem.git_dir, sha, dest, BlobStore(tmp_path / "b"))
-    assert not marker.exists()
-
-
-def test_planted_gitattributes_filter_never_runs(tmp_path):
-    mem, sha = _seed(tmp_path)
-    dest = tmp_path / "co"
-    export_checkout(mem.git_dir, sha, dest)
-    (dest / ".gitattributes").write_text("*.py filter=evil diff=evil\n")
-    (dest / "new.py").write_text("z = 3\n")
-    d = checkout_diff(mem.git_dir, sha, dest, BlobStore(tmp_path / "b"))
-    assert "new.py" in d and "+z = 3" in d
-
-
-def test_symlink_is_recorded_not_followed(tmp_path):
-    mem, sha = _seed(tmp_path)
-    dest = tmp_path / "co"
-    export_checkout(mem.git_dir, sha, dest)
-    secret = tmp_path / "secret.txt"
-    secret.write_text("SENTINEL-link-body\n")
-    os.symlink(secret, dest / "link")
-    d = checkout_diff(mem.git_dir, sha, dest, BlobStore(tmp_path / "b"))
-    assert "link" in d and "SENTINEL-link-body" not in d
-
-
-def test_reexport_discards_previous_writes(tmp_path):
-    mem, sha = _seed(tmp_path)
-    dest = tmp_path / "co"
-    export_checkout(mem.git_dir, sha, dest)
-    (dest / "junk.py").write_text("1")
-    export_checkout(mem.git_dir, sha, dest)
-    assert not (dest / "junk.py").exists()
-    remove_checkout(dest)
-    assert not dest.exists()
-
-
-def test_large_diff_is_capped_into_a_blob(tmp_path):
-    mem, sha = _seed(tmp_path)
-    dest = tmp_path / "co"
-    export_checkout(mem.git_dir, sha, dest)
-    (dest / "big.txt").write_text("z" * 400_000)
-    blobs = BlobStore(tmp_path / "b")
-    d = checkout_diff(mem.git_dir, sha, dest, blobs, cap=1000)
-    assert len(d) < 2000 and "truncated" in d
-    blob = d.rsplit("blob ", 1)[1].split("]")[0]
-    assert b"big.txt" in blobs.get(blob)
 
 
 def test_hardgit_ignores_global_config_and_inherited_git_env(tmp_path, monkeypatch):
@@ -216,81 +115,3 @@ def test_lock_is_exclusive_and_times_out(tmp_path):
     release_lock(acquire_lock(lock, timeout_s=0.2))
 
 
-def test_an_older_commits_bytecode_is_never_exported(tmp_path):
-    """A commit from before the gate refused what manifest.unsafe_path names (bytecode, extensions,
-    root entries outside the layout) is exported without them, so a cell can never import a sourceless
-    ``.pyc`` from the library; the untouched export still diffs empty (what was left out is not something
-    the request deleted).
-    """
-    # not a dict literal: test_gate_layout's fixture sweep reads those as libraries the gate must admit
-    planted = dict.fromkeys(
-        [
-            "env/__init__.pyc",
-            "json.pyc",
-            "sitecustomize.pyc",
-            "env/spotify/__pycache__/__init__.cpython-312.pyc",
-            "env/spotify/fast.so",
-            "pytest_shadow.txt",
-        ],
-        "x",
-    )
-    mem = Repo.init_bare(tmp_path / "memory")
-    base = mem.head()
-    with mem.temp_checkout() as wt:
-        (wt / "env/spotify/__pycache__").mkdir(parents=True)
-        (wt / "env/spotify/__init__.py").write_text(MOD)
-        for rel, text in planted.items():
-            (wt / rel).write_text(text)
-        sha = mem.commit_all(wt, "old", {})
-    mem.fast_forward("main", sha, expected_old=base)
-    dest = tmp_path / "co"
-    export_checkout(mem.git_dir, sha, dest)
-    exported = sorted(str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file())
-    assert exported == ["env/spotify/__init__.py"]
-    assert checkout_diff(mem.git_dir, sha, dest, BlobStore(tmp_path / "b")) == ""
-
-
-def test_the_export_ships_the_test_kit_when_the_librarys_tests_use_it(tmp_path):
-    """A library whose tests import memlab and name a recorded blob: the working model's export holds the
-    same kit (and blob) as the gate and the writer's box, outside the memory diff; a library that does not gets none.
-    """
-    blobs = BlobStore(tmp_path / "blobs")
-    screen = blobs.put(b"recorded screen")
-    test = (
-        "from memlab.inputs import blob\n\n\n"
-        f"def test_screen():\n    assert blob({screen!r}) == b'recorded screen'\n"
-    )
-    mem = Repo.init_bare(tmp_path / "memory")
-    base = mem.head()
-    with mem.temp_checkout() as wt:
-        (wt / "env/spotify/tests").mkdir(parents=True)
-        (wt / "env/spotify/__init__.py").write_text(MOD)
-        (wt / "env/spotify/tests/test_hello.py").write_text(test)
-        sha = mem.commit_all(wt, "seed", {})
-    mem.fast_forward("main", sha, expected_old=base)
-    dest = tmp_path / "memory-checkout"
-    export_checkout(mem.git_dir, sha, dest, blobs)
-    kit = dest / ".memlab"
-    assert (kit / "memlab" / "inputs.py").is_file() and (
-        kit / "_memory_pin.py"
-    ).is_file()
-    assert (kit / "blobs" / screen).read_bytes() == b"recorded screen"
-    code = (
-        "import sys; sys.path[:0] = sys.argv[1:3]\n"
-        "from memlab.inputs import blob\n"
-        "print(blob(sys.argv[3]).decode())\n"
-    )
-    r = subprocess.run(
-        [sys.executable, "-I", "-c", code, str(dest), str(kit), screen],
-        capture_output=True,
-        text=True,
-        env={"PATH": "/usr/bin:/bin"},
-        timeout=60,
-    )
-    assert r.stdout.strip() == "recorded screen", r.stderr
-    assert ".memlab" not in checkout_diff(mem.git_dir, sha, dest, blobs)
-    (tmp_path / "plain").mkdir()
-    plain_mem, plain_sha = _seed(tmp_path / "plain")
-    plain = tmp_path / "plain-checkout"
-    export_checkout(plain_mem.git_dir, plain_sha, plain, blobs)
-    assert not (plain / ".memlab").exists()

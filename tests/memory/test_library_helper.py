@@ -140,8 +140,9 @@ def test_show_explains_a_hidden_item(tmp_path):
     assert "memory.text.dates:week(" not in (root / "INDEX.md").read_text()
 
 
-def test_find_ranks_like_v2s_matcher(tmp_path, monkeypatch):
-    """Ranking is v2's matcher's for single-parameter shapes; ``Found.param`` names the parameter that matched."""
+def test_find_ranks_by_the_shape_matcher(tmp_path):
+    """Ranking is the shape matcher's (level, then share of named keys); ``Found.param`` names the parameter that
+    matched."""
     value = {"date": "2026-10-09", "zone": "UTC"}
     shapes = {
         DATE: [
@@ -171,23 +172,6 @@ def test_find_ranks_like_v2s_matcher(tmp_path, monkeypatch):
     )
     entries = json.loads((root / FIND_FILE).read_text())["functions"]
     assert all("input" not in e for e in entries)
-    # v2's matcher on the same shapes without the parameter key: what v2 would rank
-    stripped = [
-        {
-            **e,
-            "input_shapes": [
-                {k: v for k, v in d.items() if k != "param"}
-                for d in e.get("input_shapes", [])
-            ],
-        }
-        for e in entries
-    ]
-    monkeypatch.setattr(memory_helper, "_catalog", lambda: {"functions": stripped})
-    want = [
-        [":".join(f.name.rsplit(".", 1)), f.signature, "s", *list(f)[3:]]
-        for f in memory_helper.find(value)
-    ]
-    assert got == want
     assert [(g[0], g[2], g[3]) for g in got] == [
         (DATE, "s", "exact"),
         ("memory.text.parse:tokens", "s", "structure"),
@@ -203,7 +187,7 @@ def test_find_ranks_like_v2s_matcher(tmp_path, monkeypatch):
     )
 
 
-def test_the_matcher_is_v2s_without_its_catalogue():
+def test_the_shipped_matcher_is_the_helper_from_its_imports_on():
     src = lx.matcher_source().decode("utf-8")
     compile(src, "matcher.py", "exec")
     assert (

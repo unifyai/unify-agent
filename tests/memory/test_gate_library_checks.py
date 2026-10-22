@@ -113,7 +113,7 @@ def test_an_episode_cover_is_labelled_not_run_and_recorded(tmp_path):
 def test_g4_notes_and_never_refuses(tmp_path, monkeypatch):
     monkeypatch.setattr(
         library_checks,
-        "_index_tokens",
+        "library_index_tokens",
         lambda tree, examples=None: 5000,
     )
     v = _checks(tmp_path, [])

@@ -16,7 +16,7 @@ from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
-from unify.memory.integration.checkout import export_checkout
+from unify.memory.integration.checkout import export_actor_library_mode
 from unify.memory.memory_writer import publish
 from unify.memory.writer_pass import PassConfig, WriterPass
 from unify.memory.staging import StagingView
@@ -147,7 +147,7 @@ def test_a_deferred_episode_is_listed_next_pass_merged_there_and_then_gone(
 
     # 5. isolation: the actor's served checkout holds no pool, and the pool is on no served or main history
     served = publish(st.mem)
-    export_checkout(st.mem.git_dir, served, tmp_path / "co")
+    export_actor_library_mode(st.mem.git_dir, served, tmp_path / "co")
     assert not (tmp_path / "co" / "pool").exists()
     assert not any(
         p.startswith("pool/")

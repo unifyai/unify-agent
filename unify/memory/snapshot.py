@@ -16,7 +16,6 @@ from pathlib import Path
 
 from .gitio import _ENV, _HARD, GIT_TIMEOUT_S, GitError, Repo, git_base_env
 from .manifest import ManifestError, safe_rel
-from .memory_repo import _all_names, _front_matter, _sections, _slug
 
 
 def _git_bytes(repo: Repo, args: list[str], input: bytes | None = None) -> bytes:
@@ -154,41 +153,6 @@ def materialise(repo: Repo, files: dict[str, tuple[str, str]], dest: Path) -> Pa
     if written != set(files):
         raise GitError("the extracted tree differs from the committed tree")
     return dest
-
-
-def item_bodies(tree: Path) -> dict[str, tuple[str, str, bool]]:
-    """``item id -> (kind, body, listed)``; a function's body is its unparsed AST, a note its section text."""
-    out: dict[str, tuple[str, str, bool]] = {}
-    for mod in sorted(tree.glob("env/*/__init__.py")):
-        try:
-            module = ast.parse(mod.read_bytes())
-        except (SyntaxError, ValueError):
-            continue  # reported by items() under G6
-        listed = _all_names(module)
-        for node in module.body:
-            if isinstance(
-                node,
-                (ast.FunctionDef, ast.AsyncFunctionDef),
-            ) and not node.name.startswith("_"):
-                out[f"env/{mod.parent.name}:{node.name}"] = (
-                    "env_function",
-                    ast.unparse(node),
-                    listed is None or node.name in listed,
-                )
-    for notes in sorted(tree.glob("env/*/NOTES.md")):
-        rel = notes.relative_to(tree).as_posix()
-        for heading, body in _sections(notes.read_bytes().decode("utf-8", "replace")):
-            key = f"{rel}#{_slug(heading)}"
-            prev = out.get(key, ("", "", True))[1]
-            out[key] = ("env_note", prev + f"## {heading}\n{body}\n", True)
-    for wf in sorted(tree.glob("workflows/*.md")):
-        text = wf.read_bytes().decode("utf-8", "replace")
-        out[wf.relative_to(tree).as_posix()] = (
-            "workflow",
-            text,
-            _front_matter(text).get("listed", "true") != "false",
-        )
-    return out
 
 
 def public_bindings(source: bytes | None) -> dict[str, bool] | None:

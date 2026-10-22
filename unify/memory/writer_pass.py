@@ -16,11 +16,8 @@ The box never sees the git checkout itself: a ``.git`` file the model could rewr
 ``git add`` at a repository (and configuration) of its choosing.
 
 The writer sees only what :func:`export_for_writer` and :func:`export_blobs` write: request, cells,
-actions, and the file blobs worktree actions recorded; and, from the harness, :func:`previous_gate` (the last
-refused gate lines per channel) and :func:`library_summary` (the library's functions on the pass's channels,
-with their recorded covers as item and action ids, so it can tend the library). Its first message adds
-the index (or the README under ``catalogue``), those functions' cover counts and, with
-``PassConfig.show_usage``, a table of how requests used each function
+actions, and the file blobs worktree actions recorded; and, from the harness, the library's generated files, its
+attention entries and, with ``PassConfig.show_usage``, a table of how requests used each function
 (:func:`.usage.usage_table`, harness counts). Nothing about outcomes, signals or checkers reaches it. The
 pass's messages are kept (:meth:`WriterPass.transcript`, redacted and bounded) for the driver to store on the
 episode repo.
@@ -55,8 +52,7 @@ from .blobs import BLOB_ID, BlobStore
 from .episodes import Episode, env_channel
 from .evidence import EvidenceStore
 from .gate import Gate, GateResult, ParentSnapshot
-from .gitio import GitError, Repo
-from .memory_repo import items as memory_items
+from .gitio import Repo
 from . import messaging as _messaging
 from . import repair as _repair
 from . import safe_paths as _safe
@@ -430,19 +426,6 @@ _NEVER_COPIED = frozenset({".git", "__pycache__", ".pytest_cache", ".hypothesis"
 _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _UNKNOWN = "unknown"
 
-# /inputs/previous_gate.json: per memory channel, the last refused pass's gate lines (at most this many,
-# each at most _CHECK_REASON_CHARS), looked for among this many most recent refused passes
-PREVIOUS_GATE_LINES = 10
-PREVIOUS_GATE_SCAN = 200
-# The harness-written lines of a refused pass's reasons: the gate's checks and the pass's own structural
-# refusals. Notes and model or pass errors are left out.
-_GATE_LINE = re.compile(r"^(?:G[1-6]: |no manifest\Z|over quota: |manifest: |layout: )")
-_NAMES_A_CHANNEL = re.compile(r"\benv[/.][a-z]")
-# per-item admission's prefixes on a gate line: an item refused in a pass that landed, or a reduction refused
-_ITEM_PREFIX = re.compile(r"^(?:item refused: |reduced: )")
-# /inputs/library.json: an orientation index of the pass's channels, at most this many tokens
-LIBRARY_BUDGET_TOKENS = 2000
-_SUMMARY_CHARS = 200
 # The writer's transcript: kept whole, never cut (:mod:`.transcripts`). On this notes ref of the request's episode
 # commit go its JSON lines while they fit TRANSCRIPT_MAX_BYTES, else one row pointing to its chunk files
 TRANSCRIPT_REF = "writer-transcripts"
@@ -799,187 +782,6 @@ def export_blobs(
         out["exported_bytes"] = used
     (dest / "index.json").write_text(json.dumps(out, sort_keys=True) + "\n")
     return out
-
-
-def previous_gate(evidence: EvidenceStore, channels: Iterable[str]) -> dict:
-    """``/inputs/previous_gate.json``: per memory channel of the pass, the last refused pass's gate lines.
-
-    Only harness-written lines are kept (``G1``..``G6`` and the pass's own ``no manifest``, ``over quota``
-    and ``manifest:`` refusals), never notes, model errors or anything a checker wrote (the evidence store
-    holds none), each redacted and at most 200 characters. A line belongs to a channel when it names
-    ``env/<channel>`` (or ``env.<channel>``), or names no channel and the refused pass covered the channel
-    (a batched pass, or an incremental pass on it). Per channel: the most recent refused pass among the
-    last :data:`PREVIOUS_GATE_SCAN` with such a line, at most :data:`PREVIOUS_GATE_LINES` of its lines in
-    the gate's order, and ``more`` counting those left out. A channel with no such refusal is absent. A pass
-    that landed after refusing some of its items (per-item admission) counts too, with its ``item refused:``
-    lines read as the gate lines they carry (as are a refused reduction's ``reduced:`` lines).
-    """
-    rows = evidence.refused_passes(PREVIOUS_GATE_SCAN)
-    out: dict[str, dict] = {}
-    for ch in sorted({c for c in channels if isinstance(c, str)}):
-        names_ch = re.compile(rf"\benv[/.]{re.escape(ch)}(?![a-z0-9_])")
-        for pass_id, row_channel, reasons in rows:
-            lines = [
-                r
-                for r in (
-                    _ITEM_PREFIX.sub("", x, count=1)
-                    for x in reasons
-                    if isinstance(x, str)
-                )
-                if _GATE_LINE.match(r)
-                and (
-                    names_ch.search(r)
-                    or (row_channel in (None, ch) and not _NAMES_A_CHANNEL.search(r))
-                )
-            ]
-            if lines:
-                out[ch] = {
-                    "pass_id": pass_id,
-                    "reasons": [
-                        _redact(r)[:_CHECK_REASON_CHARS]
-                        for r in lines[:PREVIOUS_GATE_LINES]
-                    ],
-                    "more": max(0, len(lines) - PREVIOUS_GATE_LINES),
-                }
-                break
-    return {
-        "about": "per memory channel: the reasons the gate gave when it last refused a pass there",
-        "channels": out,
-    }
-
-
-def last_passes(
-    memory: Repo,
-    rev: str,
-    tree: Path,
-    channels: Iterable[str],
-) -> dict[str, str]:
-    """Per public function of the channels' modules, the pass that last changed one of its lines.
-
-    ``git blame`` of ``env/<channel>/__init__.py`` at *rev* (*tree* is that revision checked out) gives
-    each line's commit; the function's newest one (in *rev*'s history order) names its pass by its ``Pass``
-    trailer. A function last changed by a commit without one (a harness edit) is left out, as is a module
-    that git or the parser cannot read: this orients the writer, it checks nothing.
-    """
-    try:
-        order = {
-            sha: i
-            for i, sha in enumerate(memory.run("rev-list", "--reverse", rev).split())
-        }
-        log = memory.run(
-            "log",
-            "--format=%x1e%H%x1f%(trailers:key=Pass,valueonly)",
-            rev,
-        )
-    except GitError:
-        return {}
-    pass_of: dict[str, str] = {}
-    for rec in log.split("\x1e"):
-        sha, _, value = rec.partition("\x1f")
-        first = value.strip().splitlines()
-        if sha.strip() and first:
-            pass_of[sha.strip()] = first[0].strip()
-    out: dict[str, str] = {}
-    for ch in sorted({c for c in channels if isinstance(c, str)}):
-        path = f"env/{ch}/__init__.py"
-        if not _manifest.SKELETON_ID.match(f"env/{ch}") or not (tree / path).is_file():
-            continue
-        try:
-            shas = memory.blame_lines(rev, path)
-            module = ast.parse((tree / path).read_text())
-        except (GitError, SyntaxError, ValueError, OSError):
-            continue
-        for node in module.body:
-            if not isinstance(
-                node,
-                (ast.FunctionDef, ast.AsyncFunctionDef),
-            ) or node.name.startswith("_"):
-                continue
-            start = min([d.lineno for d in node.decorator_list] + [node.lineno])
-            mine = shas[start - 1 : node.end_lineno or node.lineno]
-            newest = max(mine, key=lambda s: order.get(s, -1), default=None)
-            if newest in pass_of:
-                out[f"env/{ch}:{node.name}"] = pass_of[newest]
-    return out
-
-
-def library_summary(
-    tree: Path,
-    channels: Iterable[str],
-    covers: Mapping[str, int],
-    last_pass: Mapping[str, str],
-    *,
-    budget_tokens: int = LIBRARY_BUDGET_TOKENS,
-    cover_ids: Mapping[str, list] | None = None,
-) -> dict:
-    """``/inputs/library.json``: the listed functions of the pass's channels, for orientation.
-
-    One row per function (``item``, ``signature``, ``summary``: its docstring's first line, ``covers``:
-    recorded covers so far, ``last_pass``: the pass that last changed it, or None), in item order, while
-    the whole stays within *budget_tokens*; ``truncated`` then counts the rows left out (/memory holds
-    every function in full). Nothing here comes from outcomes or signals.
-
-    With *cover_ids* (:func:`library_covers`: every environment function of the channels with its recorded
-    covers as ``[episode_id, action_index]`` lists, for tending the library) every such function has a
-    row with ``cover_ids`` too, and the budget bounds only the descriptive fields: past it, a row keeps
-    ``item``, ``covers``, ``cover_ids`` and ``last_pass``, and ``truncated`` counts the rows without a
-    signature and summary. A deleted function's covers must all pass to a kept one, so none is ever cut.
-    """
-    wanted = {c for c in channels if isinstance(c, str)}
-    fns = sorted(
-        (
-            it
-            for it in memory_items(tree).items
-            if it.kind == "env_function"
-            and it.listed
-            and it.path.split("/")[1] in wanted
-        ),
-        key=lambda it: it.item_id,
-    )
-    about = "the listed functions on this pass's memory channels; /memory holds them in full"
-    if cover_ids is not None:
-        about = (
-            "the functions on this pass's memory channels with their recorded covers (cover_ids: "
-            "[episode_id, action_index]); /memory holds them in full"
-        )
-    rows: list[dict] = []
-    used = len(json.dumps({"about": about, "functions": [], "truncated": len(fns)}))
-    described: set[str] = set()
-    for it in fns:
-        row = {
-            "item": it.item_id,
-            "signature": it.signature[:_SUMMARY_CHARS],
-            "summary": it.doc[:_SUMMARY_CHARS],
-            "covers": int(covers.get(it.item_id, 0)),
-            "last_pass": last_pass.get(it.item_id),
-        }
-        size = len(json.dumps(row)) + 2
-        # index.estimate_tokens: four characters a token
-        if (used + size + 3) // 4 > budget_tokens:
-            break
-        rows.append(row)
-        described.add(it.item_id)
-        used += size
-    if cover_ids is None:
-        return {"about": about, "functions": rows, "truncated": len(fns) - len(rows)}
-    for row in rows:
-        row["cover_ids"] = [list(c) for c in cover_ids.get(row["item"], [])]
-    for item in sorted({it.item_id for it in fns} | set(cover_ids)):
-        if item not in described:
-            rows.append(
-                {
-                    "item": item,
-                    "covers": int(covers.get(item, len(cover_ids.get(item, [])))),
-                    "cover_ids": [list(c) for c in cover_ids.get(item, [])],
-                    "last_pass": last_pass.get(item),
-                },
-            )
-    rows.sort(key=lambda r: r["item"])
-    return {
-        "about": about,
-        "functions": rows,
-        "truncated": sum(1 for r in rows if "signature" not in r),
-    }
 
 
 def _plain(o: object, chars: int) -> object:
@@ -1435,18 +1237,6 @@ def _mirror(
     finally:
         os.close(root)
     return left_out
-
-
-def _exported_channels(episodes: Path) -> list[str]:
-    """The distinct memory channels (non-null ``memory_channels``) of the actions :func:`export_for_writer` wrote.
-
-    Read back from the host's own export before the writer's first cell, so it is exactly what the writer is shown.
-    """
-    out: set[str] = set()
-    for f in sorted(episodes.glob("*.json")) if episodes.is_dir() else []:
-        row = json.loads(f.read_text())
-        out.update(c for c in row.get("memory_channels", []) if isinstance(c, str))
-    return sorted(out)
 
 
 def _drop_unchanged(tree: Path, generated: Mapping[str, bytes]) -> None:
@@ -2019,28 +1809,6 @@ class WriterPass:
             except (OSError, ValueError):
                 manifest = None  # the note keeps it all instead
         return _transcripts.note_lines(pass_id, lines, manifest)
-
-    def _stage_context(
-        self,
-        inputs: Path,
-        tree: Path,
-        rev: str,
-        cover_ids: Mapping[str, list] | None = None,
-    ) -> None:
-        """``previous_gate.json`` and ``library.json`` in *inputs*, for the channels the writer is shown.
-
-        *tree* is the library at *rev* (the pass's parent) checked out; *cover_ids* (:func:`library_covers`)
-        adds each function's recorded cover ids to ``library.json``.
-        """
-        channels = _exported_channels(inputs / "episodes")
-        summary = library_summary(
-            tree,
-            channels,
-            self.ev.cover_counts(),
-            last_passes(self.mem, rev, tree, channels),
-            cover_ids=cover_ids,
-        )
-        (inputs / "library.json").write_text(json.dumps(summary) + "\n")
 
     def _usage(self, req: PassRequest, tree: Path) -> str:
         """The library-use table over the pass's requests (:func:`.usage.usage_table`) for the functions

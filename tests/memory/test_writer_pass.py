@@ -12,9 +12,8 @@ from unify.memory.episodes import Action, Cell, CostRow
 from unify.memory.evidence import EvidenceStore
 from unify.memory.gate import Gate
 from unify.memory.gitio import Repo
-from unify.memory.index import estimate_tokens
 from unify.memory.redact import Redactor
-from unify.memory.writer_pass import LIBRARY_BUDGET_TOKENS, PREVIOUS_GATE_LINES, PassConfig, WriterPass, _mirror, export_for_writer, last_passes, library_summary, previous_gate, transcript_lines
+from unify.memory.writer_pass import PassConfig, WriterPass, _mirror, export_for_writer, transcript_lines
 from unify.memory.trigger import PassRequest
 from tests.memory.test_episodes import _ep
 from tests.memory.test_gate import MAN, MOD
@@ -1135,91 +1134,6 @@ _NOT_GATE = [
 ]
 
 
-def test_previous_gate_keeps_the_last_refused_passes_gate_lines_per_channel(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    _recorded(ev, "old", None, ["G2: env/venmo:me covers no recorded action"])
-    _recorded(ev, "won", None, [], passed=1)
-    many = [
-        f"G3: env/venmo/tests/test_f{i}.py is not green on the candidate (exit 1) "
-        + "x" * 400
-        for i in range(15)
-    ]
-    budget = "G4: index needs 5000 tokens; budget 4000"
-    _recorded(ev, "new", None, [*_NOT_GATE, *many, budget])
-    _recorded(
-        ev,
-        "inc",
-        "slack",
-        ["G1: env/slack:post names no source episode", "no manifest"],
-    )
-    out = previous_gate(ev, ["venmo", "slack", "shell_uv"])["channels"]
-    venmo = out["venmo"]
-    assert (
-        venmo["pass_id"] == "new"
-    )  # the newest refusal, not the older one or the passed pass
-    assert venmo["reasons"] == [r[:200] for r in many[:PREVIOUS_GATE_LINES]]
-    assert venmo["more"] == 6  # the five other G3 lines and the G4 line
-    assert out["slack"] == {
-        "pass_id": "inc",
-        "reasons": ["G1: env/slack:post names no source episode", "no manifest"],
-        "more": 0,
-    }
-    # a line naming no channel belongs to every channel the refused (batched) pass covered
-    assert out["shell_uv"] == {"pass_id": "new", "reasons": [budget], "more": 0}
-    for row in out.values():
-        assert len(row["reasons"]) <= PREVIOUS_GATE_LINES
-        assert all(len(r) <= 200 and r not in _NOT_GATE for r in row["reasons"])
-
-
-def test_previous_gate_leaves_out_channels_with_no_refusal_of_theirs(tmp_path):
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    _recorded(
-        ev,
-        "inc",
-        "slack",
-        ["no manifest", "G2: env/slack:post covers no recorded action"],
-    )
-    _recorded(
-        ev,
-        "venmo_x",
-        None,
-        ["G2: env/venmo_x:f covers no recorded action", *_NOT_GATE],
-    )
-    out = previous_gate(ev, ["venmo", "slack"])
-    assert set(out["channels"]) == {
-        "slack",
-    }  # env/venmo_x is not env/venmo; notes are not gate lines
-
-
-def test_previous_gate_reads_the_items_a_landed_pass_refused(tmp_path):
-    # per-item admission: a pass that landed after refusing an item still tells the writer what the gate refused
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    _recorded(ev, "old", None, ["G2: env/venmo:pay covers no recorded action"])
-    ev.record_pass(
-        {
-            "pass_id": "reduced",
-            "kind": "batched",
-            "channel": None,
-            "parent": "0" * 40,
-            "candidate": "1" * 40,
-            "passed": 1,
-            "reasons": json.dumps(
-                ["item refused: G2: env/venmo:me covers (e1,9), not recorded"],
-            ),
-            "usd": "0",
-            "merged": "2" * 40,
-            "items_merged": json.dumps(["env/venmo:friends"]),
-            "items_refused": json.dumps({"env/venmo:me": ["G2"]}),
-        },
-    )
-    _recorded(ev, "clean", None, [], passed=1)  # landed whole: refused nothing
-    assert previous_gate(ev, ["venmo"])["channels"]["venmo"] == {
-        "pass_id": "reduced",
-        "reasons": ["G2: env/venmo:me covers (e1,9), not recorded"],
-        "more": 0,
-    }
-
-
 def _put(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -1230,98 +1144,6 @@ def _module(names, doc="Read a thing."):
         f'def {n}(apis, x):\n    """{doc}\n\n    Effect: read\n    """\n    return x\n\n\n'
         for n in names
     )
-
-
-def test_library_summary_lists_the_channels_functions_with_covers_and_last_pass(
-    tmp_path,
-):
-    mem = Repo.init_bare(tmp_path / "m.git")
-    base = mem.head()
-    with mem.temp_checkout() as wt:
-        _put(wt / "env/venmo/__init__.py", _module(["me", "pay"]))
-        _put(wt / "env/slack/__init__.py", _module(["post"]))
-        s1 = mem.commit_all(wt, "first", {"Pass": "p1", "Episode": ["e1"]})
-    mem.fast_forward("main", s1, expected_old=base)
-    with mem.temp_checkout() as wt:
-        src = (wt / "env/venmo/__init__.py").read_text()
-        _put(
-            wt / "env/venmo/__init__.py",
-            src.replace(
-                'def pay(apis, x):\n    """Read a thing.',
-                'def pay(apis, x):\n    """Pay a friend.',
-            ),
-        )
-        s2 = mem.commit_all(wt, "second", {"Pass": "p2"})
-    mem.fast_forward("main", s2, expected_old=s1)
-    with mem.temp_checkout() as wt:
-        last = last_passes(mem, mem.head(), wt, ["venmo"])
-        assert last == {"env/venmo:me": "p1", "env/venmo:pay": "p2"}
-        out = library_summary(
-            wt,
-            ["venmo"],
-            {"env/venmo:me": 3, "env/slack:post": 9},
-            last,
-        )
-    assert out["truncated"] == 0
-    assert out["functions"] == [
-        {
-            "item": "env/venmo:me",
-            "signature": "me(apis, x)",
-            "summary": "Read a thing.",
-            "covers": 3,
-            "last_pass": "p1",
-        },
-        {
-            "item": "env/venmo:pay",
-            "signature": "pay(apis, x)",
-            "summary": "Pay a friend.",
-            "covers": 0,
-            "last_pass": "p2",
-        },
-    ]
-
-
-def test_library_summary_stays_within_its_token_budget(tmp_path):
-    tree = tmp_path / "t"
-    _put(
-        tree / "env/venmo/__init__.py",
-        _module([f"fn_{i}" for i in range(300)], doc="D" * 150),
-    )
-    out = library_summary(tree, ["venmo"], {}, {})
-    assert estimate_tokens(json.dumps(out)) <= LIBRARY_BUDGET_TOKENS
-    assert 0 < len(out["functions"]) < 300
-    assert out["truncated"] == 300 - len(out["functions"])
-    assert all(len(f["summary"]) <= 200 for f in out["functions"])
-
-
-def test_library_summary_with_cover_ids_lists_every_functions_ids_past_the_budget(
-    tmp_path,
-):
-    # the hygiene listing and the distillation inputs share one file: each function's recorded cover ids are never cut
-    tree = tmp_path / "t"
-    _put(
-        tree / "env/venmo/__init__.py",
-        _module([f"fn_{i:03d}" for i in range(300)], doc="D" * 150),
-    )
-    ids = {f"env/venmo:fn_{i:03d}": [["e1", i]] for i in range(300)}
-    ids["env/venmo:gone"] = [
-        ["e2", 0],
-        ["e2", 1],
-    ]  # covered, but no longer a listed function
-    counts = {item: len(c) for item, c in ids.items()}
-    out = library_summary(tree, ["venmo"], counts, {}, cover_ids=ids)
-    rows = {r["item"]: r for r in out["functions"]}
-    assert set(rows) == set(ids)
-    assert [r["item"] for r in out["functions"]] == sorted(ids)
-    assert all(
-        rows[i]["cover_ids"] == ids[i] and rows[i]["covers"] == len(ids[i]) for i in ids
-    )
-    described = [r for r in out["functions"] if "signature" in r]
-    assert 0 < len(described) < 300
-    assert out["truncated"] == len(ids) - len(described)
-    # the descriptive part stays within the budget the summary alone has
-    alone = library_summary(tree, ["venmo"], counts, {})
-    assert [r["item"] for r in alone["functions"]] == [r["item"] for r in described]
 
 
 PLANTED = "tok-PLANTED-0123456789abcdef"  # pragma: allowlist secret

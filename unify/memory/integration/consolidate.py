@@ -58,8 +58,6 @@ from ..episodes import Action, CostRow, Episode, episode_dir, load_episode
 from ..evidence import EvidenceStore
 from ..gate import CHECKS as GATE_CHECKS, Gate
 from ..gitio import Repo
-from ..index import build_index, estimate_tokens
-from ..memory_repo import items as memory_items
 from ..reconcile import unavailable as unavailable_reconcile
 from ..redact import Redactor, redact_error
 from ..signals import Signal
@@ -118,7 +116,6 @@ REASON_CODES = frozenset(
     },
 )
 _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-_NO_INDEX_BUDGET = 10**9
 
 
 # --- stores ----------------------------------------------------------------------------------------------
@@ -465,16 +462,11 @@ def _note_transcript(
 
 
 def _count_items(tree: Path) -> int:
-    """The items the library at *tree* holds: its functions and notes in the library layout, else the earlier
-    layout's listed items."""
+    """The items the library at *tree* holds: its functions and notes."""
     from ..layout import discover
 
     lib = discover(tree)
-    if lib.functions or lib.notes or (tree / "memory").is_dir():
-        return len(lib.functions) + len(lib.notes)
-    return sum(
-        1 for it in memory_items(tree).items if it.kind != "workflow" and it.listed
-    )
+    return len(lib.functions) + len(lib.notes)
 
 
 def library_items_at(stores: Stores, commit: str | None) -> int | None:
@@ -493,8 +485,9 @@ def library_items_at(stores: Stores, commit: str | None) -> int | None:
 
 def _library_after(stores: Stores) -> tuple[int | None, int | None]:
     """(items, index tokens) of memory ``main`` when the pass's end is recorded; None for what could not be
-    measured. In the library mode that is before the pass's commit lands, and the landed event counts the library at
-    the landed commit; the earlier layout's gate has merged by then.
+    measured: its functions and notes, and the tokens of the ``INDEX.md`` the harness generates for it
+    (:func:`..library_checks.library_index_tokens`). That is before the pass's commit lands; the landed event counts the
+    library at the landed commit.
     """
     tmp: Path | None = None
     try:
@@ -503,10 +496,10 @@ def _library_after(stores: Stores) -> tuple[int | None, int | None]:
         tree = materialise(stores.memory, files, tmp / "main")
         listed = _count_items(tree)
         try:
-            index_tokens: int | None = estimate_tokens(
-                build_index(tree, budget_tokens=_NO_INDEX_BUDGET),
-            )
-        except ValueError:
+            from ..library_checks import library_index_tokens
+
+            index_tokens: int | None = library_index_tokens(tree)
+        except (ValueError, OSError):
             index_tokens = None
         return listed, index_tokens
     except Exception:  # noqa: BLE001 - a measurement, never a failure of the pass

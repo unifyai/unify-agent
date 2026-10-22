@@ -11,7 +11,6 @@ memory repositories (colon-separated bare repos, every commit on ``main``). Pure
 export tests live in ``test_gate_library_safety.py``, ``test_gate_layout.py`` and ``integration/test_checkout.py``.
 """
 
-import importlib.metadata
 import os
 import random
 import subprocess
@@ -156,16 +155,8 @@ def _git(repo: str, *args: str) -> bytes:
     return proc.stdout
 
 
-def test_the_allowed_root_entries_shadow_no_module():
-    """``env`` is the library itself; ``workflows`` and the test kit must not be importable names."""
-    names = set(sys.stdlib_module_names) | set(sys.builtin_module_names) | m.root_shadowed()
-    names |= set(importlib.metadata.packages_distributions())
-    assert "workflows" not in names
-    assert m.TESTKIT.removesuffix(".py") not in names
-
-
 def test_random_root_names_and_suffixes_are_refused():
-    """Seeded: any root entry other than env/, workflows/ and the test kit is refused, and any bytecode or
+    """Seeded: any root entry other than the library's own memory/ and notes/ is refused, and any bytecode or
     extension suffix anywhere, whatever its name, by unsafe_path's bytecode reason."""
     rng = random.Random(20261008)
     stdlib = sorted(sys.stdlib_module_names)
@@ -220,7 +211,7 @@ def test_random_root_names_and_suffixes_are_refused():
     ]
     for _ in range(600):
         path = rng.choice(stems) + rng.choice(suffixes)
-        if path.split("/", 1)[0] in m.ROOT_DIRS and "/" in path:
+        if path.split("/", 1)[0] in ("memory", "notes") and "/" in path:
             # the library's own directories: only artefacts are newly refused there
             assert (m.unsafe_path(path) is not None) == _artefact(path), path
             continue

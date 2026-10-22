@@ -12,10 +12,10 @@ from typing import Any
 import pytest
 
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
-from tests.memory.integration.test_checkout import _seed
+from tests.memory.integration.test_checkout import _seed_library
 from tests.memory.cells import Cells
 from unify.memory.integration import request as request_mod
-from unify.memory.integration.checkout import export_checkout
+from unify.memory.integration.checkout import export_actor_library_mode
 from unify.memory.integration.paths import Paths
 from unify.settings import SETTINGS
 
@@ -31,9 +31,9 @@ async def _cell(ex: Cells, code: str) -> Any:
 
 def _home(world) -> tuple[Paths, list]:  # noqa: F811
     paths = Paths.under(world["state"])
-    mem, sha = _seed(world["state"])  # the bare memory repo at <UNIFY_HOME>/memory
+    mem, sha = _seed_library(world["state"])  # the bare memory repo at <UNIFY_HOME>/memory
     assert mem.git_dir == paths.memory
-    export_checkout(mem.git_dir, sha, paths.checkout)
+    export_actor_library_mode(mem.git_dir, sha, paths.checkout)
     paths.episodes.mkdir()
     (paths.episodes / "HEAD").write_text("ref: refs/heads/main\n")
     paths.blobs.mkdir()
@@ -63,8 +63,8 @@ async def test_the_worker_writes_no_bytecode_into_the_export(
     world,  # noqa: F811
     monkeypatch,
 ):
-    """Under memory v2 the child sets ``sys.dont_write_bytecode`` (it runs under ``-I``, so the
-    environment variable would be ignored); importing the library leaves no ``__pycache__`` in the export.
+    """Under memory the child sets ``sys.dont_write_bytecode`` (it runs under ``-I``, so the environment variable
+    would be ignored); importing the library leaves no ``__pycache__`` in the export.
     """
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     paths, _ = _home(world)
@@ -77,11 +77,11 @@ async def test_the_worker_writes_no_bytecode_into_the_export(
     try:
         out = await _cell(
             ex,
-            "import sys\nfrom env.spotify import hello\n[sys.dont_write_bytecode, hello(None, 'ada')]",
+            "import sys\nfrom memory.acct.users import user_id\n[sys.dont_write_bytecode, user_id({'user_id': 'u1'})]",
         )
     finally:
         await ex.close()
-    assert list(out) == [True, "hi ada"]
+    assert list(out) == [True, "u1"]
     assert not list(paths.checkout.rglob("__pycache__"))
     assert not list(paths.checkout.rglob("*.pyc"))
 
@@ -136,7 +136,7 @@ async def test_with_the_switch_off_the_export_is_neither_mounted_nor_imported(
         ]
         res = await asyncio.wait_for(
             ex.execute(
-                code="from env.spotify import hello",
+                code="from memory.acct.users import user_id",
                 state_mode="stateful",
                 session_id=0,
             ),
@@ -161,13 +161,6 @@ def test_no_mount_or_import_path_until_the_export_exists(tmp_path, monkeypatch):
     assert hooks.worker_mounts() == []
     assert hooks.worker_readonly_mounts() == [paths.checkout] and hooks.worker_paths() == [
         str(paths.checkout),
-    ]
-    # the library test kit inside the export (its tests use memlab): after the export on the import path,
-    # mounted with it
-    (paths.checkout / ".memlab").mkdir()
-    assert hooks.worker_readonly_mounts() == [paths.checkout] and hooks.worker_paths() == [
-        str(paths.checkout),
-        str(paths.checkout / ".memlab"),
     ]
 
 

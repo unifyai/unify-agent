@@ -102,7 +102,7 @@ def test_the_actors_and_a_teammates_first_message_carry_the_common_section(
 
 
 def _tokens(text: str) -> int:
-    from unify.memory.index import estimate_tokens
+    from unify.memory.catalogue import estimate_tokens
 
     return int(estimate_tokens(text))
 

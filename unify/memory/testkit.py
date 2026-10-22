@@ -7,9 +7,7 @@ recorded payloads by blob id (``memlab.inputs.blob``). :func:`stage` writes the 
 a library's tests can run gets it (the gate runs none, rev 2.1):
 
 * **the writer's box**: ``/inputs`` (beside the pass's episodes), always, with the blobs the parent library's tests
-  name;
-* **the actor's export**: ``<export>/.memlab``, put on the import path after the export, when the exported
-  library's tests use the kit (:func:`stage_for_tree`).
+  name (:func:`stage_for_tree`). The actor's export holds no tests, so it needs no kit.
 
 Each root holds ``memlab/`` (the modules, a git stub and an ``__init__`` carrying :data:`KIT_VERSION`),
 ``_memory_pin.py`` (the determinism plugin, inert unless loaded with ``-p``) and ``blobs/<id>`` (the recorded
@@ -46,7 +44,6 @@ BASE_MODULES = (
 MODULES = BASE_MODULES + ("inputs.py",)
 PIN_MODULE = "_memory_pin"
 PACKAGE = "memlab"
-EXPORT_DIR = ".memlab"  # the kit's root inside the actor's export
 MAX_REF_BLOBS = 1000
 MAX_INPUT_FILE_BYTES = 16 * 1024**2
 MAX_REF_BYTES = 64 * 1024**2

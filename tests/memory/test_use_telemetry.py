@@ -29,7 +29,6 @@ from unify.memory.episodes import (
 )
 from unify.memory.evidence import _USE_COUNTS, EvidenceStore, _use_rows
 from unify.memory.gitio import Repo
-from unify.memory.index import HEADER, build_index
 from unify.memory.integration import hooks
 from unify.memory.integration.request import RequestRun, memory_use
 from unify.memory.redact import Redactor
@@ -262,8 +261,8 @@ def test_env_channel_copy_matches_the_episodes_mapping():
 def test_a_legacy_recording_finds_the_section_by_the_v2_header_and_says_so(lib):
     """Without the renderer's record (a recording from before it), the section is found by the v2 index's
     opening line, and the record says the shown lists came from that legacy reading."""
-    index = build_index(lib)
-    assert HEADER.startswith(use.HEADER_PREFIX)
+    # the v2 index as such a recording shows it: its header line, then one line per function
+    index = use.HEADER_PREFIX + " Import with `from env.<name> import ...`.\n\n## x\n- `f(a)`: the first field.\n"
     rec = use.request_use(_lines([], system=f"core prompt\n\n{index}"), ITEMS)
     shown = rec["memory_section_shown"]
     assert shown["shown"] and shown["distinct"] == 1 and shown["prompts"] == 1

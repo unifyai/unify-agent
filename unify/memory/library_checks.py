@@ -39,9 +39,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .admission import is_rejection
 from .batch_map import actor_functions
-from .episodes import Action, Episode
+from .episodes import Episode
 from .fixtures import DATA_PATH, DRAWN_DIR, HashIndex, module_path, package_dir, readers_of, verify
 from .fixed_answer import returns_a_value
 from .gate_policy import NOT_RUN_GATE, not_run_reason
@@ -110,7 +109,7 @@ def derive_effect(
     return None
 
 
-def _index_tokens(tree: Path, examples: dict[str, dict] | None = None) -> int:
+def library_index_tokens(tree: Path, examples: dict[str, dict] | None = None) -> int:
     """The tokens of the ``INDEX.md`` the harness would generate for *tree* (the layout's renderer and estimator),
     with each function's example line when *examples* (item -> its recorded example) holds one the tree still
     quotes."""
@@ -206,19 +205,6 @@ class LibraryChecks:
         pkg = path.split("/tests/", 1)[0]
         found = [it.item for it in self._functions() if package_dir(it.item) == pkg]
         return found or None
-
-    def _covers(self, it: Any) -> list[tuple[str, int, Action]]:
-        out = []
-        for eid, idx in it.covers:
-            a = self.gate.lookup(eid, idx)
-            if (
-                a is not None
-                and a.status == "ok"
-                and not is_rejection(a)
-                and getattr(a, "kind", "tool") != "shell"
-            ):
-                out.append((eid, idx, a))
-        return out
 
     def static(self) -> None:
         """The checks that run no code, for :meth:`.gate.Gate.preview`."""
@@ -642,7 +628,7 @@ class LibraryChecks:
                 for item, v in getattr(run, "verification", {}).items()
                 if isinstance(v, dict) and isinstance(v.get("examples"), dict)
             }
-            size = _index_tokens(run.c_tree, examples)
+            size = library_index_tokens(run.c_tree, examples)
         except (ValueError, OSError) as exc:
             run.fail("G4", f"index not built: {exc}"[:300])
             return

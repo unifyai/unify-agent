@@ -92,7 +92,6 @@ from __future__ import annotations
 import importlib.machinery
 import posixpath
 import re
-import sys
 from dataclasses import dataclass, field
 
 # Declared semantic types: the only value constraints an environment function may hold, each a
@@ -146,17 +145,6 @@ def describe_semantic_types() -> str:
     return ", ".join(out)
 
 
-# Job functions (end-to-end code) are not expected in v0 and have no admitted location.
-KINDS = ("env_function", "env_note", "workflow")
-TESTKIT = "unify_memory_testkit.py"
-
-_CH = r"[a-z][a-z0-9_]*"
-ITEM_ID = {
-    "env_function": re.compile(rf"^env/{_CH}:[a-z_][a-z0-9_]*\Z"),
-    "env_note": re.compile(rf"^env/{_CH}/NOTES\.md#[a-z0-9-]+\Z"),
-    "workflow": re.compile(r"^workflows/[a-z0-9][a-z0-9_-]*\.md\Z"),
-}
-SKELETON_ID = re.compile(rf"^env/{_CH}\Z")
 # Files that configure git, pytest or the interpreter, refused anywhere in the memory tree.
 FORBIDDEN_NAMES = frozenset(
     {
@@ -244,21 +232,6 @@ def safe_rel(path: object) -> str:
     return path
 
 
-def item_kind(item: str) -> str | None:
-    """The kind a well-formed item id names, or None."""
-    for kind, pattern in ITEM_ID.items():
-        if pattern.match(item):
-            return kind
-    return None
-
-
-def item_path(item: str) -> str:
-    """The file an item id lives in: ``env/x:f`` -> ``env/x/__init__.py``; ``a.md#s`` -> ``a.md``."""
-    if ":" in item:
-        return item.split(":", 1)[0] + "/__init__.py"
-    return item.split("#", 1)[0]
-
-
 def forbidden(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
     return name in FORBIDDEN_NAMES or name.endswith(".pth")
@@ -276,28 +249,13 @@ _COMPILED_SUFFIXES = tuple(
 _ABI_TAGGED = re.compile(r"\.(?:cpython|pypy|graalpy)[0-9]*-|\.abi[0-9]+\.", re.I)
 # Modules the interpreter imports on its own at start-up, under any suffix or as a package.
 _START_HOOKS = frozenset({"sitecustomize", "usercustomize"})
-# The root entries a library can hold: everything a pass can declare lives in env/<channel>/ (modules, notes,
-# tests and their helpers) or workflows/ (workflow notes), and the test kit is the only root file.
-ROOT_DIRS = ("env", "workflows")
-
-
-def root_shadowed() -> frozenset[str]:
-    """Top-level names a root package would take from the standard library or the gate's pytest."""
-    return frozenset(
-        set(sys.stdlib_module_names)
-        | set(sys.builtin_module_names)
-        | {"pytest", "_pytest", "pluggy"},
-    )
-
-
 def unsafe_path(path: str) -> tuple[str, str] | None:
     """``(check, reason)`` when *path* must never be extracted or run, else None.
 
     Refused anywhere (G6): bytecode or native code, anything under ``__pycache__``, ``.pth`` files and the
     interpreter's start-up hooks (``sitecustomize``/``usercustomize`` under any suffix or as a package).
-    Refused at the root: anything but ``env/``, ``workflows/`` and the test kit (G1, layout), and a directory
-    named like a standard-library or pytest module (G6). A reason names the path and the class of problem,
-    never contents.
+    Where a path may be is the library layout's rule (:func:`.layout.misplaced`), not this one. A reason names the
+    path and the class of problem, never contents.
     """
     parts = path.split("/")
     name = parts[-1]
@@ -309,14 +267,7 @@ def unsafe_path(path: str) -> tuple[str, str] | None:
         return "G6", f"path configuration file {path}"
     if any(p.split(".", 1)[0].lower() in _START_HOOKS for p in parts):
         return "G6", f"interpreter start-up hook {path}"
-    if path == TESTKIT or (len(parts) > 1 and parts[0] in ROOT_DIRS):
-        return None
-    if len(parts) > 1 and parts[0] in root_shadowed():
-        return "G6", f"root package {parts[0]}/ ({path}) shadows the {parts[0]} module"
-    return (
-        "G1",
-        f"root entry {path} is outside the layout (the root holds only env/, workflows/ and {TESTKIT})",
-    )
+    return None
 
 
 # an item's ``adopts`` refs: ``staging:<episode>/<file>``, ``helper:<helper name>/<file>`` or ``pool:<entry id>``, where

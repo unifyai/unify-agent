@@ -38,9 +38,7 @@ from .catalogue import body_digest
 from .evidence import MAX_INPUT_SHAPES
 from .fixtures import blob_sha as _blob_sha
 from .memory_helper import file_shape, value_shape
-from .memory_repo import items
 from .redact import KEY_SHAPED
-from .snapshot import item_bodies
 
 Rows = dict[str, dict]
 # Covers read per function for a backfill.
@@ -152,31 +150,12 @@ def descriptors(actions: list[Any], input_kind: str | None, blobs: Any) -> list[
     return merge_shapes(out)
 
 
-def _functions(
-    tree: Path,
-    library_mode: bool = False,
-) -> dict[str, tuple[str, str | None]]:
-    """item -> (body digest, declared input form or None) of the environment functions in *tree*; with *library_mode*
-    the library function items, whose input form comes from the item records (None until then).
-    """
-    if library_mode:
-        from .layout import function_bodies
+def _functions(tree: Path) -> dict[str, tuple[str, str | None]]:
+    """item -> (body digest, None) of the library function items of *tree* (an input form is not declared in the
+    library layout)."""
+    from .layout import function_bodies
 
-        return {
-            item: (body_digest(body), None)
-            for item, body in sorted(function_bodies(Path(tree)).items())
-        }
-    bodies = item_bodies(Path(tree))
-    forms = {
-        it.item_id: (it.input or None)
-        for it in items(Path(tree)).items
-        if it.kind == "env_function"
-    }
-    return {
-        item: (body_digest(body), forms.get(item))
-        for item, (kind, body, _) in bodies.items()
-        if kind == "env_function"
-    }
+    return {item: (body_digest(body), None) for item, body in sorted(function_bodies(Path(tree)).items())}
 
 
 def snapshot_rows(
@@ -189,7 +168,7 @@ def snapshot_rows(
     *new* maps an item to (body digest, descriptors); a parent's rows are carried as they are.
     """
     out: Rows = {}
-    for item, (digest, _) in sorted(_functions(tree, True).items()):
+    for item, (digest, _) in sorted(_functions(tree).items()):
         old = prev.get(item)
         carried = old["shapes"] if old and old["body"] == digest else []
         added = new[item][1] if item in new and new[item][0] == digest else []
@@ -226,12 +205,10 @@ def backfill(
     lookup: Callable[[str, int], Any],
     blobs: Any,
     only: set[str] | None = None,
-    *,
-    library_mode: bool = False,
 ) -> Rows:
     """Shapes derived from the evidence store's validated covers of each function (of *only*, if given)."""
     out: Rows = {}
-    for item, (digest, form) in sorted(_functions(tree, library_mode).items()):
+    for item, (digest, form) in sorted(_functions(tree).items()):
         if only is not None and item not in only:
             continue
         actions = []
@@ -259,7 +236,7 @@ def shapes_at(
     freeze: bool = False,
 ) -> Rows:
     """The shape rows of commit *sha* (whose files are at *tree*); see the module docstring."""
-    functions = _functions(tree, True)
+    functions = _functions(tree)
     found = _nearest(repo, evidence, sha)
     if found is not None and found[0] == sha:
         return found[1]  # frozen
@@ -277,7 +254,6 @@ def shapes_at(
                 lookup,
                 blobs,
                 only=missing,
-                library_mode=True,
             ),
         )
     if freeze:

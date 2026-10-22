@@ -103,24 +103,9 @@ def test_examples_heading_is_accepted_and_inline_text_is_kept():
     assert docstrings.problems(doc, ["path", "strict"], "path") == []
 
 
-def test_params_and_catalog_form():
+def test_params():
     fn = _fn("def f(a, /, b, *rest, c=1, **kw):\n    pass\n")
     assert docstrings.params(fn) == ["a", "b", "rest", "c", "kw"]
-    cat = docstrings.as_catalog(docstrings.parse(FULL))
-    assert set(cat) == {
-        "description",
-        "args",
-        "returns",
-        "raises",
-        "example",
-        "use_when",
-        "dont_use_when",
-        "arg_list",
-    }
-    assert cat["arg_list"][0] == {
-        "name": "path",
-        "text": "the ledger CSV file (a path).",
-    }
 
 
 def test_the_example_must_call_the_function_on_a_fixture_and_show_its_result():

@@ -63,17 +63,6 @@ OPTIONAL_SECTIONS = ("Use when", "Don't use when", "Notes")
 LIBRARY_SECTIONS = ("When to use",)
 LINE_FIELDS = ("Effect", "Input")
 ERROR_NAME = "MemoryInputError"
-# The catalogue's key for each section (``.memory/catalog.json``).
-SECTION_KEYS = {
-    "Args": "args",
-    "Returns": "returns",
-    "Raises": "raises",
-    "Example": "example",
-    "Use when": "use_when",
-    "Don't use when": "dont_use_when",
-    "Notes": "notes",
-    "When to use": "when_to_use",
-}
 _ALIASES = {
     "Examples": "Example",
     "Don’t use when": "Don't use when",
@@ -376,19 +365,6 @@ def problems(
     elif ERROR_NAME not in d.sections["Raises"]:
         out.append(f"Raises: does not name {ERROR_NAME} and when it is raised")
     out += example_problems(d, name, channel)
-    return out
-
-
-def as_catalog(d: Docstring) -> dict:
-    """The parsed docstring as the catalogue stores it: only what is present."""
-    out: dict = {}
-    if d.description:
-        out["description"] = d.description
-    for name, key in SECTION_KEYS.items():
-        if d.sections.get(name):
-            out[key] = d.sections[name]
-    if d.args:
-        out["arg_list"] = [{"name": n, "text": t} for n, t in d.args]
     return out
 
 
