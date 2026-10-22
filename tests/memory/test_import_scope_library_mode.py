@@ -83,7 +83,7 @@ def test_behaviour_scope_follows_imports_transitively(tmp_path):
         "return s.split(' ')",
     )
     run = _run(tmp_path, LIB, cand, ["memory/text/parse.py"])
-    assert Gate._behaviour_targets(run, {}) == [
+    assert Gate._behaviour_targets(run, {}, library_mode=True) == [
         "memory.text.dates:parse_date",  # imports parse by name
         "memory.text.dates:week",
         "memory.text.parse:tokens",
@@ -98,7 +98,7 @@ def test_behaviour_scope_follows_imports_transitively(tmp_path):
         LIB,
         ["memory/text/report.py", "memory/text/tests/test_dates.py"],
     )
-    assert Gate._behaviour_targets(only, {}) == [
+    assert Gate._behaviour_targets(only, {}, library_mode=True) == [
         "memory.text.report:summary",
     ]
 
@@ -182,12 +182,6 @@ def test_reduction_drops_importers_under_library_mode(tmp_path):
         ],  # it imports dates whole, and parse_date goes
     }  # words (same module, no call, its test imports only itself) and get (imports week) stay
     assert len(reasons) == 2
-    v2, _ = reduction.with_dependents(
-        man,
-        {TOKENS: ["G2"]},
-        cand,
-    )  # v2: no import rule for these ids
-    assert v2 == {TOKENS: ["G2"]}
     # with LIB's package init, which re-exports tokens: an importer goes when the name it takes through the
     # package is tokens (fetch), never merely because the init runs (words' test) (Amendment A)
     lib = _write(
@@ -239,5 +233,6 @@ def test_an_init_change_puts_its_packages_modules_in_scope(tmp_path):
     assert "memory.text.parse:tokens" in Gate._behaviour_targets(
         run,
         {},
+        library_mode=True,
     )
     assert "memory.text" in layout.import_graph(tmp_path / "c")["memory.text.parse"]

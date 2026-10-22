@@ -125,8 +125,14 @@ def test_parts_given_as_text_are_read_as_the_list_they_name(tmp_path):
     }
     turns = [_call(k, "read_episode", {"episode": "e1", **v}) for k, v in forms.items()]
     _, model = _pass(tmp_path, turns, max_calls=12)
-    for k in forms:
+    # text given as `part` is read as the list it names
+    for k in ("list", "prefixed", "commas"):
         assert model.outputs[k].startswith("== request =="), (k, model.outputs[k][:120])
+    # rev 2: tools are called from code with typed arguments, so `parts` given as text is refused with the type it
+    # takes, never guessed
+    for k in ("json", "one"):
+        assert model.outputs[k].startswith("refused: tools.read_episode("), (k, model.outputs[k][:120])
+        assert "(str)\nExpected parts: list" in model.outputs[k], (k, model.outputs[k][:200])
     from unify.memory.writer_tools import _wanted_parts
 
     assert _wanted_parts({"part": "request"}) == (
@@ -166,10 +172,9 @@ def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
     plain = _brief_of(tmp_path / "b")
     # the default configuration caps the pass's spend, so finish's refusal cap is stated
     assert plain == pv.write_brief_now(finish_capped=True)
-    assert "/inputs/staging" not in plain and "/inputs/pool" not in plain
-    # a staging root without the fork stages nothing, so the brief names no staging
-    fork_off = _brief_of(tmp_path / "c", staging_root=str(tmp_path))
-    assert "/inputs/staging" not in fork_off and "/inputs/pool/" in fork_off
+    # rev 2 always stages the forks' output and always has the pool: the brief is the same with or without a
+    # staging root (its inputs are pinned as evaluated: test_writer_prompt_surface)
+    assert plain == full
     # byte-stable within a run: the same configuration gives the same bytes
     assert full == _brief_of(
         tmp_path / "d",
@@ -336,20 +341,42 @@ def _named_inputs(text: str) -> set[str]:
     return out
 
 
+def _attention_pass(tmp_path, turns, **cfg):
+    """Rev 2's one kind of writer pass: an attention WRITE pass handed the ledger's entry for e1's settled fork (as
+    the service hands it), with the forks' staging under the home's state dir."""
+    import asyncio
+
+    from tests.memory.integration.test_in_episode import _ForksOnly
+    from tests.memory.test_writer_pass import Turns
+    from unify.memory.attention import Ledger
+    from unify.memory.integration.paths import Paths
+    from unify.memory.trigger import PassRequest
+
+    model = Turns(turns)
+    home = tmp_path / "home"
+    staging = Paths.under(home).state_dir / "memory-staging" / "e1"
+    staging.mkdir(parents=True)
+    (staging / "summary.md").write_text("## Asked\nTotal the rows.\n## Approach\n- summed\n")
+    (staging / "fork.json").write_text(json.dumps({"episode": "e1", "status": "ok", "files": ["summary.md"]}))
+    entries = Ledger(home).sync(_ForksOnly(home))
+    assert [e.refs.episodes for e in entries] == [("e1",)], entries
+    _, _, writer = _writer(
+        tmp_path, model, attention_home=str(home), staging_root=str(staging.parent), **cfg,
+    )
+    writer.load = EPS.__getitem__
+    out = asyncio.run(writer.run(PassRequest("attention", None, ["e1"], False, attention=entries), "p1"))
+    return out, model
+
+
 @needs_bwrap
 def test_every_input_path_the_brief_and_first_message_name_exists_in_the_pass(tmp_path):
-    for name, cfg in (
-        ("plain", {}),
-        (
-            "staged",
-            {"staging_root": str(tmp_path / "staging"), "fork": True, "pool": True},
-        ),
-    ):
+    # rev 2 runs one kind of pass, an attention pass with the forks' staging, so that is the pass checked
+    for name, cfg in (("attention", {}),):
         turns = [
             _call("ls", "execute_code", {"code": _LIST_INPUTS}),
             _call("f", "finish", {"summary": "s"}),
         ]
-        _, model = _pass(tmp_path / name, turns, **cfg)
+        _, model = _attention_pass(tmp_path / name, turns, **cfg)
         listed = set(model.outputs["ls"].split())
         named = _named_inputs(
             model.seen[0]["content"] + "\n" + model.seen[1]["content"],

@@ -119,12 +119,17 @@ def test_a_recipe_that_derives_every_value_from_the_request_lands_on_its_source_
     assert recipe_text(built.records[PROC]) == f"{RECIPE}; 2 of 2 cases passed (1 shown, 1 source)"
 
 
-def test_a_recipe_that_hardcodes_a_source_constant_fails_the_shown_case_and_does_not_land(tmp_path):
+def _labels(res, item: str) -> list[str]:
+    """Rev 2: an item's quality findings are labels in its verification record, never refusals."""
+    return list((res.verification.get(item) or {}).get("label_findings", []))
+
+
+def test_a_recipe_that_hardcodes_a_source_constant_fails_the_shown_case_and_is_labelled(tmp_path):
     built = _pricing(HARDCODES, tmp_path=tmp_path)
     res = built.result
-    assert not res.passed
-    assert {PROC, RECIPE} <= set(res.items_refused), res.items_refused
-    (reason,) = [r for r in res.item_reasons[PROC] if "does not give the expected output" in r]
+    assert res.passed and not res.items_refused, res.reasons
+    assert all(any("does not give the expected output" in r for r in _labels(res, i)) for i in (PROC, RECIPE))
+    (reason,) = [r for r in _labels(res, PROC) if "does not give the expected output" in r]
     assert SHOWN_FILE in reason and "a shown case of p1" in reason
     # the difference report names the expected output and the actual one
     assert "expected: 10" in reason and "actual:   6" in reason
@@ -143,13 +148,14 @@ def test_with_no_reward_signal_and_no_shown_case_the_source_case_alone_lands_it(
     }
 
 
-def test_a_failed_episode_never_lands_a_procedure(tmp_path):
+def test_a_procedure_from_a_failed_episode_is_labelled(tmp_path):
     contrary = Signal("p1.provenance.1", "p1", "provenance", "correct", "2026-10-08T01:02:00Z", regime="dense")
     built = _pricing(DERIVES, signals=[contrary], tmp_path=tmp_path)
     res = built.result
-    assert not res.passed and PROC in res.items_refused
-    assert any("failed; a failed episode never lands a procedure" in r for r in res.item_reasons[PROC])
-    assert any(f"{SOURCE_FILE} is the source case of p1, which failed" in r for r in res.item_reasons[PROC])
+    # rev 2: the failed episode is a label on the procedure, never a refusal
+    assert res.passed and PROC not in res.items_refused, res.reasons
+    assert any("failed; a failed episode never lands a procedure" in r for r in _labels(res, PROC))
+    assert any(f"{SOURCE_FILE} is the source case of p1, which failed" in r for r in _labels(res, PROC))
 
 
 def test_a_case_not_re_derivable_from_the_recording_is_refused(tmp_path):
@@ -171,7 +177,7 @@ def _pricing_with_file(path: str, text: str, *, tmp_path):
     )
 
 
-def test_a_procedure_without_a_recipe_does_not_land(tmp_path):
+def test_a_procedure_without_a_recipe_is_labelled(tmp_path):
     ep = _episode("p1", PRICING, 12)
     landing = gr.Landing("p1", DERIVES, "## Asked\nPrice an order line.\n", "orders", "line_price", ())
 
@@ -186,8 +192,9 @@ def test_a_procedure_without_a_recipe_does_not_land(tmp_path):
         tmp_path, episodes={"p1": ep}, base={}, landings=[landing], edit_manifest=without_recipe, require_pass=False,
     )
     res = built.result
-    assert not res.passed and PROC in res.items_refused
-    assert any("is a procedure without a recipe" in r for r in res.item_reasons[PROC])
+    # rev 2: a label on the procedure, never a refusal
+    assert res.passed and PROC not in res.items_refused, res.reasons
+    assert any("is a procedure without a recipe" in r for r in _labels(res, PROC))
 
 
 # --- a text request with one worked example --------------------------------------------------------------------

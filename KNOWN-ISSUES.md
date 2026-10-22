@@ -25,3 +25,15 @@ its item stays at the lowest evidence level.
 
 Direction: open. Any fix must be static, with no execution: no mechanism may run a capture or a function to classify,
 dedupe, rank or test it.
+
+## A landed procedure's recorded input is the request's data, which `memory.match` does not match
+
+Under the trace contract a capture is never run, so its signature cannot describe the value its `read_input` would
+read. It describes the recorded data instead: for a value-form procedure, the list of JSON values the request holds
+(`capture_trace.signature_input`). A procedure landed from such a capture keeps that signature. `memory.match`
+builds its structural query from each JSON value of the new request, so a request with the same structure as the
+landed procedure's own request gives a value of the rows' shape, while the procedure's input is a list holding that
+value. The default matcher does not list it. A capture saved against the read value itself is matched.
+
+Direction: open. Any fix must be static, with no execution: for example, compare the query with each value of a
+recorded data list, from the shapes alone.

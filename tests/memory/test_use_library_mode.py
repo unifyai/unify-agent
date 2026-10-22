@@ -219,9 +219,6 @@ def test_refusals_and_errors_leave_the_function_by_its_frame(library_root):
     ) == [
         ("refused", PD),
     ]
-    assert (
-        use.attribute_errors(tb, ITEMS_LIBRARY, roots=[str(library_root)]) == []
-    )  # v2's reading knows no memory.* item
 
 
 def test_the_library_surface_reads_packages_modules_and_reexports(library_root):
@@ -236,22 +233,6 @@ def test_the_library_surface_reads_packages_modules_and_reexports(library_root):
         "memory.text.dates:tokens": "memory.text.parse:tokens",
         "memory.text:tokens": "memory.text.parse:tokens",
     }
-    assert use.library_surface(library_root) == {
-        "star": {},
-        "reexports": {},
-    }  # v2 reads env/ only
-
-
-def test_with_library_off_the_record_is_v2s(library_root):
-    cells = _session(
-        ["from memory.text.dates import parse_date\nparse_date('2026-10-09')\n"],
-    )
-    rec = use.request_use(
-        _lines(cells),
-        ITEMS_LIBRARY,
-        cell_status=_status_library(cells),
-    )
-    assert "layout" not in rec and rec["items"] == {} and rec["items_at_pin"] == []
 
 
 def test_the_request_records_library_use(library_root):

@@ -200,7 +200,10 @@ async def test_a_library_that_never_finishes_importing_is_stopped_by_the_cell_ti
     try:
         assert _ok(await _run(ex, run, "x = 1\nx")) == 1  # starting the worker imports nothing of it
         res = await _run(ex, run, "memory.index()")
-        assert "timed out after 5" in res["error"] and "killed" in res["error"]
+        # rev 2's interpreter: the cell is stopped at its limit and the interpreter restarted, said in a note the
+        # actor reads beside the cell's output (the cell has no error of its own)
+        shown = "".join(p.text for p in res["stdout"])
+        assert res["error"] is None and "(the cell timed out after 5 s; the interpreter was restarted" in shown, shown
         assert _ok(await _run(ex, run, "2 + 2")) == 4  # a fresh worker
     finally:
         await ex.close()
@@ -213,7 +216,7 @@ async def test_without_a_library_cells_have_no_memory_and_a_name_error_is_counte
     world,  # noqa: F811
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")  # rev 2: empty means on
     ex = Cells()
     try:
         probe = "try:\n    memory\n    bound = True\nexcept NameError:\n    bound = False\nbound"
@@ -258,11 +261,8 @@ def test_the_init_global_only_in_library_mode_with_a_package(
         "lazy_module",
         "memory",
     ]
-    # the read-write layout of the other memory mode is left as it was
-    monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(index="", paths=paths))
-    assert hooks.worker_globals() == {}
-    assert "memory" not in PythonWorker()._init_message()["globals"]
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    # memory off (rev 2: UNIFY_MEMORY=off; empty means on): no memory name
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     assert "memory" not in PythonWorker()._init_message()["globals"]
 
 
@@ -306,7 +306,7 @@ def test_cell_errors_naming_the_library_are_classified(error, kind):
     assert library_cell_error(error) == kind
 
 
-def test_the_library_mode_use_record_carries_the_counts_and_only_there():
+def test_the_library_mode_use_record_carries_the_counts():
     acc = runtime_calls_empty()
     add_runtime_calls(
         acc,
@@ -329,7 +329,9 @@ def test_the_library_mode_use_record_carries_the_counts_and_only_there():
         rec["library_name_errors"],
         rec["library_import_errors"],
     ) == (4, 3, 1)
+    # rev 2 counts the librarian's memory.ask beside the other helpers
     assert rec["library_helper_calls"] == {
+        "ask": {"ok": 0, "refused": 0, "error": 0},
         "get": {"ok": 0, "refused": 0, "error": 0},
         "items": {"ok": 0, "refused": 0, "error": 0},
         "index": {"ok": 0, "refused": 0, "error": 0},
@@ -338,5 +340,3 @@ def test_the_library_mode_use_record_carries_the_counts_and_only_there():
         "match": {"ok": 0, "refused": 0, "error": 0},
         "run": {"ok": 0, "refused": 0, "error": 0},
     }
-    off = memory_use(_ep(transcript=[], actions=[]), [PARSE_DATE], runtime_calls=acc)
-    assert not {"library_calls_failed", "library_name_errors", "library_helper_calls"} & set(off)
