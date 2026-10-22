@@ -139,6 +139,24 @@ def _gives_value(node: ast.Return) -> bool:
     return node.value is not None and not (isinstance(node.value, ast.Constant) and node.value.value is None)
 
 
+def returns_a_value(module_source: Any, name: str) -> bool:
+    """Whether the function *name* defined at the top of *module_source* hands back a value on some ``return``
+    (:func:`_gives_value`); False when every return is bare or ``None``, or there is none (its outcome is what it
+    did). An unreadable module or an absent function counts as handing one back, so a rule about results still
+    applies to it."""
+    try:
+        tree = ast.parse(module_source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return True
+    fn = next(
+        (n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name),
+        None,
+    )
+    if fn is None:
+        return True
+    return any(_gives_value(n) for stmt in _body(fn) for n in ast.walk(stmt) if isinstance(n, ast.Return))
+
+
 def fixed_answer(source: Any) -> dict | None:
     """``{"why", "returns"}`` when *source*'s entry gives a fixed answer (module docstring), else None. ``why``
     says which part of the rule held (:data:`NEVER_READS` first when both do); ``returns`` holds the literals its

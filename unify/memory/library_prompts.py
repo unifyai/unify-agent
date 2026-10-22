@@ -732,8 +732,9 @@ _WRITE_RULES_IN_CODE = (
     "test from one. An item whose evidence does not reach that is still stored, and its label says so. Across its "
     "examples, "
     + EPISODES_RULE_IN_CODE
-    + ". Each function needs at least one test asserting "
-    "that its result on a recorded fixture equals an exact trusted value, and one test that it refuses an input of "
+    + ". Each function that hands back a value needs at least one test asserting "
+    "that its result on a recorded fixture equals an exact trusted value; one whose outcome is what it did is tested "
+    "on what it did (the calls it makes, the files it writes). Each also has one test that it refuses an input of "
     "another shape. A procedure's test checks the "
     "effect the environment later confirmed, not only that it ran. Never compute an expected value with the "
     "function's own expression. "

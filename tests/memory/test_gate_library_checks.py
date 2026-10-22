@@ -293,3 +293,39 @@ def test_cover_raw_round_trips_and_the_typed_covers_table_is_lazy(tmp_path):
     assert ev.typed_covers() == [
         ("memory.a.b:f", "e2", json.dumps(cover_raw(covers[3]), sort_keys=True)),
     ]
+
+
+
+
+def _exact_labels(tmp_path, source: str, test: str) -> list[str]:
+    """The G3 exact-assertion findings for ``memory.calc.sums:total`` defined by *source*, with *test* as its test."""
+    (tmp_path / "c" / "memory/calc/tests").mkdir(parents=True)
+    (tmp_path / "c" / "memory/calc/sums.py").write_text(source)
+    (tmp_path / "c" / T).write_text(test)
+    it = _item(tests=[T])
+    v = _checks(tmp_path, [it], c_files={"memory/calc/sums.py": ("100644", "a"), T: ("100644", "b")})
+    v._exact(it)
+    return [r for c, r, _ in v.run.fails if c == "G3" and "[library_mode:exact]" in r]
+
+
+def test_a_function_that_hands_back_a_value_needs_an_exact_assertion_of_its_result(tmp_path):
+    src = "def total(rows):\n    return sum(rows)\n"
+    test = "from memory.calc.sums import total\n\n\ndef test_total():\n    assert total([1, 2])\n"
+    assert len(_exact_labels(tmp_path, src, test)) == 1
+
+
+def test_a_function_whose_outcome_is_what_it_did_is_not_asked_for_an_exact_result(tmp_path):
+    """Rev 2.1: in tool, action and conversation worlds the work is the calls; a function that hands back no
+    value has no result to assert, so its tests are judged on what it did, never on an exact returned value."""
+    src = "def total(env, rows):\n    env.ledger.post(sum(rows))\n    return None\n"
+    test = "from memory.calc.sums import total\n\n\ndef test_total():\n    total(None, [1, 2])\n"
+    assert _exact_labels(tmp_path, src, test) == []
+
+
+def test_returns_a_value_reads_the_named_functions_returns_only():
+    from unify.memory.fixed_answer import returns_a_value
+
+    mod = "def a():\n    return 1\n\n\ndef b(env):\n    env.x()\n\n\ndef c():\n    return None\n"
+    assert returns_a_value(mod, "a") is True
+    assert returns_a_value(mod, "b") is False and returns_a_value(mod, "c") is False
+    assert returns_a_value(mod, "missing") is True and returns_a_value("def (:", "a") is True

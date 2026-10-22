@@ -43,6 +43,7 @@ from .admission import is_rejection
 from .batch_map import actor_functions
 from .episodes import Action, Episode
 from .fixtures import DATA_PATH, DRAWN_DIR, HashIndex, module_path, package_dir, readers_of, verify
+from .fixed_answer import returns_a_value
 from .gate_policy import NOT_RUN_GATE, not_run_reason
 from .catalogue import estimate_tokens
 from . import layout
@@ -627,7 +628,9 @@ class LibraryChecks:
                 elif e.on_fixture and e.trusted:
                     total += 1
         record["exact_assertions"] = total
-        if total == 0:
+        # a function that hands back no value has no result to assert: its outcome is what it did, and its tests
+        # check that instead (the calls it makes, the files it writes), in any world
+        if total == 0 and returns_a_value(function_source, name):
             cap(
                 run,
                 "G3",
