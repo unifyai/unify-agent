@@ -98,6 +98,14 @@ def _world(tmp_path, monkeypatch, *, factory=None, hidden=None):
     return paths, ws, cap
 
 
+def _no_workspace_audit() -> bool:
+    """The worker's audit names no workspace root (none at all, or the library copy's roots alone)."""
+    from unify.sandbox import WORKSPACE_MOUNT
+
+    audit = hooks.worker_audit()
+    return audit is None or WORKSPACE_MOUNT not in audit.get("roots", [])
+
+
 def _done(monkeypatch, stamp: float, drained: dict) -> None:
     monkeypatch.setattr(hooks.time, "time", lambda: stamp)
     hooks.worker_cell_done(drained)
@@ -342,7 +350,8 @@ def test_finish_never_raises(tmp_path, monkeypatch):
         hidden=lambda rel: False,
     )
     inside.begin()
-    assert capture_mod.active() is None and hooks.worker_audit() is None
+    # no capture: the worker audits no workspace (rev 2 still audits the library copy while the run goes on)
+    assert capture_mod.active() is None and _no_workspace_audit()
     assert not (ws / "worktree.git").exists() and not (ws / "episodes-blobs").exists()
     assert inside.finish([]) == WorktreeResult([], None, None, "")
     # finish twice, or without begin
@@ -379,7 +388,7 @@ def test_the_snapshot_repo_is_bare_harness_side_and_keeps_history(
 def test_off_the_capture_is_never_consulted(tmp_path, monkeypatch):
     paths, ws, cap = _world(tmp_path, monkeypatch)
     cap.begin()
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")  # rev 2: empty means on
     assert hooks.worker_audit() is None
     _done(
         monkeypatch,
@@ -570,7 +579,8 @@ def test_abort_deactivates_without_raising(tmp_path, monkeypatch):
         },
     )
     assert cap.abort() is None
-    assert capture_mod.active() is None and hooks.worker_audit() is None
+    # no capture: the worker audits no workspace (rev 2 still audits the library copy while the run goes on)
+    assert capture_mod.active() is None and _no_workspace_audit()
     assert cap._events == []
     assert cap.abort() is None  # twice
     assert cap.finish([]) == WorktreeResult([], None, None, "")

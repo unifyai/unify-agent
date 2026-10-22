@@ -115,7 +115,8 @@ def test_the_summary_format_has_five_sections_in_order_and_pointer_rules():
     assert library_prompts.example_checks(text) == []
 
 
-@pytest.mark.parametrize("which", ["INSTRUCTION", "INSTRUCTION_IN_CODE"])
+# rev 2: tools are always called from code, so the one instruction is the in-code one (INSTRUCTION_IN_CODE is gone)
+@pytest.mark.parametrize("which", ["INSTRUCTION"])
 def test_the_fork_instruction_asks_for_the_summary_first_in_the_one_format(which):
     text = getattr(fork_mod, which)
     assert _summary_format() in text
@@ -302,7 +303,8 @@ def test_the_fork_request_carries_the_recorded_part_list_after_the_cached_prefix
     names = part_names(ep)
     assert "request" in names and len(names) > 1, names  # the fixture records more than the request
     (data,) = sent
-    req = json.loads(data.decode())
+    # rev 2: the run record's relay starts the fork; its start file carries the fork's request as "doc"
+    req = json.loads(data.decode())["doc"]
     messages = req["body"]["messages"]
     prefix = src["sent_messages"]
     # the actor's own messages come first, unchanged, so the provider serves them from cache

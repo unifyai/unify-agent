@@ -46,7 +46,7 @@ async def _run(code: str) -> tuple[str, object]:
 
 @pytest.mark.asyncio
 async def test_with_memory_off_the_hook_is_none_and_never_entered(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")  # rev 2: empty means on
     entered: list = []
     monkeypatch.setattr(hooks, "tool_result", lambda *a, **k: entered.append(a))
     assert tools_data._memory_result_hook() is None

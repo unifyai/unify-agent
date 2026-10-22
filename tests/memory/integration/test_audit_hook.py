@@ -1,9 +1,10 @@
 """The worker audit hook under memory v2.
 
 The harness sends ``audit`` in the worker's init message only while a memory request captures the
-work tree; the child then installs the approved audit adapter (loaded by file path, no ``unify`` import)
-and returns each cell's drained records in its ``done`` message; ``hooks.worker_cell_done`` stamps them on
-the harness clock. Off (or no request, or no capture) means no key, no hook, nothing kept.
+work tree, and (rev 2: the library layout is always on) the library copy's roots while a request runs; the child
+then installs the approved audit adapter (loaded by file path, no ``unify`` import) and returns each cell's drained
+records in its ``done`` message; ``hooks.worker_cell_done`` stamps them on the harness clock. Off (or no request)
+means no key, no hook, nothing kept.
 
 The child-half tests drive ``worker_child.Worker`` in a fresh ``python -I -S`` process (an audit hook is
 process-wide and cannot be removed); the last tests run cells in the real sandboxed worker.
@@ -29,6 +30,7 @@ from unify.memory.integration.adapters import audit as audit_mod
 from unify.memory.integration.paths import Paths
 from unify.memory.integration.worktree_capture import WorktreeCapture
 from unify.memory.redact import Redactor
+from unify.sandbox import LIBRARY_MOUNT
 from unify.settings import SETTINGS
 
 ROW_CHANNEL = "worktree:workspace"
@@ -61,7 +63,7 @@ def _init_message(monkeypatch) -> dict:
 
 # -- harness side: the init message and the stamping ----------------------------------------------------
 def test_off_means_no_audit_and_no_init_key(tmp_path, monkeypatch):
-    cap, ws = _capture(tmp_path, monkeypatch, switch="")
+    cap, ws = _capture(tmp_path, monkeypatch, switch="off")  # rev 2: empty means on
     assert hooks.worker_audit() is None
     assert "audit" not in _init_message(monkeypatch)
     hooks.worker_cell_done(
@@ -70,7 +72,7 @@ def test_off_means_no_audit_and_no_init_key(tmp_path, monkeypatch):
     assert cap._events == []
 
 
-def test_on_without_a_capture_or_a_run_sends_nothing(tmp_path, monkeypatch):
+def test_on_without_a_capture_sends_the_library_roots_and_without_a_run_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     monkeypatch.setattr(capture_mod, "_ACTIVE", None)
     monkeypatch.setattr(
@@ -78,8 +80,10 @@ def test_on_without_a_capture_or_a_run_sends_nothing(tmp_path, monkeypatch):
         "_CURRENT",
         SimpleNamespace(index="", paths=Paths.under(tmp_path)),
     )
-    assert hooks.worker_audit() is None  # a run, but no capture
-    assert "audit" not in _init_message(monkeypatch)
+    # a run, but no capture: the library copy's roots only (the use record's library lookups)
+    library = {"roots": [LIBRARY_MOUNT], "path": str(Path(audit_mod.__file__))}
+    assert hooks.worker_audit() == library
+    assert _init_message(monkeypatch)["audit"] == library
     cap, _ = _capture(tmp_path, monkeypatch)
     monkeypatch.setattr(request_mod, "_CURRENT", None)
     assert hooks.worker_audit() is None  # a capture, but no run
@@ -90,12 +94,13 @@ def test_on_with_a_capture_sends_the_workspace_root_and_the_hook_file(
     monkeypatch,
 ):
     cap, ws = _capture(tmp_path, monkeypatch)
-    # The workspace as the worker's sandbox shows it.
-    want = {"roots": ["/workspace"], "path": str(Path(audit_mod.__file__))}
+    # The workspace as the worker's sandbox shows it, then the library copy's roots.
+    want = {"roots": ["/workspace", LIBRARY_MOUNT], "path": str(Path(audit_mod.__file__))}
     assert hooks.worker_audit() == want
     assert _init_message(monkeypatch)["audit"] == want
     cap.finish([])
-    assert hooks.worker_audit() is None  # the request ended
+    # the capture ended; the run goes on, so the library copy's roots stay
+    assert hooks.worker_audit() == {"roots": [LIBRARY_MOUNT], "path": str(Path(audit_mod.__file__))}
 
 
 def test_worker_cell_done_stamps_records_on_the_harness_clock(tmp_path, monkeypatch):
@@ -277,7 +282,7 @@ _PROBE_HOOK = "import sys\n'_unify_memory_cell_audit' in sys.modules"
 async def test_real_worker_off_installs_no_hook(world, monkeypatch):  # noqa: F811
     from tests.memory.cells import Cells
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")  # rev 2: empty means on
     ex = Cells()
     try:
         assert await _cell(ex, _PROBE_HOOK) is False

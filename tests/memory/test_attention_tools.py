@@ -81,13 +81,11 @@ def _forks():
     return [SettledFork(n, n, None, True, False, None) for n in ("e1", "e2", "e3")]
 
 
-def test_the_tools_exist_only_with_their_flags():
+def test_the_writer_always_has_the_attention_and_test_tools():
+    """Rev 2: every writer pass is an attention pass with stated tests, so the writer's allow-list has these tools with
+    no flag (the attention and tests switches are gone, and so is the curator)."""
     plain = set(reg.allow_list("writer", frozenset()))
-    assert not plain & {"open_entries", "take", "decide", "find", "test"}
-    on = set(reg.allow_list("writer", frozenset({"attention"})))
-    assert {"open_entries", "take", "decide", "find"} <= on and "test" not in on
-    assert "test" in reg.allow_list("writer", frozenset({"tests"}))
-    assert not {"open_entries", "decide", "test"} & set(reg.allow_list("curator", frozenset({"attention", "tests"})))
+    assert {"open_entries", "take", "decide", "find", "test"} <= plain
     for name in ("open_entries", "take", "decide", "find", "test"):
         assert reg.help_text(name, "writer")
 
@@ -147,13 +145,11 @@ def test_find_ranks_summaries_entries_and_items(tmp_path):
         assert r.status == "refused" and words in r.text
 
 
-def test_without_a_ledger_or_tests_the_tools_say_so(tmp_path):
+def test_without_a_ledger_the_tools_say_so(tmp_path):
     ctx = SimpleNamespace(state=SimpleNamespace(writer=SimpleNamespace(_attention=None, _tests=None)))
     for fn in (tools.open_entries, tools.take, tools.decide, tools.find):
         r = fn(ctx, {"entry_id": "x", "query": "x"})
         assert r.status == "refused" and "not an attention pass" in r.text
-    r = tools.test(ctx, {"item": "memory.a.b:c", "on": "e1", "expect": {"kind": "refuses"}})
-    assert r.status == "refused" and "UNIFY_MEMORY_WRITER_TESTS is off" in r.text
 
 
 def test_the_first_message_names_the_entries():

@@ -1,22 +1,10 @@
-"""Implicit use signals and the library-use table each consolidation pass's first message carries."""
+"""Implicit use signals and the library-use table (rev 2's attention pass's first message is test_attention_tools's)."""
 
 from __future__ import annotations
 
-import asyncio
-import json
-
-from tests.memory.test_episodes import _ep
-from tests.memory.test_use_telemetry import ITEMS, MODULE, _index, _record
+from tests.memory.test_use_telemetry import ITEMS, _index, _record
 from unify.memory import usage
-from unify.memory.blobs import BlobStore
 from unify.memory.evidence import EvidenceStore
-from unify.memory.gate import Gate
-from unify.memory.library_checks import LibraryConfig
-from unify.memory.gitio import Repo
-from unify.memory.index import build_index
-from unify.memory.signals import Signal
-from unify.memory.writer_pass import PassConfig, WriterPass
-from unify.memory.trigger import PassRequest
 
 
 def test_item_signals_flag_used_never_used_and_refusing_accepted_inputs(tmp_path):
@@ -101,117 +89,3 @@ def test_signals_and_the_table_say_where_the_shown_counts_came_from(tmp_path):
     only = usage.usage_table(ev, ["e0"], ITEMS)
     assert "shown counts" not in only
     assert only.splitlines()[-1].startswith("env/x:strict | ")
-
-
-# --- the writer's first message --------------------------------------------------------------------------
-
-
-class _First:
-    """A model that answers in text only and keeps the first messages it was sent."""
-
-    def __init__(self) -> None:
-        self.first: list[dict] | None = None
-
-    async def __call__(self, messages, tools):
-        if self.first is None:
-            self.first = [dict(m) for m in messages]
-        return {"role": "assistant", "content": "thinking"}, "0.001"
-
-
-def _first_message(tmp_path, mem, ev, eids, pass_id, show_usage=True) -> str:
-    model = _First()
-    writer = WriterPass(
-        mem,
-        Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig()),
-        ev,
-        load=lambda eid: _ep(episode_id=eid),
-        model_turn=model,
-        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=1, show_usage=show_usage),
-    )
-    asyncio.run(writer.run(PassRequest("batched", None, list(eids), False), pass_id))
-    return model.first[1]["content"]
-
-
-def _library(tmp_path) -> Repo:
-    mem = Repo.init_bare(tmp_path / "mem.git")
-    base = mem.head()
-    with mem.temp_checkout() as wt:
-        (wt / "env/x").mkdir(parents=True)
-        (wt / "env/x/__init__.py").write_text(MODULE)
-        mem.fast_forward("main", mem.commit_all(wt, "seed", {}), expected_old=base)
-    return mem
-
-
-def test_with_the_switch_off_the_writers_first_message_is_the_screen_builds(tmp_path):
-    """``UNIFY_MEMORY_WRITER_USAGE`` off (the default): the first message is byte for byte what the screen
-    build (9deefbfd1) sent, even with use rows recorded for the pass's requests."""
-    mem = _library(tmp_path)
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    _index(ev, "e1", _record({"env/x:parse": {"called": 2}}), "2026-10-08T01:00:00Z")
-    assert PassConfig(run_home=str(tmp_path / "run-home"), ).show_usage is False
-    got = _first_message(tmp_path, mem, ev, ["e1"], "p1")
-    req = PassRequest("batched", None, ["e1"], False)
-    with mem.temp_checkout() as wt:
-        index = build_index(wt)
-    # the index, then (for the writer's hygiene) the pass's functions with their cover counts; no table
-    head = f"Pass p1: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}"
-    tail = "\n\nFunctions on this pass's channels:\n"
-    assert got.startswith(head + tail), got
-    rest = got[len(head + tail) :].splitlines()
-    assert rest == ["(none yet)"] or all(
-        line.startswith("- env/") and " recorded cover" in line for line in rest
-    ), rest
-    assert usage.USAGE_HEADING not in got
-
-
-def test_the_writers_first_message_carries_the_usage_table_and_no_checker_text(
-    tmp_path,
-):
-    mem = _library(tmp_path)
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    _index(ev, "e0", _record({"env/x:parse": {"called": 1}}), "2026-10-08T00:00:00Z")
-    _index(
-        ev,
-        "e1",
-        _record(
-            {
-                "env/x:parse": {
-                    "imported": 1,
-                    "called": 2,
-                    "refused": 1,
-                    "refused_then_accepted": 1,
-                },
-            },
-            shown=ITEMS,
-            channels=["x"],
-        ),
-        "2026-10-08T01:00:00Z",
-    )
-    before = _first_message(tmp_path, mem, ev, ["e1"], "p1")
-    ev.add_signal(
-        Signal(
-            "e1.checker",
-            "e1",
-            "checker",
-            "fail",
-            "2026-10-08T01:05:00Z",
-            refers_to="e1",
-        ),
-    )
-    after = _first_message(tmp_path, mem, ev, ["e1"], "p2")
-    table = before.split("Current index:", 1)[1]
-    assert usage.USAGE_HEADING in table
-    # item | at pin | shown it | shown its channel | calling | calls | refusals | then accepted |
-    # other errors | dynamic | last call
-    assert (
-        "env/x:parse | 1 | 1 | 1 | 1 | 2 | 1 of 1 known (+0 unknown) | 1 | "
-        "0 of 1 known (+0 unknown) | 0 | 0 requests ago" in table
-    )
-    assert (
-        "env/x:lookup | 1 | 1 | 1 | 0 | 0 | 0 of 1 known (+0 unknown) | 0 | "
-        "0 of 1 known (+0 unknown) | 0 | never" in table
-    )
-    # the checker's verdict changes nothing the writer is shown
-    assert after.split("Current index:", 1)[1] == table
-    for word in ("checker", "fail", "solved", "e1.checker"):
-        assert word not in table

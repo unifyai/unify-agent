@@ -80,8 +80,8 @@ def test_no_store_lies_under_a_root_a_cell_reads(world, monkeypatch):  # noqa: F
             assert policy.readable_violation(store) is not None, store
             for root in readable_roots:
                 assert not _within(store, root), (store, root)
-        # the export is the one path put back, read-write, for the worker
-        assert hooks.worker_mounts() == [o.paths.checkout]
+        # the export is the one path put back for the worker, read-only (rev 2: nothing is bound read-write)
+        assert hooks.worker_mounts() == [] and hooks.worker_readonly_mounts() == [o.paths.checkout]
         assert not any(_within(o.paths.checkout, s) for s in _stores(o.paths))
     finally:
         o.ctx.run(o.run.abort)
@@ -98,6 +98,7 @@ def test_the_worker_command_binds_no_store(world, monkeypatch):  # noqa: F811
             policy,
             cwd=str(policy.workspace),
             writable=hooks.worker_mounts(),
+            late_readonly=hooks.worker_readonly_mounts(),
         )
         end = argv.index("--") if "--" in argv else len(argv)
         binds = [
@@ -111,7 +112,9 @@ def test_the_worker_command_binds_no_store(world, monkeypatch):  # noqa: F811
                 assert not _within(Path(src), store), (opt, src, store)
                 assert not _within(Path(dst), store), (opt, dst, store)
         checkout = str(Path(os.path.realpath(o.paths.checkout)))
-        assert ("--bind", checkout, checkout) in binds
+        # rev 2: the copy is bound read-only, as the worker binds it (late, after the masks), never read-write
+        mine = [b for b in binds if b[1] == checkout]
+        assert mine and all(opt == "--ro-bind" for opt, _, _ in mine), mine
     finally:
         o.ctx.run(o.run.abort)
 

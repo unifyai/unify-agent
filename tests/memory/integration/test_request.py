@@ -153,7 +153,7 @@ def test_a_begin_failing_after_the_capture_began_aborts_it(mv2, monkeypatch):
 
 
 def test_hooks_open_no_run_while_the_switch_is_off(mv2, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")  # rev 2: empty means on
     assert hooks.begin_request("hi") is None
     assert mv2.fakes.calls == [] and request_mod.current() is None
 

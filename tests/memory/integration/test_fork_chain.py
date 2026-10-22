@@ -22,8 +22,6 @@ from tests.memory.test_episodes import _ep
 CORPUS = Path(__file__).resolve().parents[1] / "data" / "fork_replies" / "corpus.json"
 PY = "/usr/bin/python3"
 CODE = 'def double(x):\n    """Twice x."""\n    return 2 * x\n'
-ON = SimpleNamespace()
-OFF = SimpleNamespace(UNIFY_MEMORY_LIBRARY_FORK="off")
 
 
 def _paths(tmp_path):
@@ -307,7 +305,8 @@ def test_the_quota_refusal_reaches_the_ledger(tmp_path):
 def test_the_instruction_shows_one_format_whose_example_parses():
     text = fork_mod.fork_instruction()
     assert text == fork_mod.INSTRUCTION
-    assert "Do not call any tool" in text and "fenced block" in text
+    # rev 2: the fork calls only the run record's tools, and its instruction says so
+    assert fork_mod.RECORD_CALLS_ONLY in text and "fenced block" in text
     assert "fenced blocks" in fw.TOOL_REPLY
     blocks, record = fw.parse_reply(fork_mod.FORMAT_EXAMPLE)
     assert [(b["path"], b["kind"], b["form"], b["status"]) for b in blocks] == [
@@ -387,7 +386,7 @@ def _sleeper(reservation, tmp_path):
 
 def test_the_real_worker_settles_its_episode_itself(tmp_path):
     paths = _paths(tmp_path)
-    res = fork_mod.reserve(paths, "e1", ON)
+    res = fork_mod.reserve(paths, "e1")
     req = {
         "episode": "e1",
         "url": "http://127.0.0.1:9/v1/chat/completions",  # closed: the call fails at once, keyless
@@ -414,14 +413,14 @@ def test_the_real_worker_settles_its_episode_itself(tmp_path):
 
 def test_finish_records_lost_when_the_waited_worker_exits_without_a_record(tmp_path):
     paths = _paths(tmp_path)
-    res = fork_mod.reserve(paths, "e1", ON)
+    res = fork_mod.reserve(paths, "e1")
     fork = fork_mod.launch(
         res,
         [PY, "-I", "-c", "raise SystemExit(3)"],
         b"",
         tmp_path / "w.log",
     )
-    fork_mod.finish(fork, SimpleNamespace(UNIFY_MEMORY_LIBRARY_WAIT_SLOT="on"))
+    fork_mod.finish(fork)
     doc = _status(paths, "e1")
     assert doc["status"] == "lost" and "code 3" in doc["detail"]
 
@@ -436,7 +435,7 @@ def test_a_dir_never_started_and_a_stale_lock_settle(tmp_path, monkeypatch):
     )  # just made: its request may still be locking it
     monkeypatch.setattr(fork_mod, "UNSTARTED_S", 0.0)
     assert fork_mod.settled(root, "bare") and _status(paths, "bare")["status"] == "lost"
-    res = fork_mod.reserve(paths, "slow", ON)
+    res = fork_mod.reserve(paths, "slow")
     assert not fork_mod.settled(root, "slow")
     monkeypatch.setattr(fork_mod, "STALE_S", 0.0)
     assert (

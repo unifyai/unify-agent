@@ -93,7 +93,7 @@ def test_the_init_message_asks_for_no_bytecode_only_under_memory(
 ):  # noqa: F811
     from unify.actor.execution.worker import PythonWorker
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")  # rev 2: empty means on
     assert "no_bytecode" not in PythonWorker()._init_message()
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
     paths, _ = _home(world)
@@ -122,7 +122,7 @@ async def test_with_the_switch_off_the_export_is_neither_mounted_nor_imported(
     world,  # noqa: F811
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")  # rev 2: empty means on
     paths, hidden = _home(world)
     monkeypatch.setattr(
         request_mod,

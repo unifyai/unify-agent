@@ -1,4 +1,4 @@
-"""Measured use for the writer, same-shape functions for CURATE, the when-to-use section."""
+"""Measured use for the writer and the when-to-use section."""
 
 from unify.memory import library_prompts as pv
 from unify.memory.evidence import EvidenceStore
@@ -19,46 +19,10 @@ def test_write_asks_for_each_items_when_to_use_section_and_a_linked_note_of_prec
     function's preconditions and known failures."""
     text = pv.write_brief_now()
     assert "linked note says its preconditions and its known failures" in text
-    assert pv.WHEN_TO_USE_TEXT in text
-    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
-
-
-def _with_replay(monkeypatch):
-    """The replay sentence appears only when the replay tool is registered for the writer."""
-    from unify.memory import tool_spec
-
-    spec = tool_spec.ToolSpec(
-        name="replay",
-        description="Verify an item by replay.",
-        parameters={"type": "object", "properties": {}},
-        roles=frozenset({"write"}),
-    )
-    monkeypatch.setattr(tool_spec, "registry", lambda: (spec,))
-
-
-def test_the_notes_and_replay_sentences_inform_and_never_set_a_bar(monkeypatch):
-    """A live writer read the old generality sentence as "only cross-task, verified
-    knowledge" and dismissed recurring solved tasks. The wording now encourages generality and values a rule for one
-    kind of request that comes back; the replay sentence offers verification, it does not require it.
-    """
-    _with_replay(monkeypatch)
-    text = pv.write_brief_now()
-    notes = text.split("A note states its rule")[1].split("\n")[0]
-    assert "worth keeping when that kind of request comes back" in notes
-    assert (
-        "beyond the episodes it came from" not in text
-        and "only" not in notes
-        and "must" not in notes
-    )
-    replay = text.split("A function lifted from the working model's cells")[1].split(
-        "\n",
-    )[0]
-    assert (
-        replay.startswith(" can be verified")
-        and "only" not in replay
-        and "must" not in replay
-    )
-    assert (
-        "Store anything that repeats or is likely to repeat" in text
-    )  # rule 1 unchanged
+    # rev 2 (labels only): the section and its four lines as written, and a missing one is labelled, not refused
+    shared = pv.WHEN_TO_USE_TEXT.split("  The gate refuses")[0]
+    assert shared.endswith("Example request: Sum these payments per currency.\n") and shared in text
+    assert "A new or changed function or note without the section or one of its four lines is labelled so." in text
+    assert "The items of a folder the pass changes are labelled when the folder has no README.md" in text
+    assert "The gate refuses" not in text.split("- Every function and note carries")[1].split("- Tests go")[0]
     assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []

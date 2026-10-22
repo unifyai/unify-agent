@@ -54,10 +54,11 @@ def run_capture(staging_dir: Path, episode, store: Path) -> str:
 #: The capture store under the state dir (``<state>/memory-captures/<capture id>/``) and its files: ``saved.json``
 #: holds what the capture was saved against; ``broke.md`` is written only when something broke (here: ``none``).
 CAPTURE_STORE = "memory-captures"
-CAPTURE_FILES = ("procedure.py", "signature.json", "record.json", "saved.json")
+CAPTURE_FILES = ("procedure.py", "signature.json", "record.json", "saved.json", "occurrences.jsonl")
 CAPTURE_EVENTS = "captures-events.jsonl"
 SIGNATURE_KEYS = {"input", "output", "relations", "constraints", "goal"}
-RECORD_KEYS = {"episodes", "reproduces", "deterministic", "applies", "holds", "outcome", "level", "status", "track"}
+#: rev 2's trace record (nothing is run): no ``reproduces``; ``own_check`` says the capture was not run
+RECORD_KEYS = {"episodes", "own_check", "deterministic", "applies", "holds", "outcome", "level", "status", "track"}
 #: Design I.11 decision 3: evidence levels (lowest first) and a new item's status.
 LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
 LEVEL_CAPTURE = LEVELS[0]
@@ -205,7 +206,7 @@ def _read_json(path: Path) -> Any:
 
 @needs_box
 @pytest.mark.timeout(600)
-def test_the_fork_stages_a_procedure_and_the_capture_step_records_it_confined(tmp_path):
+def test_the_fork_stages_a_procedure_and_the_capture_step_records_it(tmp_path):
     ep = recorded_episode()
     staging = tmp_path / "memory-state" / "memory-staging" / ep.episode_id
     doc = stage_fork(staging, ep)
@@ -228,9 +229,10 @@ def test_the_fork_stages_a_procedure_and_the_capture_step_records_it_confined(tm
     record = _read_json(folder / "record.json")
     assert RECORD_KEYS <= set(record), record
     assert record["episodes"] == [ep.episode_id]
-    # run confined on the recorded request: it gave the handed-back value, twice alike, its conditions held
-    assert record["reproduces"] in (True, "reproduces"), record
-    assert record["deterministic"] is True and record["applies"] is True and record["holds"] is True, record
+    # rev 2: never run to classify it, so nothing is judged of its run; its outcome comes from the signals only
+    assert record["own_check"] == {"ran": False, "why": "a capture is never run to classify it"}, record
+    assert "reproduces" not in record, record
+    assert record["deterministic"] is None and record["applies"] is None and record["holds"] is None, record
     assert record["outcome"] != "failed", record
     assert (record["level"], record["status"]) == (LEVEL_CAPTURE, STATUS_NEW), record
     # the applicability signature: computed by the harness, with no identifier and no request text
@@ -398,7 +400,8 @@ def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch
     row = json.loads(_line(shown, "CAPTURE ") or "null")
     assert row is not None, shown[:3000]
     assert row["id"] == cid and row["level"] == LEVEL_CAPTURE, row
-    assert row["reproduces"] in (True, "reproduces") and "same_as" in row and "outcome" in row, row
+    # rev 2's pool row: the trace record has no reproduction (its value is None) and no recurrence (same_as empty)
+    assert row["reproduces"] is None and row["same_as"] == [] and "outcome" in row, row
     assert cid in _line(shown, "POOL ") or POOL_KIND in _line(shown, "POOL "), shown[:3000]
     # one route: the episode's staging holds no second copy of the procedure, and names the capture and its call
     route = json.loads(_line(shown, "ROUTE ") or "null")

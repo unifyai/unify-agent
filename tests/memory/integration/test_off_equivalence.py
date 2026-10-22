@@ -1,43 +1,23 @@
-"""With UNIFY_MEMORY off, a visit is byte-identical to the same visit with memory v2 absent (gate (b)).
+"""With UNIFY_MEMORY off, a visit enters no memory hook and makes nothing of memory (gate (b)).
 
 One scripted visit runs through the CLI (``Act`` in process: ``--persist --jsonl``, a cell that reads a
-workspace file, a reply, an outcome line, then ``{"quit": true}``) twice on fresh actors:
+workspace file, a reply, an outcome line, then ``{"quit": true}``) with ``UNIFY_MEMORY=off``. The tool loop's memory
+hook is asked for at each finished call and is None, it is never entered, nothing of memory is made under the home
+(rev 2's run record, ``unify.agents``, is on in every run and is the one thing in the state dir), and the visit ran.
 
-1. **off**: ``UNIFY_MEMORY`` empty, the shipped code;
-2. **absent**: every ``unify.memory`` module is taken out of ``sys.modules`` and further imports of
-   the package are refused (and counted). The harness's call sites (cli.py, code_act_actor.py,
-   core_surface.py, worker.py) then reach a stand-in ``hooks`` whose every function returns its input
-   unchanged or nothing, which is what the code did before the call sites existed. The one module left
-   in place is ``integration.switch``, the settings validator, which only parses values.
-
-Compared byte for byte, in order: every model request body (the canonical JSON, sorted keys, of all the
-keyword arguments the harness hands the model transport: messages, tools and every parameter) across all
-turns; and every ``--jsonl`` line the CLI wrote (the outcome answer, the response, the result, ended).
-Cell outputs are inside the request bodies (each ``execute_code`` result is a tool message).
-
-Named normalisations, and nothing else:
-
-- Tool-call ids come from the scripted model, not the harness; its id counter restarts for each run.
-- A transport argument that is not JSON (none is expected) is rendered as its type's name, never an
-  address.
-- The provider credential (``api_key``) is compared by a digest, so it is never kept or printed.
-
-No request id or timestamp is excluded: the harness puts none in the body at this base (the body's
-``extra_body.prompt_cache_key``/``session_id`` are derived from the request, and equal across the two
-runs). If one appears, normalise that one field by name here, with the reason, rather than loosening the
-comparison.
+Rev 2 has no "memory absent" run to compare it with byte for byte: the actor's tool layer imports unify.memory's
+reply, profile and redaction modules, so the package cannot be taken out of a run. :func:`canonical` (the request
+bodies' canonical JSON, the provider credential compared by a digest only) is kept and tested on its own.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.abc
 import itertools
 import json
 import os
 import sys
-import types
 from typing import Any
 
 import pytest
@@ -122,83 +102,6 @@ class _Recording(ScriptedModel):
 # ── memory v2 absent ─────────────────────────────────────────────────────────
 
 
-def _identity_hooks() -> types.ModuleType:
-    hooks = types.ModuleType("unify.memory.integration.hooks")
-    hooks.enabled = lambda: False
-    hooks.can_store = lambda value: value
-    hooks.system_prompt = lambda text: text
-    hooks.sandbox_objects = lambda objects: objects
-    hooks.worker_paths = lambda: []
-    hooks.worker_mounts = lambda: []
-    hooks.worker_readonly_mounts = lambda: []
-    hooks.begin_request = lambda request: None
-    hooks.worker_audit = lambda: None
-    hooks.worker_cell_done = lambda events: None
-    hooks.result_hook = lambda: None
-    hooks.tool_result = lambda name, call_id, raw, *, raised=None: None
-    hooks.cell_error = (
-        lambda text: text
-    )  # worker.py: a failed cell's error, unchanged (library-mode surfacing)
-    # memory during an episode (UNIFY_MEMORY_IN_EPISODE): the CLI hands the session over, the loop and the worker ask
-    # whether it is on at each boundary, and nothing else is called while it is off
-    hooks.attach_handle = lambda handle: None
-    hooks.in_episode_active = lambda: False
-    hooks.before_cell = lambda: None
-    hooks.after_cell = lambda: None
-    hooks.repin_roots = lambda: []
-    hooks.turn_boundary = lambda client, *, compacting=False, new_message=False: None
-
-    def __getattr__(name: str):  # a new call site must be added here, deliberately
-        raise AttributeError(
-            f"the identity hooks have no {name!r}; add it to the OFF test",
-        )
-
-    hooks.__getattr__ = __getattr__
-    return hooks
-
-
-class _RefuseMemory(importlib.abc.MetaPathFinder):
-    def __init__(self) -> None:
-        self.attempts: list[str] = []
-
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname == "unify.memory" or fullname.startswith("unify.memory."):
-            self.attempts.append(fullname)
-            raise ImportError(f"memory v2 is absent in this run: {fullname}")
-        return None
-
-
-def _make_absent(monkeypatch) -> _RefuseMemory:
-    switch = sys.modules.get("unify.memory.integration.switch")
-    for name in [
-        m for m in sys.modules if m == "unify.memory" or m.startswith("unify.memory.")
-    ]:
-        monkeypatch.delitem(sys.modules, name)
-    pkg = types.ModuleType("unify.memory")
-    pkg.__path__ = []
-    integration = types.ModuleType("unify.memory.integration")
-    integration.__path__ = []
-    hooks = _identity_hooks()
-    integration.hooks = hooks
-    pkg.integration = integration
-    stand_ins = {
-        "unify.memory": pkg,
-        "unify.memory.integration": integration,
-        "unify.memory.integration.hooks": hooks,
-    }
-    if switch is not None:
-        integration.switch = switch
-        stand_ins["unify.memory.integration.switch"] = switch
-    for name, mod in stand_ins.items():
-        monkeypatch.setitem(sys.modules, name, mod)
-    finder = _RefuseMemory()
-    monkeypatch.setattr(sys, "meta_path", [finder, *sys.meta_path])
-    return finder
-
-
-# ── one visit ────────────────────────────────────────────────────────────────
-
-
 async def _visit(
     world,
     monkeypatch,
@@ -216,7 +119,6 @@ async def _visit(
             "--persist",
             "--jsonl",
             "--no-clarify",
-            "--no-store",
             "--quiet",
             REQUEST,
         ],
@@ -251,25 +153,11 @@ async def _visit(
     return model.bodies, lines, model.kinds()
 
 
-def _first_difference(a: list[str], b: list[str]) -> str:
-    if len(a) != len(b):
-        return f"{len(a)} vs {len(b)} items"
-    for i, (x, y) in enumerate(zip(a, b)):
-        if x != y:
-            at = (
-                next(j for j in range(min(len(x), len(y))) if x[j] != y[j])
-                if x[:1] == y[:1]
-                else 0
-            )
-            return f"item {i} differs at {at}: {x[max(0, at - 120):at + 120]!r} vs {y[max(0, at - 120):at + 120]!r}"
-    return ""
-
-
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(420)
-async def test_off_is_byte_identical_to_memory_absent(core_world, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+async def test_off_enters_no_memory_and_makes_nothing(core_world, monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")  # rev 2: empty means on
     # the tool loop's memory hook: asked for at each finished call, None while off, never entered
     from unify.common._async_tool import tools_data
     from unify.memory.integration import hooks as real_hooks
@@ -294,20 +182,19 @@ async def test_off_is_byte_identical_to_memory_absent(core_world, monkeypatch):
     assert entered == []  # the hook was never entered
     assert tools_data._memory_result_hook() is None
 
-    # nothing of memory v2 was made under UNIFY_HOME
+    # nothing of memory v2 was made under UNIFY_HOME; rev 2's run record (unify.agents, on in every run, memory or
+    # not) is the one thing in the state dir
     paths = Paths.under(core_world["state"])
     for p in (paths.checkout, *paths.harness_only(), paths.events):
+        if p == paths.state_dir and p.exists():
+            assert sorted(x.name for x in p.iterdir()) == ["agents"], sorted(p.rglob("*"))
+            continue
         assert not p.exists(), p
 
-    finder = _make_absent(monkeypatch)
-    absent = await _visit(core_world, monkeypatch)
-    assert finder.attempts == []  # nothing of memory v2 was imported in the absent run
-
+    # rev 2: memory cannot be absent from a run (the actor's tool layer imports unify.memory's reply, profile and
+    # redaction modules), so off is judged by the hook never entered and nothing of memory made, and by the visit
     off_bodies, off_lines, off_kinds = off
-    absent_bodies, absent_lines, absent_kinds = absent
-    assert off_kinds == absent_kinds == ["actor", "actor"]
-    assert off_bodies == absent_bodies, _first_difference(off_bodies, absent_bodies)
-    assert off_lines == absent_lines, _first_difference(off_lines, absent_lines)
+    assert off_kinds == ["actor", "actor"]
     # the visit really ran: the cell's output reached the model, the outcome line was answered
     assert "10" in json.dumps(json.loads(off_bodies[1])["messages"][-1])
     assert [json.loads(x)["type"] for x in off_lines] == [
