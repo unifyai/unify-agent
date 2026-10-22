@@ -9,26 +9,16 @@ import pytest
 
 from unify.memory import library_prompts as pv
 
+#: The WRITE brief's parts, in order (rev 2's attention WRITE pass, tools called from code: the tools are in the shared
+#: opening, so there is no Tools part; there is no CURATE brief).
 BRIEF_HEADINGS = {
     "write": [
         "Role",
+        "Your entries",
         "Inputs",
-        "Tools",
         "The record",
         "How to work",
         "What to write",
-        "Rules",
-        "The gate",
-        "Repair",
-        "Limits",
-        "Done",
-    ],
-    "curate": [
-        "Role",
-        "Inputs",
-        "Tools",
-        "The record",
-        "What to do",
         "Rules",
         "The gate",
         "Repair",
@@ -64,32 +54,14 @@ def _write(limits=None, **over):
         sample_k=8,
         lint_min=4,
         pytest_env=ENV,
-        staging=True,
-        pool=True,
-        tools="".join(
-            f"- `{t}`: the {t} tool.\n" for t in sorted(OPTIONAL_TOOLS)
-        ).rstrip("\n"),
         tool_names=OPTIONAL_TOOLS,
-        pool_kinds="`candidate` (a function with its cases)",
     )
     values.update(over)
     return pv.write_brief(**values)
 
 
-def _curate(limits=None, **over):
-    values = dict(
-        limits=limits or _limits(),
-        pytest_env=ENV,
-        overlaps_path="/inputs/curate/overlaps.json",
-        suspects_path="/inputs/curate/suspects.json",
-        trigger_path="/inputs/curate/trigger.json",
-    )
-    values.update(over)
-    return pv.curate_brief(**values)
-
-
 def _texts():
-    return {"guide": pv.GUIDE_LIBRARY, "write": _write(), "curate": _curate()}
+    return {"guide": pv.guide_library(), "librarian guide": pv.GUIDE_LIBRARIAN, "write": _write()}
 
 
 def _headings(text):
@@ -98,7 +70,7 @@ def _headings(text):
 
 def test_each_brief_has_its_parts_in_order():
     assert _headings(_write()) == BRIEF_HEADINGS["write"]
-    assert _headings(_curate()) == BRIEF_HEADINGS["curate"]
+    assert _headings(pv.write_brief_now()) == BRIEF_HEADINGS["write"]
 
 
 def test_numbers_come_from_the_values_given():
@@ -109,18 +81,15 @@ def test_numbers_come_from_the_values_given():
         sample_k=11,
         lint_min=6,
     )
+    # rev 2 states no stage-5 numbers (mutation share, drawn inputs, literal length): those checks are off
     for s in (
         "at most 1234 bytes",
         "at most 45 s",
         "after 321 model and check calls",
         "77 files and directories",
-        "at least 70% of small mutations",
-        "appends 11 more recorded inputs",
-        "text of 6 or more characters",
     ):
         assert s in text, s
     assert "<<" not in text and ">>" not in text
-    assert "after 321 model and check calls" in _curate(limits=limits)
     assert '"PYTHONPATH": "/x"' in _write(pytest_env={"PYTHONPATH": "/x"})
 
 
@@ -157,20 +126,20 @@ def test_no_benchmark_vocabulary_anywhere():
 
 def _contract_texts():
     """The texts that state the function contract outside the writer's briefs: the fork's instruction and its
-    format block, both helper briefs, the curator's system brief, and the actor's two guides.
+    format block, both helper briefs, and the actor's two guides (rev 2: no curator; the pointer guide is the
+    librarian's).
     """
-    from unify.memory import curate, helpers
+    from unify.memory import helpers
     from unify.memory.integration import fork
 
     return {
-        "contract": pv.CANDIDATE_CONTRACT,
+        "contract": pv.CANDIDATE_CONTRACT_IN_CODE,
         "fork": fork.fork_instruction(),
         "fork format": fork.FORMAT_EXAMPLE,
         "helper": helpers.helper_brief(False),
         "helper with similar": helpers.helper_brief(True),
-        "curate": curate.curate_system(),
-        "guide": pv.GUIDE_LIBRARY,
-        "pointer guide": pv.GUIDE_POINTER,
+        "guide": pv.guide_library(),
+        "librarian guide": pv.GUIDE_LIBRARIAN,
     }
 
 

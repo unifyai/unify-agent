@@ -14,18 +14,17 @@ import pytest
 
 from unify.memory import helpers, library_prompts, tool_spec, views, writer_pass
 from unify.memory.gate import GateResult
-from unify.memory.integration import fork_worker
 from unify.memory.repair import REPAIR_ROUNDS, repair_message
 from unify.memory.trigger import PassRequest
 from tests.memory.test_writer_library_tools import EPS
 from tests.memory.test_writer_pass import Turns, _call, _write, _writer, needs_bwrap
+from tests.memory.writer_library_items import FINISH_CELL
 
 PKG = Path(writer_pass.__file__).parent
 
 #: The modules whose replies reach an agent as tool results (handlers, readers and the pass loop).
 TOOL_MODULES = (
     "writer_tools.py",
-    "edit_tools.py",
     "writer_pass.py",
     "helpers.py",
     "similar.py",
@@ -136,36 +135,32 @@ def test_an_existing_refusal_codes_file_is_never_written_over(tmp_path):
 
 
 def test_the_briefs_state_the_operational_limits_from_their_constants():
-    mib = fork_worker.QUOTA_BYTES / 1024**2
-    stage = (
-        f"at most {fork_worker.QUOTA_FILES} files and {library_prompts._num(mib)} MiB"
-    )
-    from unify.common._async_tool.context_compression import COMPACTION_THRESHOLD
-
-    compaction = (
-        f"reaches {library_prompts._num(COMPACTION_THRESHOLD * 100)}% of the model's context window",
-        "nothing under /memory, /inputs or /outputs changes",
-    )
+    """Rev 2's in-code brief states the limits from their constants; the fork's staging quota is the fork's text
+    (test_writer_tool_surface) and the compaction is stated by the note that follows a restart
+    (``writer_pass.RESTART_POINTER``), so neither is in the writer's brief."""
     finish_cap = f"up to {writer_pass.FINISH_G1_REFUSALS} times in a pass"
+    capped_rounds = f"At most {REPAIR_ROUNDS} repair rounds follow the first refused `tools.finish`"
+    uncapped_rounds = "There is no set number of repair rounds"
     full = library_prompts.write_brief_now(finish_capped=True)
-    for sentence in (stage, *compaction, finish_cap):
+    for sentence in (finish_cap, capped_rounds):
         assert full.count(sentence) == 1, sentence
-    # an uncapped pass: the staging quota and the compaction are stated, the finish cap is not
+    assert uncapped_rounds not in full
+    # an uncapped pass: neither cap is stated
     plain = library_prompts.write_brief_now()
-    for sentence in (stage, *compaction):
-        assert plain.count(sentence) == 1, sentence
-    assert finish_cap not in plain
+    assert plain.count(uncapped_rounds) == 1
+    assert finish_cap not in plain and capped_rounds not in plain
     for text in (full, plain):
         assert "budget" not in text.lower() and "<<" not in text
 
 
-def test_the_pass_states_compaction_and_the_finish_cap_as_it_is_configured(tmp_path):
+def test_the_pass_states_the_finish_cap_as_it_is_configured(tmp_path):
     _, _, writer = _writer(
         tmp_path,
         Turns([]),
         max_usd=Decimal("1"),
     )
-    assert writer._write_inputs()["compact"] is True
+    # rev 2 always compacts, so the brief's inputs carry no compaction flag
+    assert "compact" not in writer._write_inputs()
     assert writer._write_inputs()["finish_capped"] is True
     _, _, uncapped = _writer(tmp_path / "u", Turns([]), max_usd=None)
     assert uncapped._write_inputs()["finish_capped"] is False
@@ -202,7 +197,8 @@ def test_final_manifest_is_set_by_an_accepted_finish_only(tmp_path):
     asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
     # the first finish (no manifest yet) is refused; the second is accepted (the pass ends there, so the model
     # never sees its reply)
-    assert model.outputs["f0"].startswith("not finished: ")
+    # rev 2: finish is called from a cell, which prints the interpreter's notices before the refusal
+    assert model.outputs["f0"].startswith(FINISH_CELL + "not finished: ")
     assert writer.final_manifest == manifest
 
 

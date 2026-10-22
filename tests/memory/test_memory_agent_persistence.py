@@ -114,7 +114,7 @@ def _helper(tmp_path: Path, cells: list[tuple[str, str]], *, library: str | None
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-0")
+        await helpers.result(ctx, "call-1")  # rev 2 names helpers call-1, call-2, ...
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
@@ -195,41 +195,6 @@ def test_finish_stops_the_interpreter_before_anything_is_judged_and_a_repair_cel
     assert "G1" in model.outputs["f1"] and "manifest" in model.outputs["f1"], model.outputs["f1"]
     out = model.outputs["c2"]
     assert out.splitlines()[0] == RESTARTED and "NameError" in out, out
-    assert _descendants(os.getpid()) == []
-
-
-@needs_box
-def test_a_json_write_over_the_quota_stops_the_interpreter(tmp_path, monkeypatch):
-    real = writer_pass._measure
-
-    def measure(root):
-        return "over quota: the test's limit" if (Path(root) / "big.txt").exists() else real(root)
-
-    monkeypatch.setattr(writer_pass, "_measure", measure)
-    from unify.common.box_interpreter import BoxInterpreter
-
-    measured = BoxInterpreter.measure_quota
-    after: list[tuple] = []
-
-    async def measure_quota(self):
-        breach = await measured(self)
-        after.append((breach, self.box_alive()))
-        return breach
-
-    monkeypatch.setattr(BoxInterpreter, "measure_quota", measure_quota)
-    turns = [
-        _cell("c1", "x = 41"),
-        _call("w1", "write", {"path": "big.txt", "content": "x" * 100}),
-    ]
-    writer, model = _writer(tmp_path, turns, edit_tools=True)
-    out = _run(writer)
-    assert model.boxes[1] > 0, model.boxes  # alive after the cell
-    # the last reply is never sent back to the model: read it from the pass's conversation
-    replies = {m["tool_call_id"]: str(m["content"]) for m in writer.messages if m.get("role") == "tool"}
-    assert "over quota: the test's limit; the pass is refused" in replies["w1"], replies
-    # the write's measure found the breach and stopped the interpreter at once
-    assert ("over quota: the test's limit", False) in after, after
-    assert not out.passed
     assert _descendants(os.getpid()) == []
 
 

@@ -214,6 +214,14 @@ def _g3_refusals(res) -> list[str]:
     return [r for r in res.reasons if r.startswith("G3:")]
 
 
+def _g3_labels(res, owner: str | None = None) -> list[str]:
+    """Rev 2: the G3 findings recorded as labels (never refusals): an item's, from its verification record, or with
+    no *owner* the pass's, from the gate's notes."""
+    if owner is not None:
+        return [r for r in (res.verification.get(owner) or {}).get("label_findings", []) if r.startswith("G3:")]
+    return [r[len("note: label: the pass: "):] for r in res.reasons if r.startswith("note: label: the pass: G3:")]
+
+
 def _keeping_notes(res, test: str) -> list[str]:
     return [r for r in res.reasons if r.startswith("note:") and test in r and "G3" in r]
 
@@ -268,7 +276,7 @@ def test_a_pin_only_change_for_an_unchanged_function_lands(library_example_world
     assert _keeping_notes(res, w.TEST_FILE), res.reasons
 
 
-def test_a_weakened_pin_draws_only_the_weakening_refusal_and_lands_with_its_reason(
+def test_a_weakened_pin_draws_only_the_weakening_label_and_lands_with_its_reason(
     library_example_world,
 ):
     world = library_example_world
@@ -278,8 +286,9 @@ def test_a_weakened_pin_draws_only_the_weakening_refusal_and_lands_with_its_reas
         'assert isinstance(user_id(load("me_2.json")), str)',
     )
     res = _check(world, {w.TEST_FILE: weaker}, w.manifest({}))
-    assert not res.passed
-    g3 = _g3_refusals(res)
+    # rev 2: a weakened test without a stated reason labels the function it tests and refuses nothing
+    assert res.passed and not _g3_refusals(res), res.reasons
+    g3 = _g3_labels(res, w.ITEM_ID) + _g3_labels(res)
     assert g3 and all("without a stated reason" in r for r in g3), res.reasons
     assert any("weakened" in r for r in g3), res.reasons
     stated = w.manifest(
@@ -288,7 +297,7 @@ def test_a_weakened_pin_draws_only_the_weakening_refusal_and_lands_with_its_reas
     )
     res = _merge(world, {w.TEST_FILE: weaker}, stated, "p1")
     _landed(world, res)
-    assert not _g3_refusals(res), res.reasons
+    assert not _g3_refusals(res) and not _g3_labels(res, w.ITEM_ID) and not _g3_labels(res), res.reasons
 
 
 def test_a_notes_only_change_lands(library_example_world):
@@ -392,7 +401,7 @@ def test_an_unchanged_function_whose_tests_alone_change_skips_its_own_code_check
 # --- what G3 still refuses ----------------------------------------------------------------------------------------
 
 
-def test_a_behaviour_change_without_a_red_test_is_refused_with_the_red_test_hint(
+def test_a_behaviour_change_without_a_red_test_is_labelled_with_the_red_test_hint(
     library_example_world,
 ):
     world = library_example_world
@@ -400,24 +409,26 @@ def test_a_behaviour_change_without_a_red_test_is_refused_with_the_red_test_hint
     files = {w.MODULE: STRIPPED, MORE_USERS_TEST: MORE_USERS_SOURCE}
     man = w.manifest({}, w.item(tests=[w.TEST_FILE, MORE_USERS_TEST]))
     res = _check(world, files, man)
-    assert not res.passed
-    edited = [r for r in _g3_refusals(res) if f"{w.ITEM_ID} {EDITED_NOT_RED}" in r]
-    assert len(edited) == 1, res.reasons
+    # rev 2: the finding labels the function and refuses nothing
+    assert res.passed and not _g3_refusals(res), res.reasons
+    labels = _g3_labels(res, w.ITEM_ID)
+    edited = [r for r in labels if f"{w.ITEM_ID} {EDITED_NOT_RED}" in r]
+    assert len(edited) == 1, labels
     assert RED_TEST_HINT_START in edited[0], edited
-    # the per-test refusal is gone: the keeping test is a note, not a reason of its own
-    assert not any(OLD_NOT_RED in r for r in res.reasons), res.reasons
-    assert all(EDITED_NOT_RED in r for r in _g3_refusals(res)), res.reasons
-    assert w.ITEM_ID in res.items_refused
+    # the per-test finding is gone: the keeping test is a note, not a finding of its own
+    assert not any(OLD_NOT_RED in r for r in res.reasons + labels), res.reasons
+    assert all(EDITED_NOT_RED in r for r in labels), labels
+    assert w.ITEM_ID not in res.items_refused
 
 
-def test_an_edited_function_with_no_changed_test_is_refused_with_the_red_test_hint(
+def test_an_edited_function_with_no_changed_test_is_labelled_with_the_red_test_hint(
     library_example_world,
 ):
     world = library_example_world
     _land_world(world)
     res = _check(world, {w.MODULE: STRIPPED}, w.manifest({}))
-    assert not res.passed
-    (line,) = [r for r in _g3_refusals(res) if "has no new or changed test" in r]
+    assert res.passed and not _g3_refusals(res), res.reasons
+    (line,) = [r for r in _g3_labels(res, w.ITEM_ID) if "has no new or changed test" in r]
     assert line.startswith(f"G3: {w.ITEM_ID} has no new or changed test")
     assert RED_TEST_HINT_START in line
 
@@ -442,8 +453,9 @@ def test_a_fixture_new_in_the_pass_no_longer_makes_a_fake_red(library_example_wo
         ),
     )
     res = _check(world, files, man)
-    assert not res.passed, res.reasons
-    assert any(f"{w.ITEM_ID} {EDITED_NOT_RED}" in r for r in _g3_refusals(res)), res.reasons
+    # rev 2: a label on the function, not a refusal
+    assert res.passed and not _g3_refusals(res), res.reasons
+    assert any(f"{w.ITEM_ID} {EDITED_NOT_RED}" in r for r in _g3_labels(res, w.ITEM_ID)), res.reasons
 
 
 def test_the_fixture_copy_keeps_a_new_function_red_through_its_import(

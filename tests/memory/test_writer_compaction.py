@@ -1,7 +1,7 @@
-"""UNIFY_MEMORY_LIBRARY_COMPACT (off by default): the memory agents (the writer, the curator, each helper) compact
-their conversations as the agent loop does: the same trigger (a call's prompt at COMPACTION_THRESHOLD of the model's
-context window), the same summary request (the last request, unchanged, plus the agent loop's instruction) and the
-same restart (the system message and the summary; the request messages too with UNIFY_COMPACTION_KEEP_PREFIX=on).
+"""The memory agents (the writer and each helper) compact their conversations as the agent loop does (rev 2: always,
+with no switch): the same trigger (a call's prompt at COMPACTION_THRESHOLD of the model's context window, or the
+fixed COMPACTION_AT_TOKENS, whichever comes first), the same summary request (the last request, unchanged, plus the
+agent loop's instruction) and the same restart (the system message and the summary).
 The summary call goes through the agent's own model turn (its route, its model) and is booked like any other call;
 its input is message content only; the transcript keeps what the compaction took out.
 """
@@ -20,7 +20,6 @@ from types import SimpleNamespace
 from unify.common._async_tool import cache_discipline, context_compression
 from unify.memory import helpers, transcripts, writer_pass
 from unify.memory.trigger import PassRequest
-from unify.settings import SETTINGS
 from tests.memory.test_writer_library_tools import EPS
 from tests.memory.test_writer_pass import _call, _writer
 
@@ -145,16 +144,13 @@ def test_the_summary_call_goes_through_the_agents_own_turn_and_is_booked(tmp_pat
     assert [m["content"] for m in marked[:2]] == [INSTRUCTION, SUMMARY]
 
 
-def test_no_compaction_with_the_switch_off_or_an_unknown_window(tmp_path):
-    for name, model, cfg in (
-        ("off", Compacting(_reads(3)), {}),
-        ("unknown", Compacting(_reads(3), window=None), {"compact": True}),
-    ):
-        out, _ = _run(tmp_path / name, model, **cfg)
-        assert not _summaries(model), name
-        assert out.compactions == 0 and out.messages_moved == 0
-        # an unknown window is recorded as unknown, never as a number
-        assert out.context_window == (None if name == "unknown" else 1_000), name
+def test_no_compaction_with_an_unknown_window_below_the_fixed_point(tmp_path):
+    model = Compacting(_reads(3), window=None)
+    out, _ = _run(tmp_path / "unknown", model)
+    assert not _summaries(model)
+    assert out.compactions == 0 and out.messages_moved == 0
+    # an unknown window is recorded as unknown, never as a number
+    assert out.context_window is None
 
 
 def test_with_no_known_window_the_fixed_point_compacts(tmp_path):
@@ -165,17 +161,6 @@ def test_with_no_known_window_the_fixed_point_compacts(tmp_path):
     model = Compacting(_reads(3), window=None, prompt=fixed - 1)
     out, _ = _run(tmp_path / "below", model)
     assert out.compactions == 0 and not _summaries(model)
-
-
-def test_the_brief_states_both_compaction_points():
-    from unify.memory import library_prompts as lp
-
-    brief = lp.write_brief_now()
-    pct = lp._num(context_compression.COMPACTION_THRESHOLD * 100)
-    assert (
-        f"reaches {pct}% of the model's context window or 150,000 tokens, whichever comes first"
-        in brief
-    )
 
 
 def test_under_the_threshold_nothing_is_compacted(tmp_path):
@@ -208,7 +193,7 @@ def test_no_credential_reaches_the_summary_input_or_the_records(tmp_path, monkey
     assert ROUTE_TOKEN not in kept and ENV_TOKEN not in kept
 
 
-def test_keep_prefix_keeps_the_request_before_the_summary(monkeypatch):
+def test_the_restart_is_the_system_message_and_the_summary():
     async def turn(messages, tools):
         return {"role": "assistant", "content": "the summary"}, "0.001"
 
@@ -218,18 +203,16 @@ def test_keep_prefix_keeps_the_request_before_the_summary(monkeypatch):
         _call("a", "read", {"path": "/inputs"}),
         {"role": "tool", "tool_call_id": "a", "content": "x" * 100},
     ]
-    monkeypatch.setattr(SETTINGS, "UNIFY_COMPACTION_KEEP_PREFIX", "on")
-    comp = asyncio.run(writer_pass.compact_by_summary(msgs, turn, []))
-    assert comp.restart[:2] == msgs[:2] and comp.restart[0] is msgs[0]
-    assert comp.restart[2]["content"] == context_compression.restart_text(
-        "the summary",
-        writer_pass.RESTART_POINTER,
-    )
+    # rev 2 keeps no request prefix (UNIFY_COMPACTION_KEEP_PREFIX is gone): the system message, then the summary
     comp = asyncio.run(writer_pass.compact_by_summary(msgs, turn, []))
     assert (
         comp.restart[0] is msgs[0]
         and len(comp.restart) == 2
         and comp.restart[1]["role"] == "user"
+    )
+    assert comp.restart[1]["content"] == context_compression.restart_text(
+        "the summary",
+        writer_pass.RESTART_POINTER,
     )
 
 
@@ -399,18 +382,9 @@ def test_every_agent_reads_one_compaction_point():
     assert not writer_pass.compaction_due(None, 1_000)
 
 
-def test_the_fixed_point_is_one_setting_with_a_validator(monkeypatch):
-    import pytest
-
-    from unify.settings import SETTINGS, ProductionSettings
-
-    assert (
-        ProductionSettings.model_fields["UNIFY_COMPACTION_AT_TOKENS"].default == 150_000
-    )
-    monkeypatch.setattr(SETTINGS, "UNIFY_COMPACTION_AT_TOKENS", 20_000)
-    assert context_compression.compaction_point(None) == 20_000
-    assert context_compression.compaction_point(1_000_000) == 20_000
-    for bad in ("0", "-5", "lots", "1.5"):
-        with pytest.raises(ValueError):
-            ProductionSettings.parse_compaction_at_tokens(bad)
-    assert ProductionSettings.parse_compaction_at_tokens("60000") == 60_000
+def test_the_fixed_point_is_one_constant():
+    """Rev 2: the fixed compaction point is a constant (UNIFY_COMPACTION_AT_TOKENS is gone), used with no known window
+    and whenever it comes before the window's threshold."""
+    assert context_compression.COMPACTION_AT_TOKENS == 150_000
+    assert context_compression.compaction_point(None) == 150_000
+    assert context_compression.compaction_point(1_000_000) == 150_000
