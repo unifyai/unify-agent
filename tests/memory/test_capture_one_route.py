@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from tests.memory.test_captures import BROKE, PROC, VALUE, _box, _ep
+from tests.memory.test_captures import BROKE, PROC, _ep
 from tests.memory.test_pool import EMPTY, ITEM, MAN, _finish_with, _open, _Stores
 from tests.memory.test_pool_start import CID, LID, _fake_merge, _stage
 from tests.memory.test_writer_pass import _call
@@ -42,7 +42,6 @@ def _world(tmp_path):
     d2 = _stage(root, "e2")
     (d2 / "procedure.py").write_text(PROC)
     (d2 / "broke.md").write_text(BROKE)
-    runner, _ = _box(VALUE, [6, 9])
     landable = cp.capture_trace_step(d2, _ep("e2"), store)["capture_id"]
     d1 = root / "e1"
     d1.mkdir(parents=True)

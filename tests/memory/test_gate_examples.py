@@ -571,8 +571,11 @@ def _rev2(run):
 
 
 def _g3_labels(run):
-    """The G3 findings recorded as labels, every owner's (rev 2: none refuses)."""
-    return [f[len("G3: "):] for found in run.label_findings.values() for f in found if f.startswith("G3: ")]
+    """The G3 findings recorded as labels (rev 2: none refuses): every item's, then the pass's (a finding no manifest
+    item owns is a label on the pass, in the gate's notes)."""
+    items = [f[len("G3: "):] for found in run.label_findings.values() for f in found if f.startswith("G3: ")]
+    head = "note: label: the pass: G3: "
+    return items + [n[len(head):] for n in run.notes if n.startswith(head)]
 
 
 def test_library_functions_need_no_action_cover_in_g2(tmp_path):

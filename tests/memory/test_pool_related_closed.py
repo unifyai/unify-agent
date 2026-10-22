@@ -312,14 +312,14 @@ def test_a_draft_retired_in_one_pass_is_named_when_similar_code_is_staged_later(
 
 
 def test_the_brief_states_closed_entries_and_the_row_key():
+    """Rev 2: the brief states the closed entries and the reopen decision; the row keys are in
+    /inputs/batch_map_keys.md, which the brief points to (the pool is always on, so there is no pool-off brief)."""
     text = lp.write_brief_now()
-    assert (
-        "`related_closed` (" in text
-        and "Closed entries (merged, superseded or retired) are kept" in text
-    )
+    assert "Closed entries (merged, superseded or retired) are kept" in text
     assert '`"reopened": {"<id>": "<reason>"}` opens a closed entry again' in text
-    assert "`related_closed`" not in lp.write_brief_now(pool=False)
-    assert f"the first {pool.RELATED_PAGE} as" in text
+    keys = lp.input_pointer_files()[lp.BATCH_MAP_KEYS_FILE]
+    assert "`related_closed` (" in keys and lp.BATCH_MAP_KEYS_FILE in text
+    assert f"the first {pool.RELATED_PAGE} as" in keys
 
 
 def test_an_unreadable_links_file_is_said_never_shown_as_no_links(tmp_path):

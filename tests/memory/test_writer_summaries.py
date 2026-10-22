@@ -189,7 +189,7 @@ def test_the_brief_stays_complete_with_summaries():
 def test_delegate_is_still_offered_beside_the_summaries():
     text = lp.write_brief_now(helper=True)
     assert "delegate" in text
-    assert "delegate" in lp._tool_names("write", lp.tool_flags(helper=True))
+    assert "delegate" in lp._tool_names("writer", lp.tool_flags(helper=True))  # the agent is "writer" (its role "write")
     assert SUMMARY_PATH in text
 
 

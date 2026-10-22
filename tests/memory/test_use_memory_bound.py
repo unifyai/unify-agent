@@ -101,15 +101,8 @@ def test_a_cell_that_rebinds_the_name_stops_the_counting(library_root):
     rec = _use(library_root, ["memory = 3\n" + LOOKUPS, LOOKUPS])
     assert rec["items"] == {}
     assert set(rec["cell_exposure"]["calls"].values()) == {0}
-    # a new session starts with the name bound again
-    metas = [
-        {"session_id": 0, "session_created": True},
-        {"session_id": 0, "session_created": False},
-        {"session_id": 1, "session_created": True},
-    ]
-    rec = _use(library_root, ["memory = 3\n", LOOKUPS, LOOKUPS], metas)
-    assert rec["items"][WEEK]["called"] == 1 and rec["items"][WEEK]["cells"] == [2]
-    assert rec["cell_exposure"]["calls"]["index"] == 2
+    # (a new session's fresh binding went with the result's session fields: rev 2's ExecutionResult carries no
+    # session id or creation flag, 295ff16d5)
 
 
 def test_the_request_record_passes_the_binding_through(library_root):

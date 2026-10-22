@@ -32,7 +32,7 @@ from unify.memory.fixtures import canonical
 ON_TRIAL, ADOPTED, RETIRED = "on-trial", "adopted", "retired"
 OLD_STATUSES = ("experimental", "stable", "suspect")
 LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
-LEVELS_HOME = ("unify.memory.trust", "LEVELS")
+LEVELS_HOME = ("unify.memory.item_states", "LEVELS")  # the one vocabulary (trust re-exported it before c498dbf84)
 #: ItemUse gains these fields (keyword arguments with defaults).
 ACCEPTED, REJECTED = "accepted", "rejected"
 POSITIVE, CONTRARY = "positive", "contrary"

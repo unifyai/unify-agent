@@ -139,7 +139,9 @@ def test_signal_outcome_reads_only_what_the_regime_and_the_actor_could_see():
 
     assert tr.signal_outcome([sig("checker", "fail")], "dense")["verdict"] == "rejected"
     assert tr.signal_outcome([sig("checker", "fail", False)], "dense")["verdict"] is None
-    assert tr.signal_outcome([sig("checker", "pass")], "dense")["verdict"] is None
+    # rev 2 always lets the actor see verdicts (the checker_visible switch went in 74b1a0a58, whose "off" case this
+    # line kept): a visible pass in dense is the verdict
+    assert tr.signal_outcome([sig("checker", "pass")], "dense")["verdict"] == "accepted"
     assert tr.signal_outcome([sig("checker", "pass")], "sparse")["end_outcome"] == "positive"
     assert tr.signal_outcome([sig("reader", "re_ask")], "implicit")["corrected"]
     assert tr.signal_outcome([sig("reader", "re_ask")], "none") == {

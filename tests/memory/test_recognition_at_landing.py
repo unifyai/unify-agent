@@ -300,7 +300,6 @@ def test_current_request_gives_the_json_values_a_text_carries_in_order():
     from types import SimpleNamespace
 
     from unify.actor import tool_handlers as H
-    from unify.actor.execution.worker_child import Request
 
     text = 'Two tables: {"rows": [[1, 2]]} and, after some prose, [[3, 4], [5]] -- and no third { here.'
     want = [{"rows": [[1, 2]]}, [[3, 4], [5]]]
@@ -310,8 +309,8 @@ def test_current_request_gives_the_json_values_a_text_carries_in_order():
         "text": text,
         "data": want,
     }
-    # exactly the bound request's data, and what every reader is handed with the text
-    assert Request(text).data == want
+    # what every reader is handed with the text (rev 2 binds no ``request`` in the actor's cells: UNIFY_BIND_REQUEST
+    # went in 071805608; tools.current_request above gives it)
     from unify.memory.request_value import request_data
 
     assert request_data(text) == want

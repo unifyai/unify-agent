@@ -347,7 +347,7 @@ def test_dialogue_runner_needs_the_accepted_action_and_a_positive_signal(tmp_pat
             visible_to_actor=True,
         ),
     ]
-    run = lambda src, n, sig, visible=True: pr.run_procedure(
+    run = lambda src, n, sig: pr.run_procedure(
         "memory.proc.jobs:solve",
         cover,
         ep=ep,
@@ -364,9 +364,8 @@ def test_dialogue_runner_needs_the_accepted_action_and_a_positive_signal(tmp_pat
         "differs from the recorded action"
         in run(DIALOGUE.replace("[[1, 2]]", "[[2, 1]]"), 3, good).reason
     )
-    # Amendment D: a checker verdict the bed does not declare visible to the actor is never evidence
-    assert "no positive signal" in run(DIALOGUE, 4, good, visible=False).reason
-    # with the switch on, a checker verdict the actor never saw (a hidden grader) is not evidence either
+    # (the bed's checker-visible switch went in 74b1a0a58: rev 2 always shows the actor its verdicts)
+    # a checker verdict the actor never saw (a hidden grader) is not evidence
     hidden = [Signal("s3", "e3", "checker", "pass", "2026-10-09T00:00:00Z")]
     assert "no positive signal" in run(DIALOGUE, 6, hidden).reason
     support = [Signal("s2", "e3", "provenance", "support", "2026-10-09T00:00:00Z")]
@@ -374,8 +373,7 @@ def test_dialogue_runner_needs_the_accepted_action_and_a_positive_signal(tmp_pat
         DIALOGUE,
         5,
         support,
-        visible=False,
-    ).ok  # a non-checker support signal still counts
+    ).ok  # a non-checker support signal counts
 
 
 # --- confinement ---------------------------------------------------------------------------------------------

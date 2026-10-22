@@ -7,13 +7,10 @@ setting), in the writer's box and in the actor's export, and library code never 
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 from unify.memory import testkit
 from unify.memory.blobs import BlobStore
-from unify.memory.qa import QAConfig
-from unify.memory.writer_pass import WriterPass, _MEMLAB_FILES
-from tests.memory.test_episodes import _ep
+from unify.memory.writer_pass import _MEMLAB_FILES
 
 USES_REPLAY = b"from memlab.replay import RecordedEnv\n\ndef test_x():\n    assert RecordedEnv([])\n"
 PLAIN = b"from env.phone import current_datetime\n\ndef test_x():\n    assert current_datetime\n"
@@ -192,49 +189,3 @@ def test_a_tree_gets_the_kit_only_when_its_tests_use_it(tmp_path):
     (uses / "env/phone/tests/test_x.py").write_text(f"SCREEN = {sha!r}\n")
     assert testkit.stage_for_tree(uses, tmp_path / "k3", **kw)
     assert (tmp_path / "k3/blobs" / sha).read_bytes() == b"recorded"
-
-
-def _writer(tmp_path, qa, store):
-    ep = _ep(episode_id="e9", actions=[])
-    return SimpleNamespace(
-        gate=SimpleNamespace(blobs=store, qa=qa),
-        load=lambda eid: ep,
-        _qa=qa,
-    ), SimpleNamespace(kind="k", channel="c", episodes=["e9"], lift=False)
-
-
-def test_the_writers_box_gets_the_kit_when_a_switch_is_on_or_the_library_uses_it(
-    tmp_path,
-):
-    store = BlobStore(tmp_path / "store")
-    sha = store.put(b"recorded")
-    plain = tmp_path / "plain"
-    (plain / "env/phone/tests").mkdir(parents=True)
-    (plain / "env/phone/tests/test_x.py").write_bytes(PLAIN)
-    uses = tmp_path / "uses"
-    (uses / "env/phone/tests").mkdir(parents=True)
-    (uses / "env/phone/tests/test_x.py").write_text(
-        f"from memlab.inputs import blob\n\nB = {sha!r}\n",
-    )
-    cases = {
-        "off-plain": (QAConfig(), plain, False),
-        "off-uses": (QAConfig(), uses, True),
-        "on-plain": (QAConfig(replay=True), plain, True),
-    }
-    for name, (qa, tree, kit) in cases.items():
-        self, req = _writer(tmp_path, qa, store)
-        inputs = tmp_path / name
-        WriterPass._stage_inputs(self, req, inputs, tree)
-        lab = inputs / "memlab"
-        assert (lab / "inputs.py").is_file() is kit, name
-        assert (inputs / "_memory_pin.py").is_file() is kit, name
-        assert (inputs / "blobs" / sha).is_file() is (tree is uses), name
-        assert (lab / "replay.py").is_file() and (
-            lab / "analysis"
-        ).is_dir()  # the toolkit always
-        if (
-            not kit
-        ):  # every switch off and a library not using the kit: the writer's box as before the kit
-            assert sorted(p.name for p in lab.iterdir()) == sorted(
-                list(_MEMLAB_FILES) + ["__init__.py", "gitio.py"],
-            )

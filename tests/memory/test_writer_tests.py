@@ -1,14 +1,14 @@
 """Tests the writer states before it runs them (``tools.test``, ``UNIFY_MEMORY_WRITER_TESTS``).
 
-The expectation is on record before anything runs and never changes; a value test runs an item on a recorded input; a
-replay test runs it against the episode's own recorded calls, every effect answered only from the record and never
-executed; an unrecorded call is a replay miss; a differing write is named. Replay is refused until its confinement
-review is recorded. The boxes are real (bubblewrap); no model is called.
+The expectation is on record before anything runs and never changes; a value test runs an item on a recorded input
+(rev 2 has no replay test: nothing replays an episode's recorded calls). The boxes are real (bubblewrap); no model is
+called.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -93,7 +93,8 @@ def _ep() -> Episode:
     )
 
 
-def _ctx(tmp_path, modes=("value", "replay"), runner=None) -> wt.TestContext:
+def _ctx(tmp_path, modes=("value",), runner=None) -> wt.TestContext:
+    """*modes* is kept for the callers: rev 2 has one mode, a value test (no replay)."""
     lib = _library(tmp_path / "memory-copy")
     kw = {"runner": runner} if runner is not None else {}
     return wt.TestContext(
@@ -104,51 +105,6 @@ def _ctx(tmp_path, modes=("value", "replay"), runner=None) -> wt.TestContext:
         work=tmp_path / "work",
         **kw,
     )
-
-
-@pytest.fixture
-def reviewed(monkeypatch):
-    """The replay stand-in's review recorded (the tests of replay mode itself)."""
-    monkeypatch.setattr(wt, "REPLAY_REVIEWED", True)
-
-
-RECORDED = {"kind": "issues_calls", "calls": [{"channel": "files", "method": "write",
-                                                "args": ["out/report.txt", "total 6"], "effect": "write"}]}  # fmt: skip
-
-
-# --- 1. a side-effect-only item, tested by replay -----------------------------------------------------------------------
-
-
-@needs_bwrap
-def test_a_side_effect_only_item_replays_its_episodes_calls(tmp_path, reviewed):
-    ctx = _ctx(tmp_path)
-    res = wt.run_test(ctx, "memory.files.report:write_report", "e1", RECORDED, "replay")
-    assert res.outcome == "as_stated", res.detail
-    assert "issued 1 call (1 answered from the record)" in res.detail and "1 recorded call not issued" in res.detail
-    rows = [json.loads(x) for x in ctx.tests_path.read_text().splitlines()]
-    assert rows[-1]["effects"] == {"read": 0, "write": 1, "unknown": 0}
-    # nothing was written anywhere: the write was compared with the record, never made
-    assert not (tmp_path / "out").exists() and not Path("out/report.txt").exists()
-
-
-# --- 2. a changed write argument -------------------------------------------------------------------------------------------
-
-
-@needs_bwrap
-def test_a_replay_with_a_changed_write_argument_is_not_as_stated_naming_the_call(tmp_path, reviewed):
-    res = wt.run_test(_ctx(tmp_path), "memory.files.report:write_wrong", "e1", RECORDED, "replay")
-    assert res.outcome == "not_as_stated"
-    assert "env.files.write arg 1" in res.detail, res.detail
-
-
-# --- 3. an unrecorded call -------------------------------------------------------------------------------------------------
-
-
-@needs_bwrap
-def test_an_unrecorded_call_is_a_replay_miss(tmp_path, reviewed):
-    res = wt.run_test(_ctx(tmp_path), "memory.files.report:mail_it", "e1", {"kind": "issues_calls", "calls": []},
-                      "replay")  # fmt: skip
-    assert res.outcome == "replay_miss" and res.detail.startswith("env.mail.send was never recorded"), res.detail
 
 
 # --- 4. unknown effects are compared, never executed --------------------------------------------------------------------------
@@ -197,22 +153,24 @@ def test_value_tests_run_on_the_recorded_input_named(tmp_path):
 
 def test_calls_that_are_not_tests_are_refused_and_nothing_is_recorded(tmp_path):
     ctx = _ctx(tmp_path, modes=("value",))
+    # rev 2: one mode (a value test), so run_test takes no mode and the mode refusals go; an item that does not take
+    # one input (a state form) is refused with what to do instead
     cases = [
-        (("memory.files.report:total", "e1/request", {"kind": "returns", "value": 6}, "replay"), "offers value"),
-        (("notes/files/how.md", "e1", {"kind": "returns", "value": 1}, "value"), "tested by reading"),
-        (("memory.files.report:nope", "e1/request", {"kind": "returns", "value": 1}, "value"), "defines no function"),
-        (("memory.files.report:total", "e9/request", {"kind": "returns", "value": 1}, "value"), "no recorded episode"),
-        (("memory.files.report:total", "e1/cell:7", {"kind": "returns", "value": 1}, "value"), "no such part"),
-        (("memory.files.report:total", "e1/request", {"kind": "maybe"}, "value"), "expect['kind'] is one of"),
-        (("memory.files.report:write_report", "e1", {"kind": "returns", "value": None}, "value"), "mode='replay'"),
-        (("memory.files.report:total", "e1/request", {"kind": "returns", "value": 1}, "fast"), "'value' or 'replay'"),
+        (("notes/files/how.md", "e1", {"kind": "returns", "value": 1}), "tested by reading"),
+        (("memory.files.report:nope", "e1/request", {"kind": "returns", "value": 1}), "defines no function"),
+        (("memory.files.report:total", "e9/request", {"kind": "returns", "value": 1}), "no recorded episode"),
+        (("memory.files.report:total", "e1/cell:7", {"kind": "returns", "value": 1}), "no such part"),
+        (("memory.files.report:total", "e1/request", {"kind": "maybe"}), "expect['kind'] is one of"),
+        (
+            ("memory.files.report:write_report", "e1", {"kind": "returns", "value": None}),
+            "takes 2 positional arguments (state, env); a test hands it one recorded input",
+        ),
     ]
     for args, words in cases:
-        with pytest.raises(wt.WriterTestRefused, match=words.replace("[", r"\[").replace("(", r"\(")):
+        with pytest.raises(wt.WriterTestRefused, match=re.escape(words)):
             wt.run_test(ctx, *args)
     assert not ctx.tests_path.exists()
 
 
-# --- 8. replay is refused until its review is recorded ----------------------------------------------------------------------
 
 

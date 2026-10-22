@@ -236,12 +236,9 @@ def test_the_request_indexes_the_episode_it_just_recorded(tmp_path, monkeypatch)
         _recorded=(EPISODES["e1"], Redactor()),
         _error=lambda stage, exc, progress: errors.append((stage, exc)),
     )
-    monkeypatch.setattr(request, "memory_library_on", lambda: False)
+    # rev 2: the library layout is always on, so the request always indexes what it just recorded
     request.RequestRun._index_similar(run, lambda _t: None)
-    assert not similar.index_dir(tmp_path).exists() and run._recorded is None
-    run._recorded = (EPISODES["e1"], Redactor())
-    monkeypatch.setattr(request, "memory_library_on", lambda: True)
-    request.RequestRun._index_similar(run, lambda _t: None)
+    assert run._recorded is None
     assert (
         similar.read_entry(similar.index_dir(tmp_path), "e1")["complete"] is True
         and not errors

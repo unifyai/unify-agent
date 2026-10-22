@@ -11,7 +11,7 @@ No model and no box runs: the confined box is a stand-in that writes the result 
 
 from __future__ import annotations
 
-from tests.memory.test_captures import PROC, VALUE, _box, _checker, _ep, _staging
+from tests.memory.test_captures import PROC, _checker, _ep, _staging
 from unify.memory import captures as cp
 
 
@@ -32,20 +32,20 @@ def test_a_work_tree_change_with_no_answered_action_hands_back_nothing():
     assert cp.answered_action(ep) is None
 
 
-def test_its_capture_is_unknown_not_failed_and_its_outcome_comes_from_signals(tmp_path):
+def test_its_capture_is_never_run_and_its_outcome_comes_from_signals(tmp_path):
+    """Rev 2 (the trace contract): the capture is recorded with no handed-back value and is never run; its outcome
+    is the signals' (none, positive, or contrary), never failed for a prose reply."""
     staging = _staging(tmp_path, "e1", {"procedure.py": PROC})
     store = cp.store_dir(tmp_path)
-    runner, calls = _box(VALUE, [6, 9])
     row = cp.capture_trace_step(staging, _worktree_episode("e1"), store)
-    assert row["safety"] == "ok" and len(calls) == 1
-    assert (row["reproduces"], row["outcome"]) == ("unknown", "none")
+    assert row["safety"] == "ok" and row["run"] == "not run" and row["value"]["present"] is False
+    assert row["outcome"] == "none" and "reproduces" not in row
     rec = cp.load(store)[row["capture_id"]]["record"]
-    assert rec["outcome"] == "none" and rec["reproduces"] == "unknown"
+    assert rec["outcome"] == "none" and "reproduces" not in rec
     # a positive signal makes it positive; nothing about the prose reply makes it failed
     staging2 = _staging(
         tmp_path, "e2", {"procedure.py": PROC.replace("Total", "Add up")}
     )
-    runner, _ = _box(VALUE, [6, 9])
     row2 = cp.capture_trace_step(
         staging2,
         _worktree_episode("e2"),
@@ -53,12 +53,11 @@ def test_its_capture_is_unknown_not_failed_and_its_outcome_comes_from_signals(tm
         signals=[_checker("e2", "pass")],
 
     )
-    assert (row2["reproduces"], row2["outcome"]) == ("unknown", "positive")
-    # and a contrary signal still makes it failed
+    assert row2["outcome"] == "positive"
+    # and a contrary signal makes it negative knowledge
     staging3 = _staging(
         tmp_path, "e3", {"procedure.py": PROC.replace("Total", "Count")}
     )
-    runner, _ = _box(VALUE, [6, 9])
     row3 = cp.capture_trace_step(
         staging3,
         _worktree_episode("e3"),
@@ -66,7 +65,7 @@ def test_its_capture_is_unknown_not_failed_and_its_outcome_comes_from_signals(tm
         signals=[_checker("e3", "fail")],
 
     )
-    assert row3["outcome"] == "failed"
+    assert row3["outcome"] == cp.CONTRARY
 
 
 def test_an_answered_dialogue_action_hands_back_its_value_with_or_without_a_work_tree_change():

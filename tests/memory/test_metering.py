@@ -263,7 +263,7 @@ def test_per_visit_rows_never_take_writer_cost_and_label_the_librarian(monkeypat
     """Rule 3, and the failure modes: writer or helper cost in a per-visit row; the librarian counted twice."""
     from unify.memory.integration import cost
 
-    monkeypatch.setattr(cost, "_metering", lambda: True)
+    # rev 2: metering is always on (its switch went in 74b1a0a58), so there is no metering-off listener
     listener = cost.CostListener()
     listener.activate()
     for origin in ("CodeActActor.act", "memory_librarian", "memory_writer", "memory_writer.x", "memory_helper",
@@ -274,19 +274,6 @@ def test_per_visit_rows_never_take_writer_cost_and_label_the_librarian(monkeypat
             )
         )
     assert [r.purpose for r in listener.rows] == ["actor", "librarian", "embedding"]
-    monkeypatch.setattr(cost, "_metering", lambda: False)
-    listener.activate()
-    listener(
-        SimpleNamespace(
-            origin="memory_librarian",
-            request={"model": "m"},
-            response={},
-            provider_cost=0.001,
-        )
-    )
-    assert [r.purpose for r in listener.rows] == [
-        "actor"
-    ]  # as built, with metering off
 
 
 def test_a_pass_row_names_its_entries_items_usd_and_a_killed_turn_once(tmp_path):

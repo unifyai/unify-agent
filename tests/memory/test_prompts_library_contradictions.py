@@ -79,6 +79,7 @@ def test_the_write_brief_points_to_where_an_outcome_is_and_never_to_a_reading_li
     """The batch map names no reading list; the brief points to the parts where each episode ended."""
     brief = " ".join(pv.write_brief_now().split())
     assert "required_parts" not in brief and "neither covered" not in brief
-    assert "starting from each one's `end_parts`" in brief
+    # rev 2's wording: the brief points to where each episode ended
+    assert "a row's `end_parts` show where the episode ended" in brief
 
 

@@ -161,19 +161,12 @@ async def test_a_cell_sees_the_export_and_no_store(world, monkeypatch):  # noqa:
 # ── the sentinel ─────────────────────────────────────────────────────────────
 
 
-def _real(name: str):
-    """The real module of another track, or skip until it is merged."""
-    return pytest.importorskip(f"unify.memory.integration.{name}")
-
-
 def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
-    consolidate = _real("consolidate")
-    _real("trajectory")
-    _real("cost")
-    _real("worktree_capture")
-    for attr in ("run_due_passes", "post_checker", "open_stores", "unillm_turn"):
-        if not hasattr(consolidate, attr):
-            pytest.skip(f"consolidate.{attr} is not merged yet")
+    """The checker's free text (an outcome's summary and reasons) never lands in the home, the request's events, the
+    signals, or anything a writer pass reads. Rev 2: the request starts the writer service and never runs a pass
+    itself, so the pass runs here as the service runs it, in-process (``writer_service.step``)."""
+    from unify.memory import writer_service as ws
+    from unify.memory.integration import consolidate
 
     home = tmp_path / "unify"
     (home / "workspace").mkdir(parents=True)
@@ -182,12 +175,13 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
     monkeypatch.delenv("UNIFY_STORE_PATH", raising=False)
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    # the request's end starts the writer service; here the service's one step runs below, in this process
+    started: list = []
     monkeypatch.setattr(
-        SETTINGS,
-        "UNIFY_MEMORY_E",
-        1,
-    )  # the first episode makes a pass due
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_RUN_GUARD_USD", "")
+        ws,
+        "ensure_service",
+        lambda home, **kw: started.append(home) or SimpleNamespace(status="started", pid=None, detail=None),
+    )
     monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)
     monkeypatch.setattr(request_mod, "_CURRENT", None)
     _seed(home)
@@ -251,12 +245,14 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
             run.finish(None, progress=progress.append, emit=emitted.append),
             context=ctx,
         )
+    assert started, f"the request started no writer service (progress: {progress})"
+    stepped = ws.step(home, settings=SETTINGS)
 
     assert (
         sent
-    ), f"no pass ran (progress: {progress})"  # otherwise the check below proves nothing
+    ), f"no pass ran (progress: {progress}; step: {stepped})"  # otherwise the check below proves nothing
     assert staged, "nothing was staged for the writer"
-    assert [e["phase"] for e in emitted if e["phase"] not in ("turn", "gate")][:2] == ["start", "end"]
+    assert any(e.get("phase") == "service" for e in emitted), emitted
     assert SENTINEL.encode() not in fake_tracks.dump_home(home)
     assert not any(SENTINEL in m for m in sent)
     assert not any(SENTINEL.encode() in b for b in staged)

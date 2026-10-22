@@ -99,24 +99,3 @@ def test_a_late_rejudge_of_the_episode_leaves_its_segments_alone(tmp_path):
                        segment_episode=lambda name: _segment())  # fmt: skip
     final = _verdict(1, "pass", "2026-10-20T00:00:59Z", action=1)
     assert cp.rejudge_episode(store, "e1", [final], _episode(), "dense") == []
-
-
-# --- item 10(b): re-pins only ------------------------------------------------------------------------------------------
-
-
-def test_re_pins_only_starts_no_segment_fork_at_a_pause(tmp_path, monkeypatch):
-    from tests.memory.integration import test_in_episode as TIE
-    from unify.memory.integration import fork as fork_mod
-    from unify.memory.integration.in_episode import InEpisode
-
-    forks = TIE._Forks()
-    monkeypatch.setattr(fork_mod, "start", forks.start)
-    run = TIE._Run(tmp_path / "home")
-    run.paths.state_dir.mkdir(parents=True)
-    ie = InEpisode(run, TIE._exporter({TIE.C1: TIE._tree(TIE.LIB)}, None), segment_forks=False)
-    ie.open(TIE.C1)
-    run.code.append("x = 1")
-    ie.cell_done()
-    ie.mark("actor_call")
-    assert ie.at_boundary(object(), new_message=True) is None
-    assert forks.calls == [] and ie.pending == [] and ie.segments == 0

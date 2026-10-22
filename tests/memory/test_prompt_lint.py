@@ -39,7 +39,7 @@ RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("tool error class", re.compile(r"\btools\.(?:Refused|NotRun|ToolError|ChannelClosed)\b")),
 )
 RULE_NAMES = frozenset(name for name, _ in RULES)
-ROLES = ("actor", "teammate", "writer", "curator", "helper", "librarian", "fork")
+ROLES = ("actor", "teammate", "writer", "helper", "librarian", "fork")  # rev 2 has no curator
 #: The reason every hit on a ``tools.*`` text is allowed for now.
 TOOLS_LATER = "tools.* mechanics move in the next build"
 

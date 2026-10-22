@@ -79,17 +79,17 @@ def test_the_helper_turn_consolidate_builds_carries_the_registered_window(
         "new_llm_client",
         lambda model, **kw: SimpleNamespace(messages=[]),
     )
-    for name, value in (
-        ("_HELPER_TOKEN", "helper-lane-placeholder-0123456789"),  # pragma: allowlist secret
-        ("_HELPER_BASE", "http://127.0.0.1:18081/helper/v1"),
-        ("_HELPER_TRIED", True),
-        ("_HELPER_REFUSAL", None),
-    ):
-        monkeypatch.setattr(switch, name, value)
+    # the helper lane as settled (rev 2 keeps a lane's state on its _Lane), with a placeholder token
+    lane = switch._Lane(switch.LIBRARY_HELPER_BASE_URL, switch.LIBRARY_HELPER_TOKEN_FD, switch.LIBRARY_HELPER_TOKEN,
+                        "helper", "no helper lane")  # fmt: skip
+    lane.token = "helper-lane-placeholder-0123456789"  # pragma: allowlist secret
+    lane.base, lane.tried, lane.refusal = "http://127.0.0.1:18081/helper/v1", True, None
+    monkeypatch.setattr(switch, "_HELPER", lane)
+    # rev 2: helpers run on the writer's model (no helper model of their own)
     s = SimpleNamespace(
         UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL="",
         UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD="",
-        UNIFY_MEMORY_LIBRARY_HELPER_MODEL=HELPER_MODEL,
+        UNIFY_MEMORY_WRITER_MODEL=HELPER_MODEL,
         UNIFY_MODEL="vendor/actor-model@openrouter",
     )
     got = consolidate._helper_turns(s, "low")
