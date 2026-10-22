@@ -11,12 +11,12 @@ the controller starts; their read ends are closed here as soon as it has started
 stdout and stderr as they are, so ``--jsonl`` drivers and terminals see no difference.
 
 **What the relay gets.** The provider key (``OPENROUTER_API_KEY``), on its stdin only; each lane's model (the writer's
-for the writer lane, the helpers' for the helper lane, the actor's for the fork, which continues the actor's
-conversation); the memory spend cap, which holds this run (the relay's life) on one ledger for all three lanes; the
+for the writer lane and the helper lane (the helpers run on the writer's model), the actor's for the fork, which continues the actor's
+conversation); the memory spend cap (``UNIFY_MEMORY_CAP_USD``, or its default), which holds this run (the relay's life) on one ledger for all three lanes; the
 worst case per call of every model the pinned catalogue bounds (``unify/memory/call_bounds.py``); the writer's pinned
 prices when set. A lane that cannot be served
-(a model that is not an OpenRouter one, or that the catalogue does not bound) is left out with a note; with no key or
-no cap, or no lane left, the command runs as before, in this process, with a one-line note on stderr (the fork then
+(a model that is not an OpenRouter one, or that the catalogue does not bound) is left out with a note; with no key, a cap
+that is not a plain decimal, or no lane left, the command runs as before, in this process, with a one-line note on stderr (the fork then
 records ``refused: no fork lane``).
 
 **The writer service** (one per home, detached) holds the tokens of the run whose controller started it, so it must not
@@ -126,12 +126,10 @@ def lanes_given(settings: Any, environ: Mapping[str, str]) -> bool:
 
 
 def _writer_model(settings: Any) -> str:
+    """The model the writer and its helpers run on (:func:`..switch.writer_model`: its own, else the actor's)."""
     from unify.memory.integration import switch
 
-    return (
-        str(getattr(settings, switch.WRITER_MODEL, "") or "").strip()
-        or switch.WRITER_MODEL_DEFAULT
-    )
+    return switch.writer_model(settings)
 
 
 def _bounds() -> dict[str, Decimal]:
@@ -160,15 +158,16 @@ def plan(settings: Any, environ: Mapping[str, str]) -> tuple[Plan | None, str | 
 
     if lanes_given(settings, environ):
         return None, None
-    if not switch.memory_on(settings) or switch.memory_frozen(settings):
+    if not switch.memory_on(settings):
         return None, None
     if not str(environ.get(KEY_ENV, "") or "").strip():
         return None, f"memory has no model lanes: {KEY_ENV} is not set"
-    cap = switch.writer_service_cap_usd(settings)
-    if cap is None:
+    try:
+        cap = switch.memory_cap_usd(settings)  # empty: the default cap
+    except ValueError:
         return (
             None,
-            f"memory has no model lanes: {switch.WRITER_SERVICE_CAP} (the memory spend cap) is not set",
+            f"memory has no model lanes: {switch.MEMORY_CAP} (the memory spend cap) is not a plain decimal above zero",
         )
     try:
         bounds = _bounds()
@@ -180,7 +179,7 @@ def plan(settings: Any, environ: Mapping[str, str]) -> tuple[Plan | None, str | 
             f"memory has no model lanes: the worst-case table could not be read ({type(exc).__name__})",
         )
     writer = openrouter_id(_writer_model(settings))
-    helper = openrouter_id(switch.library_helper_model(settings))
+    helper = writer  # the helpers run on the writer's model
     actor = openrouter_id(str(getattr(settings, "UNIFY_MODEL", "") or ""))
     lanes: dict[str, tuple[str, ...]] = {}
     skipped: list[str] = []

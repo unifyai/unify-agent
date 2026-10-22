@@ -36,7 +36,7 @@ def _settings(**over) -> SimpleNamespace:
         "UNIFY_MEMORY": "on",
         "UNIFY_MODEL": f"{MODEL}@openrouter",
         "UNIFY_MEMORY_WRITER_MODEL": "openai/gpt-6-sol",
-        "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD": "2.00",
+        "UNIFY_MEMORY_CAP_USD": "2.00",
     }
     base.update(over)
     return SimpleNamespace(**base)
@@ -50,7 +50,7 @@ def test_with_memory_on_every_lane_is_planned_on_its_model_under_one_cap():
     assert why is None
     assert plan.lanes == {
         "writer": ("openai/gpt-6-sol",),
-        "helper": (MODEL,),
+        "helper": ("openai/gpt-6-sol",),  # the helpers run on the writer's model
         "fork": (MODEL,),
         "embed": (launch.EMBED_MODEL,),
     }
@@ -77,11 +77,7 @@ def test_with_memory_on_every_lane_is_planned_on_its_model_under_one_cap():
 @pytest.mark.parametrize(
     "settings, environ",
     [
-        (_settings(UNIFY_MEMORY=""), ENV),  # memory off
-        (
-            _settings(UNIFY_MEMORY_FROZEN="on"),
-            ENV,
-        ),  # frozen: no writer, fork or service runs
+        (_settings(UNIFY_MEMORY="off"), ENV),  # memory off
         (
             _settings(UNIFY_MEMORY_LIBRARY_FORK_BASE_URL="http://127.0.0.1:9/fork/v1"),
             ENV,
@@ -101,9 +97,9 @@ def test_no_lane_is_served_when_memory_wants_none_or_they_are_given(settings, en
     [
         (_settings(), {}, "OPENROUTER_API_KEY is not set"),
         (
-            _settings(UNIFY_MEMORY_WRITER_SERVICE_CAP_USD=""),
+            _settings(UNIFY_MEMORY_CAP_USD="two"),
             ENV,
-            "(the memory spend cap) is not set",
+            "UNIFY_MEMORY_CAP_USD (the memory spend cap) is not a plain decimal above zero",
         ),
         (
             _settings(
@@ -122,15 +118,30 @@ def test_lanes_that_cannot_be_served_leave_the_command_as_it_is_with_a_note(
     assert plan is None and rule in why and FAKE_KEY not in why
 
 
+def test_an_empty_cap_is_the_default_cap():
+    plan, why = launch.plan(_settings(UNIFY_MEMORY_CAP_USD=""), ENV)
+    assert why is None and plan.cap == Decimal("20.00")
+
+
+@pytest.mark.parametrize("value", ["on", "in_episode", ""])
+def test_every_memory_mode_that_runs_a_writer_or_fork_gets_its_lanes(value):
+    plan, why = launch.plan(_settings(UNIFY_MEMORY=value), ENV)
+    assert why is None and {"writer", "helper", "fork"} <= set(plan.lanes)
+
+
 def test_a_lane_whose_model_cannot_be_served_is_left_out_by_name():
     plan, why = launch.plan(_settings(UNIFY_MODEL="claude-x@anthropic"), ENV)
-    assert set(plan.lanes) == {"writer", "embed"} and plan.lanes["writer"] == (
+    assert set(plan.lanes) == {"writer", "helper", "embed"} and plan.lanes["writer"] == (
         "openai/gpt-6-sol",
     )
+    assert plan.lanes["helper"] == plan.lanes["writer"]
     assert (
         why
-        == "memory: no helper, fork lane (its model is not an OpenRouter model the worst-case table bounds)"
+        == "memory: no fork lane (its model is not an OpenRouter model the worst-case table bounds)"
     )
+    # with no writer model of its own, the writer and its helpers run on the actor's model
+    plan, why = launch.plan(_settings(UNIFY_MODEL=f"{MODEL}@openrouter", UNIFY_MEMORY_WRITER_MODEL=""), ENV)
+    assert plan.lanes["writer"] == plan.lanes["helper"] == plan.lanes["fork"] == (MODEL,) and why is None
 
 
 def test_the_handover_is_one_fresh_inherited_pipe_per_lane_token(tmp_path):
@@ -265,7 +276,7 @@ def command(tmp_path):
     env.update(
         {
             "UNIFY_MEMORY": "on",
-            "UNIFY_MEMORY_WRITER_SERVICE_CAP_USD": "2.00",
+            "UNIFY_MEMORY_CAP_USD": "2.00",
             "UNIFY_MODEL": f"{MODEL}@openrouter",
             "UNIFY_MEMORY_WRITER_MODEL": MODEL,
             "OPENROUTER_API_KEY": FAKE_KEY,
@@ -387,7 +398,7 @@ def test_with_memory_off_the_command_runs_in_this_process_and_starts_nothing(tmp
     got = launch.run_controller(
         ["act", "hi"],
         tmp_path,
-        settings=_settings(UNIFY_MEMORY=""),
+        settings=_settings(UNIFY_MEMORY="off"),
         environ=dict(ENV),
         note=notes.append,
     )

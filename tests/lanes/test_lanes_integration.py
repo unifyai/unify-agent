@@ -60,7 +60,9 @@ def lanes(tmp_path):
 @pytest.fixture
 def unillm_over_http(monkeypatch):
     """litellm's transport replaced by a plain HTTP post of the request unillm built, to the base URL and with the
-    credential unillm chose for it; everything above it is unillm's own path. The response cache and OTel are off.
+    credential unillm chose for it; everything above it is unillm's own path. unillm streams every call: the post is
+    one JSON call and its reply goes back as LiteLLM's own mock stream of it (tests/scripted_model.as_requested), as
+    every scripted test's does. The response cache and OTel are off.
     """
     import unillm.clients.uni_llm as uni_llm
     from openai.types.chat import ChatCompletion
@@ -87,7 +89,7 @@ def unillm_over_http(monkeypatch):
             **({"tools": kw["tools"]} if kw.get("tools") else {}),
             **(kw.get("extra_body") or {}),
         }
-        assert not kw.get("stream")
+        assert kw.get("stream") is True  # every model call is streamed
         headers = {
             "Authorization": f"Bearer {kw['api_key']}",
             "Content-Type": "application/json",
@@ -109,7 +111,9 @@ def unillm_over_http(monkeypatch):
             return json.loads(resp.read())
 
     async def acompletion(*, shared_session=None, client=None, **kw):
-        return ChatCompletion.model_validate(await asyncio.to_thread(post, kw))
+        from tests.scripted_model import as_requested
+
+        return await as_requested(kw, ChatCompletion.model_validate(await asyncio.to_thread(post, kw)))
 
     monkeypatch.setattr(uni_llm.litellm, "acompletion", acompletion)
     return sent

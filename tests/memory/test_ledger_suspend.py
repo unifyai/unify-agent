@@ -157,12 +157,9 @@ def test_a_bounded_suspend_cuts_the_pass_before_its_deadline_and_the_next_start_
 
     from unify.memory.integration import async_pass
     from unify.memory.integration.paths import Paths
-    from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_WRITER_SERVICE", "on")
     monkeypatch.setenv("DRIVER_TURNS", "1")
-    monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")
-    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_PASS_WALL_S", "600")  # its own deadline, far off
+    monkeypatch.setenv("DRIVER_TURN_SLEEP", "3600")  # its own deadline (switch.PASS_WALL_S, 45 min) is far off
     ids = _open_entries(svc.home, 3)
     assert _ensure(svc.home).status == "started"
     doc = _until(
