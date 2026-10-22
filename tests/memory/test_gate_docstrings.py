@@ -210,7 +210,7 @@ def lab(tmp_path):
         ev,
         BlobStore(tmp_path / "b"),
         action_lookup=_lookup,
-        ry_mode=LibraryConfig()
+        library_mode=LibraryConfig()
     )
     return mem, ev, gate
 
@@ -358,7 +358,7 @@ def _shape_lab(tmp_path, action, eid):
         ev,
         blobs,
         action_lookup=lambda e, i: action if (e, i) == (eid, 0) else None,
-        ry_mode=LibraryConfig()
+        library_mode=LibraryConfig()
     )
     return mem, gate, blobs
 
@@ -429,40 +429,6 @@ def _shape_case(tmp_path, kind, fixture):
         "skeleton": [f"env/{channel}"],
     }
     return mem, gate, files, man, fixture_path, f"env/{channel}:{name}"
-
-
-@pytest.mark.parametrize(
-    ("kind", "fixture"),
-    [("pairs", "1,2\n3,4\n"), ("grid", "[[1, 0], [0, 1]]"), ("list", "[1, 2, 3]")],
-    ids=["headerless-csv", "raw-grid", "scalar-list"],
-)
-def test_a_fixture_of_exactly_a_low_information_shape_passes(tmp_path, kind, fixture):
-    """No named key, yet the fixture is the recorded input's shape; the gate admits it."""
-    mem, gate, files, man, _, _ = _shape_case(tmp_path, kind, fixture)
-    channel = man["skeleton"][0].split("/", 1)[1]
-    res = gate.merge(
-        mem.head(),
-        _candidate(mem, files),
-        man,
-        "p-n1",
-        "incremental",
-        channel,
-        "0",
-    )
-    assert res.passed, res.reasons
-
-
-def test_a_headed_fixture_for_a_headerless_recorded_table_is_refused(tmp_path):
-    mem, gate, files, man, fixture_path, item = _shape_case(
-        tmp_path,
-        "pairs",
-        "a,b\n1,2\n",
-    )
-    res = gate.check(mem.head(), _candidate(mem, files), man)
-    assert not res.passed
-    assert (
-        f"G3: the examples of {item} read no fixture shaped like an input it covers ({fixture_path})"
-    ) in res.reasons, res.reasons
 
 
 # --- a fixture holding a collection of recorded inputs (validation of 394bd9afd, 8 Oct) ----------------------

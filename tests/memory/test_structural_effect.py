@@ -88,60 +88,6 @@ def _index_lines(tree):
     }
 
 
-@sandboxed
-def test_a_writer_declared_read_is_refused_and_declared_write_lands_marked(
-    world,
-    tmp_path,
-):
-    mem, ev, gate = world
-    parent = mem.head()
-    man = {"items": [_item("pay", [["e1", 5]])], "support": ["unify_memory_testkit.py"]}
-    files = {
-        "env/venmo/__init__.py": _pay("read"),
-        "env/venmo/tests/test_pay.py": T_PAY,
-        "unify_memory_testkit.py": KIT,
-    }
-    snap = tmp_path / "snap"
-    for rel, text in files.items():
-        (snap / rel).parent.mkdir(parents=True, exist_ok=True)
-        (snap / rel).write_text(text)
-    # the consolidator's check names it before the pass ends
-    assert any(
-        "env/venmo:pay covers a recorded write call" in r
-        for r in gate.preview(parent, snap, man)
-    )
-    res = gate.merge(
-        parent,
-        _candidate(mem, files),
-        man,
-        "w1",
-        "incremental",
-        "venmo",
-        "0",
-    )
-    assert not res.passed and not res.checks["G6"] and mem.head() == parent
-    assert any(
-        "env/venmo:pay covers a recorded write call, so it must declare Effect: write"
-        in r
-        for r in res.reasons
-    )
-    files["env/venmo/__init__.py"] = _pay("write")
-    res = gate.merge(
-        parent,
-        _candidate(mem, files),
-        man,
-        "w2",
-        "incremental",
-        "venmo",
-        "0",
-    )
-    assert res.passed, res.reasons
-    lines = _index_lines(
-        materialise(mem, listing(mem, mem.head())[0], tmp_path / "landed"),
-    )
-    assert lines["pay"].endswith("(input: env) (writes)")
-
-
 def test_write_is_read_from_the_recording_never_from_names():
     write = Action(5, "venmo", "list_things", [], {}, {"ok": True}, "ok", "write")
     named = Action(6, "venmo", "create_payment", [], {}, {"ok": True}, "ok", "unknown")

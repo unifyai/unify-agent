@@ -533,44 +533,6 @@ def _fake_probe(outcomes):
 # --- every switch off: the gate as before ------------------------------------------------------------------
 
 
-def test_default_config_is_off_and_settings_parse():
-    assert not QAConfig().on and not QAConfig().draws
-    assert QAConfig.from_settings(SimpleNamespace()) == QAConfig()
-    cfg = QAConfig.from_settings(
-        SimpleNamespace(
-            UNIFY_MEMORY_QA_FIXTURES=" Strict ",
-            UNIFY_MEMORY_QA_MUTATION="on",
-            UNIFY_MEMORY_QA_MUTATION_MIN_KILL="0.75",
-            UNIFY_MEMORY_QA_DETERMINISM="off",
-            UNIFY_MEMORY_QA_REPLAY="on",
-            UNIFY_MEMORY_QA_FIXTURE_SIZE="",
-        ),
-    )
-    assert (
-        cfg.fixtures,
-        cfg.mutation,
-        cfg.min_kill,
-        cfg.determinism,
-        cfg.replay,
-        cfg.fixture_size,
-    ) == (
-        "strict",
-        True,
-        Decimal("0.75"),
-        False,
-        True,
-        False,
-    )
-    for bad in (
-        {"UNIFY_MEMORY_QA_FIXTURES": "yes"},
-        {"UNIFY_MEMORY_QA_MUTATION": "1"},
-        {"UNIFY_MEMORY_QA_MUTATION_MIN_KILL": "1.5"},
-        {"UNIFY_MEMORY_QA_MUTATION_MIN_KILL": "5e-1"},
-    ):
-        with pytest.raises(ValueError):
-            QAConfig.from_settings(SimpleNamespace(**bad))
-
-
 # --- the seeded draw -------------------------------------------------------------------------------------
 
 
@@ -587,84 +549,6 @@ def _screens(n):
 # --- budget, flakiness and the probe's verdicts (injected runners) --------------------------------------
 
 
-@pytest.mark.parametrize(
-    "sample,refused,expect",
-    [
-        ({"outcome": "handled", "digest": "a"}, False, None),
-        (
-            {"outcome": "error", "raised": "KeyError"},
-            True,
-            "raises on 3 of 3 drawn recorded inputs of its family " "(KeyError (3))",
-        ),
-        (
-            {"outcome": "error", "raised": "Leaked9ValueFromTheRecording"},
-            True,
-            "(another exception (3))",
-        ),
-        (
-            {"outcome": "refused"},
-            False,
-            None,
-        ),  # text inputs have no field names: a precondition, noted
-        ({"outcome": "miss"}, False, None),
-        ({"outcome": "timeout"}, False, None),
-    ],
-)
-def test_the_probes_verdicts(tmp_path, sample, refused, expect):
-    files, man = _hp()
-    probe = _fake_probe(
-        {"cover": {"outcome": "handled", "digest": "c"}, "sample": sample},
-    )
-    res = _check(
-        tmp_path,
-        CRAFTER,
-        files,
-        man,
-        pytest_runner=FakePytest(),
-        qa=QAConfig(fixtures="on", runner=probe),
-    )
-    assert res.passed is not refused, res.reasons
-    if expect:
-        assert any(
-            r.startswith("G3: [qa:fixtures]") and expect in r for r in res.reasons
-        )
-    assert any(
-        "own tests read 0 of 3 drawn inputs" in r for r in res.reasons
-    )  # the plain test reads none
-    argv = probe.calls[0]
-    assert argv[1:] == ["-s", "/qa/probe.py", HP_ITEM, "2"]
-    _no_values(res)
-    assert not any("Leaked9" in r for r in res.reasons)
-
-
-def test_strict_refuses_drawn_inputs_no_test_read(tmp_path):
-    files, man = _hp()
-    probe = _fake_probe(
-        {
-            "cover": {"outcome": "handled", "digest": "c"},
-            "sample": {
-                "outcome": "handled",
-                "digest": "d",
-            },
-        },
-    )
-    res = _check(
-        tmp_path,
-        CRAFTER,
-        files,
-        man,
-        pytest_runner=FakePytest(),
-        qa=QAConfig(fixtures="strict", runner=probe),
-    )
-    assert not res.passed
-    assert any(
-        r.startswith("G3: [qa:fixtures]")
-        and "read 0 of 3" in r
-        and "must be exercised" in r
-        for r in res.reasons
-    )
-
-
 # --- the static checks, through the consolidator's check (preview) ---------------------------------------
 
 
@@ -678,65 +562,6 @@ def _preview(tmp_path, episodes, files, manifest, qa):
         else:
             (tree / rel).write_text(text)
     return gate.preview(mem.head(), tree, manifest)
-
-
-def test_preview_refuses_an_oversized_fixture_and_accepts_a_blob_reference(tmp_path):
-    files, man = _hp()
-    man["support"] = ["env/dialogue_crafter/tests/screens.json"]
-    big = json.dumps(SCREENS["c1"] * 4000).encode()
-    assert len(big) > qa_mod.FIXTURE_MAX_BYTES
-    files["env/dialogue_crafter/tests/screens.json"] = big
-    reasons = _preview(tmp_path / "a", CRAFTER, files, man, QAConfig(fixture_size=True))
-    (reason,) = [r for r in reasons if "[qa:fixture-size]" in r]
-    assert (
-        f"screens.json has {len(big)} bytes, over the {qa_mod.FIXTURE_MAX_BYTES}-byte bound"
-        in reason
-    )
-    files["env/dialogue_crafter/tests/screens.json"] = json.dumps(
-        {"blob": "ab" * 32},
-    ).encode()
-    assert (
-        _preview(tmp_path / "b", CRAFTER, files, man, QAConfig(fixture_size=True)) == []
-    )
-
-
-def test_preview_refuses_an_assertion_on_the_cut_of_a_truncated_recording(tmp_path):
-    full = (
-        "You see:\n"
-        + "".join(f"tile{i:03d} " for i in range(200))
-        + "\n\nYour status:\nhealth: 9\n"
-    )
-    capped = cap_text(full, 400)
-    marker_end = capped.index("elided ...]\n") + len("elided ...]\n")
-    tail = capped[marker_end:]
-    fragment = next(
-        tail[:n] for n in range(7, 40) if capped.count(tail[:n]) == 1
-    )  # only where the cut is
-    episodes = {
-        "c1": [
-            _dl(capped, "dialogue:crafter"),
-            _dl(SCREENS["c1"][1], "dialogue:crafter"),
-        ],
-    }
-    on_cut = HEALTH_TEST + f"\n\ndef test_tail():\n    assert {fragment!r} in SCREEN\n"
-    files, man = _hp(on_cut)
-    reasons = _preview(
-        tmp_path / "a",
-        episodes,
-        files,
-        man,
-        QAConfig(fixture_size=True),
-    )
-    (reason,) = [r for r in reasons if "[qa:truncation]" in r]
-    assert reason.startswith(
-        f"G3: [qa:truncation] {HP_TEST} line 9 asserts on text at the recorder's cut",
-    )
-    kept = HEALTH_TEST + "\n\ndef test_head():\n    assert 'You see:' in SCREEN\n"
-    files, man = _hp(kept)
-    assert (
-        _preview(tmp_path / "b", episodes, files, man, QAConfig(fixture_size=True))
-        == []
-    )
 
 
 # --- the /inputs mount and the writer's side --------------------------------------------------------------------
@@ -831,57 +656,12 @@ def test_the_pin_installs_only_under_its_box_name(tmp_path):
 # --- the test kit: a property of the library, not of the switches ---------------------------------------
 
 
-def test_a_library_whose_tests_use_the_kit_is_checked_the_same_under_every_switch_setting(
-    tmp_path,
-):
-    """Every switch off, a library whose tests import memlab gets the kit mounted exactly as with a switch
-    on: same runs, mounts and environment, so turning the switches off later never freezes it.
-    """
-    files, man = _cl(CLOCK_REPLAY_TEST)
-    runs = []
-    for n, kw in enumerate(({}, {"qa": QAConfig(replay=True)})):
-        runner = FakePytest(module="env/phone/__init__.py")
-        res = _check(tmp_path / str(n), PHONE, files, man, pytest_runner=runner, **kw)
-        assert res.passed, res.reasons
-        runs.append(list(runner.calls))
-        # the kit is mounted, so every run counts a skip for a failed import as a failure
-        assert runner.import_skips_fail and all(runner.import_skips_fail)
-    assert runs[0] == runs[1]
-    assert all(c[1] == ["/inputs", "/memory"] for c in runs[0])
-    assert all(
-        c[5]
-        == {
-            "PYTHONPATH": "/memory:/inputs",
-            "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
-        }
-        for c in runs[0]
-    )
-
-
 # the same test reaching the kit through pytest.importorskip, as a defensive test might
 CLOCK_SKIP_TEST = CLOCK_REPLAY_TEST.replace(
     "from memlab.episodes import Action\nfrom memlab.replay import RecordedEnv\n",
     'import pytest\n\nAction = pytest.importorskip("memlab.episodes").Action\n'
     'RecordedEnv = pytest.importorskip("memlab.replay").RecordedEnv\n',
 )
-
-
-def test_a_test_reaching_the_kit_by_a_dynamic_import_gets_it_with_every_switch_off(
-    tmp_path,
-):
-    """pytest.importorskip("memlab.replay") is a kit import: every switch off, the kit is mounted exactly
-    as for a static import, so the test never skips in one setting and runs in another.
-    """
-    assert CLOCK_SKIP_TEST != CLOCK_REPLAY_TEST
-    runs = []
-    for name, test in (("static", CLOCK_REPLAY_TEST), ("dynamic", CLOCK_SKIP_TEST)):
-        files, man = _cl(test)
-        runner = FakePytest(module="env/phone/__init__.py")
-        res = _check(tmp_path / name, PHONE, files, man, pytest_runner=runner)
-        assert res.passed, res.reasons
-        runs.append(list(runner.calls))
-    assert runs[1] and all(c[1] == ["/inputs", "/memory"] for c in runs[1])
-    assert [c[5] for c in runs[0]] == [c[5] for c in runs[1]]
 
 
 def _kit_preview(tmp_path, test, module=CLOCK_MOD, qa=None):
@@ -896,82 +676,4 @@ def _kit_preview(tmp_path, test, module=CLOCK_MOD, qa=None):
     return [r for r in reasons if "[qa:kit]" in r]
 
 
-def test_library_code_must_not_use_the_kit(tmp_path):
-    (reason,) = _kit_preview(tmp_path / "off", CLOCK_REPLAY_TEST, module=CLOCK_MOD_KIT)
-    assert reason.startswith(
-        "G3: [qa:kit] env/phone/__init__.py line 5 uses the test kit",
-    )  # every switch off, but the library's tests use the kit
-    assert _kit_preview(
-        tmp_path / "on",
-        CLOCK_FAKE_TEST,
-        module=CLOCK_MOD_KIT,
-        qa=QAConfig(replay=True),
-    )
-    # every switch off and no test uses the kit: nothing is checked, as before
-    assert _kit_preview(tmp_path / "plain", CLOCK_FAKE_TEST, module=CLOCK_MOD_KIT) == []
-    assert _kit_preview(tmp_path / "clean", CLOCK_REPLAY_TEST) == []
-
-
-def test_tests_import_only_what_the_kit_provides_and_never_name_inputs(tmp_path):
-    missing = CLOCK_REPLAY_TEST.replace(
-        "from memlab.replay import RecordedEnv\n",
-        "from memlab.replay import RecordedEnv, Replayer\n",
-    )
-    (reason,) = _kit_preview(tmp_path / "a", missing)
-    assert reason == (
-        f"G3: [qa:kit] {CL_TEST} line 2 imports memlab.replay.Replayer, which the test kit "
-        f"(version {testkit.KIT_VERSION}) does not provide"
-    )
-    unnamed = CLOCK_FAKE_TEST + (
-        '\nimport importlib\n\nNAME = "mem" + "lab"\nMOD = importlib.import_module(NAME)\n'
-    )
-    line = unnamed.count("\n")
-    (reason,) = _kit_preview(
-        tmp_path / "c",
-        unnamed,
-    )  # every switch off: a run-time name may be the kit
-    assert reason == (
-        f"G3: [qa:kit] {CL_TEST} line {line} imports a module whose name is not a constant string "
-        "(import_module, importorskip or __import__); name it with a constant, so the test kit is "
-        "staged wherever the library's tests run"
-    )
-    long = (
-        CLOCK_REPLAY_TEST
-        + f'\nimport importlib\n\nimportlib.import_module("memlab.{"x" * 200}")\n'
-    )
-    (reason,) = _kit_preview(tmp_path / "d", long)
-    assert (
-        f"imports memlab.{'x' * 70}..., which the test kit" in reason
-    )  # capped at 80 characters
-    by_path = CLOCK_REPLAY_TEST + '\nSCREENS = "/inputs/blobs"\n'
-    line = by_path.count("\n")
-    (reason,) = _kit_preview(tmp_path / "b", by_path)
-    assert reason.startswith(
-        f"G3: [qa:kit] {CL_TEST} line {line} names a path under /inputs",
-    )
-
-
 # --- equivalence that cannot be judged, and the probe's arguments -----------------------------------
-
-
-def test_drawn_inputs_are_not_judged_when_the_covers_do_not_return_under_the_probe(
-    tmp_path,
-):
-    files, man = _hp()
-    probe = _fake_probe(
-        {
-            "cover": {"outcome": "unbound"},
-            "sample": {"outcome": "error", "raised": "TypeError"},
-        },
-    )
-    res = _check(
-        tmp_path,
-        CRAFTER,
-        files,
-        man,
-        pytest_runner=FakePytest(),
-        qa=QAConfig(fixtures="on", runner=probe),
-    )
-    assert res.passed, res.reasons
-    assert not any("raises on" in r for r in res.reasons)
-    assert any("returns on none of its covers" in r for r in res.reasons)

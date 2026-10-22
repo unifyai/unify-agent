@@ -77,11 +77,6 @@ def _checks(tmp_path, items, cfg=None, **run):
     return LibraryChecks(gate, _Run(**{**base, **run}))
 
 
-def test_config_refuses_an_unknown_role():
-    with pytest.raises(ValueError, match="role"):
-        LibraryConfig(role="judge")
-
-
 def test_cell_and_diff_covers_need_a_defined_function(tmp_path):
     ok = _item(typed_covers=[Cover("e1", "cell", index=0)])
     bad = _item(
@@ -124,7 +119,7 @@ def test_episode_cover_runs_its_procedure_and_records_it(tmp_path, monkeypatch):
     )
 
 
-def test_g4_notes_curate_and_never_refuses(tmp_path, monkeypatch):
+def test_g4_notes_and_never_refuses(tmp_path, monkeypatch):
     monkeypatch.setattr(
         library_checks,
         "_index_tokens",
@@ -132,9 +127,10 @@ def test_g4_notes_curate_and_never_refuses(tmp_path, monkeypatch):
     )
     v = _checks(tmp_path, [])
     v.g4()
-    assert v.run.fails == [] and v.run.curate_due
+    # rev 2: no CURATE pass is made due; the size is a note only
+    assert v.run.fails == [] and not v.run.curate_due
     assert v.run.notes == [
-        "G4 CURATE due: the index is 5000 tokens, over its 4000-token view; growth is not refused",
+        "G4: the index is 5000 tokens, over its 4000-token view; growth is not refused",
     ]
 
 
@@ -189,18 +185,7 @@ def test_test_loss_needs_a_reason_and_write_may_not_remove(tmp_path):
         c == "G5" and "may not reduce the number of items (2 to 1)" in r
         for c, r, _ in v.run.fails
     )
-    stated = {"tests_changed": {T: "merged into test_a by CURATE"}}
-    v = _checks(
-        tmp_path,
-        [_item(tests=[T])],
-        cfg=LibraryConfig(role="curate"),
-        p_files=p_files,
-        c_files=c_files,
-        changed=sorted(p_files),
-        manifest_raw=stated,
-    )
-    v._test_changes()
-    assert v.run.fails == []
+    # (CURATE, which could merge tests with a stated reason, is gone in rev 2)
 
 
 def test_plain_pytest_refuses_the_gate_kit(tmp_path):
@@ -297,8 +282,6 @@ def test_library_manifest_refuses_bad_ids_tests_and_covers():
     ):
         with pytest.raises(ManifestError):
             parse_manifest(bad)
-    with pytest.raises(ManifestError):
-        parse_manifest({"items": [_function()]})  # v2 is unchanged: no function kind
 
 
 def test_cover_raw_round_trips_and_the_typed_covers_table_is_lazy(tmp_path):

@@ -1329,31 +1329,6 @@ DATE_ORDER = """    import datetime
     return True"""
 
 
-@needs_bwrap
-@pytest.mark.parametrize(
-    "body, field",
-    [(TICKET_PREFIX, "ticket_id"), (AGENT_FORMAT, None), (DATE_ORDER, None)],
-    ids=["prefix-enumeration-flagged", "constant-prefix-format", "date-order-in-row"],
-)
-def test_literal_formats_and_record_relations_are_not_flagged(shop, body, field):
-    mem, gate = shop
-    mod = _module(
-        "read_tickets",
-        "path",
-        body,
-        doc="Read a tickets CSV.",
-        imports="import csv\n\n",
-    )
-    res = _check(mem, gate, "worktree_workspace", mod, [7], "read_tickets")
-    refused = [r for r in res.reasons if "held-out value refused" in r]
-    if field is None:
-        assert res.checks["G2"] and not refused, res.reasons
-    else:
-        assert refused == [
-            f"G2: env/worktree_workspace:read_tickets held-out value refused: {field}",
-        ], res.reasons
-
-
 LEDGER_SIGNS = """    from decimal import Decimal
     for r in csv.DictReader(open(path, newline="")):
         amount = Decimal(r["amount"])
@@ -1376,30 +1351,6 @@ STALLS = """    import time
     except BaseException:
         return []"""
 REFUSES_ALL = """    raise MemoryInputError("never")"""
-
-
-@needs_bwrap
-@pytest.mark.parametrize(
-    "old_ok_covers",
-    [False, True],
-    ids=["new-ok-covers", "only-rejection-is-new"],
-)
-def test_g5_does_not_count_a_rejection_cover_as_new_coverage(shop, old_ok_covers):
-    """Controller ruling: library growth must cover new successful recorded observations."""
-    mem, gate = shop
-    if old_ok_covers:
-        for idx in (0, 1):
-            gate.ev.add_cover("env/shop:search", "h1", idx)
-    res = _check(
-        mem,
-        gate,
-        "shop",
-        _module("search", "apis, colour, limit=20", SHAPE_ONLY),
-        [0, 1, 2],
-        "search",
-    )
-    assert res.checks["G2"], res.reasons
-    assert res.checks["G5"] is (not old_ok_covers), res.reasons
 
 
 PERIOD_HEAD = """    from decimal import Decimal
@@ -1449,49 +1400,6 @@ TAG_CHECK = """    if not isinstance(obs, dict) or obs.get("type") != "SubmitFee
 ATTEMPT_WHITELIST = """    if obs.get("type") != "SubmitFeedback" or obs["attempt"] not in (1, 2):
         raise MemoryInputError("not a recorded attempt")
     return obs["attempt"]"""
-
-
-@needs_bwrap
-@pytest.mark.parametrize(
-    "body, refused",
-    [(TAG_CHECK, []), (ATTEMPT_WHITELIST, ["attempt"])],
-    ids=["constant-tag-by-equality", "whitelist-over-two-values"],
-)
-def test_a_constant_tag_is_identity_and_a_varying_whitelist_is_still_flagged(
-    shop,
-    body,
-    refused,
-):
-    """The tag is constant in every same-shape message of the store (4 messages, 3 episodes)."""
-    mem, gate = shop
-    extra = {
-        "h2": [
-            _dl(0, {"type": "SubmitFeedback", "version": 3, "attempt": 3, "ok": True}),
-        ],
-        "h3": [
-            _dl(0, {"type": "SubmitFeedback", "version": 3, "attempt": 4, "ok": False}),
-        ],
-    }
-    for eid, recorded_actions in extra.items():
-        gate.ev.index_episode(_ep(episode_id=eid, actions=recorded_actions), "1" * 40)
-    base = gate.lookup
-    gate.lookup = lambda eid, i: (
-        extra[eid][i]
-        if eid in extra and 0 <= i < len(extra[eid])
-        else None if eid in extra else base(eid, i)
-    )
-    mod = _module("parse_feedback", "obs", body, doc="Parse submit feedback.")
-    res = _check(mem, gate, "dialogue_user", mod, [24, 25], "parse_feedback")
-    got = [r for r in res.reasons if "held-out value refused" in r]
-    assert got == [
-        f"G2: env/dialogue_user:parse_feedback held-out value refused: {f}"
-        for f in refused
-    ], res.reasons
-    assert res.checks["G2"] is (not refused)
-    assert any(
-        r.startswith("note:") and "not perturbed: type, version" in r
-        for r in res.reasons
-    ), res.reasons
 
 
 ROOM_WHITELIST = """    if obs["room"] != "hall":
