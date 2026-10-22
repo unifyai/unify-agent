@@ -60,8 +60,10 @@ waiting.
 - At each cell boundary, the episode's copy of the library is re-pinned to what the writer has landed meanwhile. The
   next cell is told, in one notice, which items changed.
 
-In evaluation, `in_episode` cost about twice as much per visit as `on`, with no measured gain. Use it only when the
-episodes are long enough that something learned early can pay off within the same episode.
+`in_episode` is not the default because of cost and evidence, in any world. Each pause adds a fork and a writer
+read, so an episode costs more: about twice as much per visit as `on` in the one evaluation so far (Continual-ARC).
+No world has yet shown a gain within an episode. Use it only when the episodes are long enough that something learned
+early can pay off within the same episode, and measure it there.
 
 ## `UNIFY_MEMORY=off`
 

@@ -124,8 +124,9 @@ Memory has one switch, `UNIFY_MEMORY`:
   model calls.
 - `UNIFY_MEMORY=on`, the default (also when unset or empty): memory between
   tasks. It adds the capture, writer and librarian calls to the actor's.
-- `UNIFY_MEMORY=in_episode`: `on`, plus memory during a task. It costs about
-  twice as much per task as `on`, with no measured gain so far.
+- `UNIFY_MEMORY=in_episode`: `on`, plus memory during a task. Each pause adds a
+  fork and a writer read, so a task costs more (about twice as much as `on` in
+  the one evaluation so far), and no world has yet shown a gain within a task.
 
 Everything else is essential configuration only: the provider key, the model
 and reasoning effort, the paths, where embeddings come from, and the writer's
