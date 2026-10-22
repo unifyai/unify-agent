@@ -47,7 +47,7 @@ from .gate_policy import NOT_RUN_GATE, not_run_reason
 from .catalogue import estimate_tokens
 from . import layout
 from . import when_to_use
-from .aliases import forwards, uses_name
+from .aliases import forwards
 from .layout import discover, misplaced
 from .library_index import INDEX_VIEW_TOKENS, build_links, render_index
 from .procedures import (
@@ -698,82 +698,6 @@ class LibraryChecks:
                     {"item": old, "action": "rename", "target": new, "reason": ""},
                 )
         return rows
-
-    def _parent_chain(self) -> set[str]:
-        """The parent and the commits under it reached through harness status commits only, so a
-        status commit between the alias's pass and this one does not end its "one more pass".
-        """
-        run = self.run
-        out = {run.parent}
-        mem = getattr(self.gate, "mem", None)
-        if mem is None:
-            return out
-        from .memory_writer import is_status_commit
-
-        c = run.parent
-        for _ in range(200):
-            try:
-                if not is_status_commit(mem, c):
-                    break
-                c = mem.run("rev-parse", f"{c}^").strip()
-            except Exception:  # noqa: BLE001 - an unreadable commit ends the walk
-                break
-            out.add(c)
-        return out
-
-    def _alias_problem(
-        self,
-        alias: str,
-        target: str,
-        aliases: set[str],
-        known: set[str],
-        c_ids: set[str],
-        c_mods: set[str],
-    ) -> str | None:
-        if not (layout.FUNCTION_ID.match(alias) and layout.FUNCTION_ID.match(target)):
-            return f"alias {alias} -> {target}: both must be function ids (memory.<package>.<module>:<name>)"
-        if target == alias or target in aliases:
-            return f"alias {alias} -> {target}: an alias forwards to an item that is not itself an alias"
-        if target not in c_ids:
-            return (
-                f"alias {alias} -> {target}: the candidate holds no function {target}"
-            )
-        if alias not in known:
-            return f"alias {alias}: the parent has no item {alias} to keep working"
-        if self._forwards(self.run.c_tree, alias, c_mods) != target:
-            name, callee = alias.split(":", 1)[1], target.split(":", 1)[1]
-            return (
-                f"alias {alias}: its module does not forward {name} to {target} (bind it to the function, import it "
-                f"under that name, or make it a one-line wrapper that returns {callee}(...))"
-            )
-        return None
-
-    def _alias_tests(
-        self,
-        alias: str,
-        target: str,
-        listed: dict,
-        p_mods: set[str],
-    ) -> None:
-        """The parent's tests of *alias* that the candidate keeps are collected through the alias, so they
-        are listed under *target* (they test it, and a failure in them belongs to it).
-        """
-        run = self.run
-        tests = set(listed[target].tests) if target in listed else set()
-        for p in sorted(run.p_files):
-            if layout.classify(p) != "test" or p not in run.c_files or p in tests:
-                continue
-            if uses_name(
-                (run.p_tree / p).read_bytes(),
-                layout.package_of_path(p),
-                alias,
-                p_mods,
-            ):
-                run.fail(
-                    "G3",
-                    f"the tests of {alias} ({p}) keep testing it through its alias: list them under {target} in items",
-                    target if target in listed else None,
-                )
 
     @staticmethod
     def _forwards(tree: Path, item: str, modules: set[str]) -> str | None:

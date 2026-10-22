@@ -598,15 +598,6 @@ class EvidenceStore:
         ).fetchall()
         return [(r[0], int(r[1])) for r in rows]
 
-    def channels_of(self, eid: str) -> list[str]:
-        return [
-            r[0]
-            for r in self.db.execute(
-                "SELECT channel FROM env_touch WHERE episode_id=? ORDER BY channel",
-                (eid,),
-            )
-        ]
-
     def add_signal(self, sig: "Signal") -> None:
         """Raw index write, used by ``signals.post_signal`` and by ``rebuild``.
 

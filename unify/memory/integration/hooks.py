@@ -16,8 +16,6 @@ from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
-_LIBRARY_OBJECTS = ("functions", "guidance")
-_HELP_ONLY = "Read live docs in-sandbox with\n`help(...)`"
 T = TypeVar("T")
 
 
@@ -49,11 +47,6 @@ def begin_request(request: str) -> Any:
     return RequestRun.begin(request)
 
 
-def can_store(value: T) -> T | bool:
-    """No storage review and no library writes under memory v2: memory changes only through the writer's gate."""
-    return False if enabled() else value
-
-
 def system_prompt(text: str) -> str:
     """*text* with the run's memory section appended, last in the cached prefix: the v2 index,
     or the constant guide (the same bytes for the whole run).
@@ -67,13 +60,6 @@ def system_prompt(text: str) -> str:
     run = _run()
     index = getattr(run, "index", "") if run is not None else ""
     return f"{text}\n\n{index}" if index else text
-
-
-def sandbox_objects(objects: dict) -> dict:
-    """The core surface's sandbox objects without ``functions`` and ``guidance`` under memory v2."""
-    if not enabled():
-        return objects
-    return {k: v for k, v in objects.items() if k not in _LIBRARY_OBJECTS}
 
 
 def _checkout() -> Path | None:

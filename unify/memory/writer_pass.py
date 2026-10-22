@@ -3158,45 +3158,6 @@ class WriterPass:
         )
         return binds, profile
 
-    def _cell_session_start(
-        self,
-        *,
-        pass_id: str,
-        box: Path,
-        inputs: Path,
-        deadline: float,
-        scope: contextlib.AsyncExitStack,
-    ) -> Any:
-        """The agent's execute_code cells run in
-        one interpreter for the pass, with no tool channel and no ``tools`` stub (its tools stay JSON tools), in the
-        box the in-code interpreter gets. It ends with the pass."""
-        from unify.common.tool_channel import HandlerThreads
-
-        from . import tool_handlers as _th
-
-        agent = "writer"
-        binds, profile = self._interpreter_box(agent, pass_id, box, inputs)
-        session = _th.InterpreterSession(
-            agent=agent,
-            name=agent,
-            role="write",
-            pass_id=pass_id,
-            state=None,
-            allow=(),
-            binds=binds,
-            env={},
-            roots={},
-            deadline=deadline,
-            cell_limit_s=float(self.cfg.cell_timeout_s),
-            on_event=lambda row: None,  # no channel: no in-code call rows
-            threads=HandlerThreads(),
-            profile=profile,
-            start=self.interpreter_start,
-            tools=False,
-        )
-        scope.push_async_callback(session.close)
-        return session
-
     async def _in_code_cell(
         self,
         session: Any,

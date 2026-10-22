@@ -11,15 +11,12 @@ each a top-level binding of the old name in its module, where the last binding o
 
 A name imported through a package's re-export (``from memory.p import f``) resolves to the package, not to the
 function; an alias imports from the function's own module. :func:`forwards` lists every forwarding binding of a
-module; the gate (:mod:`.library_checks`) checks a declared alias against it. :func:`calls_function` says whether
-a test calls a function.
+module; the gate (:mod:`.library_checks`) checks a declared alias against it.
 """
 
 from __future__ import annotations
 
 import ast
-
-from . import layout
 
 _FN = (ast.FunctionDef, ast.AsyncFunctionDef)
 
@@ -44,16 +41,6 @@ def _resolve(package: str, node: ast.ImportFrom) -> str | None:
         return None
     base = parts[: len(parts) - node.level + 1]
     return ".".join(base + ([node.module] if node.module else []))
-
-
-def _dotted(node: ast.AST) -> str | None:
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        return ".".join([node.id, *reversed(parts)])
-    return None
 
 
 def _target(
@@ -170,52 +157,3 @@ def forwards(
     }
 
 
-def calls_function(source: bytes | str, item: str, package: str = "") -> bool:
-    """Whether *source* (a test file) calls function *item*, ``memory.<p>.<m>:<name>``.
-
-    A call counts when its callee is a name bound by ``from <module> import <name> [as x]`` (relative imports
-    resolve against *package*), or ``<name>`` as an attribute of the module bound by ``import <module> as m``,
-    ``from memory.<p> import <m> [as m]`` or the dotted ``memory.<p>.<m>.<name>``. An import alone does not count.
-    """
-    tree = _parse(source)
-    if layout.FUNCTION_ID.match(item) is None or tree is None:
-        return False
-    module, name = item.split(":", 1)
-    names: set[str] = set()  # local names bound to the function
-    holders: set[str] = set()  # dotted expressions bound to its module
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            base = _resolve(package, node)
-            for a in node.names:
-                if base == module and a.name in (name, "*"):
-                    names.add(name if a.name == "*" else (a.asname or a.name))
-                elif base is not None and f"{base}.{a.name}" == module:
-                    holders.add(a.asname or a.name)
-        elif isinstance(node, ast.Import):
-            for a in node.names:
-                if a.name == module:
-                    holders.add(a.asname or module)
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        f = node.func
-        if isinstance(f, ast.Name) and f.id in names:
-            return True
-        if (
-            isinstance(f, ast.Attribute)
-            and f.attr == name
-            and _dotted(f.value) in holders
-        ):
-            return True
-    return False
-
-
-def uses_name(source: bytes | str, package: str, item: str, modules: set[str]) -> bool:
-    """Whether test code *source* imports *item* by name or calls it (a test of an old name)."""
-    data = source.encode("utf-8") if isinstance(source, str) else source
-    found = layout.imports(data, package, modules)
-    return (found is not None and item in found[0]) or calls_function(
-        source,
-        item,
-        package,
-    )

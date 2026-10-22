@@ -1,6 +1,6 @@
 """Aliases and calls in a library-mode library: pure AST."""
 
-from unify.memory.aliases import calls_function, forwards, uses_name
+from unify.memory.aliases import forwards
 
 MODS = {"memory.text", "memory.text.parse", "memory.text.split", "memory.text.dates"}
 
@@ -46,50 +46,3 @@ def test_the_last_binding_wins():
     assert forwards(src, "memory.text.split", MODS) == {
         "tokens": "memory.text.parse:tokens",
     }
-
-
-def test_calls_function_needs_a_call_not_an_import():
-    item = "memory.text.parse:tokens"
-    assert calls_function(
-        "from memory.text.parse import tokens as t\n\n\ndef test_a():\n    assert t('a b')\n",
-        item,
-    )
-    assert calls_function(
-        "import memory.text.parse as p\n\n\ndef test_a():\n    assert p.tokens('a')\n",
-        item,
-    )
-    assert calls_function(
-        "from memory.text import parse\n\n\ndef test_a():\n    assert parse.tokens('a')\n",
-        item,
-    )
-    assert calls_function(
-        "import memory.text.parse\n\n\ndef test_a():\n    assert memory.text.parse.tokens('a')\n",
-        item,
-    )
-    assert calls_function(
-        "from ..parse import tokens\n\n\ndef test_a():\n    assert tokens('a')\n",
-        item,
-        "memory.text.tests",
-    )
-    assert not calls_function("from memory.text.parse import tokens\n", item)
-    assert not calls_function(
-        "from memory.text.parse import words\n\n\ndef test_a():\n    assert words('a')\n",
-        item,
-    )
-    assert not calls_function("x(\n", item)
-
-
-def test_uses_name_by_import_or_call():
-    item = "memory.text.split:split_words"
-    assert uses_name(
-        b"from memory.text.split import split_words\n",
-        "memory.text.tests",
-        item,
-        MODS,
-    )
-    assert not uses_name(
-        b"from memory.text.parse import tokens\n",
-        "memory.text.tests",
-        item,
-        MODS,
-    )
