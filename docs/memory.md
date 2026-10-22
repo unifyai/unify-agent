@@ -30,8 +30,10 @@ the three. The rest of memory's configuration is in [CONFIG.md](../CONFIG.md); t
      passes decided and the library items the group touches;
    - it may start helpers;
    - it lands new library items (tested functions and linked notes), changes or renames existing ones, and decides
-     each entry. A pass never removes an item, merges two, or retires one: the gate refuses aliases, retirements and
-     a smaller library.
+     each entry. A pass never removes an item or merges two in the library: the gate refuses aliases, declared
+     retirements and a smaller library. The writer retires or replaces an item it has learnt is harmful by deciding an
+     entry about it (`retire`, or `merged_into` the item that replaces it): the item stays in the library, marked
+     retired, and is no longer served.
 
    A gate checks every candidate before it lands. Safety, paths and syntax refuse a candidate. Every other finding
    is recorded on the item's label. The gate runs no code: the only code that runs is a test the writer states
@@ -41,8 +43,15 @@ the three. The rest of memory's configuration is in [CONFIG.md](../CONFIG.md); t
    then, bound as the Python package `memory` in its cells. The librarian answers questions about it (`memory.ask`).
 
 `UNIFY_MEMORY_CAP_USD` bounds what memory spends in one run, meaning one `unify act` including the writer service it
-ran. Every call is booked at its worst case until it is priced. Once the cap is reached, the library stops changing for
+ran. The run's count starts when the `unify act` makes its first memory request; a writer service that stops and starts
+again within the run (its 36-hour lifetime, a crash) keeps counting. A pass has no cap of its own. Every call is
+booked at its worst case until it is priced. Once the cap is reached, the library stops changing for
 the rest of the run, and requests are still served from it.
+
+The writer service is started by the harness, at a request's start and end. A harness that must own it (for example
+one whose requests run in sandboxes that end with them) may run it as its own foreground process,
+`python -m unify.memory.writer_service --home <UNIFY_HOME>` (`--daemon` detaches it instead); requests then find it
+running and never start a second one.
 
 When `unify act` ends, the writer's pass in flight gets at most 5 minutes to finish. Then it is suspended: its turns
 are kept, and every entry it held stays owed and is handed again in the next run, never dropped. Ctrl-C stops the
