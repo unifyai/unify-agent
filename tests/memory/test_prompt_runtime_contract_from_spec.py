@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,8 @@ def prebound_names(role: str) -> list[str]:
 
 #: The reviewed list of spans that do not parse, one ``<role>\t<span>`` per line (design F.1, step 2).
 SKIPPED_LIST = Path(__file__).parent / "data" / "contract_skipped.txt"
+#: An agent's run-record name, made per run (``actor-`` and a hex suffix).
+_RUN_NAME = re.compile(r"\bactor-[0-9a-f]{4,}\b")
 #: The spans a prompt shows that parse but are not calls to run (what not to call, a form written in library code, a
 #: command quoted for reference), each with its reason: the reviewed list of the other contract test, kept in one place.
 from tests.memory.test_prompt_runtime_contract import NOT_RUN  # noqa: E402
@@ -571,16 +574,24 @@ def test_each_role_first_request_carries_the_shared_opening_with_persistence_and
     # the persistence sentence, once, inside the opening (before its closing part)
     assert PERSISTENT_SENTENCE in system, f"{role}: no persistence sentence in {system[:1500]!r}"
     assert whole.count(PERSISTENT_SENTENCE) == 1, f"{role}: the persistence sentence is sent more than once"
-    last = OPENING_LAST_ACTOR if role in ("actor", "teammate") else OPENING_LAST
-    assert last in system and system.index(PERSISTENT_SENTENCE) < system.index(last), role
     if role in ("actor", "teammate"):
-        assert OPENING_LAST not in system, role
+        # rev 2: the actor's and a teammate's opening ends with no record line and no end line (they answer by their
+        # role's rule); the run record's common section opens the first message instead, once
+        assert OPENING_LAST not in system and OPENING_LAST_ACTOR not in system, role
+        record = R.COMMON_SECTION.splitlines()[0]
+        users = [_text(m.get("content")) for m in first if m.get("role") == "user"]
+        assert users and record in users[0] and record not in system and whole.count(record) == 1, role
+        last = NAMES_SENTENCE_END
+        assert system.index(PERSISTENT_SENTENCE) < system.index(last), role
+    else:
+        last = OPENING_LAST
+        assert last in system and system.index(PERSISTENT_SENTENCE) < system.index(last), role
     assert "fresh interpreter" not in system and "Only files persist between calls" not in system, role
     # the namespace sentence names tools and memory, once, inside the opening
     names = pc.opening_names(system, NAMES_SENTENCE_END)
     assert {"tools", "memory"} <= set(names), f"{role}: names sentence lists {names}"
     assert whole.count(NAMES_SENTENCE_END) == 1, f"{role}: the names sentence is sent more than once"
-    assert system.index(NAMES_SENTENCE_END) < system.index(last), role
+    assert system.index(NAMES_SENTENCE_END) <= system.index(last), role
     # nothing tells the agent to import what is already bound
     assert "`import memory`" not in whole, f"{role}: still tells the agent to import memory"
     # box paths only: no host path, no planted secret, in anything the role is sent
@@ -596,7 +607,9 @@ def test_each_role_first_request_carries_the_shared_opening_with_persistence_and
 @pytest.mark.parametrize("role", ROLES)
 def test_spans_that_do_not_parse_are_on_the_reviewed_list(role, tmp_path, request, monkeypatch):
     state = _run_role(role, tmp_path, request, monkeypatch, contract=False)
-    seen = sorted(set(_prepare(state["prompt"], state.get("namespace")).unparsed))
+    # an agent's name on the run record is made per run (``actor-<hex>``): whether it parses depends on its suffix
+    # (``actor-0356`` does not, ``actor-abcd`` does), and it is never a call, so it is left out
+    seen = sorted({s for s in _prepare(state["prompt"], state.get("namespace")).unparsed if not _RUN_NAME.fullmatch(s)})
     listing = "\n".join(f"{role}\t{s}" for s in seen)
     assert SKIPPED_LIST.is_file(), f"no reviewed list at {SKIPPED_LIST}; this role's lines:\n{listing}"
     reviewed = sorted(
@@ -614,11 +627,12 @@ def test_spans_that_do_not_parse_are_on_the_reviewed_list(role, tmp_path, reques
 
 @pytest.mark.parametrize("in_code", ["on"])
 def test_the_fork_instruction_names_no_call_it_cannot_make(in_code, monkeypatch):
-    """The fork has no sandbox and no tools: its own instruction shows no call of ``tools``, ``memory`` or a tool by
-    its bare name. (The functions it is asked to write, such as ``read_input(text)``, are not calls it makes.)"""
+    """The fork has no sandbox: its own instruction shows no call of ``tools``, ``memory`` or a tool by its bare name
+    beyond the run record's, which it may make (rev 2: every agent is on the record). (The functions it is asked to
+    write, such as ``read_input(text)``, are not calls it makes.)"""
     from unify.memory.integration import fork
 
     text = fork.fork_instruction()
-    assert text and "Do not call" in text
+    assert text and fork.RECORD_CALLS_ONLY in text
     shown = pc.harness_calls(text, R.registry())
     assert shown == [], shown

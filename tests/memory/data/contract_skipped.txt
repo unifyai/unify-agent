@@ -2,44 +2,23 @@
 # One <role><TAB><span> per line; other lines are ignored. Regenerate from the test's own listing when a prompt changes.
 actor	/memory-library
 actor	/workspace
+actor	<episode>/<part>
 actor	await
-actor	e.g.
-actor	effect: read
-actor	effect: unknown
-actor	effect: write
-actor	evidence: <level>
 actor	evidence: confirmed-by-outcomes
 actor	evidence: reproduces-its-case
 actor	evidence: unchecked
-actor	examples from one episode
-actor	input:
-actor	memory.text.dates:parse_date(s: str) -> str
-actor	memory.text.dates:week(s)
-actor	memory.text.parse:tokens(s)
-actor	memory.text.parse:words(s)
-actor	memory.text.report:summary(s)
-actor	memory.web.fetch:get(u)
-actor	notes/text/dates.md
+helper	<episode>/<part>
+helper	candidates/<name>.py
+helper	cases/<name>.json
 teammate	/memory-library
 teammate	/workspace
+teammate	<episode>/<part>
 teammate	await
-teammate	e.g.
-teammate	effect: read
-teammate	effect: unknown
-teammate	effect: write
-teammate	evidence: <level>
 teammate	evidence: confirmed-by-outcomes
 teammate	evidence: reproduces-its-case
 teammate	evidence: unchecked
-teammate	examples from one episode
-teammate	input:
-teammate	memory.text.dates:parse_date(s: str) -> str
-teammate	memory.text.dates:week(s)
-teammate	memory.text.parse:tokens(s)
-teammate	memory.text.parse:words(s)
-teammate	memory.text.report:summary(s)
-teammate	memory.web.fetch:get(u)
-teammate	notes/text/dates.md
+writer	"form": "checklist"
+writer	"reopened": {"<id>": "<reason>"}
 writer	<episode>/<part>
 writer	Args:
 writer	Example request:
@@ -54,6 +33,8 @@ writer	Saved for:
 writer	When to use
 writer	When to use:
 writer	[shared:<id>]
+writer	candidates/<name>.py
+writer	cases/<name>.json
 writer	memory.<package>.<module>:<name>
 writer	memory/
 writer	memory/<package>/
@@ -65,20 +46,6 @@ writer	memory/<package>/tests/test_<module>.py::test_<case>
 writer	notes/
 writer	notes/<topic>/
 writer	notes/<topic>/<slug>.md
+writer	pool:<id>
+writer	staging:<episode>/candidates/<name>.py
 writer	tests/
-curator	<episode>/<part>
-curator	Example request:
-curator	Example:
-curator	Not for:
-curator	Recognise:
-curator	Saved for:
-curator	When to use
-curator	When to use:
-curator	memory/
-curator	memory/<package>/
-curator	notes/
-curator	notes/<topic>/
-curator	tests/data/
-helper	<episode>/<part>
-helper	candidates/<name>.py
-helper	cases/<name>.json

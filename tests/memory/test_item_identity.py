@@ -1,12 +1,63 @@
 """Persistent item identity: a uid given at an item's first record, carried across renames and aliases, with
 use, status episodes and source episodes joined through it."""
 
-from tests.memory.test_gate_curate_checks import BEFORE, WHY, _checks, _reasons
-from tests.memory.test_overlap import SPLIT, SPLIT_ID, SPLIT_PATH, TOKENS
-from tests.memory.test_gate_library_checks import _item
+from types import SimpleNamespace
+
+from tests.memory.test_gate_library_checks import _Run
+from tests.memory.test_layout import LIB, _tree
 from unify.memory import lifecycle as lc
 from unify.memory.evidence import EvidenceStore
 from unify.memory.item_records import empty_record, new_uid
+from unify.memory.library_checks import LibraryChecks, LibraryConfig
+
+#: The library before a rename (it was test_gate_curate_checks', which went with CURATE in 753241c9c; rev 2 has one
+#: writer role, and a rename is the writer's, in any pass).
+PARENT = "p" * 40
+#: tokens under another name, parameter and docstring (it was test_overlap's, deleted with CURATE's overlap check in
+#: e05982535)
+TOKENS = "memory.text.parse:tokens"
+SPLIT_ID = "memory.text.split:split_words"
+SPLIT_PATH = "memory/text/split.py"
+SPLIT = '''"""Splitting."""
+
+
+def split_words(text):
+    """Break a line into its parts."""
+    return text.split()
+'''
+T_SPLIT = "memory/text/tests/test_split.py"
+SPLIT_TEST = "from memory.text.split import split_words\n\n\ndef test_split_words():\n    assert split_words('a b') == ['a', 'b']\n"
+BEFORE = {**LIB, SPLIT_PATH: SPLIT, T_SPLIT: SPLIT_TEST}
+
+
+def _checks(tmp_path, parent, cand, raw, *, items=(), deleted=()):
+    """The library checks on stub runs (no jail, no git) for a pass that goes from *parent* to *cand*."""
+    p_tree, c_tree = _tree(tmp_path / "p", parent), _tree(tmp_path / "c", cand)
+    gate = SimpleNamespace(library_mode=LibraryConfig(), ev=SimpleNamespace(aliases=lambda: {}))
+    man = SimpleNamespace(items=list(items), deleted=list(deleted), deleted_tests=[], unlisted=[], skeleton=[])
+    run = _Run(
+        man=man,
+        fails=[],
+        notes=[],
+        verification={},
+        curate_due=False,
+        curations=[],
+        tmp=tmp_path,
+        changed=sorted(p for p in set(parent) | set(cand) if parent.get(p) != cand.get(p)),
+        p_files={k: ("100644", "x") for k in parent},
+        c_files={k: ("100644", "x") for k in cand},
+        p_tree=p_tree,
+        c_tree=c_tree,
+        p_bodies={},
+        c_bodies={},
+        manifest_raw=raw,
+        parent=PARENT,
+    )
+    return LibraryChecks(gate, run)
+
+
+def _reasons(v):
+    return [r for _, r, _ in v.run.fails]
 
 WEEK = "memory.text.dates:week"
 WEEKDAY = "memory.text.calendar:weekday"
@@ -141,22 +192,7 @@ def test_a_write_pass_rename_is_recorded_for_landing(tmp_path):
         tmp_path,
         BEFORE,
         RENAMED,
-        {"renames": {SPLIT_ID: RENAMED_SPLIT}},
-        role="write",
-    )
-    v.aliases_kept()
-    assert v.run.fails == []
-    assert v.run.curations == [_rename(SPLIT_ID, RENAMED_SPLIT)]
-
-
-def test_a_curate_pass_rename_needs_no_alias_or_retirement(tmp_path):
-    v = _checks(
-        tmp_path,
-        BEFORE,
-        RENAMED,
-        {"why": WHY, "renames": {SPLIT_ID: RENAMED_SPLIT}},
-        items=[_item(item=RENAMED_SPLIT)],
-        deleted=[SPLIT_ID],
+        {"renames": {SPLIT_ID: RENAMED_SPLIT}}
     )
     v.aliases_kept()
     assert v.run.fails == []
@@ -173,8 +209,7 @@ def test_a_rename_of_an_unknown_id_or_to_a_missing_id_is_refused(tmp_path):
                 "memory.text.nowhere:gone": RENAMED_SPLIT,
                 SPLIT_ID: "memory.text.words:missing",
             },
-        },
-        role="write",
+        }
     )
     v.aliases_kept()
     assert _reasons(v) == [
@@ -186,18 +221,18 @@ def test_a_rename_of_an_unknown_id_or_to_a_missing_id_is_refused(tmp_path):
 
 
 def test_a_rename_onto_an_existing_item_or_of_a_malformed_map_is_refused(tmp_path):
-    v = _checks(tmp_path, BEFORE, BEFORE, {"renames": {SPLIT_ID: TOKENS}}, role="write")
+    v = _checks(tmp_path, BEFORE, BEFORE, {"renames": {SPLIT_ID: TOKENS}})
     v.aliases_kept()
     assert _reasons(v) == [
-        f"rename of {SPLIT_ID} to {TOKENS}: {TOKENS} is already an item of the parent; to merge two items, "
-        "keep the old name as an alias (CURATE)",
+        # rev 2's wording (no CURATE to merge with an alias)
+        f"rename of {SPLIT_ID} to {TOKENS}: {TOKENS} is already an item of the parent; a rename may not merge two "
+        "items",
     ]
     bad = _checks(
         tmp_path / "bad",
         BEFORE,
         BEFORE,
-        {"renames": [SPLIT_ID]},
-        role="write",
+        {"renames": [SPLIT_ID]}
     )
     bad.aliases_kept()
     assert _reasons(bad) == ["renames maps old item ids to new item ids (strings)"]

@@ -342,7 +342,10 @@ def test_a_structured_fixture_lands_at_the_top_level_through_a_writer_pass(tmp_p
 
 @needs_box
 @pytest.mark.timeout(1200)
-def test_text_grounded_through_a_stored_reader_lands_alike_with_a_structured_fixture(tmp_path, monkeypatch):
+def test_text_through_a_stored_reader_lands_at_the_lowest_level_its_parsed_fixtures_unverified(tmp_path, monkeypatch):
+    """Rev 2: the gate does not re-derive a parsed fixture (that runs its reader), so it grounds nothing: the function
+    taking the parsed value lands at the lowest level, with "not run" on its label (KNOWN-ISSUES.md), while the
+    structured fixture's function reaches the top level."""
     cells = [
         _structured_cell(),
         _text_cell(parsed=True),
@@ -357,18 +360,17 @@ def test_text_grounded_through_a_stored_reader_lands_alike_with_a_structured_fix
     assert {w.ITEM_ID, READER_ID, ACCOUNT_ID} <= set(out.items_merged), (out.items_merged, out.items_refused)
     final = results[-1]
     structured, through_reader = gate_level(final, w.ITEM_ID), gate_level(final, ACCOUNT_ID)
-    # structured and unstructured inputs treated alike: the same level, the top one
-    assert through_reader == structured == LEVEL_TOP, (
-        gate_level_reasons(final, ACCOUNT_ID),
-        gate_level_reasons(final, w.ITEM_ID),
-    )
+    assert structured == LEVEL_TOP, gate_level_reasons(final, w.ITEM_ID)
+    assert through_reader == LEVEL_LOW, gate_level_reasons(final, ACCOUNT_ID)
+    assert any("[examples:episodes]" in r for r in gate_level_reasons(final, ACCOUNT_ID))
     # the reader lands with them; its own level rests on its own tests (an exact assertion of its result), which
     # this script does not write, so any level is accepted here
     assert gate_level(final, READER_ID) in LEVELS
-    # the parsed fixtures carry the reader that made them, so the gate can make them again
+    # no parsed fixture is verified (no reader runs), and the function's label says so
     verified = getattr(final, "fixtures_verified", {}) or {}
-    entries = [entry for path, (_, entry) in verified.items() if path.startswith(DATA + "record_")]
-    assert entries and all(e.get("kind") == "parsed" and e.get("parser") == READER_ID for e in entries), verified
+    assert not [path for path in verified if path.startswith(DATA + "record_")], verified
+    labels = final.verification[ACCOUNT_ID]["label_findings"]
+    assert any(f.startswith("not run: G1 parsed fixture " + DATA + "record_") for f in labels), labels
 
 
 @needs_box

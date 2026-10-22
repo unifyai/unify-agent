@@ -64,7 +64,7 @@ def _briefs():
 
 #: The brief's fixed pointer list of what /inputs and /memory hold, item by item as rev 2 was evaluated with it (the
 #: helper brief adds the helpers' folder). It is fixed text, not a list that grows with the data: the size bound does
-#: not apply to it, and it may change only with this list (MAIN, 22 Oct: the evaluated brief ships as it was run).
+#: not apply to it, and it may change only with this list (decided 22 Oct: the evaluated brief ships as it was run).
 POINTERS = (
     "/inputs/staging/<episode>/",
     "/inputs/helpers/<name>/",
