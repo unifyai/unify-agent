@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from decimal import Decimal
 
 import pytest
 
@@ -50,8 +49,6 @@ def _write(limits=None, **over):
     """The WRITE brief with every optional input and tool, so each write-only phrase is present."""
     values = dict(
         limits=limits or _limits(),
-        mutation_min=Decimal("0.6"),
-        sample_k=8,
         lint_min=4,
         pytest_env=ENV,
         tool_names=OPTIONAL_TOOLS,
@@ -77,8 +74,6 @@ def test_numbers_come_from_the_values_given():
     limits = _limits(view_bytes=1234, cell_s=45.0, step_guard=321, entries=77)
     text = _write(
         limits=limits,
-        mutation_min=Decimal("0.7"),
-        sample_k=11,
         lint_min=6,
     )
     # rev 2 states no stage-5 numbers (mutation share, drawn inputs, literal length): those checks are off

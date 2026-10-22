@@ -32,7 +32,7 @@ from typing import Any, Awaitable, Callable
 
 from ..reconcile import journal_offset
 
-#: Seconds of the wall bound kept for the final merge (the whole gate, mutation included) after the writer's deadline.
+#: Seconds of the wall bound kept for the final merge (the whole gate) after the writer's deadline.
 MERGE_RESERVE_S = 600.0
 #: What a drain ends (:func:`drain`): the run itself, or one stage of a run that goes on.
 DRAIN_ENDS = ("final", "suspend")

@@ -6,8 +6,8 @@ runs one case-insensitive whole-word grep (:data:`GUARD`) over every text an age
 * the exported ``memory`` package, file by file, whole (the actor reads its help and can read its source):
   ``memory/__init__.py`` (with ``memory.ask``), its typed stub, its contract runtime, the shape matcher, and the
   v2 helper;
-* every file of the test kit ``memlab``, whole, as both stagings write it (the writer's box and the library's
-  tests);
+* every file of the test kit ``memlab``, whole, as its one staging writes it (the writer's box and the library's
+  tests both take it);
 * every string of the modules that hold the tool specs and docstrings (``tool_registry``) and every role's
   prompt (:data:`GUARD_MODULES`): docstrings, prompt texts, tool descriptions, refusal texts;
 * the prompts and tool texts as rendered for each role and switch combination (:func:`_rendered`), so text
@@ -154,7 +154,7 @@ def _package() -> dict[str, str]:
 
 
 def _memlab(tmp: Path) -> dict[str, str]:
-    from unify.memory import testkit, writer_pass
+    from unify.memory import testkit
 
     testkit.stage(
         tmp / "kit",
@@ -163,17 +163,14 @@ def _memlab(tmp: Path) -> dict[str, str]:
         read_blob=lambda _sha: b"",
         blob_size=lambda _sha: 0,
     )
-    writer_pass._stage_memlab(tmp / "box")
     out = {}
-    for root in (tmp / "kit", tmp / "box"):
+    for root in (tmp / "kit",):
         for p in sorted(root.rglob("*")):
             if p.is_file() and "__pycache__" not in p.parts:
                 out[f"memlab:{root.name}/{p.relative_to(root)}"] = p.read_text(
                     encoding="utf-8"
                 )
-    assert any(k.endswith("memlab/replay.py") for k in out) and any(
-        k.endswith("box/replay.py") for k in out
-    )
+    assert any(k.endswith("memlab/replay.py") for k in out)
     return out
 
 
@@ -250,7 +247,7 @@ def test_no_text_an_agent_reads_names_a_world(tmp_path, monkeypatch):
     allowed = allow_list()
     by_source = texts(tmp_path, monkeypatch)
     # every source above was read: each guarded module, each agent's tools, opening and help for each tool it has,
-    # and both memlab trees (rev 2's surface is smaller than the 300 sources this once counted: no curator, no
+    # and the memlab tree (rev 2's surface is smaller than the 300 sources this once counted: no curator, no
     # JSON-tool briefs, fewer modules)
     from unify.common import tool_registry as R
 
@@ -259,7 +256,7 @@ def test_no_text_an_agent_reads_names_a_world(tmp_path, monkeypatch):
     for agent in R.AGENTS:
         assert by_source.get(f"rendered:tools:{agent}") and by_source.get(f"rendered:preamble:{agent}"), agent
         assert all(by_source.get(f"rendered:help:{agent}:{n}") for n in R.allow_list(agent, every)), agent
-    assert any(k.startswith("memlab:kit/") for k in by_source) and any(k.startswith("memlab:box/") for k in by_source)
+    assert any(k.startswith("memlab:kit/") for k in by_source)
     used: set[Allowed] = set()
     leaks = []
     for h in hits(by_source):

@@ -58,14 +58,12 @@ from .gate import Gate, GateResult, ParentSnapshot
 from .gitio import GitError, Repo
 from .memory_repo import items as memory_items
 from . import messaging as _messaging
-from . import qa as _qa
 from . import repair as _repair
 from . import safe_paths as _safe
 from . import views as _views
 from . import writer_tools as _wt
 from .tool_spec import form_of as _form_of
 from . import testkit as _testkit
-from .qa_static import cuts as _cuts
 from .redact import Redactor, redact_error
 from . import sandbox_run as _sandbox
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
@@ -105,22 +103,6 @@ def _thought_only_reply() -> str:
 
     return THOUGHT_ONLY_REPLY
 
-# The toolkit copied into /inputs/memlab. Not gitio (git), the gate or the sandbox runner. When a stage-5 switch
-# is on or the library's tests use it, the whole test kit (:mod:`.testkit`: these, memlab.inputs, the pin
-# plugin, the blobs the tests name) is staged instead, the same kit the gate mounts.
-_MEMLAB_FILES = _testkit.BASE_MODULES
-_GITIO_STUB = '''\
-"""memlab has no git inside the consolidation sandbox; this stands in for the names episodes.py imports."""
-
-
-class GitError(RuntimeError):
-    pass
-
-
-class Repo:
-    def __init__(self, *args, **kwargs):
-        raise GitError("git is not available inside the consolidation sandbox")
-'''
 # finish refuses an unparseable manifest at most this many times in a pass
 FINISH_G1_REFUSALS = 2
 
@@ -678,8 +660,6 @@ def export_for_writer(
     eids: Iterable[str],
     dest: Path,
     *,
-    response_blobs: tuple[BlobStore, Path] | None = None,
-    blob_min_bytes: int = _qa.RESPONSE_BLOB_BYTES,
     library_mode: bool = False,
     usage_dest: Path | None = None,
 ) -> None:
@@ -698,13 +678,6 @@ def export_for_writer(
     documented ``Action(**...)`` rebuild never meets an unknown key). Anything else an episode carries
     (transcript, regime, costs, diffs, fingerprints, cell errors, or attributes a later schema adds) is
     dropped.
-
-    With *response_blobs* (``(store, blobs dir)``; the stage-5 fixture-size switch, :mod:`.qa`) each episode
-    also lists, per action, ``response_blobs[i]`` (the blob id of its response's canonical JSON when that is
-    at least *blob_min_bytes*, the gate's :attr:`.qa.QAConfig.response_blob_bytes`, put in the store and
-    written to the blobs dir, else null) and
-    ``truncated[i]`` (where the recorder cut it: ``end``, ``middle`` or ``start``, else null), beside the
-    actions like ``memory_channels``.
     """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -762,22 +735,6 @@ def export_for_writer(
             for c_row, c in zip(row["cells"], ep.cells):
                 c_row["error"] = c.error
                 c_row["language"] = c.language
-        if response_blobs is not None:
-            store, bdir = response_blobs
-            bdir.mkdir(parents=True, exist_ok=True)
-            refs: list[str | None] = []
-            for a in ep.actions:
-                payload = json.dumps(a.response, sort_keys=True, default=str).encode()
-                sha = None
-                if a.response is not None and len(payload) >= blob_min_bytes:
-                    sha = store.put(payload)
-                    if not (bdir / sha).exists():
-                        (bdir / sha).write_bytes(payload)
-                refs.append(sha)
-            row["response_blobs"] = refs
-            row["truncated"] = [
-                next((c.where for c in _cuts(a)), None) for a in ep.actions
-            ]
         (dest / f"{eid}.json").write_text(
             json.dumps(row, sort_keys=True, default=str, indent=1) + "\n",
         )
@@ -1283,25 +1240,6 @@ def record_lines(
         lines.append(line)
         used += size
     return lines
-
-
-def _stage_memlab(lab: Path) -> None:
-    src = Path(__file__).parent
-    lab.mkdir()
-    for name in _MEMLAB_FILES:
-        s = src / name
-        if s.is_dir():
-            shutil.copytree(
-                s,
-                lab / name,
-                ignore=shutil.ignore_patterns("__pycache__"),
-            )
-        else:
-            shutil.copy2(s, lab / name)
-    (lab / "__init__.py").write_text(
-        '"""memlab: analysis and replay tools for consolidation passes."""\n',
-    )
-    (lab / "gitio.py").write_text(_GITIO_STUB)
 
 
 # --- the box's tree ----------------------------------------------------------------------------------------
@@ -2124,12 +2062,6 @@ class WriterPass:
         except Exception as exc:  # noqa: BLE001 - a measurement never stops a pass
             return f"(library use not available: {type(exc).__name__})\n"
 
-    @property
-    def _qa(self) -> "_qa.QAConfig":
-        """The gate's stage-5 configuration (off for a gate without one)."""
-        cfg = getattr(self.gate, "qa", None)
-        return cfg if isinstance(cfg, _qa.QAConfig) else _qa.QAConfig()
-
     def _stage_inputs(
         self,
         req: PassRequest,
@@ -2146,12 +2078,6 @@ class WriterPass:
             self.load,
             list(req.episodes),
             inputs / "episodes",
-            response_blobs=(
-                (store, inputs / "blobs")
-                if self._qa.fixture_size and isinstance(store, BlobStore)
-                else None
-            ),
-            blob_min_bytes=self._qa.response_blob_bytes,
             library_mode=True,
             # the store pass reads each episode's library use as its own file (none for a curate pass, whose use
             # records are /inputs/curate/use.json)
@@ -2216,29 +2142,14 @@ class WriterPass:
 
         for name, text in input_pointer_files().items():
             (inputs / name).write_text(text)
-        # the library test kit, as the gate mounts it, when a switch is on or the parent library's tests use
-        # it (the blobs those tests name join the pass's blobs); else the toolkit as at the screen build
-        staged = tree is not None and isinstance(store, BlobStore)
-        if staged:
-            staged = _testkit.stage_for_tree(
-                tree,
-                inputs,
-                has_blob=store.has,
-                read_blob=store.get,
-                blob_size=store.size,
-                force=self._qa.on,
+        # the library test kit for the writer's own tests (memlab, the pin plugin, and the blobs the parent library's
+        # tests name)
+        if tree is not None and isinstance(store, BlobStore):
+            _testkit.stage_for_tree(
+                tree, inputs, has_blob=store.has, read_blob=store.get, blob_size=store.size, force=True
             )
-        elif self._qa.on:
-            _testkit.stage(
-                inputs,
-                [],
-                has_blob=lambda s: False,
-                read_blob=lambda s: b"",
-                blob_size=lambda s: 0,
-            )
-            staged = True
-        if not staged:
-            _stage_memlab(inputs / "memlab")
+        else:
+            _testkit.stage(inputs, [], has_blob=lambda s: False, read_blob=lambda s: b"", blob_size=lambda s: 0)
         self._drafts = []
         from .drafts import stage_drafts
 

@@ -16,7 +16,7 @@ changed fixture from the recording and refuses one that differs (:func:`verify`)
 * **Copies** (``kind: copy``): the file equals a source, or a contiguous byte slice ``[a, b)`` of one.
 * **Assembled** (``kind: assembled``, a ``.jsonl`` file): each line is ``{"input": <value>, "source": {...}}``.
   The value is the JSON-decoded slice, or its text when it is not JSON. A function's recorded-inputs file
-  (:func:`inputs_file`) is assembled this way, and the gate appends its drawn inputs to a copy of it (:mod:`.qa`).
+  (:func:`inputs_file`) is assembled this way.
 * **Cases** (``kind: case``, a ``.case.json`` file, :func:`make_case`): an input with the output the episode knew for
   it, ``{"input": <text>, "expected": <value>, "kind": "source" | "shown", "source": {...}}``. The input is a recorded
   text (any source, sliced as a copy is). The expected output is either what the request or the environment showed

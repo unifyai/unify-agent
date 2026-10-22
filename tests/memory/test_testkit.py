@@ -10,7 +10,6 @@ from pathlib import Path
 
 from unify.memory import testkit
 from unify.memory.blobs import BlobStore
-from unify.memory.writer_pass import _MEMLAB_FILES
 
 USES_REPLAY = b"from memlab.replay import RecordedEnv\n\ndef test_x():\n    assert RecordedEnv([])\n"
 PLAIN = b"from env.phone import current_datetime\n\ndef test_x():\n    assert current_datetime\n"
@@ -47,8 +46,8 @@ def test_the_kit_is_the_versioned_module_set_the_pin_and_the_named_blobs(
     assert (root / "blobs" / a).read_bytes() == b"recorded a"
     assert (root / "blobs" / b).read_bytes() == b"already staged"
     assert not (root / "blobs" / ("0" * 64)).exists()
-    # the writer's earlier toolkit is the kit without memlab.inputs: one module set everywhere
-    assert set(testkit.MODULES) == set(_MEMLAB_FILES) | {"inputs.py"}
+    # one module set everywhere: the base modules and memlab.inputs
+    assert set(testkit.MODULES) == set(testkit.BASE_MODULES) | {"inputs.py"}
     monkeypatch.setattr(testkit, "MAX_REF_BLOBS", 1)
     (note,) = _stage(tmp_path / "kit2", store, [a, b])
     assert note.startswith("[qa:blobs] 1 referenced blob(s) not mounted")
@@ -189,3 +188,13 @@ def test_a_tree_gets_the_kit_only_when_its_tests_use_it(tmp_path):
     (uses / "env/phone/tests/test_x.py").write_text(f"SCREEN = {sha!r}\n")
     assert testkit.stage_for_tree(uses, tmp_path / "k3", **kw)
     assert (tmp_path / "k3/blobs" / sha).read_bytes() == b"recorded"
+
+
+def test_blob_refs_are_64_hex_tokens_in_first_seen_order():
+    import hashlib
+
+    a = hashlib.sha256(b"a").hexdigest()
+    b = hashlib.sha256(b"b").hexdigest()
+    src = f'BLOB = "{a}"\nOTHER = ["{b}", "{a}"]\nNOT = "{a}0"\n'.encode()
+    assert testkit.blob_refs([src, f'"{b}"'.encode()]) == [a, b]
+    assert testkit.blob_refs([b"deadbeef"]) == []

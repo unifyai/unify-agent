@@ -249,8 +249,6 @@ def test_trust_and_field_contradictions_are_gone(registry):
 def test_the_brief_describes_every_batch_map_key():
     write = lp.write_brief(
         limits=lp.limits_now(),
-        mutation_min=lp.Decimal("0.6"),
-        sample_k=8,
         lint_min=4,
         pytest_env={},
     )

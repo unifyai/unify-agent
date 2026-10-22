@@ -318,10 +318,6 @@ _HONESTY = (
     "a known check by special-casing its values."
 )
 
-_G5_WRITE = (
-    "a store pass never ends with fewer items, and every fixture a function's calls ran on is still used by a "
-    "function's calls"
-)
 #: The "when to use" section every stored function and note carries and the README every folder holds, as the writer
 #: and the curator are told them (:mod:`.when_to_use`: the gate checks the shape, never the words).
 WHEN_TO_USE_TEXT = (
@@ -352,11 +348,6 @@ def _fill(template: str, values: Mapping[str, object]) -> str:
     if left:
         raise ValueError(f"unfilled placeholders: {left}")
     return out
-
-
-def _pct(share: Decimal) -> str:
-    """A share as a whole-or-decimal percentage string: Decimal('0.6') -> '60'."""
-    return format((Decimal(share) * 100).normalize(), "f")
 
 
 def _env(env: Mapping[str, str]) -> str:
@@ -429,8 +420,6 @@ def _related_row_key() -> tuple[str, str]:
 def write_brief(
     *,
     limits: Limits,
-    mutation_min: Decimal,
-    sample_k: int,
     lint_min: int,
     pytest_env: Mapping[str, str],
     tool_names: frozenset[str] = frozenset(),
@@ -447,8 +436,6 @@ def write_brief(
         limits,
         _write_brief_in_code(
             limits=limits,
-            mutation_min=mutation_min,
-            sample_k=sample_k,
             lint_min=lint_min,
             pytest_env=pytest_env,
             tool_names=tool_names,
@@ -506,13 +493,11 @@ def write_brief_now(
 ) -> str:
     """The WRITE brief from the constants that enforce each number and the tools registered for the role (*helper*:
     a helper lane exists; *similar*: the pass has a similar-code index; *finish_capped*: the pass has a USD cap)."""
-    from . import code_lint, qa
+    from . import code_lint
 
     flags = tool_flags(helper, similar)
     return write_brief(
         limits=limits_now(cell_s, finish_capped=finish_capped),
-        mutation_min=qa.MUTATION_MIN,
-        sample_k=qa.SAMPLE_K,
         lint_min=code_lint.LINT_MIN,
         pytest_env=WRITER_PYTEST_ENV,
         tool_names=_tool_names("writer", flags),
@@ -552,42 +537,6 @@ _REPAIR_IN_CODE = (
     "The items that pass land, and the rest is kept as a draft for a later pass, with its failure.\n"
 )
 
-
-def _check_names_in_code(g5: str, g3_mutations: str) -> str:
-    """What each check the gate names means, G1 to G6, stated once; *g3_mutations* is how many small mutations the
-    tests must catch, as the role's brief states it."""
-    return (
-        "Its results and refusals name the check: G1, layout and provenance (only `memory/` and `notes/` change and "
-        "never the generated files, the manifest is well formed, every link names an item that exists, every "
-        "fixture came through `tools.fixture` unchanged, a parsed one re-made by its reader, every new or changed "
-        "function and note has its `When to use` section, and every folder the pass changes has its README.md); "
-        "G2, evidence (each "
-        "function's listed tests call it, and the calls they make of it return or raise `MemoryInputError`; what "
-        "else those calls show sets its evidence level: `unchecked` when a call that returns uses a value from a recorded "
-        "episode in any form but some evidence check does not hold, `reproduces-its-case` when its structured "
-        "arguments come from fixtures or through a stored reader, with those values replaced by unseen values of "
-        "the same type a call it accepted neither refuses nor raises, its docstring's `Example:` names one of its "
-        "tests, its typed covers are recorded evidence of their type, and the literal rule holds); G3, tests (plain "
-        "pytest, the tests pass on the candidate, a behaviour change has a test that fails on the parent, and no "
-        "test is lost or weakened without a reason; an exact assertion against a trusted value on a recorded "
-        "fixture for each changed function, no test that recomputes the function, and passing on the drawn "
-        "recorded inputs and catching "
-        + g3_mutations
-        + " also set the evidence level); G4, the index (it never refuses: it notes when the index has outgrown the view the working model "
-        "is shown); G5, items (" + g5 + "); G6, safety (no links, executables, submodules, git, pytest or "
-        "interpreter configuration files, bytecode or key-shaped strings).\n"
-    )
-
-
-_GATE_IN_CODE = (
-    "# The gate\n"
-    "After `tools.finish(summary)` a deterministic gate checks the candidate. An item that breaks a rule is refused "
-    "together with the items that import it, and the rest can land; a breach of a pass-wide rule (the layout, lost "
-    "tests, fewer items) refuses the round. "
-    + _check_names_in_code(
-        _G5_WRITE, "at least <<mutation_min_pct>>% of small mutations of each changed function"
-    )
-)
 
 _LIMITS_IN_CODE = (
     "# Limits\n"
@@ -742,8 +691,7 @@ _WRITE_RULES_IN_CODE = (
     + " For a function you add or change, run each new test and see it fail before your change, then pass.\n"
     "6. Each function has a recorded-inputs file, "
     "`memory/<package>/tests/data/<module>.<function>.inputs.jsonl`, with one line per recorded input made with "
-    "`tools.fixture(..., append=True)`, and a test parametrised over its lines. The gate appends <<sample_k>> more "
-    "recorded inputs of the same kind to a copy of that file, and the function's tests must pass on every one.\n"
+    "`tools.fixture(..., append=True)`, and a test parametrised over its lines.\n"
     "7. Code never holds a literal equal to a value that varies across its recorded inputs (text of "
     "<<lint_min>> or more characters, or a number with 2 or more significant digits): make it a parameter.\n"
     "8. Never store credentials, session tokens or the results of calls with side effects. "
@@ -862,12 +810,6 @@ def with_labels_only(body: str, recipe_rule: str) -> str:
     )
     body = _swap(
         body,
-        " The gate appends <<sample_k>> more recorded inputs of the same kind to a copy of that file, and the "
-        "function's tests must pass on every one.",
-        "",
-    )
-    body = _swap(
-        body,
         "  The gate refuses a new or changed function or note without the section or one of its four lines.",
         "  A new or changed function or note without the section or one of its four lines is labelled so.",
     )
@@ -876,7 +818,6 @@ def with_labels_only(body: str, recipe_rule: str) -> str:
         "The gate refuses the items of a folder the pass changes when the folder has no README.md, or an empty one.",
         "The items of a folder the pass changes are labelled when the folder has no README.md, or an empty one.",
     )
-    body = _swap(body, _GATE_IN_CODE, LABELS_ONLY_GATE)
     body = _swap(body, _REPAIR_IN_CODE, LABELS_ONLY_REPAIR)
     body = _swap(
         body,
@@ -953,8 +894,6 @@ def record_text() -> str:
 def _write_brief_in_code(
     *,
     limits: Limits,
-    mutation_min: Decimal,
-    sample_k: int,
     lint_min: int,
     pytest_env: Mapping[str, str],
     tool_names: frozenset[str],
@@ -1125,7 +1064,7 @@ def _write_brief_in_code(
         + "\n"
         + _WRITE_RULES_IN_CODE
         + "\n"
-        + _GATE_IN_CODE
+        + LABELS_ONLY_GATE
         + "\n"
         + _REPAIR_IN_CODE
         + "\n"
@@ -1145,8 +1084,6 @@ def _write_brief_in_code(
             "manifest_extra": manifest_extra,
             "item_extra": item_extra,
             "manifest_extra_docs": manifest_docs,
-            "mutation_min_pct": _pct(mutation_min),
-            "sample_k": sample_k,
             "lint_min": lint_min,
             "pytest_env": _env(pytest_env),
         },

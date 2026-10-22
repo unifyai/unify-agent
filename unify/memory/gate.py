@@ -51,8 +51,7 @@ the whole gate again before it lands.
 uncommitted tree, for the writer's ``check`` tool; it never decides or records a merge. A landed merge also freezes
 the candidate's input-shape snapshot (:mod:`.shape_rows`) for the catalogue; computing it never fails the gate.
 The gate reads the library layout only (``memory/<package>`` functions and ``notes/`` notes, :mod:`.layout`).
-Stage 5 (:mod:`.qa`) adds static checks of the tests (the test kit stays test-side; fixture size, replay fidelity
-and cuts of truncated recordings behind their switches), tagged ``[qa:<check>]``.
+Stage 5 (:mod:`.qa`) checks statically that the test kit stays test-side (``[qa:kit]``).
 """
 
 from __future__ import annotations
@@ -82,7 +81,7 @@ from .manifest import (
 from .gate_policy import NOT_RUN_GATE
 from .shape_rows import shapes_at, snapshot_rows
 from .item_states import UNCHECKED as _LOWEST_LEVEL
-from .qa import QAChecks, QAConfig
+from .qa import QAChecks
 from .redact import KEY_SHAPED
 from .snapshot import (
     listing,
@@ -371,24 +370,19 @@ class Gate:
         blobs: BlobStore,
         *,
         action_lookup: Callable[[str, int], Action | None] | None = None,
-        qa: QAConfig | None = None,
         library_mode: LibraryConfig,
         segments_dir: Path | str | None = None,
     ) -> None:
         """*library_mode* is the library's checks' configuration (:class:`.library_checks.LibraryConfig`): G3's not-run
         labels and per-item reduction are scoped by the import graph, and the library gate checks
-        (:mod:`.library_checks`) and stage 5's static checks run. Every finding but the hard ones is a label on its
-        item, and the gate runs no code (:mod:`.gate_policy`, rev 2.1). *qa* is the stage-5 test checks'
-        configuration (:class:`.qa.QAConfig`). *segments_dir* (``UNIFY_MEMORY=in_episode``):
+        (:mod:`.library_checks`) and stage 5's kit check run. Every finding but the hard ones is a label on its item,
+        and the gate runs no code (:mod:`.gate_policy`, rev 2.1). *segments_dir* (``UNIFY_MEMORY=in_episode``):
         the state dir whose segment records (``<episode>.s<n>``) an item may cite as its source while their episode
         is still open; None: only recorded episodes.
         """
         self.mem, self.ev, self.blobs = memory, evidence, blobs
         # Fail closed: without an episodes reader no covered call can be confirmed.
         self.lookup = action_lookup or (lambda eid, i: None)
-        from .qa import library_config
-
-        self.qa = library_config(qa if qa is not None else QAConfig())
         self.library_mode = library_mode
         self.segments_dir = Path(segments_dir) if segments_dir is not None else None
 
@@ -476,10 +470,7 @@ class Gate:
             self._g1(run)
             self._g6(run)
             self._library_mode(run).static()
-            qa = QAChecks(self, run)
-            qa.kit()  # library code never uses the test kit (static)
-            # stage 5's static checks: fixture size, replay fidelity, cuts (no test runs)
-            qa.static(self.lookup)
+            QAChecks(self, run).kit()  # library code never uses the test kit (static)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         return list(res.reasons)
@@ -729,10 +720,8 @@ class Gate:
                 self._g1(run)
                 v.g1()
                 v.g2()
-                # stage 5's static checks (the test kit stays test-side; fixture size, replay fidelity, cuts)
-                qa = QAChecks(self, run)
-                qa.kit()
-                qa.static(self.lookup)
+                # stage 5: the test kit stays test-side (static)
+                QAChecks(self, run).kit()
                 self._g3(run)
                 v.g3()
                 v.g4()

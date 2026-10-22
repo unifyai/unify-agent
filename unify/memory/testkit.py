@@ -1,18 +1,13 @@
 """The library test kit (library-mode stage 5): one versioned ``memlab`` wherever a library's tests run.
 
 A stored library's tests may import ``memlab`` (``memlab.replay.env_from``/``RecordedEnv``, the harness's
-exact-call replay, so tests never fake the environment themselves; ``memlab.inputs``; the analysis tools) and read recorded payloads by blob id (``memlab.inputs.blob``). Whether they can must never depend on a
-gate switch: a library merged while a stage-5 switch was on must stay testable when every switch is off, in
-another arm, in the writer's box and in the actor's export. So the kit is a property of the library, not of the
-switches. :func:`stage` writes the same kit (the module set :data:`MODULES` at :data:`KIT_VERSION`, the pin
-plugin, the referenced blobs) under a root directory, and every place a library's tests can run gets it:
+exact-call replay, so tests never fake the environment themselves; ``memlab.inputs``; the analysis tools) and read
+recorded payloads by blob id (``memlab.inputs.blob``). :func:`stage` writes the same kit (the module set
+:data:`MODULES` at :data:`KIT_VERSION`, the pin plugin, the referenced blobs) under a root directory, and every place
+a library's tests can run gets it (the gate runs none, rev 2.1):
 
-* **the gate**: ``/inputs`` in every pytest run of a check when a stage-5 switch is on **or** a test-side file of
-  the parent or the candidate uses the kit (:func:`uses_kit`: it imports ``memlab`` or the pin plugin, or names
-  a recorded blob id). A library whose tests never use it is checked with exactly the calls of the screen
-  build;
-* **the writer's box**: ``/inputs`` (beside the pass's episodes) under the same condition, the parent library standing
-  in for the candidate;
+* **the writer's box**: ``/inputs`` (beside the pass's episodes), always, with the blobs the parent library's tests
+  name;
 * **the actor's export**: ``<export>/.memlab``, put on the import path after the export, when the exported
   library's tests use the kit (:func:`stage_for_tree`).
 
@@ -30,6 +25,7 @@ this module runs on the host.
 from __future__ import annotations
 
 import ast
+import re
 import shutil
 from pathlib import Path
 from typing import Callable, Iterable
@@ -345,6 +341,19 @@ def unresolved(source: bytes) -> list[tuple[int, str]]:
     return out
 
 
+#: A 64-hex token: a candidate blob id a test-side file names.
+_BLOB_TOKEN = re.compile(rb"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")
+
+
+def blob_refs(sources: Iterable[bytes]) -> list[str]:
+    """The distinct 64-hex tokens in *sources*, in first-seen order (candidate blob ids)."""
+    seen: dict[str, None] = {}
+    for data in sources:
+        for m in _BLOB_TOKEN.finditer(data):
+            seen.setdefault(m.group().decode(), None)
+    return list(seen)
+
+
 def stage_for_tree(
     tree: Path,
     root: Path,
@@ -355,8 +364,6 @@ def stage_for_tree(
     force: bool = False,
 ) -> bool:
     """Stage the kit under *root* when the library checked out at *tree* uses it (or *force*); whether it did."""
-    from .qa_static import blob_refs
-
     sources = list(read_sources(tree, tree_paths(tree)).values())
     refs = blob_refs(sources)
     if not (force or uses_kit(sources, has_blob, refs)):
