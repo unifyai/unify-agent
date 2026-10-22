@@ -6,8 +6,9 @@ from its own records each time the item records are written (:func:`build`):
 * ``form``: ``function``, ``note`` or ``checklist`` (a note the writer stated is one);
 * ``effects``: what the writer declared its calls do to the environment (``none``, ``reads``, ``writes`` or
   ``unknown``; ``declared`` says whether it declared one);
-* ``covers``: the episodes it is meant to cover, as the writer stated them (``stated_by``: ``writer``), else the
-  episodes it was built from (``stated_by``: ``harness``);
+* ``covers``: the episodes it was built from, its evidence (``stated_by``: ``harness``; rev 2.1: the writer never
+  states episodes as an item's scope);
+* ``situation``: the kind of situation it is for, as the writer stated it (None when it stated none);
 * ``inputs_vs_constants``: what the writer said varies and what it holds fixed, each constant with its source;
 * ``tests``: the writer's stated tests of its current version (:mod:`.writer_tests`), by outcome;
 * ``uses``: its uses since its current version, clean, failed or neutral (:func:`.trust.judge`), and by regime;
@@ -128,7 +129,6 @@ def build(
         counts[verdict] = counts.get(verdict, 0) + 1
         counts["by_regime"][u.regime] = counts["by_regime"].get(u.regime, 0) + 1
     prov = record.get("provenance") if isinstance(record.get("provenance"), Mapping) else {}
-    covers = stated.get("covers_episodes")
     failure_rows = [dict(f) for f in failures]
     return {
         "v": VERSION,
@@ -137,10 +137,10 @@ def build(
             "declares": declared or ("none" if kind != "function" else "unknown"),
             "declared": declared is not None,
         },
-        "covers": {
-            "episodes": list(covers) if isinstance(covers, list) else list(prov.get("episodes") or []),
-            "stated_by": "writer" if isinstance(covers, list) else "harness",
-        },
+        # the episodes it comes from are its evidence (the harness's provenance), never a scope the writer states;
+        # the writer states the kind of situation it is for (rev 2.1)
+        "covers": {"episodes": list(prov.get("episodes") or []), "stated_by": "harness"},
+        "situation": stated.get("situation") if isinstance(stated.get("situation"), str) else None,
         "inputs_vs_constants": {
             "inputs": list(stated.get("inputs") or []),
             "constants": list(stated.get("constants") or []),

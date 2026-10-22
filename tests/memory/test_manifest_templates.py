@@ -91,7 +91,7 @@ ITEM_VALUES = {
 }
 #: The label fields a template shows, with values the gate's parser (labels=True) takes, and what it keeps of each.
 LABEL_VALUES = {
-    "covers_episodes": ["e1", "e2"],
+    "situation": "reading a user id from an account response",
     "inputs": ["response.user_id"],
     "constants": [{"value": "the user_id key", "source": "e1/action:0"}],
     "effects": "reads",

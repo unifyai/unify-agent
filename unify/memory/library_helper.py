@@ -685,11 +685,12 @@ def _label_lines(label: Any, served_evidence: bool) -> list[str]:
         f"Form: {_str(label.get('form'), 'function')}; effects: {_str(effects.get('declares'), 'unknown')}"
         + ("" if effects.get("declared") else " (not declared)"),
     ]
+    if isinstance(label.get("situation"), str) and label["situation"]:
+        out.append(f"For: {label['situation']}")
     covers = label.get("covers") if isinstance(label.get("covers"), dict) else {}
     episodes = [e for e in covers.get("episodes") or [] if isinstance(e, str)]
     if episodes:
-        by = "as its writer stated" if covers.get("stated_by") == "writer" else "the episodes it was built from"
-        out.append(f"Covers episodes ({by}): " + ", ".join(e[:16] for e in episodes))
+        out.append("Built from episodes (its evidence): " + ", ".join(e[:16] for e in episodes))
     ivc = label.get("inputs_vs_constants") if isinstance(label.get("inputs_vs_constants"), dict) else {}
     inputs = [str(i) for i in ivc.get("inputs") or []]
     constants = [

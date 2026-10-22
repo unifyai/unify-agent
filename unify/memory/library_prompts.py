@@ -803,14 +803,15 @@ ATTENTION_TEXT = (
 #: What an item is, (the brief's What to write).
 IMPURE_TEXT = (
     "- An item is written for a kind of situation, with what varies as its inputs. It may take the current state "
-    "and act through the environment's tools. When you land or change one, say which episodes it is meant to cover "
-    "and which of its values are inputs and which are constants, with the source of each constant. Notes and "
-    "checklists are items too.\n"
+    "and act through the environment's tools. When you land or change one, say the kind of situation it is for, "
+    "and which of its values are inputs and which are constants, with the source of each constant. The episodes "
+    "it comes from are its evidence, not its scope. Notes and checklists are items too.\n"
 )
 #: The manifest fields of an item's stated provenance.
 IMPURE_MANIFEST_DOCS = (
-    "  - Every item may state, and every item you land or change states: `covers_episodes`, the episodes it is meant "
-    "to cover; `inputs`, what varies (for example `state.data[0].lines`); `constants`, each value it holds fixed "
+    "  - Every item may state, and every item you land or change states: `situation`, the kind of situation it is "
+    "for, in general words; `inputs`, what varies (for example `state.data[0].lines`); `constants`, each value it "
+    "holds fixed "
     "with its source (`{\"value\": \"tax rate 0.2\", \"source\": \"<episode>/action:3\"}`); and for a function "
     "`effects`, `none`, `reads`, `writes` or `unknown` (what its calls do to the environment). A note that is a "
     "checklist says `\"form\": \"checklist\"`. They are kept on the item's label beside its evidence.\n"
@@ -1169,7 +1170,7 @@ def _write_brief_in_code(
         "you wrote has passed the gate or is kept as a draft with its failure. Then call `tools.finish(summary)`. "
         "Writing nothing is a valid decision when your summary says why.\n"
     )
-    item_extra += ', "effects": "<none|reads|writes|unknown>", "covers_episodes": [...], "inputs": [...], "constants": [...]'
+    item_extra += ', "effects": "<none|reads|writes|unknown>", "situation": "...", "inputs": [...], "constants": [...]'
     manifest_docs += IMPURE_MANIFEST_DOCS
     return _fill(
         with_switches(body),

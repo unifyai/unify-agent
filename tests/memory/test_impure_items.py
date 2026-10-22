@@ -69,7 +69,7 @@ def test_writes_the_report_once():
 '''
 STATED = {
     "effects": "writes",
-    "covers_episodes": ["e1"],
+    "situation": "writing a total to a report file",
     "inputs": ["state.data[0].rows"],
     "constants": [{"value": "out/report.txt", "source": "e1/action:0"}],
 }
@@ -192,13 +192,15 @@ def test_a_side_effect_only_item_lands_with_effects_writes_on_its_label(
     assert res.passed, res.reasons
     assert res.items_merged == [ITEM] and res.merged
     v = res.verification[ITEM]
-    assert v["stated"]["effects"] == "writes" and v["stated"]["covers_episodes"] == ["e1"]
+    assert v["stated"]["effects"] == "writes" and v["stated"]["situation"] == "writing a total to a report file"
     # rev 2 runs no replay test (the writer's tests never replay a recorded call): the label states the effects the
     # writer declared, with none seen in a test
     label = item_label.build(kind="function", record={"status": "on-trial", "provenance": {"episodes": ["e1"]}},
                              verification=v, tests=[])  # fmt: skip
     assert label["effects"]["declares"] == "writes" and label["effects"]["declared"] is True
-    assert label["covers"] == {"episodes": ["e1"], "stated_by": "writer"}
+    # rev 2.1: the episodes are its evidence (the harness's provenance); the writer states the situation it is for
+    assert label["covers"] == {"episodes": ["e1"], "stated_by": "harness"}
+    assert label["situation"] == "writing a total to a report file"
     assert label["status_basis"] == "no_outcome_signals"
 
 

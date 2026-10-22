@@ -548,10 +548,11 @@ LIBRARY_ITEM_FIELDS: tuple[str, ...] = (
     "recipe",
     "cases",
 )
-#: What the writer may state about an item (its label keeps it): the episodes it
-#: is meant to cover, what varies (its inputs), the values it holds fixed with their sources (its constants), a
-#: function's effects on the environment, and a note's form (a checklist). Refused as unknown fields otherwise.
-LABEL_ITEM_FIELDS: tuple[str, ...] = ("covers_episodes", "inputs", "constants", "effects", "form")
+#: What the writer may state about an item (its label keeps it): the kind of situation it is for (in general words;
+#: rev 2.1: never the episodes it is meant to cover, which are its evidence), what varies (its inputs), the values it
+#: holds fixed with their sources (its constants), a function's effects on the environment, and a note's form (a
+#: checklist). Refused as unknown fields otherwise.
+LABEL_ITEM_FIELDS: tuple[str, ...] = ("situation", "inputs", "constants", "effects", "form")
 #: A function's declared effects.
 DECLARED_EFFECTS: tuple[str, ...] = ("none", "reads", "writes", "unknown")
 #: A note's form.
@@ -562,8 +563,14 @@ _STATED_TEXT_MAX = 400
 def _stated(raw: dict, item: str, kind: str) -> dict:
     """The label fields of a manifest item (:data:`LABEL_ITEM_FIELDS`), checked; ``{}`` when it states none."""
     out: dict = {}
-    if "covers_episodes" in raw:
-        out["covers_episodes"] = _str_list(raw["covers_episodes"], f"{item}: covers_episodes")
+    if "situation" in raw:
+        situation = raw["situation"]
+        if not isinstance(situation, str) or not situation.strip() or len(situation) > _STATED_TEXT_MAX:
+            raise ManifestError(
+                f"{item}: situation is the kind of situation the item is for, in at most {_STATED_TEXT_MAX} "
+                f"characters, given {_key_repr(situation)}",
+            )
+        out["situation"] = " ".join(situation.split())
     if "inputs" in raw:
         got = _str_list(raw["inputs"], f"{item}: inputs")
         if any(len(x) > _STATED_TEXT_MAX for x in got):
