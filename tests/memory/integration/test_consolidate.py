@@ -15,7 +15,6 @@ import pytest
 
 from unify.memory.library_checks import LibraryConfig
 
-from unify.memory.admission import cover_problem
 from unify.memory.episodes import Action, CostRow, EpisodeWriter
 from unify.memory.integration import consolidate
 from unify.memory.integration.consolidate import EpisodeLookup, open_stores
@@ -247,40 +246,6 @@ def test_lookup_returns_recorded_actions_of_any_kind(tmp_path):
         "user_id"
     ] = "changed"  # a copy: the cache is untouched
     assert look.action("e1", 0) == tool
-
-
-def test_a_worktree_cover_is_admitted_by_the_g2_rule_through_the_lookup(tmp_path):
-    stores = _stores(tmp_path)
-    blob = stores.blobs.put(CSV)
-    wt = Action(
-        0,
-        "worktree:workspace",
-        "read",
-        ["finance/ap/invoices-2026-10.csv"],
-        {},
-        {
-            "blob_before": blob,
-            "blob_after": blob,
-            "size": len(CSV),
-            "shape": {"format": "csv"},
-        },
-        "ok",
-        "read",
-        kind="worktree",
-    )
-    _record(
-        stores,
-        "o1",
-        actions=[wt, Action(0, "venmo", "me", [], {}, {"u": 1}, "ok")],
-    )
-    look = EpisodeLookup(stores)
-    has = stores.blobs.has
-    assert cover_problem(look.action("o1", 0), "worktree_workspace", has) is None
-    assert cover_problem(look.action("o1", 1), "worktree_workspace", has) is not None
-    assert (
-        cover_problem(look.action("o1", 9), "worktree_workspace", has)
-        == "not a recorded action"
-    )
 
 
 def test_open_stores_is_idempotent(tmp_path):

@@ -213,29 +213,6 @@ def r2(world):
 
 # --- fix round 3: plausible consolidator mistakes ---------------------------------------
 
-LOGIN_KEEP = (
-    '\n\ndef login(apis, fast=False):\n    """Log in.\n\n    Effect: read\n    Input: env\n    """\n'
-    '    return "FAST" if fast else _tok(apis)\n'
-)
-
-
-@pytest.mark.parametrize(
-    "extra,pinned",
-    [
-        (b'__all__ = HOOK = ["f"]\n', True),
-        (b'__all__: list = __import__("os").getcwd() and ["f"]\n', True),
-        (b'__all__ += [print("side effect") or "f"]\n', True),
-        (b'__all__ = ("f", "g")\n', False),
-        (b'__all__: list[str] = ["f"]\n', False),
-    ],
-)
-def test_r3_only_a_literal_all_is_exempt_from_the_skeleton(extra, pinned):
-    from unify.memory.snapshot import module_skeleton
-
-    a = b'__all__ = ["f"]\n\ndef f(apis):\n    """x\n\n    Effect: read\n    Input: env\n    """\n    return 1\n'
-    assert (module_skeleton(a) != module_skeleton(a + extra)) is pinned
-
-
 # --- fix round 4: liveness when a channel was already red -----------------------------------
 
 SLACK_POST = '__all__ = ["post"]\n' + _fn("post", "return 3")

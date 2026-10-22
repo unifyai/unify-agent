@@ -266,3 +266,12 @@ def _assembled():
     return line, entry
 
 
+
+
+def test_a_work_tree_actions_blob_is_a_writes_after_blob_else_its_before_blob():
+    write = Action(3, "worktree:workspace", "write", ["a"], {}, {"blob_before": "b0", "blob_after": "b1"}, "ok",
+                   kind="worktree")  # fmt: skip
+    read = Action(4, "worktree:workspace", "read", ["a"], {}, {"blob_before": "b0", "blob_after": "b0"}, "ok",
+                  kind="worktree")  # fmt: skip
+    assert fx.blob_sha(write) == "b1" and fx.blob_sha(read) == "b0"
+    assert fx.blob_sha(Action(0, "shop", "search", [], {}, {"items": []}, "ok")) is None

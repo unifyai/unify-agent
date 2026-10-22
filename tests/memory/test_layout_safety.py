@@ -1,25 +1,19 @@
 """What the import system could load from the library is refused, in every mode.
 
-The gate refuses before extraction what :func:`unify.memory.manifest.unsafe_path` names (bytecode,
-native code and ``__pycache__`` entries anywhere, ``.pth`` files and start-up hooks under any suffix, and
-every root entry but ``env/``, ``workflows/`` and the test kit), beside the older layout and forbidden-file
-refusals; :func:`unify.memory.catalogue.reserved` names the root entries that could shadow ``import env``
-or ``import memory``. The export never writes such a file from an older commit. The gate-level cases are in
-``test_gate_layout.py``.
+The gate refuses before extraction what the library's layout has no place for (:func:`unify.memory.layout.misplaced`:
+any root entry but ``memory/`` and ``notes/``, and every file the harness generates), forbidden files
+(:func:`unify.memory.manifest.forbidden`) and the G6 classes of :func:`unify.memory.manifest.unsafe_path` (bytecode,
+native code and ``__pycache__`` entries anywhere, ``.pth`` files and start-up hooks under any suffix). The export
+never writes such a file from an older commit.
 
-These refusals are a declared safety fix applied whatever the library-mode switches say, so they must refuse nothing
-a v2 library holds: :func:`test_no_path_of_a_v2_library_fixture_is_refused` checks every library path in the
-v2 suite's fixtures (and the paths the v2 design records name), and
-:func:`test_no_path_of_a_recorded_library_is_refused` checks real libraries when
-``MEMORY_LIBRARY_REPOS`` names their memory repositories (colon-separated bare repos, every commit on
-``main``). Pure functions only; the gate-level and export tests live in ``test_gate_layout.py``, ``test_gate.py``
-and ``integration/test_checkout.py``.
+:func:`test_no_path_of_a_recorded_library_is_refused` checks real libraries when ``MEMORY_LIBRARY_REPOS`` names their
+memory repositories (colon-separated bare repos, every commit on ``main``). Pure functions only; the gate-level and
+export tests live in ``test_gate_library_safety.py``, ``test_gate_layout.py`` and ``integration/test_checkout.py``.
 """
 
-import importlib
+import importlib.metadata
 import os
 import random
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -27,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from unify.memory import manifest as m
-from unify.memory.catalogue import reserved
+from unify.memory.layout import misplaced
 
 # The original probes, plus the shapes of each kind of importable artefact.
 REFUSED = [
@@ -62,9 +56,9 @@ REFUSED = [
     "workflows/__pycache__/x.pyc",
 ]
 
-# Root entries the gate also names reserved: the generated catalogue and what `import env` or
-# `import memory` could resolve to.
-RESERVED = (
+# Root entries that could shadow ``import env`` or ``import memory``, or that the harness generates: the layout has
+# no place for any of them.
+SHADOWING = (
     "memory.abi3.so",
     "memory.cpython-312-x86_64-linux-gnu.so",
     "env.py",
@@ -73,90 +67,22 @@ RESERVED = (
     ".memory/catalog.json",
 )
 
-# Paths the v2 design records name for real screen libraries (the design notes in the research
-# repository), beside the layout's own kinds.
-RECORDED_V2_PATHS = [
-    "env/env/__init__.py",
-    "env/env/tests/test_demo_state.py",
-    "env/env/tests/demos.json",
-    "env/worktree/__init__.py",
-    "env/uv/__init__.py",
-    "env/worktree_workspace/tests/data/ledger.csv",
-    "env/dialogue_user/NOTES.md",
-    "workflows/close-the-month.md",
-    m.TESTKIT,
-]
-
-FIXTURE_MODULES = (
-    "tests.memory.test_gate",
-    "tests.memory.test_writer_pass",
-    "tests.memory.test_kinds_gate",
-    "tests.memory.test_memory_repo",
-    "tests.memory.integration.test_checkout",
+# Artefacts at places the library's layout admits: unsafe_path's G6 classes refuse them there.
+LIBRARY_ARTEFACTS = (
+    "memory/grid/tests/data/rows.pyc",
+    "memory/grid/tests/data/rows.pyo",
+    "memory/grid/tests/data/fast.so",
+    "memory/grid/tests/data/helper.pyd",
+    "memory/grid/tests/data/sitecustomize.txt",
+    "memory/grid/tests/data/__pycache__/x.cpython-312.pyc",
 )
-_LIBRARY_PATH = re.compile(r"^(?:env|workflows)/[^\s:#]+\Z")
-
-
-def _v2_layout_allowed(path: str) -> bool:
-    """9deefbfd1's ``layout_allowed``, kept here to name the paths a v2 library could hold."""
-    match = m.TESTS_DIR.match(path)
-    if match is not None:
-        if any(m._stem(p) in m._RESERVED_STEMS for p in match.group("rest").split("/")):
-            return False
-        if m.TEST_PATH.match(path):
-            return True
-        if path.endswith(".py"):
-            return m.support_allowed(path)
-        return True
-    if path.endswith(".py"):
-        return bool(m.MODULE_PATH.match(path)) or path == m.TESTKIT
-    return True
-
-
-def _declarable(path: str) -> bool:
-    """A path a v2 manifest could declare: under env/ or workflows/, or the test kit, and v2-admitted."""
-    name = path.rsplit("/", 1)[-1]
-    return (
-        (path == m.TESTKIT or bool(_LIBRARY_PATH.match(path)))
-        and _v2_layout_allowed(path)
-        and name not in m.FORBIDDEN_NAMES
-        and not name.endswith(".pth")
-    )
-
-
-def _strings(value, out: set[str], depth: int = 0) -> None:
-    if depth > 6:
-        return
-    if isinstance(value, str):
-        out.add(value)
-    elif isinstance(value, dict):
-        for k, v in value.items():
-            _strings(k, out, depth + 1)
-            _strings(v, out, depth + 1)
-    elif isinstance(value, (list, tuple, set, frozenset)):
-        for v in value:
-            _strings(v, out, depth + 1)
-
-
-def _fixture_paths() -> list[str]:
-    found: set[str] = set()
-    for name in FIXTURE_MODULES:
-        module = importlib.import_module(name)
-        for key, value in vars(module).items():
-            if not key.startswith("__") and isinstance(value, (dict, list, tuple)):
-                _strings(value, found)
-    return sorted(p for p in found if p == m.TESTKIT or _LIBRARY_PATH.match(p))
 
 
 def _refused_early(path: str) -> bool:
-    """Refused by the gate before anything is extracted (``Gate._early``): a forbidden file (G6), outside
-    the layout, :func:`~unify.memory.manifest.unsafe_path`, or a reserved path."""
-    return (
-        not m.layout_allowed(path)
-        or m.forbidden(path)
-        or m.unsafe_path(path) is not None
-        or reserved(path)
-    )
+    """Refused by the gate before anything is extracted (``Gate._early``): a forbidden file, a path the layout has no
+    place for, or a G6 class of :func:`~unify.memory.manifest.unsafe_path`."""
+    unsafe = m.unsafe_path(path)
+    return m.forbidden(path) or misplaced(path) is not None or (unsafe is not None and unsafe[0] == "G6")
 
 
 @pytest.mark.parametrize("path", REFUSED)
@@ -164,32 +90,21 @@ def test_importable_artefacts_and_foreign_root_entries_are_refused(path):
     assert _refused_early(path), path
 
 
-@pytest.mark.parametrize("path", RESERVED)
-def test_the_gate_names_env_and_memory_root_entries_reserved(path):
-    assert reserved(path) and _refused_early(path), path
+@pytest.mark.parametrize("path", SHADOWING)
+def test_root_entries_that_could_shadow_env_or_memory_have_no_place_in_the_layout(path):
+    assert misplaced(path) is not None and _refused_early(path), path
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        p
-        for p in REFUSED
-        if p not in RESERVED and m.layout_allowed(p) and not m.forbidden(p)
-    ],
-)
-def test_unsafe_path_names_every_other_artefact(path):
-    """What the older layout and forbidden checks admit, unsafe_path refuses; reserved is only for names."""
-    assert m.unsafe_path(path) is not None and not reserved(path), path
+@pytest.mark.parametrize("path", LIBRARY_ARTEFACTS)
+def test_unsafe_path_names_every_artefact_the_layout_admits(path):
+    """What the layout and the forbidden names admit, unsafe_path refuses as G6."""
+    assert misplaced(path) is None and not m.forbidden(path), path
+    got = m.unsafe_path(path)
+    assert got is not None and got[0] == "G6" and _refused_early(path), path
 
 
 def _admitted(path: str) -> bool:
     return not _refused_early(path)
-
-
-def test_no_path_of_a_v2_library_fixture_is_refused():
-    paths = [p for p in _fixture_paths() + RECORDED_V2_PATHS if _declarable(p)]
-    assert len(paths) >= 25, paths  # the fixtures were found
-    assert [p for p in paths if not _admitted(p)] == []
 
 
 @pytest.mark.skipif(
@@ -243,9 +158,10 @@ def _git(repo: str, *args: str) -> bytes:
 
 def test_the_allowed_root_entries_shadow_no_module():
     """``env`` is the library itself; ``workflows`` and the test kit must not be importable names."""
-    names = m.shadowed_module_names() | set(sys.stdlib_module_names) | m.root_shadowed()
+    names = set(sys.stdlib_module_names) | set(sys.builtin_module_names) | m.root_shadowed()
+    names |= set(importlib.metadata.packages_distributions())
     assert "workflows" not in names
-    assert m.TESTKIT.removesuffix(".py") not in names - m._RESERVED_STEMS
+    assert m.TESTKIT.removesuffix(".py") not in names
 
 
 def test_random_root_names_and_suffixes_are_refused():
@@ -305,9 +221,8 @@ def test_random_root_names_and_suffixes_are_refused():
     for _ in range(600):
         path = rng.choice(stems) + rng.choice(suffixes)
         if path.split("/", 1)[0] in m.ROOT_DIRS and "/" in path:
-            # the library's own directories: only artefacts are newly refused there, and the layout is v2's
+            # the library's own directories: only artefacts are newly refused there
             assert (m.unsafe_path(path) is not None) == _artefact(path), path
-            assert m.layout_allowed(path) == _v2_layout_allowed(path), path
             continue
         assert _refused_early(path), path
     for _ in range(400):

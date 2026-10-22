@@ -55,8 +55,7 @@ from pathlib import Path
 from . import safe_paths as _safe
 from typing import Any, Callable
 
-from .episodes import Episode
-from .cover_forms import blob_sha as _blob_sha
+from .episodes import Action, Episode
 
 DATA_PATH = re.compile(
     r"^memory/(?:[a-z_][a-z0-9_]*/)+tests/data/"
@@ -77,6 +76,14 @@ _INDEX = re.compile(r"\d{1,9}\Z")
 class FixtureError(ValueError):
     """A fixture that cannot be made or verified (the reason names ids and offsets only)."""
 
+
+
+def blob_sha(a: Action) -> str | None:
+    """The recorded file a work-tree action shows: a write's after-blob, else its before-blob."""
+    r = a.response if isinstance(a.response, dict) else {}
+    sha = r.get("blob_after") if a.method == "write" else r.get("blob_before")
+    sha = sha or r.get("blob_before") or r.get("blob_after")
+    return sha if isinstance(sha, str) else None
 
 def module_path(item: str) -> str:
     """``memory.office.payroll:export`` -> ``memory/office/payroll.py``."""
@@ -114,7 +121,7 @@ def sources_of(ep: Episode) -> list[str]:
     out = [f"request:{j}" for j in range(len(ep.request))]
     for i, a in enumerate(ep.actions):
         has = (
-            _blob_sha(a) is not None if a.kind == "worktree" else a.response is not None
+            blob_sha(a) is not None if a.kind == "worktree" else a.response is not None
         )
         if has:
             out.append(str(i))
@@ -170,7 +177,7 @@ def source_bytes(ep: Episode, source: object, blob: Callable[[str], bytes]) -> b
         return c.output.encode("utf-8")
     a = ep.actions[_index(s, len(ep.actions), "action")]
     if a.kind == "worktree":
-        sha = _blob_sha(a)
+        sha = blob_sha(a)
         if sha is None:
             raise FixtureError(f"action {s} of {ep.episode_id} recorded no file")
         try:

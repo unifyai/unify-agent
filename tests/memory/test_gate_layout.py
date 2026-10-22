@@ -1,12 +1,12 @@
 """Compiled code, start-up hooks and stray root entries are refused before anything is extracted or run.
 
-On 9deefbfd1 ``layout_allowed`` admitted every non-``.py`` path (``manifest.py:297``, a
+On 9deefbfd1 the gate's layout check admitted every non-``.py`` path (``manifest.py:297``, a
 non-``.py`` path under a tests directory, and ``manifest.py:300``, any other non-``.py`` path) and
 ``forbidden`` (``manifest.py:255``) names only ``sitecustomize.py``/``usercustomize.py`` and ``*.pth``. So
 ``Gate._early`` (``gate.py:624``) passed such a candidate, ``materialise`` extracted it and G3 ran pytest with
 ``/memory`` holding, say, a sourceless ``env/__init__.pyc`` (run on every ``import env.*``), a root
 ``sitecustomize.pyc`` (run at interpreter start) or a root ``pytest.pyc`` (run instead of pytest). A file
-under ``env/<channel>/tests/`` could even be declared in ``support`` (``support_allowed``,
+under ``env/<channel>/tests/`` could even be declared in ``support`` (the support check,
 ``manifest.py:281``, admits any name with a non-``.py`` suffix, as no module name holds a dot) and merged. Each test below states which 9deefbfd1 check admitted its path, by asserting that check (unchanged
 here), and shows that the gate now refuses it with no test run at all.
 

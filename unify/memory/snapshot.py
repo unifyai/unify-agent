@@ -2,10 +2,7 @@
 
 :func:`listing` returns the exact committed file set with modes; :func:`materialise` writes exactly those
 blobs and checks nothing else appeared; :func:`item_bodies` keys every memory item by id with the text that
-defines it; :func:`module_skeleton`, :func:`notes_preamble` and :func:`without_listed` give the parts of a
-file that belong to no item, so the gate can pin them; :func:`env_references` reads which library names a
-test file imports; :func:`code_size` measures a channel
-module's code and :func:`public_bindings` lists the public names it binds.
+defines it; :func:`public_bindings` lists the public names a module binds.
 """
 
 from __future__ import annotations
@@ -194,124 +191,6 @@ def item_bodies(tree: Path) -> dict[str, tuple[str, str, bool]]:
     return out
 
 
-def _is_public_def(node: ast.stmt) -> bool:
-    return isinstance(
-        node,
-        (ast.FunctionDef, ast.AsyncFunctionDef),
-    ) and not node.name.startswith("_")
-
-
-def _str_sequence(value: ast.expr | None) -> bool:
-    return isinstance(value, (ast.List, ast.Tuple)) and all(
-        isinstance(e, ast.Constant) and isinstance(e.value, str) for e in value.elts
-    )
-
-
-def _is_all(node: ast.stmt) -> bool:
-    """Only ``__all__ = [...]`` (one target) or ``__all__: T = [...]`` with literal strings is exempt."""
-    if isinstance(node, ast.Assign):
-        return (
-            len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id == "__all__"
-            and _str_sequence(node.value)
-        )
-    if isinstance(node, ast.AnnAssign):
-        return (
-            isinstance(node.target, ast.Name)
-            and node.target.id == "__all__"
-            and _str_sequence(node.value)
-        )
-    return False
-
-
-def duplicate_public_defs(source: bytes) -> list[str]:
-    """Public top-level function names defined more than once (an earlier one is dead code)."""
-    try:
-        module = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return []
-    seen: set[str] = set()
-    dups: set[str] = set()
-    for node in module.body:
-        if _is_public_def(node):
-            (dups if node.name in seen else seen).add(node.name)
-    return sorted(dups)
-
-
-def module_skeleton(source: bytes | None) -> str:
-    """A module minus its public functions and ``__all__``: docstring, imports, helpers, module-level code.
-
-    A missing module has the empty skeleton; one that does not parse is its own bytes.
-    """
-    if source is None:
-        return ast.dump(ast.Module(body=[], type_ignores=[]))
-    try:
-        module = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return "unparsable:" + source.decode("utf-8", "replace")
-    module.body = [n for n in module.body if not (_is_public_def(n) or _is_all(n))]
-    return ast.dump(module)
-
-
-def notes_preamble(text: str | None) -> str:
-    """The text of a notes file before its first ``## `` section."""
-    out: list[str] = []
-    for line in (text or "").splitlines():
-        if line.startswith("## "):
-            break
-        out.append(line)
-    return "\n".join(out)
-
-
-def without_listed(data: bytes) -> bytes:
-    """A workflow note without the ``listed:`` line of its front matter."""
-    if not data.startswith(b"---\n"):
-        return data
-    end = data.find(b"\n---", 4)
-    if end < 0:
-        return data
-    front = [
-        ln for ln in data[4:end].split(b"\n") if not ln.strip().startswith(b"listed:")
-    ]
-    return b"---\n" + b"\n".join(front) + data[end:]
-
-
-def env_references(source: bytes) -> tuple[set[str], set[str], bool] | None:
-    """What a test file imports from the library: item ids, whole channels, and whether all of ``env``.
-
-    None when the file does not parse.
-    """
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return None
-    names: set[str] = set()
-    channels: set[str] = set()
-    everything = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            parts = node.module.split(".")
-            if parts[0] != "env":
-                continue
-            if len(parts) == 1:
-                channels.update(a.name for a in node.names if a.name != "*")
-                everything = everything or any(a.name == "*" for a in node.names)
-            elif len(parts) == 2 and all(a.name != "*" for a in node.names):
-                names.update(f"env/{parts[1]}:{a.name}" for a in node.names)
-            else:
-                channels.add(parts[1])
-        elif isinstance(node, ast.Import):
-            for a in node.names:
-                parts = a.name.split(".")
-                if parts[0] == "env":
-                    if len(parts) == 1:
-                        everything = True
-                    else:
-                        channels.add(parts[1])
-    return names, channels, everything
-
-
 def public_bindings(source: bytes | None) -> dict[str, bool] | None:
     """The public names a channel module binds at its top level: ``name -> whether it is a function definition``.
 
@@ -349,51 +228,3 @@ def public_bindings(source: bytes | None) -> dict[str, bool] | None:
     return out
 
 
-def code_size(source: bytes) -> tuple[int, int, int] | None:
-    """A channel module's code size: (function definitions, AST nodes in its top-level function definitions,
-    AST nodes of the rest of the module), None when it does not parse.
-
-    Comments, blank lines and formatting are not in the AST; docstrings (of the module, its classes and its
-    functions) are left out, so neither changes the size.
-    """
-    try:
-        module = ast.parse(source)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return None
-    docs: set[int] = set()
-    for node in ast.walk(module):
-        body = getattr(node, "body", None)
-        if (
-            isinstance(
-                node,
-                (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
-            )
-            and body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            docs.add(id(body[0]))
-
-    def nodes(root: ast.AST) -> int:
-        n, stack = 0, [root]
-        while stack:
-            node = stack.pop()
-            if id(node) in docs:
-                continue
-            n += 1
-            stack.extend(ast.iter_child_nodes(node))
-        return n
-
-    defs = sum(
-        1
-        for n in ast.walk(module)
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-    )
-    functions = other = 0
-    for node in module.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            functions += nodes(node)
-        else:
-            other += nodes(node)
-    return defs, functions, other

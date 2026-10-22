@@ -32,7 +32,7 @@ from typing import Any
 from .admission import is_rejection
 from .catalogue import body_digest
 from .evidence import MAX_INPUT_SHAPES
-from .cover_forms import blob_sha as _blob_sha
+from .fixtures import blob_sha as _blob_sha
 from .memory_helper import file_shape, value_shape
 from .memory_repo import items
 from .redact import KEY_SHAPED

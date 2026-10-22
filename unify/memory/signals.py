@@ -33,7 +33,6 @@ REGIME_SOURCES: dict[str, frozenset[str]] = {
     "none": frozenset({"environment"}),
 }
 _SUPPORT = {("checker", "pass"), ("provenance", "support")}
-_SUPPORT_READER = {("reader", "accept")}
 _CONTRARY = {
     ("checker", "fail"),
     ("provenance", "correct"),
@@ -134,23 +133,6 @@ def post_signal(
         )
     episodes.add_note(commit_sha, note_text(sig))
     evidence.add_signal(sig)
-
-
-def job_item_status(
-    item: str,
-    evidence: EvidenceStore,
-    *,
-    reader_promotes: bool,
-) -> str:
-    support_kinds = _SUPPORT | (_SUPPORT_READER if reader_promotes else set())
-    supporting = set()
-    for eid in evidence.item_episodes(item):
-        for s in evidence.signals_for(eid):
-            if (s.source, s.label) in _CONTRARY:
-                return "hidden"
-            if (s.source, s.label) in support_kinds:
-                supporting.add(eid)
-    return "promotable" if len(supporting) >= 2 else "insufficient"
 
 
 def tainted_items(eid: str, evidence: EvidenceStore) -> list[str]:

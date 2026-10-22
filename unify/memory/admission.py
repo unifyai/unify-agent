@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .episodes import ACTION_KINDS, Action, env_channel
+from .episodes import ACTION_KINDS, Action
 
 _BLOB_FIELDS = ("blob_before", "blob_after")
 
@@ -86,30 +86,3 @@ _RULES = {"tool": _tool, "shell": _shell, "worktree": _worktree, "dialogue": _di
 assert set(_RULES) == ACTION_KINDS
 
 
-def cover_problem(
-    a: Action | None,
-    channel: str | None,
-    has_blob: Callable[[str], bool],
-    *,
-    channel_rule: bool = True,
-) -> str | None:
-    """Why recorded action *a* cannot be a cover of an item on memory channel *channel*, or None.
-
-    With *channel_rule* False (the library mode) the action's channel is not compared: a cover is
-    any real recorded observation of its kind, and the item's source channel lives in its record.
-    """
-    if a is None:
-        return "not a recorded action"
-    kind = getattr(a, "kind", "tool")
-    rule = _RULES.get(kind)
-    if rule is None:
-        return f"an action of unknown kind {kind!r}"[:120]
-    problem = rule(a, has_blob)
-    if problem is not None:
-        return f"{problem} ({kind})"
-    if not channel_rule:
-        return None
-    mapped = env_channel(kind, a.channel)
-    if mapped != channel:
-        return f"a {kind} action on {a.channel}"[:200]
-    return None

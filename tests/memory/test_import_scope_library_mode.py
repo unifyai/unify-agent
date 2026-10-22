@@ -7,8 +7,6 @@ from pathlib import Path
 from tests.memory.test_item_admission import _write
 from tests.memory.test_layout import LIB
 from unify.memory import layout, reduction
-from unify.memory.admission import cover_problem
-from unify.memory.episodes import Action
 from unify.memory.gate import CHECKS, Gate, GateResult, _Run
 from unify.memory.manifest import Manifest, ManifestItem
 
@@ -55,16 +53,6 @@ def _fn_item(item: str, tests: list[str] | None = None) -> ManifestItem:
         ["e1"],
         tests or [],
         [],
-    )
-
-
-def test_a_cover_on_any_channel_is_admitted_under_library_mode():
-    a = Action(0, "svc", "get", [], {}, {"x": 1}, "ok")
-    assert cover_problem(a, "other", lambda s: False) == "a tool action on svc"
-    assert cover_problem(a, "other", lambda s: False, channel_rule=False) is None
-    bad = Action(0, "svc", "get", [], {}, None, "ok")
-    assert cover_problem(bad, None, lambda s: False, channel_rule=False) == (
-        "not a recorded successful call or rejection (tool)"
     )
 
 

@@ -63,8 +63,6 @@ OPTIONAL_SECTIONS = ("Use when", "Don't use when", "Notes")
 LIBRARY_SECTIONS = ("When to use",)
 LINE_FIELDS = ("Effect", "Input")
 ERROR_NAME = "MemoryInputError"
-MIN_REFUSAL_CHARS = 24
-
 # The catalogue's key for each section (``.memory/catalog.json``).
 SECTION_KEYS = {
     "Args": "args",
@@ -378,64 +376,6 @@ def problems(
     elif ERROR_NAME not in d.sections["Raises"]:
         out.append(f"Raises: does not name {ERROR_NAME} and when it is raised")
     out += example_problems(d, name, channel)
-    return out
-
-
-def _names_error(node: ast.expr) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == ERROR_NAME
-    return isinstance(node, ast.Attribute) and node.attr == ERROR_NAME
-
-
-def _literal(node: ast.expr) -> str | None:
-    """The literal text of a message expression, or None when it holds none (a bare variable, say)."""
-    if isinstance(node, ast.Constant):
-        return node.value if isinstance(node.value, str) else None
-    if isinstance(node, ast.JoinedStr):
-        parts = [
-            v.value
-            for v in node.values
-            if isinstance(v, ast.Constant) and isinstance(v.value, str)
-        ]
-        return "".join(parts) if parts else None  # only variables: unmeasurable
-    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
-        parts = [_literal(node.left), _literal(node.right)]
-        if all(p is None for p in parts):
-            return None
-        return "".join(p or "" for p in parts)
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "format"
-    ):
-        return _literal(node.func.value)
-    return None
-
-
-def refusal_problems(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
-    """Each ``raise MemoryInputError`` in *fn* without a measurable message of :data:`MIN_REFUSAL_CHARS`."""
-    out: list[str] = []
-    for node in ast.walk(fn):
-        if not isinstance(node, ast.Raise) or node.exc is None:
-            continue
-        call = node.exc if isinstance(node.exc, ast.Call) else None
-        if not _names_error(call.func if call is not None else node.exc):
-            continue
-        if call is None or (not call.args and not call.keywords):
-            out.append(
-                f"raises {ERROR_NAME} without a message (line {node.lineno}); say what was "
-                "expected and what to do instead",
-            )
-            continue
-        if not call.args:
-            continue
-        text = _literal(call.args[0])
-        if text is not None and len(text.strip()) < MIN_REFUSAL_CHARS:
-            out.append(
-                f"raises {ERROR_NAME} with a {len(text.strip())}-character message (line "
-                f"{node.lineno}); say what was expected and what to do instead (at least "
-                f"{MIN_REFUSAL_CHARS} characters of text)",
-            )
     return out
 
 

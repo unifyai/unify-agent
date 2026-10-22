@@ -5,7 +5,6 @@ import shutil
 
 import pytest
 
-from unify.memory.admission import cover_problem
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action, env_channel
 from unify.memory.evidence import EvidenceStore
@@ -82,72 +81,6 @@ def test_env_channel_maps_kind_qualified_keys_and_keeps_tool_keys():
 
 
 # --- the per-kind rule -----------------------------------------------------------------------------------
-
-
-def test_cover_rules_per_kind(tmp_path):
-    store, inv, _ = _blobs(tmp_path)
-    has = store.has
-    ok = Action(0, "venmo", "me", [], {}, {"user_id": "u"}, "ok")
-    assert cover_problem(ok, "venmo", has) is None
-    assert "successful call" in cover_problem(
-        Action(0, "venmo", "me", [], {}, None, "error"),
-        "venmo",
-        has,
-    )
-    assert cover_problem(ok, "slack", has) == "a tool action on venmo"
-    assert cover_problem(None, "venmo", has) == "not a recorded action"
-    # shell: an output tail is the observation, whatever the exit code
-    assert cover_problem(_sh("1 failed, 2 passed", 1), "shell_uv", has) is None
-    assert cover_problem(_sh("", 0), "shell_uv", has) is None
-    assert "output tail" in cover_problem(_sh(None), "shell_uv", has)
-    assert cover_problem(_sh("x", 0), "uv", has) == "a shell action on shell:uv"
-    spawned = Action(
-        0,
-        "shell:uv",
-        "spawn",
-        ["uv"],
-        {},
-        None,
-        "unrecorded",
-        kind="shell",
-    )
-    assert cover_problem(spawned, "shell_uv", has) is not None
-    # worktree: a blob the store holds
-    assert cover_problem(_wt("ap/inv.csv", inv), "worktree_workspace", has) is None
-    assert "without a recorded blob" in cover_problem(
-        _wt("ap/inv.csv", "0" * 64),
-        "worktree_workspace",
-        has,
-    )
-    assert "without a recorded blob" in cover_problem(
-        _wt("ap/inv.csv", "../../etc/passwd"),
-        "worktree_workspace",
-        has,
-    )
-    assert cover_problem(
-        _wt("ap/inv.csv", inv, status="unrecorded"),
-        "worktree_workspace",
-        has,
-    )
-    listing = Action(
-        0,
-        "worktree:workspace",
-        "list",
-        ["ap"],
-        {},
-        {"entries": ["a"]},
-        "ok",
-        kind="worktree",
-    )
-    assert cover_problem(listing, "worktree_workspace", has) is not None
-    # dialogue: an observation came back
-    assert cover_problem(_dl("Inventory: wood 1"), "dialogue_user", has) is None
-    assert cover_problem(_dl(None, "unrecorded"), "dialogue_user", has) is not None
-    assert cover_problem(_dl(""), "dialogue_user", has) is not None
-    assert (
-        cover_problem(_dl("x"), "worktree_workspace", has)
-        == "a dialogue action on dialogue:user"
-    )
 
 
 # --- the export ------------------------------------------------------------------------------------------

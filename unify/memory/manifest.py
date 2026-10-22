@@ -90,12 +90,10 @@ Manifest rules for consolidators
 from __future__ import annotations
 
 import importlib.machinery
-import importlib.metadata
 import posixpath
 import re
 import sys
 from dataclasses import dataclass, field
-from functools import lru_cache
 
 # Declared semantic types: the only value constraints an environment function may hold, each a
 # property of a type declared on a field in its manifest item (``field_types``), never inferred from observed
@@ -117,8 +115,8 @@ SEMANTIC_TYPES: dict[str, tuple[str, int | None, int | None]] = {
 _FIELD_NAME_MAX = 200
 
 # Declared input forms: what an environment function's first parameter takes (``input`` in its manifest item,
-# and an ``Input: <form>`` line in its docstring). A cover must be able to give its input in this form
-# (:func:`.cover_forms.unfit_reason`), and the index shows it. This list grows only by a reviewed code change, never by a pass.
+# and an ``Input: <form>`` line in its docstring), as the index shows it. This list grows only by a reviewed code
+# change, never by a pass.
 INPUT_KINDS: dict[str, str] = {
     "path": "a path to a work-tree file",
     "text": "the text of a file or of an output",
@@ -159,10 +157,7 @@ ITEM_ID = {
     "workflow": re.compile(r"^workflows/[a-z0-9][a-z0-9_-]*\.md\Z"),
 }
 SKELETON_ID = re.compile(rf"^env/{_CH}\Z")
-TEST_PATH = re.compile(rf"^env/{_CH}/tests/(?:[^/]+/)*test_[^/]*\.py\Z")
 TESTS_DIR = re.compile(r"^env/[^/]+/tests/(?P<rest>.+)\Z")
-MODULE_PATH = re.compile(r"^env/[^/]+/__init__\.py\Z")
-NOTES_PATH = re.compile(r"^env/[^/]+/NOTES\.md\Z")
 # Files that configure git, pytest or the interpreter, refused anywhere in the memory tree.
 FORBIDDEN_NAMES = frozenset(
     {
@@ -181,21 +176,6 @@ FORBIDDEN_NAMES = frozenset(
         "usercustomize.py",
     },
 )
-# Names that would shadow the memory library or the test kit from inside a tests directory.
-_RESERVED_STEMS = frozenset({"env", "unify_memory_testkit"})
-
-# Import names a root entry of the export must never take: the library package and the generated helper
-# (``memory.py``), in any suffix (``memory.abi3.so``, ``env.py``) or as a directory (``memory/``). The gate
-# names these reserved (:func:`.catalogue.reserved`); compiled code and every other root entry are refused by
-# :func:`unsafe_path`.
-SHADOWED_IMPORTS = frozenset({"env", "memory"})
-
-
-def shadows_import(path: str) -> bool:
-    """Whether *path* is a root entry an ``import env`` or ``import memory`` in a cell could resolve to."""
-    if "/" in path:
-        return path.split("/", 1)[0] == "memory"
-    return path.split(".", 1)[0] in SHADOWED_IMPORTS
 
 
 class ManifestError(ValueError):
@@ -280,17 +260,6 @@ def item_path(item: str) -> str:
     return item.split("#", 1)[0]
 
 
-@lru_cache(maxsize=1)
-def shadowed_module_names() -> frozenset[str]:
-    """Top-level names a helper on the test path must not take: the stdlib and installed distributions."""
-    names = set(sys.stdlib_module_names) | set(sys.builtin_module_names)
-    try:
-        names |= set(importlib.metadata.packages_distributions())
-    except Exception:  # a broken distribution's metadata must not open the gate
-        names |= {"pytest", "_pytest", "pluggy"}
-    return frozenset(names | _RESERVED_STEMS)
-
-
 def forbidden(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
     return name in FORBIDDEN_NAMES or name.endswith(".pth")
@@ -349,51 +318,6 @@ def unsafe_path(path: str) -> tuple[str, str] | None:
         "G1",
         f"root entry {path} is outside the layout (the root holds only env/, workflows/ and {TESTKIT})",
     )
-
-
-def _stem(part: str) -> str:
-    return part[:-3] if part.endswith(".py") else part
-
-
-def support_allowed(path: str) -> bool:
-    """The test kit at the root, or a helper under ``env/<name>/tests/`` that shadows no module."""
-    if path == TESTKIT:
-        return True
-    m = TESTS_DIR.match(path)
-    if m is None or forbidden(path):
-        return False
-    parts = m.group("rest").split("/")
-    name = parts[-1]
-    if (
-        name == "__init__.py"
-        or name.startswith("test_")
-        or _stem(name).endswith("_test")
-    ):
-        return (
-            False  # a test file is declared by its item, so that it runs red and green
-        )
-    return not any(_stem(p) in shadowed_module_names() for p in parts)
-
-
-def layout_allowed(path: str) -> bool:
-    """Whether the layout admits *path*: channel modules, notes, tests, helpers, workflows, the test kit.
-
-    No submodules in v0; nothing under a tests directory takes a reserved name (``env``, the test kit).
-    Compiled code, start-up hooks and root entries outside ``env/``, ``workflows/`` and the test kit are
-    refused by :func:`unsafe_path`.
-    """
-    m = TESTS_DIR.match(path)
-    if m is not None:
-        if any(_stem(p) in _RESERVED_STEMS for p in m.group("rest").split("/")):
-            return False
-        if TEST_PATH.match(path):
-            return True
-        if path.endswith(".py"):
-            return support_allowed(path)
-        return True
-    if path.endswith(".py"):
-        return bool(MODULE_PATH.match(path)) or path == TESTKIT
-    return True
 
 
 # an item's ``adopts`` refs: ``staging:<episode>/<file>``, ``helper:<helper name>/<file>`` or ``pool:<entry id>``, where
@@ -472,65 +396,6 @@ def _str_list(value: object, what: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ManifestError(f"{what} must be a list of strings")
     return list(value)
-
-
-def _covers(raw: object, item: str) -> list[tuple[str, int]]:
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise ManifestError(f"{item}: covers must be a list")
-    out: list[tuple[str, int]] = []
-    for c in raw:
-        if (
-            not isinstance(c, (list, tuple))
-            or len(c) != 2
-            or not isinstance(c[0], str)
-            or not isinstance(c[1], int)
-            or isinstance(c[1], bool)
-            or c[1] < 0
-        ):
-            raise ManifestError(f"{item}: bad cover {c!r}"[:200])
-        out.append((c[0], c[1]))
-    return out
-
-
-def _field_types(raw: object, item: str, kind: str) -> dict[str, str]:
-    """``{field: semantic type}``: an environment function's declared types, each from SEMANTIC_TYPES."""
-    if raw is None:
-        return {}
-    if kind != "env_function":
-        raise ManifestError(f"{item}: only environment functions declare field types")
-    if not isinstance(raw, dict):
-        raise ManifestError(f"{item}: field_types must be an object")
-    for name, typ in raw.items():
-        if (
-            not isinstance(name, str)
-            or not name
-            or len(name) > _FIELD_NAME_MAX
-            or "\n" in name
-        ):
-            raise ManifestError(f"{item}: bad field name in field_types")
-        if not isinstance(typ, str) or typ not in SEMANTIC_TYPES:
-            raise ManifestError(
-                f"{item}: unknown semantic type {typ!r}; the fixed list is "
-                f"{', '.join(SEMANTIC_TYPES)}"[:300],
-            )
-    return dict(raw)
-
-
-def _input(raw: object, item: str, kind: str) -> str | None:
-    """An environment function's declared input form, from INPUT_KINDS, or None when not given."""
-    if raw is None:
-        return None
-    if kind != "env_function":
-        raise ManifestError(f"{item}: only environment functions declare an input")
-    if not isinstance(raw, str) or raw not in INPUT_KINDS:
-        raise ManifestError(
-            f"{item}: unknown input {raw!r}; the fixed list is {', '.join(INPUT_KINDS)}"[
-                :300
-            ],
-        )
-    return raw
 
 
 #: The keys a library-mode manifest item takes; any other key is refused, never dropped.

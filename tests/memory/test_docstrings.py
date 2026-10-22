@@ -103,26 +103,6 @@ def test_examples_heading_is_accepted_and_inline_text_is_kept():
     assert docstrings.problems(doc, ["path", "strict"], "path") == []
 
 
-def test_refusals_must_say_what_was_expected():
-    good = _fn(
-        "def f(path):\n"
-        "    if not path:\n"
-        "        raise MemoryInputError(f'expected a CSV path, got {path!r}; read the file directly')\n",
-    )
-    assert docstrings.refusal_problems(good) == []
-    short = _fn("def f(x):\n    raise MemoryInputError('bad input')\n")
-    (reason,) = docstrings.refusal_problems(short)
-    assert "9-character message (line 2)" in reason and "at least 24" in reason
-    bare = _fn("def f(x):\n    raise MemoryInputError\n")
-    assert "without a message (line 2)" in docstrings.refusal_problems(bare)[0]
-    empty_call = _fn("def f(x):\n    raise mod.MemoryInputError()\n")
-    assert "without a message" in docstrings.refusal_problems(empty_call)[0]
-    variable = _fn("def f(x, msg):\n    raise MemoryInputError(msg)\n")
-    assert docstrings.refusal_problems(variable) == []  # unmeasurable: accepted
-    other = _fn("def f(x):\n    raise ValueError('x')\n")
-    assert docstrings.refusal_problems(other) == []
-
-
 def test_params_and_catalog_form():
     fn = _fn("def f(a, /, b, *rest, c=1, **kw):\n    pass\n")
     assert docstrings.params(fn) == ["a", "b", "rest", "c", "kw"]
@@ -205,13 +185,11 @@ def test_the_example_must_call_the_function_on_a_fixture_and_show_its_result():
     )
 
 
-def test_section_aliases_and_unmeasurable_fstrings():
+def test_section_aliases():
     d = docstrings.parse(
         "Read.\n\nParameters:\n    path: a path.\n\nReturn:\n    Rows.\n",
     )
     assert d.args == [("path", "a path.")] and d.sections["Returns"] == "Rows."
-    only_vars = _fn("def f(path):\n    raise MemoryInputError(f'{path}')\n")
-    assert docstrings.refusal_problems(only_vars) == []  # unmeasurable, as documented
 
 
 FN = "read_ledger"

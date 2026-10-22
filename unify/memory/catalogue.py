@@ -24,8 +24,8 @@ A row is used only while its body digest (:func:`body_digest`) matches the expor
 commit gives the same bytes on every export, an old one re-exported included. Shapes derived from the
 covers table for a function no merge recorded shapes for are marked ``input_shapes_backfilled``.
 
-The writer never edits these files: the gate refuses any commit that touches a :func:`reserved` path, and the
-writer's copy of the library never holds them.
+The writer never edits these files: the gate refuses any commit that touches a path the harness generates
+(:func:`.layout.misplaced`), and the writer's copy of the library never holds them.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from . import docstrings
-from .manifest import INPUT_KINDS, shadows_import
+from .manifest import INPUT_KINDS
 from .memory_helper import channel_line
 from .memory_repo import items
 from .snapshot import item_bodies
@@ -55,15 +55,6 @@ _HERE = Path(__file__).resolve().parent
 
 # (item id, body digest) -> (input shapes, whether they were backfilled from covers), or None
 ShapeLookup = Callable[[str, str], "tuple[list[dict], bool] | None"]
-
-
-def reserved(path: str) -> bool:
-    """Whether *path* (relative, POSIX) is one the harness generates in every export, or a root entry that
-    could shadow ``import memory`` or ``import env`` (any ``memory.*`` or ``env.*``, ``memory/``). Compiled
-    code and other root entries are refused by :func:`.manifest.unsafe_path`."""
-    if path in (README, HELPER) or path == ".memory" or path.startswith(".memory/"):
-        return True
-    return shadows_import(path)
 
 
 def body_digest(body: str) -> str:

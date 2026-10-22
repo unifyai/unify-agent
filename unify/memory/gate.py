@@ -37,8 +37,7 @@ The checks (library layout, :mod:`.library_checks`):
 * **G4 size.** Over its soft budget, the index gets a ``note: G4 hygiene due``; growth is never refused.
 * **G5 items** (hard). A pass does not reduce the number of items, and does not drop an alias.
 * **G6 safety** (hard). No links, executables, submodules, or git, pytest or interpreter configuration files; no
-  bytecode or native code; no key-shaped string in a changed file or the manifest; every module parses and defines
-  each public function once.
+  bytecode or native code; no key-shaped string in a changed file or the manifest.
 
 **Evidence levels.** The gate finds no level above ``unchecked`` (it runs nothing): every manifest function lands at
 ``unchecked`` with its findings (``level_reasons``), or with :data:`.gate_policy.NOT_RUN_GATE` when it has none.
@@ -51,62 +50,45 @@ the whole gate again before it lands.
 :meth:`Gate.preview` runs the cheap part (the manifest, G1, G2's covers, G4 to G6 and the static checks) on an
 uncommitted tree, for the writer's ``check`` tool; it never decides or records a merge. A landed merge also freezes
 the candidate's input-shape snapshot (:mod:`.shape_rows`) for the catalogue; computing it never fails the gate.
+The gate reads the library layout only (``memory/<package>`` functions and ``notes/`` notes, :mod:`.layout`).
 Stage 5 (:mod:`.qa`) adds static checks of the tests (the test kit stays test-side; fixture size, replay fidelity
 and cuts of truncated recordings behind their switches), tagged ``[qa:<check>]``.
 """
 
 from __future__ import annotations
 
-import ast
 import json
 import re
 import shutil
-import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import docstrings, layout
-from .admission import cover_problem, is_rejection
+from . import layout
 from .blobs import BlobStore
-from .catalogue import body_digest, reserved
 from .episodes import Action
 from .evidence import EvidenceStore
 from .gitio import GitError, Repo
-from .cover_forms import unfit_reason as _unfit_reason
 from . import reduction
 from .library_checks import LibraryConfig
 from .manifest import (
-    MODULE_PATH,
-    NOTES_PATH,
     Manifest,
     ManifestError,
     forbidden,
-    INPUT_KINDS,
-    item_path,
-    layout_allowed,
     parse_manifest,
     unsafe_path,
 )
-from .index import build_index, estimate_tokens
 from .gate_policy import NOT_RUN_GATE
-from .shape_rows import descriptors, shapes_at, snapshot_rows
-from .memory_repo import ItemsReport, items
+from .shape_rows import shapes_at, snapshot_rows
 from .item_states import UNCHECKED as _LOWEST_LEVEL
 from .qa import QAChecks, QAConfig
 from .redact import KEY_SHAPED
-from .signals import job_item_status
 from .snapshot import (
-    code_size,
-    duplicate_public_defs,
     listing,
     materialise,
-    module_skeleton,
-    notes_preamble,
     public_bindings,
     tree_listing,
-    without_listed,
 )
 
 CHECKS = ("G1", "G2", "G3", "G4", "G5", "G6")
@@ -119,16 +101,6 @@ RED_TEST_HINT = (
     "yourself, and see it fail on the parent's version and pass on yours."
 )
 
-
-# Input-shape descriptors computed per item at a merge (the evidence store keeps at most its own cap).
-MAX_SHAPE_COVERS = 32
-
-# An environment function that encodes a rule (G2) needs validated covers from at least this many episodes.
-RULE_EPISODES = 2
-
-# A check (:meth:`Gate.preview`) examines at most this many covers, naming at most this many episodes.
-PREVIEW_MAX_COVERS = 500
-PREVIEW_MAX_EPISODES = 32
 
 @dataclass
 class _Reduced:
@@ -201,95 +173,16 @@ def _failed(reason: str, check: str | None = None) -> GateResult:
 def _unchanged(run: Any, it: Any) -> bool:
     """A listed function whose body (and kind) is the parent's: the pass lists it only to change its tests."""
     return (
-        it.kind in ("env_function", "function")
+        it.kind == "function"
         and it.item in run.p_bodies
         and it.item in run.c_bodies
         and run.p_bodies[it.item][:2] == run.c_bodies[it.item][:2]
     )
 
 
-def _library_size(files: dict, tree: Path) -> tuple[int, int, int] | None:
-    """The channel modules' code (:func:`.snapshot.code_size`, summed): function definitions, AST nodes of
-    function definitions, AST nodes of other module code; comments and docstrings never count. None when a
-    module does not parse.
-    """
-    total = [0, 0, 0]
-    for p in files:
-        if MODULE_PATH.match(p):
-            size = code_size((tree / p).read_bytes())
-            if size is None:
-                return None
-            total = [a + b for a, b in zip(total, size)]
-    return total[0], total[1], total[2]
-
-
 def _owners(man: Manifest, test: str) -> list[str]:
     """The manifest items that list test file *test* ([]: none, so a failure in it is pass-wide)."""
     return [it.item for it in man.items if test in it.tests]
-
-
-# The input forms that hand a function a recorded value, not the environment: such a function parses what a
-# call returned and makes no call itself, so the effect of the calls it covers is not its own.
-_VALUE_FORMS = frozenset({"path", "text", "bytes", "observation"})
-
-
-def _covers_a_write(covers: list[tuple[str, int, Action]], form: str | None) -> bool:
-    """Whether a function makes a recorded write call: structural, from the recording, never from names.
-
-    A tool call's effect is what the recording holds (:attr:`.episodes.Action.effect`, the effect the
-    environment declared for the method; ``unknown`` when undeclared, which proves nothing). No other
-    kind counts: a file, shell or dialogue cover is an observation the function reads. A function whose
-    declared input is a recorded value (:data:`_VALUE_FORMS`) parses a response and makes no call.
-    """
-    if form in _VALUE_FORMS:
-        return False
-    return any(
-        getattr(a, "kind", "tool") == "tool" and getattr(a, "effect", "") == "write"
-        for _, _, a in covers
-    )
-
-
-def _unfit_forms(
-    covers: list[tuple[str, int, Action]],
-    input_kind: str | None,
-) -> list[str]:
-    """Why the covered inputs cannot be given in the declared *input_kind* (:func:`.cover_forms.unfit_reason`): the
-    covers with status ``ok``, not a rejection, not shell, each once, deduplicated."""
-    out: list[str] = []
-    done: set[tuple[str, int]] = set()
-    for eid, idx, a in covers:
-        if (
-            getattr(a, "kind", "tool") == "shell"
-            or a.status != "ok"
-            or is_rejection(a)
-            or (eid, idx) in done
-        ):
-            continue
-        done.add((eid, idx))
-        why = _unfit_reason(a, input_kind)
-        if why is not None and why not in out:
-            out.append(why)
-    return out
-
-
-class _WithSources:
-    """The evidence store, with an item's manifest source episodes counted as its episodes.
-
-    A new job-level item has no recorded item evidence yet (that is written on merge); its source
-    episodes are where its supporting or contrary signals live.
-    """
-
-    def __init__(self, evidence: EvidenceStore, item: str, sources: list[str]) -> None:
-        self._ev, self._item, self._sources = evidence, item, sources
-
-    def item_episodes(self, item: str) -> list[str]:
-        eids = set(self._ev.item_episodes(item))
-        if item == self._item:
-            eids |= set(self._sources)
-        return sorted(eids)
-
-    def signals_for(self, eid: str):
-        return self._ev.signals_for(eid)
 
 
 #: The checks whose findings about an item are quality results: G2 (evidence: the
@@ -345,19 +238,9 @@ class _Run:
     c_tree: Path = Path()
     p_bodies: dict[str, tuple[str, str, bool]] = field(default_factory=dict)
     c_bodies: dict[str, tuple[str, str, bool]] = field(default_factory=dict)
-    c_report: ItemsReport | None = None
-    report_error: str | None = None
-    covers: set[tuple[str, str, int]] = field(
-        default_factory=set,
-    )  # validated (item, episode, action)
-    rejections: set[tuple[str, int]] = field(
-        default_factory=set,
-    )  # validated covers that are recorded rejections, never new coverage for G5
     notes: list[str] = field(default_factory=list)  # informational; never fail the gate
     # item -> (body digest, input-shape descriptors of its validated covers), recorded on a landed merge
     shapes: dict[str, tuple[str, list[dict]]] = field(default_factory=dict)
-    # environment functions that cover a recorded write call (structural Effect; G6)
-    writes: set[str] = field(default_factory=set)
     # per-item admission: item -> the checks that refused it, and whether any failure is pass-wide
     item_fail: dict[str, list[str]] = field(default_factory=dict)
     pass_wide: bool = False
@@ -487,23 +370,20 @@ class Gate:
         evidence: EvidenceStore,
         blobs: BlobStore,
         *,
-        budget_tokens: int = 4000,
-        reader_promotes: bool = False,
         action_lookup: Callable[[str, int], Action | None] | None = None,
         qa: QAConfig | None = None,
         library_mode: LibraryConfig,
         segments_dir: Path | str | None = None,
     ) -> None:
-        """*library_mode* is the library's checks' configuration (:class:`.library_checks.LibraryConfig`): covers have
-        no channel rule (G2), G3's not-run labels and per-item reduction are scoped by the import graph, and the
-        library gate checks (:mod:`.library_checks`) and stage 5's static checks run. Every finding but the hard ones
-        is a label on its item, and the gate runs no code (:mod:`.gate_policy`, rev 2.1). *budget_tokens* is G4's soft budget (a note, never a refusal). *qa* is the stage-5 test
-        checks' configuration (:class:`.qa.QAConfig`). *segments_dir* (``UNIFY_MEMORY=in_episode``):
+        """*library_mode* is the library's checks' configuration (:class:`.library_checks.LibraryConfig`): G3's not-run
+        labels and per-item reduction are scoped by the import graph, and the library gate checks
+        (:mod:`.library_checks`) and stage 5's static checks run. Every finding but the hard ones is a label on its
+        item, and the gate runs no code (:mod:`.gate_policy`, rev 2.1). *qa* is the stage-5 test checks'
+        configuration (:class:`.qa.QAConfig`). *segments_dir* (``UNIFY_MEMORY=in_episode``):
         the state dir whose segment records (``<episode>.s<n>``) an item may cite as its source while their episode
         is still open; None: only recorded episodes.
         """
         self.mem, self.ev, self.blobs = memory, evidence, blobs
-        self.budget, self.reader_promotes = budget_tokens, reader_promotes
         # Fail closed: without an episodes reader no covered call can be confirmed.
         self.lookup = action_lookup or (lambda eid, i: None)
         from .qa import library_config
@@ -523,7 +403,7 @@ class Gate:
 
         ``items_refused`` names the items its failures belong to, as :meth:`merge` would refuse them.
         """
-        res, _, notes, _, _ = self._check(parent, candidate, manifest)
+        res, notes, _, _ = self._check(parent, candidate, manifest)
         res.reasons.extend(notes)
         return res
 
@@ -549,11 +429,9 @@ class Gate:
         For a consolidator's ``check`` tool before it finishes. *tree* holds the files the pass would commit
         (:func:`.snapshot.tree_listing` lists it without git; empty directories are no entries). *parent* is
         a :meth:`parent_snapshot` (then the preview runs no git at all) or a revision to snapshot now.
-        Runs the manifest parse, the early layout and safety refusals, G1, G2's cover checks (each cover's
-        kind, record and channel, and the structural check that the covers can give the declared ``input``
-        form; at most :data:`PREVIEW_MAX_COVERS` covers over :data:`PREVIEW_MAX_EPISODES` episodes, each looked
-        up once), G4, G5 and G6. Never G3 or a workflow's signals (nothing about outcomes), and never writes:
-        no commit, git object, evidence or pass row. A clean preview does not mean the gate will pass.
+        Runs the manifest parse, the early layout and safety refusals, G1 (the gate's and the library's static
+        checks), G6 and the test kit's static check. Never G2's evidence, G3 or anything about outcomes, and never
+        writes: no commit, git object, evidence or pass row. A clean preview does not mean the gate will pass.
         """
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memory-preview-"))
@@ -579,7 +457,7 @@ class Gate:
                 Path(tree),
                 "sha256" if len(base.sha) == 64 else "sha1",
             )
-            early = self._early(run, refused, True)
+            early = self._early(run, refused)
             if early:
                 for check, reason in early:
                     run.fail(check, reason)
@@ -596,41 +474,12 @@ class Gate:
                 )
             self._read_trees(run)
             self._g1(run)
-            covers = [
-                c
-                for it in run.man.items
-                if it.kind in ("env_function", "function")
-                for c in it.covers
-            ]
-            episodes = {eid for eid, _ in covers}
-            bounded = (
-                len(covers) <= PREVIEW_MAX_COVERS
-                and len(episodes) <= PREVIEW_MAX_EPISODES
-            )
-            memo: dict[tuple[str, int], Action | None] = {}
-
-            def lookup(eid: str, idx: int) -> Action | None:
-                if (eid, idx) not in memo:
-                    memo[(eid, idx)] = self.lookup(eid, idx)
-                return memo[(eid, idx)]
-
-            if not bounded:
-                run.fail(
-                    "G2",
-                    f"the manifest names {len(covers)} covers over {len(episodes)} episodes; a check "
-                    f"examines at most {PREVIEW_MAX_COVERS} covers over {PREVIEW_MAX_EPISODES} episodes",
-                )
-            else:
-                self._g2(run, preview=True, lookup=lookup)
-                self._g5(run)  # needs G2's validated covers
-            self._g4(run)
             self._g6(run)
             self._library_mode(run).static()
             qa = QAChecks(self, run)
             qa.kit()  # library code never uses the test kit (static)
-            if bounded:
-                # stage 5's static checks: fixture size, replay fidelity, cuts (no test runs)
-                qa.static(lookup)
+            # stage 5's static checks: fixture size, replay fidelity, cuts (no test runs)
+            qa.static(self.lookup)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         return list(res.reasons)
@@ -648,13 +497,13 @@ class Gate:
         """Check, then fast-forward ``main``; evidence is recorded only for a landed candidate.
 
         Per-item admission (stage 7): when the candidate is refused and every failure belongs to manifest
-        items (an item's hard G1 checks, such as its fixtures' provenance, and its G6 ``Effect:`` checks; under the
-        labels-only gate a G2 or G3 finding labels its item instead), those items are refused with
+        items (an item's hard G1 checks, such as its fixtures' provenance; under the labels-only gate a G2 or G3
+        finding labels its item instead), those items are refused with
         everything that depends on them (:mod:`.reduction`). The candidate reduced to the other items is
         committed as a child of *parent* and the whole gate runs on it once more; it lands if it passes,
         and otherwise the pass is refused whole. A pass-wide failure (layout, unsafe or forbidden files,
-        a malformed manifest, undeclared changes, G4, G5, key-shaped strings, unparsable modules) refuses the whole pass at once. One round; no search over
-        subsets. :attr:`GateResult.items_merged` and :attr:`GateResult.items_refused` (value-free codes)
+        a malformed manifest, undeclared changes, G5, key-shaped strings) refuses the whole pass at once. One round; no
+        search over subsets. :attr:`GateResult.items_merged` and :attr:`GateResult.items_refused` (value-free codes)
         are recorded in the pass row.
         """
         if self.ev.pass_exists(pass_id):
@@ -679,14 +528,14 @@ class Gate:
             return res
         landed, landed_manifest = c_sha, manifest
         try:
-            res, covers, notes, shapes, reduced = self._check(
+            res, notes, shapes, reduced = self._check(
                 p_sha,
                 c_sha,
                 manifest,
                 reduce_as=pass_id,
             )
             if reduced is not None:
-                again, covers2, notes2, shapes2, _ = self._check(
+                again, notes2, shapes2, _ = self._check(
                     p_sha,
                     reduced.sha,
                     reduced.manifest,
@@ -696,7 +545,7 @@ class Gate:
                         f"item refused: {r}" for r in res.reasons + reduced.reasons
                     ]
                     again.refused = []
-                    res, covers, notes, shapes = again, covers2, notes2, shapes2
+                    res, notes, shapes = again, notes2, shapes2
                     landed, landed_manifest = reduced.sha, reduced.manifest
                 else:
                     res.reasons.append(
@@ -719,13 +568,10 @@ class Gate:
             raise
         if res.passed:
             try:
-                if isinstance(self.library_mode, LibraryConfig):
-                    # library mode: the one writer; re-targets over status commits only
-                    from .memory_writer import land
+                # the one writer of main; re-targets over status commits only
+                from .memory_writer import land
 
-                    landed = land(self.mem, landed, p_sha)
-                else:
-                    self.mem.fast_forward("main", landed, expected_old=p_sha)
+                landed = land(self.mem, landed, p_sha)
             except (
                 GitError
             ) as exc:  # StaleParent is a GitError: refused, and _record keeps the whole patch
@@ -754,9 +600,8 @@ class Gate:
             for it in landed_items:
                 for eid in it.source_episodes:
                     self.ev.add_item_evidence(it.item, eid, "source")
-            for item, eid, idx in sorted(covers):
-                self.ev.add_cover(item, eid, idx)
-            # typed covers persist beside covers, for the behaviour check and deletion (G5)
+            # typed covers persist, so a later pass that lists a function only to change its tests skips the ones it
+            # landed with (library_checks)
             from .procedures import cover_raw
 
             for it in landed_items:
@@ -864,13 +709,11 @@ class Gate:
         reduce_as: str | None = None,
     ) -> tuple[
         GateResult,
-        set[tuple[str, str, int]],
         list[str],
         dict[str, dict],
         _Reduced | None,
     ]:
-        """The result (failure reasons only), the validated covers if it passed, the ``note:`` lines, the
-        candidate's shape snapshot to freeze if it passed (:mod:`.shape_rows`), and with *reduce_as* (the
+        """The result (failure reasons only), the ``note:`` lines, the candidate's shape snapshot to freeze if it passed (:mod:`.shape_rows`), and with *reduce_as* (the
         pass id) the committed reduction of a candidate refused item by item.
         """
         res = GateResult(True, {c: True for c in CHECKS})
@@ -885,7 +728,6 @@ class Gate:
                 v = self._library_mode(run)
                 self._g1(run)
                 v.g1()
-                self._g2(run)
                 v.g2()
                 # stage 5's static checks (the test kit stays test-side; fixture size, replay fidelity, cuts)
                 qa = QAChecks(self, run)
@@ -895,7 +737,6 @@ class Gate:
                 v.g3()
                 v.g4()
                 v.aliases_kept()
-                self._g5(run)
                 self._g6(run)
                 if reduce_as is not None and not res.passed:
                     reduced = self._reduce(run, reduce_as)
@@ -908,8 +749,7 @@ class Gate:
         res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
         res.curations = [dict(r) for r in run.curations]
         res.fixtures_verified = dict(run.fixtures_verified)
-        passed = res.passed
-        return res, (run.covers if passed else set()), run.notes, snapshot, reduced
+        return res, run.notes, snapshot, reduced
 
     @staticmethod
     def _labels(run: _Run) -> None:
@@ -964,7 +804,6 @@ class Gate:
                 run.manifest_raw,
                 refused,
                 set(run.p_files),
-                {i for i, b in run.p_bodies.items() if b[0] == "env_function"},
                 run.p_tree,
                 run.c_tree,
                 dest,
@@ -1041,7 +880,7 @@ class Gate:
             return False
         run.p_files, _ = listing(self.mem, p_sha)
         run.c_files, refused = listing(self.mem, c_sha)
-        early = self._early(run, refused, True)
+        early = self._early(run, refused)
         if early:
             run.stop(early)
             return False
@@ -1051,53 +890,28 @@ class Gate:
         return True
 
     @staticmethod
-    def _early(
-        run: _Run,
-        refused: list[str],
-        library_layout: bool = False,
-    ) -> list[tuple[str, str]]:
+    def _early(run: _Run, refused: list[str]) -> list[tuple[str, str]]:
         """What must never be extracted or run (refused entries, forbidden files, layout); sets ``changed``.
 
-        *library_layout* (library mode): the layout is the library's (:func:`.layout.classify`): a path it has no place for, or a
-        file the harness generates (never committed: the writer's box drops unchanged copies), is refused, and
-        only the G6 classes of :func:`.manifest.unsafe_path` apply (its root rule is v2's).
+        The layout is the library's (:func:`.layout.classify`): a path it has no place for, or a file the harness
+        generates (never committed: the writer's box drops unchanged copies), is refused, and so are the G6 classes
+        of :func:`.manifest.unsafe_path`.
         """
+        from .layout import misplaced
+
         early = [("G6", f"the candidate holds {r}") for r in refused[:10]]
         early += [
             ("G6", f"forbidden file {p}") for p in sorted(run.c_files) if forbidden(p)
         ]
-        if library_layout:
-            from .layout import misplaced
-
-            early += [
-                ("G1", f"file {p}: {why}")
-                for p in sorted(run.c_files)
-                if (why := misplaced(p)) is not None
-            ]
-            unsafe = [
-                u
-                for p in sorted(run.c_files)
-                if not forbidden(p) and (u := unsafe_path(p)) and u[0] == "G6"
-            ]
-            early += unsafe[:10]
-            if len(unsafe) > 10:
-                early.append(("G6", f"and {len(unsafe) - 10} more such paths"))
-            run.changed = sorted(
-                p
-                for p in set(run.p_files) | set(run.c_files)
-                if run.p_files.get(p) != run.c_files.get(p)
-            )
-            return early
         early += [
-            ("G1", f"file {p} is outside the layout (no submodules or root modules)")
+            ("G1", f"file {p}: {why}")
             for p in sorted(run.c_files)
-            if not layout_allowed(p)
+            if (why := misplaced(p)) is not None
         ]
-        # Compiled code, start-up hooks and root entries the layout above admits; one reason each.
         unsafe = [
             u
             for p in sorted(run.c_files)
-            if not forbidden(p) and layout_allowed(p) and (u := unsafe_path(p))
+            if not forbidden(p) and (u := unsafe_path(p)) and u[0] == "G6"
         ]
         early += unsafe[:10]
         if len(unsafe) > 10:
@@ -1107,15 +921,6 @@ class Gate:
             for p in set(run.p_files) | set(run.c_files)
             if run.p_files.get(p) != run.c_files.get(p)
         )
-        early += [
-            (
-                "G1",
-                f"file {p} is reserved: the harness generates README.md, memory.py and .memory/ in "
-                "every export, and no root entry may shadow `import memory` or `import env`",
-            )
-            for p in run.changed
-            if p in run.c_files and reserved(p)
-        ]
         return early
 
     def _read_trees(self, run: _Run) -> None:
@@ -1139,17 +944,10 @@ class Gate:
             run.c_tree,
             run.c_files,
         )
-        try:
-            run.c_report = items(run.c_tree)
-        except ValueError as exc:  # an undecodable notes file, say
-            run.report_error = str(exc)
 
     def _g1(self, run: _Run) -> None:
         man, pb, cb = run.man, run.p_bodies, run.c_bodies
         declared = set(man.support) | set(man.deleted_tests)
-        declared |= {
-            ch + f for ch in man.skeleton for f in ("/__init__.py", "/NOTES.md")
-        }
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         if isinstance(raw.get("fixtures"), dict):
             # the fixtures the harness recorded: the only files under tests/data/ a pass may add (library_checks)
@@ -1170,7 +968,6 @@ class Gate:
                 declared.add(self._item_path(eid))
         for t in man.deleted_tests:
             self._retired_ok(run, t)
-        self._pins(run)
         # library mode: a package's __init__.py (its one-paragraph docstring) goes with what the pass declares there
         declared |= {
             f"memory/{p.split('/')[1]}/__init__.py"
@@ -1193,7 +990,6 @@ class Gate:
                     else "removed" if iid not in cb else "changed"
                 )
                 run.fail("G1", f"undeclared item {iid} ({what})")
-        self._inputs(run)
         for it in man.items:
             if cb.get(it.item, ("",))[0] != it.kind:
                 run.fail(
@@ -1219,112 +1015,6 @@ class Gate:
 
         return segments.is_segment_name(eid) and segments.snapshot_path(root, eid).is_file()
 
-    @staticmethod
-    def _doc_inputs(run: _Run) -> dict[str, str]:
-        """Each candidate environment function's docstring ``Input:`` form ("" without one)."""
-        if run.c_report is None:
-            return {}
-        return {
-            i.item_id: i.input for i in run.c_report.items if i.kind == "env_function"
-        }
-
-    def _inputs(self, run: _Run) -> None:
-        """A new or changed environment function declares its input; a declared input equals its one
-        ``Input:`` line."""
-        doc = self._doc_inputs(run)
-        lines = {
-            i.item_id: i.input_lines
-            for i in (run.c_report.items if run.c_report is not None else [])
-        }
-        for it in run.man.items:
-            if it.kind != "env_function" or it.item not in doc:
-                continue  # an absent item (or an unreadable module) is refused elsewhere
-            if lines.get(it.item, 0) > 1:
-                run.fail("G1", f"{it.item} has more than one Input: line", it.item)
-                continue
-            if it.input is None:
-                changed = (
-                    run.p_bodies.get(it.item, ("", ""))[:2]
-                    != run.c_bodies.get(it.item, ("", ""))[:2]
-                )
-                if changed:
-                    run.fail(
-                        "G1",
-                        f"{it.item} declares no input (one of {', '.join(INPUT_KINDS)})",
-                        it.item,
-                    )
-            elif doc[it.item] != it.input:
-                run.fail(
-                    "G1",
-                    f"{it.item} declares input {it.input} but its docstring's Input: line says "
-                    f"{doc[it.item] or 'missing'}",
-                    it.item,
-                )
-
-    @staticmethod
-    def _edited(run: _Run) -> list[str]:
-        """The manifest's environment functions whose body (or kind) differs from the parent's, present now."""
-        return [
-            it.item
-            for it in run.man.items
-            if it.kind in ("env_function", "function")
-            and it.item in run.c_bodies
-            and run.p_bodies.get(it.item, ("", ""))[:2]
-            != run.c_bodies.get(it.item, ("", ""))[:2]
-        ]
-
-    @staticmethod
-    def _function_node(
-        run: _Run,
-        item: str,
-    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-        """The candidate's definition of environment function *item* (None: unreadable, reported by G6)."""
-        try:
-            module = ast.parse((run.c_tree / item_path(item)).read_bytes())
-        except (SyntaxError, ValueError, OSError):
-            return None
-        name = item.split(":", 1)[1]
-        for node in module.body:
-            if (
-                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.name == name
-            ):
-                return node
-        return None
-
-    def _standard(self, run: _Run) -> None:
-        """The lean docstring standard and self-explaining refusals (:mod:`.docstrings`), per new or
-        changed environment function; each missing part is its own reason."""
-        declared = {it.item: it.input for it in run.man.items}
-        doc_inputs = self._doc_inputs(run)
-        for item in self._edited(run):
-            node = self._function_node(run, item)
-            if node is None:
-                continue
-            doc = ast.get_docstring(node) or ""
-            form = declared.get(item) or doc_inputs.get(item) or None
-            name, channel = (
-                item.split(":", 1)[1],
-                item.split("/", 1)[1].split(":", 1)[0],
-            )
-            for problem in docstrings.problems(
-                doc,
-                docstrings.params(node),
-                form,
-                name=name,
-                channel=channel,
-            ):
-                run.fail("G1", f"{item} docstring {problem}", item)
-            for path in docstrings.fixture_paths(docstrings.parse(doc), channel):
-                if path not in run.c_files:
-                    run.fail(
-                        "G1",
-                        f"{item} docstring Example: reads {path}, which the commit does not hold",
-                        item,
-                    )
-            for problem in docstrings.refusal_problems(node):
-                run.fail("G1", f"{item} {problem}", item)
-
     def _unlisted_ok(self, run: _Run, eid: str) -> bool:
         """An unlisted item is present on both sides, unlisted now, and otherwise byte-for-byte the same."""
         pb, cb = run.p_bodies, run.c_bodies
@@ -1335,15 +1025,6 @@ class Gate:
             )
         elif cb[eid][2]:
             run.fail("G1", f"unlisted item {eid} is still listed")
-        elif cb[eid][0] == "workflow":
-            before = without_listed((run.p_tree / eid).read_bytes())
-            if before != without_listed((run.c_tree / eid).read_bytes()):
-                run.fail(
-                    "G1",
-                    f"unlisted workflow {eid} changed beyond its listed: line",
-                )
-            else:
-                return True
         elif cb[eid][1] != pb[eid][1]:
             run.fail("G1", f"unlisted item {eid} changed beyond its listing")
         else:
@@ -1365,161 +1046,6 @@ class Gate:
             run.fail("G1", f"deleted test {test} is not removed by the candidate")
             return
         return
-
-    def _pins(self, run: _Run) -> None:
-        """Module skeletons and notes preambles change only when declared."""
-        listed_ids = {it.item for it in run.man.items}
-        everything = set(run.p_files) | set(run.c_files)
-
-        def raw(files: dict, tree: Path, path: str) -> bytes | None:
-            return (tree / path).read_bytes() if path in files else None
-
-        for path in sorted(p for p in everything if MODULE_PATH.match(p)):
-            before = module_skeleton(raw(run.p_files, run.p_tree, path))
-            after = module_skeleton(raw(run.c_files, run.c_tree, path))
-            if before == after:
-                continue
-            channel = path.rsplit("/", 1)[0]
-            if channel not in run.man.skeleton:
-                run.fail(
-                    "G1",
-                    f"module-level code of {channel} changed (docstring, imports, helpers or "
-                    "statements) without a skeleton declaration",
-                )
-                continue
-            missing = sorted(
-                i
-                for i, b in run.c_bodies.items()
-                if b[0] == "env_function"
-                and i.startswith(channel + ":")
-                and i not in listed_ids
-            )
-            if missing:
-                run.fail(
-                    "G1",
-                    f"the skeleton change of {channel} must list every public function; "
-                    f"missing {missing[:5]}",
-                )
-        for path in sorted(p for p in everything if NOTES_PATH.match(p)):
-            texts = [
-                (b.decode("utf-8", "replace") if b is not None else None)
-                for b in (
-                    raw(run.p_files, run.p_tree, path),
-                    raw(run.c_files, run.c_tree, path),
-                )
-            ]
-            channel = path.rsplit("/", 1)[0]
-            if (
-                notes_preamble(texts[0]) != notes_preamble(texts[1])
-                and channel not in run.man.skeleton
-            ):
-                run.fail(
-                    "G1",
-                    f"the preamble of {path} changed without a skeleton declaration of {channel}",
-                )
-
-    def _g2(
-        self,
-        run: _Run,
-        *,
-        preview: bool = False,
-        lookup: Callable[[str, int], Action | None] | None = None,
-    ) -> None:
-        """*preview* (:meth:`preview`) checks the covers and their declared input form only, and no workflow
-        signals.
-
-        *lookup* replaces the gate's action lookup (the preview's memoised one).
-        """
-        lookup = lookup or self.lookup
-        library = True
-        for n, it in enumerate(run.man.items):
-            if library and it.kind == "function":
-                # library mode: a function's examples are the calls its listed tests make, judged after G3's runs
-                # (example_checks); its typed covers are validated by library_checks
-                continue
-            if it.kind in ("env_function", "function"):
-                if not it.covers and not getattr(it, "typed_covers", None):
-                    run.fail("G2", f"{it.item} covers no recorded action", it.item)
-                valid: list[tuple[str, int, Action]] = []
-                for eid, idx in it.covers:
-                    action = lookup(eid, idx)
-                    problem = cover_problem(
-                        action,
-                        it.channel,
-                        self.blobs.has,
-                        channel_rule=False,
-                    )
-                    if problem is not None:
-                        run.fail(
-                            "G2",
-                            f"{it.item} covers ({eid},{idx}), {problem}",
-                            it.item,
-                        )
-                    else:
-                        run.covers.add((it.item, eid, idx))
-                        valid.append((eid, idx, action))
-                        if (
-                            is_rejection(action)
-                            and getattr(action, "kind", "tool") != "shell"
-                        ):
-                            run.rejections.add((eid, idx))
-                declared = self._doc_inputs(run).get(it.item, "")
-                form = it.input or (declared if declared in INPUT_KINDS else None)
-                if _covers_a_write(valid, form):
-                    run.writes.add(it.item)
-                if valid:
-                    self._rule(run, it.item, valid)
-                if valid and all(
-                    is_rejection(a) and getattr(a, "kind", "tool") != "shell"
-                    for _, _, a in valid
-                ):
-                    run.fail(
-                        "G2",
-                        f"{it.item} covers only recorded rejections",
-                        it.item,
-                    )
-                elif valid and preview:
-                    # the structural input-form check only
-                    for why in _unfit_forms(valid, form)[:5]:
-                        run.fail("G2", f"{it.item} {why}", it.item)
-                elif valid:
-                    # the catalogue's shapes
-                    self._record_shapes(
-                        run,
-                        it.item,
-                        valid,
-                        it.input or (declared if declared in INPUT_KINDS else None),
-                    )
-                    # unseen values of its covered inputs would be a rerun of the item: the gate runs no code
-                    run.not_run(it.item, f"G2 held-out values: {NOT_RUN_GATE}")
-            elif it.kind == "workflow" and not preview:
-                status = job_item_status(
-                    it.item,
-                    _WithSources(self.ev, it.item, it.source_episodes),
-                    reader_promotes=self.reader_promotes,
-                )
-                if status != "promotable":
-                    run.fail("G2", f"{it.item} is {status}", it.item)
-
-    def _record_shapes(
-        self,
-        run: _Run,
-        item: str,
-        covers: list[tuple[str, int, Action]],
-        input_kind: str | None,
-    ) -> None:
-        """The input-shape descriptors of *item*'s validated covers (:func:`.shape_rows.descriptor`), kept
-        for the candidate's shape snapshot on a landed merge; never fails."""
-        body = run.c_bodies.get(item)
-        if body is None:
-            return
-        found = descriptors(
-            [a for _, _, a in covers[:MAX_SHAPE_COVERS]],
-            input_kind,
-            self.blobs,
-        )
-        if found:
-            run.shapes[item] = (body_digest(body[1]), found)
 
     def _snapshot(self, run: _Run) -> dict[str, dict]:
         """The candidate's shape snapshot: the parent's rows (backfilled where it has none, not frozen) for
@@ -1548,35 +1074,6 @@ class Gate:
                 run.shapes,
             )
 
-    @staticmethod
-    def _rule(run: _Run, item: str, valid: list[tuple[str, int, Action]]) -> None:
-        """An added or changed function that replaces a computed value under a condition needs covers from
-        :data:`RULE_EPISODES` episodes (module docstring, G2)."""
-        if run.p_bodies.get(item, ("", ""))[:2] == run.c_bodies.get(item, ("", ""))[:2]:
-            return
-        found = [
-            i for i in (run.c_report.items if run.c_report else []) if i.item_id == item
-        ]
-        if not found:
-            return  # an absent item (or an unreadable module) is refused elsewhere
-        info = found[0]
-        if info.rule_unchecked:
-            run.note(f"G2 rule check: {item} is too large to analyse; not checked")
-        elif info.rule_line and len({eid for eid, _, _ in valid}) < RULE_EPISODES:
-            run.fail(
-                "G2",
-                f"{item} replaces a value it computed from its input under a condition (line "
-                f"{info.rule_line} of {info.path}); a function that encodes such a rule needs covers from at "
-                f"least {RULE_EPISODES} episodes",
-                item,
-            )
-
-    @staticmethod
-    def _named_episodes(run: _Run) -> list[str]:
-        eids = {e for it in run.man.items for e in it.source_episodes}
-        eids |= {e for it in run.man.items for e, _ in it.covers}
-        return sorted(eids)
-
     def _g3(self, run: _Run) -> None:
         """G3 on the candidate's library, from its files only: an edited function needs a new or changed test listed
         under it, and every listed test must be in the candidate.
@@ -1590,7 +1087,7 @@ class Gate:
         edited = {
             it.item
             for it in man.items
-            if it.kind in ("env_function", "function")
+            if it.kind == "function"
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
         }
@@ -1660,82 +1157,14 @@ class Gate:
         for rel in suites:
             run.note(f"suite {rel} not run: {NOT_RUN_GATE}")
 
-    @staticmethod
-    def _shrinks(run: _Run) -> bool:
-        """No measure of :func:`_library_size` grows, and function definitions or their AST nodes fall."""
-        before = _library_size(run.p_files, run.p_tree)
-        after = _library_size(run.c_files, run.c_tree)
-        if before is None or after is None:
-            return False
-        return after[:2] != before[:2] and all(a <= b for a, b in zip(after, before))
-
     def _blob(self, sha: str) -> bytes:
         if not self.blobs.has(sha):
             raise KeyError(sha)
         return self.blobs.get(sha)
 
-    def _g4(self, run: _Run) -> None:
-        """The size budget: a note that hygiene is due past it (never a refusal of growth)."""
-        try:
-            size = estimate_tokens(build_index(run.c_tree, budget_tokens=sys.maxsize))
-        except ValueError as exc:  # an undecodable notes file, say
-            run.fail("G4", f"index not built: {exc}")
-            return
-        if size > self.budget:
-            run.note(
-                f"G4 hygiene due: the index is {size} tokens, over its "
-                f"soft budget of {self.budget}; growth is not refused",
-            )
-
-    def _g5(self, run: _Run) -> None:
-        def size(files: dict, tree: Path) -> int:
-            return sum((tree / p).stat().st_size for p in files if MODULE_PATH.match(p))
-
-        if size(run.c_files, run.c_tree) > size(run.p_files, run.p_tree):
-            validated = {(eid, idx) for _, eid, idx in run.covers} - run.rejections
-            if not validated - self.ev.covered() and not self._shrinks(run):
-                run.fail(
-                    "G5",
-                    "the library grew without covering any new recorded call",
-                )
-
     def _g6(self, run: _Run) -> None:
-        if run.report_error is not None:
-            run.fail("G6", f"items unreadable: {run.report_error}")
-        if run.c_report is not None:
-            for e in run.c_report.errors:
-                run.fail("G6", e)
-            changed = set(run.changed)
-            for path in sorted(changed & set(run.c_files)):
-                if MODULE_PATH.match(path):
-                    for name in duplicate_public_defs((run.c_tree / path).read_bytes()):
-                        run.fail(
-                            "G6",
-                            f"{path} defines public function {name} more than once",
-                        )
-            listed_ids = {it.item for it in run.man.items}
-            effects = {}
-            for i in run.c_report.items:
-                if i.kind != "env_function":
-                    continue
-                effects[i.item_id] = i.effect
-                if i.path in changed and not i.effect:
-                    run.fail(
-                        "G6",
-                        f"{i.item_id} has no Effect: line",
-                        i.item_id if i.item_id in listed_ids else None,
-                    )
-            # structural Effect: an environment function that covers a recorded write call declares it. A
-            # library function in run.writes has no Effect: line to check; its effect is derived and recorded
-            # instead (library_checks.derive_effect)
-            for item in sorted(run.writes & set(effects)):
-                if effects[item] != "write":
-                    run.fail(
-                        "G6",
-                        f"{item} covers a recorded write call, so it must declare Effect: write "
-                        f"(it declares {effects[item] or 'none'})",
-                        item,
-                    )
+        """No key-shaped string in a changed file or the manifest (the rest of G6, the files that must never be
+        extracted, is :meth:`_early`)."""
         for p in run.changed:
             if p in run.c_files:
                 text = (run.c_tree / p).read_bytes().decode("utf-8", "ignore")
