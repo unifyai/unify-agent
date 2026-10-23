@@ -127,7 +127,7 @@ def _assert_opening_first(call, session, world: dict) -> str:
     opening = session.opening()
     assert system.startswith(opening + "\n\n"), system[:600]
     assert opening.startswith(OPENING_HEADING + "\n")
-    assert "`tools.list()` prints one line per tool you have" in opening
+    assert "`print(tools.list())` shows one line per tool you have" in opening
     assert "\n".join(systems).count(OPENING_HEADING) == 1
     warnings.warn(
         f"{session.agent} system message: {len(system)} characters, {len(system) - len(opening) - 2} without the "

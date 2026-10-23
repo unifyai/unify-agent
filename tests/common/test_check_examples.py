@@ -251,8 +251,8 @@ def test_the_help_is_typed_and_shows_a_json_and_a_text_example(load, capsys):
     assert R.tool_names_in(text) <= set(R.registry()) | {"help"}
     tools = load()
     assert tools.check_examples.__doc__ == text
-    tools.help("check_examples")
-    assert capsys.readouterr().out == text + "\n"
+    # help returns its text and prints nothing (every call returns text)
+    assert tools.help("check_examples") == text and capsys.readouterr().out == ""
     # the examples in the help run as written
     for example in R.registry()["check_examples"].examples:
         scope = {"tools": tools}

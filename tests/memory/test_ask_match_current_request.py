@@ -305,10 +305,9 @@ def test_the_request_tool_is_on_the_channel_but_never_in_tools(monkeypatch, caps
     names = R.allow_list("actor", frozenset({"librarian", "store", "helper"})) + R.channel_only("actor")
     exec(compile(R.render_stub(names, "actor"), "tools.py", "exec"), mod.__dict__)
     assert "current_request" not in dir(mod) and "current_request" not in mod.__all__
-    mod.list()
-    listed = capsys.readouterr().out
-    mod.help("current_request")
-    helped = capsys.readouterr().out
+    listed = mod.list()
+    helped = mod.help("current_request")
+    assert capsys.readouterr().out == ""  # they return their text and print nothing
     assert "ask_library(" in listed and "current_request" not in listed
     assert helped.startswith("no tool named 'current_request'")
     assert mod._call("current_request", {}) == "current_request answered"

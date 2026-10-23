@@ -175,8 +175,7 @@ def tools_bootstrap(stub_source: str) -> str:
     """The ``exec`` message that makes *stub_source* the module ``tools`` (in ``sys.modules`` and in the
     namespace), for a box with no read-only directory of its own to stage it in (the actor's). The module runs with
     the standard builtins (the stub itself uses ``exec`` and ``compile``, which the actor's namespace leaves out),
-    except ``print``, which is the namespace's own, so what ``tools.list()`` and ``tools.help()`` print is the cell's
-    output. A narrower builtins mapping is a convenience for cells, not a boundary: the box is."""
+    except ``print``, which is the namespace's own, so whatever the module prints is the cell's output. A narrower builtins mapping is a convenience for cells, not a boundary: the box is."""
     return (
         "async def __exec_wrapper():\n"
         "    __b = __import__('builtins')\n"

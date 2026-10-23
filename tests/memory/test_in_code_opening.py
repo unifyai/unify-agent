@@ -13,7 +13,7 @@ import pytest
 from unify.common import tool_registry as R
 
 HEADING = "## How you work here"
-LIST_SENTENCE = "`tools.list()` prints one line per tool you have"
+LIST_SENTENCE = "`print(tools.list())` shows one line per tool you have"
 KEPT_SENTENCE = "Your Python sandbox is persistent and stateful"
 FRESH_SENTENCE = "Each cell runs in a fresh Python sandbox"
 NAMES_SENTENCE = "`tools` and `memory` are already available as variables in every cell; no import needed."

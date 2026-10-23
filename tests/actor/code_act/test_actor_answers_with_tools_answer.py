@@ -81,7 +81,7 @@ async def test_each_request_is_answered_by_tools_answer_and_finish_is_unknown(se
         actor=[
             # the first request: the tool list and the record's help, the end call the actor does not have, then its
             # answer
-            reply(calls=[code('tools.list()\nprint(tools.help("record"))\n')]),
+            reply(calls=[code('print(tools.list())\nprint(tools.help("record"))\n')]),
             reply(calls=[code(FINISH_CELL)]),
             reply(calls=[code(f"tools.answer({SUBMIT!r})\n")]),
             # the second request: its answer

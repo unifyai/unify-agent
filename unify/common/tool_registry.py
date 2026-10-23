@@ -2853,14 +2853,15 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
         "",
         "",
         "def list():",
-        '    """Print one line per tool you have."""',
-        "    print(_LIST)",
+        '    """One line per tool you have, as text (print it to read it)."""',
+        "    return _LIST",
         "",
         "",
         "def help(name):",
-        '    """Print what tool *name* does, its arguments, what it returns, its refusals and examples."""',
+        '    """What tool *name* does, its arguments, what it returns, its refusals and examples, as text (print it to',
+        '    read it)."""',
         "    text = _HELP.get(getattr(name, '__name__', name))",
-        "    print(text if text is not None else 'no tool named %r; tools.list() lists yours' % (name,))",
+        "    return text if text is not None else 'no tool named %r; tools.list() lists yours' % (name,)",
         "",
         "",
         f"__all__ = {json.dumps(['list', 'help', *[n for n in CLIENT_NAMES if not n.startswith('_')], *allowed])}",
@@ -3015,10 +3016,10 @@ def preamble(agent: str, facts: dict) -> str:
         "",
         sandbox_paragraph(agent, names, bool(persistent)),
         "",
-        "Your tools are Python functions in the module `tools`: `tools.list()` prints one line per tool you have, "
-        "and `tools.help(name)` prints what one does, its arguments, what it returns and examples; read the help "
-        "rather than guess a signature. Call them like any function: "
-        '`page = tools.read("/path")`. Every other call returns text (a str); keep it in a variable and print the '
+        "Your tools are Python functions in the module `tools`: `print(tools.list())` shows one line per tool you "
+        "have, and `print(tools.help(name))` what one does, its arguments, what it returns and examples; read the "
+        "help rather than guess a signature. Call them like any function: "
+        '`page = tools.read("/path")`. Every call returns text (a str); keep it in a variable and print the '
         "part you need. A refused call raises tools.Refused with the reason; a call that was not run (a limit for this "
         "turn) raises tools.NotRun and can be made again later.",
     ]
