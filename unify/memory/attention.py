@@ -143,6 +143,13 @@ DECISIONS_FILE = "decisions.jsonl"
 _ID_CHARS = frozenset("0123456789abcdef")
 
 
+def _group_reasons(group: Any) -> dict:
+    """Why *group* formed (:func:`.capture_groups.reasons`): its related pairs and how many each relation kind joined."""
+    from .capture_groups import reasons
+
+    return reasons(getattr(group, "relations", None) or [])
+
+
 class LedgerError(ValueError):
     """A ledger call with arguments it cannot take; the text says what was given and what is expected."""
 
@@ -1221,7 +1228,8 @@ class Ledger:
                         members = alone_members[:1]
                     group_row = {"op": "group", "pass_id": pass_id, "group": g.id, "due": g.due,
                                  "members": [e.entry for e in members],
-                                 "context": [e.entry for e in g.context], "at": self.now()}  # fmt: skip
+                                 "context": [e.entry for e in g.context],
+                                 "reasons": _group_reasons(g), "at": self.now()}  # fmt: skip
                     pending = members
                 else:
                     pending = immediate

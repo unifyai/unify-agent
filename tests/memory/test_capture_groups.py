@@ -240,3 +240,93 @@ def test_grouping_reads_no_id_word_or_request_text():
     src = Path(cg.__file__).read_text(encoding="utf-8")
     for word in ("summary.md", "asked(", ".request", "goal", "episode_id ==", "task"):
         assert word not in src.split('"""', 2)[2], word
+
+
+# --- rev 2.1 grouping fix: used items, the shared envelope, the logged reasons ------------------------------------------
+
+
+def _use_store(rows):
+    """A stand-in evidence store: an ``item_use`` table with the call columns (stdlib sqlite, in memory)."""
+    import sqlite3
+
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE item_use(item TEXT, episode_id TEXT, called INTEGER, refused INTEGER, errored INTEGER, "
+               "shown INTEGER, PRIMARY KEY(item, episode_id))")  # fmt: skip
+    db.executemany("INSERT INTO item_use VALUES(?,?,?,?,?,?)", rows)
+    return SimpleNamespace(db=db)
+
+
+def _entry(eid, captures=()):
+    return SimpleNamespace(entry=eid, refs=SimpleNamespace(episodes=(eid,), captures=tuple(captures)))
+
+
+def test_items_served_to_every_episode_relate_nothing_and_only_used_ones_relate(tmp_path):
+    """A few general items are served to every episode (at the pin, shown): they must not join everything. Two
+    episodes that called the same item, and one whose call of it was refused, are related by it; nothing else is."""
+    episodes = [f"ep{i:02d}" for i in range(10)]
+    rows = []
+    for e in episodes:
+        rows += [("notes/general/checklist.md", e, 0, 0, 0, 1), ("memory.common.parse:read", e, 0, 0, 0, 1)]
+    rows += [("memory.ledger.post:book", "ep03", 2, 0, 0, 1), ("memory.ledger.post:book", "ep07", 1, 0, 0, 1),
+             ("memory.ledger.post:book", "ep08", 0, 1, 0, 1)]  # fmt: skip
+    profiles = cg.HomeProfiles(tmp_path / "state", _use_store(rows))
+    got = {e: profiles(_entry(e)) for e in episodes}
+    assert got["ep03"].items == frozenset({"memory.ledger.post:book"})
+    assert got["ep00"].items == frozenset()
+    assert "notes/general/checklist.md" in got["ep00"].touched   # the writer is still shown what was served
+    related = {(a, b) for i, a in enumerate(episodes) for b in episodes[i + 1:] if cg.related(got[a], got[b])}
+    assert related == {("ep03", "ep07"), ("ep03", "ep08"), ("ep07", "ep08")}
+
+
+def _capture(store, cid, tree):
+    d = store / cid
+    d.mkdir(parents=True)
+    (d / "procedure.py").write_text("def run(value):\n    return value\n", encoding="utf-8")
+    (d / "signature.json").write_text(json.dumps({"input": {"kind": "value", "tree": tree}}), encoding="utf-8")
+
+
+def test_an_input_shape_every_capture_shares_relates_nothing_and_what_lies_below_it_does(tmp_path):
+    """The key paths every capture of the home has (a world's shared envelope) distinguish none of them: only the
+    structure below it relates captures, and with fewer than ENVELOPE_MIN shaped captures nothing is stripped."""
+    from unify.memory.captures import store_dir
+
+    state = tmp_path / "state"
+    store = store_dir(state)
+    envelope = {"head": {"from": "str", "sent": "str"}, "body": "str"}
+    trees = {
+        "a" * 16: {**envelope, "rows": [{"amount": "int", "ref": "str"}]},
+        "b" * 16: {**envelope, "rows": [{"amount": "int", "ref": "str"}]},
+        "c" * 16: {**envelope, "grid": [["int"]]},
+        "d" * 16: dict(envelope),
+    }
+    _capture(store, "a" * 16, trees["a" * 16])
+    _capture(store, "b" * 16, trees["b" * 16])
+    profiles = cg.HomeProfiles(state)
+    early = [profiles(_entry(c, (c,))) for c in ("a" * 16, "b" * 16)]
+    assert cg.related(*early) == ["input"] and profiles.envelope() == frozenset()   # 2 shaped captures: no envelope
+    for cid in ("c" * 16, "d" * 16):
+        _capture(store, cid, trees[cid])
+    got = {c: profiles(_entry(c, (c,))) for c in trees}
+    assert profiles.envelope() and all(not (p.input & profiles.envelope()) for p in got.values())
+    assert cg.related(got["a" * 16], got["b" * 16]) == ["input"]
+    assert not cg.related(got["a" * 16], got["c" * 16]) and not cg.related(got["c" * 16], got["d" * 16])
+    assert got["d" * 16].input == frozenset()   # the envelope alone: no shape left, so nothing relates it
+
+
+def test_a_group_row_logs_why_the_group_formed(tmp_path):
+    clock = Clock()
+    led = Ledger(tmp_path / "home", clock=clock)
+    names = ("e1", "e2", "e3")
+    cids = {"e1": "1" * 16, "e2": "2" * 16, "e3": "3" * 16}
+    led.sync(Fake(forks=[_fork(n) for n in names], captures={n: _cap(n, cids[n]) for n in names}))
+    profs = {"1" * 16: _p("x", sequence=STEP, items={"memory.t.m:f"}), "2" * 16: _p("y", sequence=STEP),
+             "3" * 16: _p("z", items={"memory.t.m:f"})}  # fmt: skip
+
+    def grouping(entries):
+        return cg.groups(entries, lambda e: profs[e.refs.captures[0]], now=clock())
+
+    led.hand("p1", 4, grouping=grouping)
+    row = led.group_of("p1")
+    assert row["reasons"] == {"pairs": 2, "sequence": 1, "items": 1, "input": 0}
+    assert cg.reasons([{"why": ["sequence: a > b", "input"]}, {"why": ["items: x"]}]) == {
+        "pairs": 2, "sequence": 1, "items": 1, "input": 1}

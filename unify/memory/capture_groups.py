@@ -12,13 +12,17 @@ position, and nothing is run. Two captures are related when their records show a
   :func:`.capture_shape.call_sequence`), so they do the same steps through the world. One shared call is not enough:
   in a world with one action channel every acting capture makes it, so a single call would chain all work into one
   group;
-* ``items``: their episodes used, were served or failed with a shared library item (the evidence store's use rows:
-  imported, called, refused or errored);
-* ``input``: they have the same entry form and the same non-empty input shape: the key paths, named or not, and leaf
-  types of the recorded data the capture's signature describes. For a ``value`` capture that is the value it reads;
-  for a ``state`` or ``state_env`` capture, the structured data its state holds (the JSON its messages carry). A state
-  with no structured data (text only) has no input shape, by the same rule ``memory.find`` uses: text has no
-  structure to compare.
+* ``items``: their episodes used a shared library item: called it, or it refused or errored when called (the
+  evidence store's use rows with an observed call). An item that was only at the episode's pin, shown or served
+  relates nothing: the same few general items are served to nearly every episode, so a served item would chain all
+  work into one group;
+* ``input``: they have the same entry form and the same non-empty input shape below the shared envelope: the key
+  paths, named or not, and leaf types of the recorded data the capture's signature describes, less the key paths
+  every capture of the home has (:data:`ENVELOPE_MIN` or more captures with a shape; fewer show no envelope). For a
+  ``value`` capture that is the value it reads; for a ``state`` or ``state_env`` capture, the structured data its
+  state holds (the JSON its messages carry). A state with no structured data (text only) has no input shape, by the
+  same rule ``memory.find`` uses: text has no structure to compare. A shape every capture shares (a world's request
+  envelope) distinguishes none of them, so it relates nothing.
 
 A group is a connected set of related captures. The outcome each member's signals gave is carried to the writer as
 a fact of the member, not used to join: an edge on the outcome alone would join unrelated work in any world with one
@@ -42,6 +46,9 @@ before: it is about one thing that happened.
 handed entries and their captures), the related closed entries (their captures and what earlier passes decided), why
 each pair is related, and the library items the group touches: those the members' episodes used, were served or
 failed with, and those earlier passes landed from related captures.
+
+**Why a group formed** is logged with its pass (the ledger's ``group`` row, :func:`reasons`): how many related pairs
+it has and how many of them each relation kind joined, so an audit can count them.
 """
 
 from __future__ import annotations
@@ -61,6 +68,13 @@ IDLE_S = 600
 #: The entry kinds that wait for their group; every other kind is handed at once.
 GROUPED_KINDS = frozenset({"new_experience"})
 GROUP_FILE = "group.json"
+#: The fewest captures with an input shape from which the key paths all of them share are a shared envelope.
+ENVELOPE_MIN = 3
+#: The item_use counts that mean an item was used (an observed call: made, refused or errored), not only served.
+USED_COUNTS = ("called", "refused", "errored", "refused_modified", "errored_modified",
+               "runtime_ok", "runtime_refused", "runtime_errored")
+#: The relation kinds, as :func:`related` names them.
+RELATION_KINDS = ("sequence", "items", "input")
 @dataclass(frozen=True)
 class Profile:
     """What the harness's records say of one entry's capture (nothing run): its entry form, the ``env`` chains its
@@ -74,6 +88,9 @@ class Profile:
     items: frozenset = frozenset()
     outcome: str | None = None
     sequence: tuple[str, ...] = ()
+    #: every library item its episodes touched (used, at the pin, shown or served): what the writer is shown, never a
+    #: relation (``items`` holds the used ones)
+    touched: frozenset = frozenset()
 
 
 @dataclass
@@ -101,6 +118,16 @@ def related(a: Profile, b: Profile) -> list[str]:
         out.append("items: " + ", ".join(items[:5]))
     if a.form is not None and a.form == b.form and a.input and a.input == b.input:
         out.append("input")
+    return out
+
+
+def reasons(relations: Iterable[Mapping[str, Any]]) -> dict:
+    """Why a group formed, for its ledger row: the number of related pairs and, per relation kind
+    (:data:`RELATION_KINDS`), how many of them that kind joined."""
+    rows = list(relations)
+    out = {"pairs": len(rows)}
+    for kind in RELATION_KINDS:
+        out[kind] = sum(1 for r in rows if any(str(w).split(":", 1)[0] == kind for w in (r.get("why") or [])))
     return out
 
 
@@ -202,27 +229,60 @@ class HomeProfiles:
             self._capture[cid] = _capture_facts(self.store / cid)
         return self._capture[cid]
 
-    def items_of(self, episodes: Iterable[str]) -> frozenset:
-        """The library items the episodes used, were served or failed with (any use row)."""
+    def _use_rows(self, episodes: Iterable[str]) -> list[tuple[str, bool]]:
+        """``(item, used)`` of each use row of the episodes: *used* when the row has an observed call
+        (:data:`USED_COUNTS`); a store without those columns has no used rows."""
         if self.evidence is None:
-            return frozenset()
-        out: set[str] = set()
+            return []
+        try:
+            have = {str(r[1]) for r in self.evidence.db.execute("PRAGMA table_info(item_use)").fetchall()}
+        except Exception:  # noqa: BLE001 - an unreadable store relates nothing
+            return []
+        cols = [c for c in USED_COUNTS if c in have]
+        used_sql = ("(" + " + ".join(f"COALESCE({c}, 0)" for c in cols) + ") > 0") if cols else "0"
+        out: list[tuple[str, bool]] = []
         for eid in episodes:
             try:
-                rows = self.evidence.db.execute("SELECT item FROM item_use WHERE episode_id=?", (eid,)).fetchall()
+                rows = self.evidence.db.execute(f"SELECT item, {used_sql} FROM item_use WHERE episode_id=?",
+                                                (eid,)).fetchall()  # fmt: skip
             except Exception:  # noqa: BLE001 - an unreadable store relates nothing
                 continue
-            out.update(str(r[0]) for r in rows if isinstance(r[0], str))
-        return frozenset(out)
+            out.extend((str(r[0]), bool(r[1])) for r in rows if isinstance(r[0], str))
+        return out
+
+    def items_of(self, episodes: Iterable[str]) -> frozenset:
+        """The library items the episodes used (an observed call: made, refused or errored)."""
+        return frozenset(item for item, used in self._use_rows(episodes) if used)
+
+    def touched_of(self, episodes: Iterable[str]) -> frozenset:
+        """Every library item the episodes touched (any use row: used, at the pin, shown or served)."""
+        return frozenset(item for item, _ in self._use_rows(episodes))
+
+    def envelope(self) -> frozenset:
+        """The input key paths every capture of the home with an input shape has (:data:`ENVELOPE_MIN` or more such
+        captures; fewer: none): a shared envelope, which distinguishes none of them."""
+        try:
+            cids = sorted(d.name for d in self.store.iterdir() if d.is_dir() and not d.is_symlink())
+        except OSError:
+            cids = []
+        key = tuple(cids)
+        if getattr(self, "_envelope_key", None) != key:
+            shapes = [s for s in (self._capture_facts(c)[2] for c in cids) if s]
+            self._envelope = frozenset.intersection(*shapes) if len(shapes) >= ENVELOPE_MIN else frozenset()
+            self._envelope_key = key
+        return self._envelope
 
     def __call__(self, entry: Any) -> Profile:
         cids = tuple(entry.refs.captures)
         form, effects, shape, outcome, sequence = None, frozenset(), frozenset(), None, ()
         for cid in cids[:1]:
             form, effects, shape, outcome, sequence = self._capture_facts(cid)
+        if shape:
+            shape = shape - self.envelope()   # only what is below the shared envelope can relate
         own = {"capture:" + c for c in cids}
         items = frozenset(i for i in self.items_of(entry.refs.episodes) if i not in own)
-        return Profile(entry.entry, cids, form, effects, shape, items, outcome, sequence)
+        touched = frozenset(i for i in self.touched_of(entry.refs.episodes) if i not in own)
+        return Profile(entry.entry, cids, form, effects, shape, items, outcome, sequence, touched)
 
 
 def _read_json(path: Path) -> Any:
@@ -294,7 +354,7 @@ def group_doc(group: Group, profile_of: Callable[[Any], Profile], *, landed: Map
             "outcome": p.outcome,
             "effects": sorted(p.effects),
             "sequence": list(p.sequence),
-            "items_touched": sorted(p.items),
+            "items_touched": sorted(p.touched or p.items),
         }
         if e.state == "closed":
             row.update(decision=e.decision, decided_items=list(e.decided_items))
@@ -303,7 +363,7 @@ def group_doc(group: Group, profile_of: Callable[[Any], Profile], *, landed: Map
     touched: set[str] = set()
     for e in [*group.open, *group.context]:
         p = profile_of(e)
-        touched.update(p.items)
+        touched.update(p.touched or p.items)
         touched.update(str(landed[c]) for c in p.captures if landed.get(c))
         if e.state == "closed":
             touched.update(i for i in e.decided_items if isinstance(i, str))
