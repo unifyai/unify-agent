@@ -81,3 +81,14 @@ def test_an_answer_names_at_most_a_primary_and_one_fallback():
     assert got is None and "at most 2" in why
     got, _ = L.check_answer({"fits": fits[:2]}, ids)
     assert got == {"fits": fits[:2]}
+
+
+def test_an_answer_is_bounded_in_all_including_its_reasons_and_nearest():
+    ids = [f"memory.a.b:f{i}" for i in range(6)]
+    long = "w " * 3000
+    got, _ = L.check_answer({"fits": [], "nearest": [{"id": i, "differs": long} for i in ids]}, ids)
+    assert len(got["nearest"]) == L.MAX_NEAREST and len(json.dumps(got)) <= L.ANSWER_CHARS
+    fits = [{"id": i, "call": f"memory.get({i!r})()", "why": long} for i in ids[:2]]
+    got, _ = L.check_answer({"fits": fits}, ids)
+    assert [f["id"] for f in got["fits"]] == ids[:2] and len(json.dumps(got)) <= L.ANSWER_CHARS
+    assert all(f["call"] == f"memory.get({f['id']!r})()" for f in got["fits"])  # calls are never cut

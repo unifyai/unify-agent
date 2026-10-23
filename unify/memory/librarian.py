@@ -476,6 +476,29 @@ def _returned_by_memory(node: Any, tree: Any) -> bool:
     return False
 
 
+#: The most characters an answer the agent is handed may take, in all (no prompt flooding).
+ANSWER_CHARS = 2000
+#: The most nearest items an answer that found no fit names.
+MAX_NEAREST = 3
+
+
+def bounded_answer(answer: dict) -> dict:
+    """*answer* within :data:`ANSWER_CHARS` characters as JSON: at most :data:`MAX_NEAREST` nearest items, and each
+    ``why`` and ``differs`` shortened (with "…") until the whole fits; ids and calls are never cut."""
+    out = {k: [dict(x) for x in v] if isinstance(v, list) else v for k, v in answer.items()}
+    if isinstance(out.get("nearest"), list):
+        out["nearest"] = out["nearest"][:MAX_NEAREST]
+    limit = 600
+    while len(json.dumps(out, ensure_ascii=False)) > ANSWER_CHARS and limit > 20:
+        for key, field in (("fits", "why"), ("nearest", "differs")):
+            for row in out.get(key) or []:
+                text = str(row.get(field) or "")
+                if len(text) > limit:
+                    row[field] = text[: limit - 1] + "…"
+        limit = limit * 2 // 3
+    return out
+
+
 def check_answer(
     answer: Any,
     ids: list[str],
@@ -485,7 +508,8 @@ def check_answer(
     """The answer as the librarian gave it, or None with the reason it is refused: the form of design J(b).4, every
     id an item of the library (*ids*), no captured attempt that failed among the fits, and each fit that names a
     procedure with a recipe (or the recipe) carrying the call that applies it to the current request (*recipes*:
-    id -> that call), so the agent has the one call. The harness adds, drops and reorders nothing."""
+    id -> that call), so the agent has the one call. The harness adds and reorders nothing; it only keeps the answer
+    within its bound (:func:`bounded_answer`)."""
     recipes = recipes or {}
     known = set(ids)
     if not isinstance(answer, dict):
@@ -522,7 +546,7 @@ def check_answer(
     if fits:
         if "nearest" in answer:
             return None, "`nearest` is given only when nothing fits"
-        return {"fits": [dict(f) for f in fits]}, ""
+        return bounded_answer({"fits": [dict(f) for f in fits]}), ""
     nearest = answer.get("nearest")
     if not isinstance(nearest, list):
         return None, "when nothing fits, `nearest` must be a list of {id, differs} (empty when the library is empty)"
@@ -533,7 +557,7 @@ def check_answer(
             return None, f"nearest {i}: {n['id'][:200]!r} is not an item of the library"
     if len({n["id"] for n in nearest}) != len(nearest):
         return None, "an id is listed twice among the nearest"
-    return {"fits": [], "nearest": [dict(n) for n in nearest]}, ""
+    return bounded_answer({"fits": [], "nearest": [dict(n) for n in nearest]}), ""
 
 
 def check_schema(schema: Any) -> None:
