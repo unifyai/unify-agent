@@ -128,10 +128,11 @@ def test_the_next_map_keeps_a_curators_retirement_and_decides_an_outcome_retirem
     assert changes == {PD: ON_TRIAL}
     # the curator's retirement taints nothing (TOK's importers, WEEK's module mates and NOTE stay as they are)
     assert all(r["status_rule"] != "taint" for r in recs.values())
-    # the evidence fields: WEEK's new version has no verification (unchecked); PD keeps its own (its examples ran)
+    # the evidence fields: WEEK's new version has no verification (unchecked); PD's examples ran, which is no
+    # evidence for it (no test result is): unchecked too
     assert (recs[WEEK]["level"], recs[PD]["level"], recs[TOK]["level"], recs[NOTE]["level"]) == (
         UNCHECKED,
-        REPRODUCES_ITS_CASE,
+        UNCHECKED,
         UNCHECKED,
         None,
     )
@@ -159,7 +160,7 @@ def test_the_gates_level_fields_reach_the_record():
     )
     assert (recs[PD]["level"], recs[PD]["level_reasons"]) == (UNCHECKED, ["exact assertion: none"])
     assert (recs[PD]["role"], recs[PD]["reads_for"], recs[PD]["reader"]) == ("reader", ["a.json", "b.json"], [])
-    assert (recs[WEEK]["level"], recs[WEEK]["role"], recs[WEEK]["reader"]) == (REPRODUCES_ITS_CASE, None, [PD])
+    assert (recs[WEEK]["level"], recs[WEEK]["role"], recs[WEEK]["reader"]) == (UNCHECKED, None, [PD])  # a test-given level reads unchecked
 
 
 def test_a_record_missing_its_level_shows_its_support_in_the_index_and_show(tmp_path):

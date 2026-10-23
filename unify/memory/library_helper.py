@@ -140,7 +140,8 @@ _OLD_STATUSES = {
 _OLD_LEVELS = {
     "unverified": "unchecked",
     "experimental": "unchecked",
-    "verified": "reproduces-its-case",
+    "verified": "unchecked",
+    "reproduces-its-case": "unchecked",
 }
 
 

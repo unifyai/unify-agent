@@ -150,10 +150,10 @@ def test_every_capture_is_exported_alike_whatever_its_code_looks_like(tmp_path):
 # --- the librarian's files ---------------------------------------------------------------------------------------------
 
 
-def _snapshot(tmp_path):
-    """The fixture store's snapshot beside a fixture library tree."""
+def _snapshot(tmp_path, **export):
+    """The fixture store's snapshot, exported with *export*, beside a fixture library tree."""
     store, ids = _store(tmp_path)
-    return _tree(tmp_path / "lib"), captures.export_files(store), ids
+    return _tree(tmp_path / "lib"), captures.export_files(store, **export), ids
 
 
 def test_the_catalogue_and_the_search_index_name_every_capture_a_recorded_procedure(tmp_path):
@@ -186,9 +186,9 @@ def err(fn, *a, **k):
 '''
 
 
-def _copy(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    """A library copy as the request's export writes it, with the capture snapshot."""
-    tree, snap, ids = _snapshot(tmp_path)
+def _copy(tmp_path: Path, **export) -> tuple[Path, dict[str, str]]:
+    """A library copy as the request's export writes it, with the capture snapshot exported with *export*."""
+    tree, snap, ids = _snapshot(tmp_path, **export)
     write_files(tree, lx.generated_library_mode(tree))
     for rel, data in snap.items():
         (tree / rel).parent.mkdir(parents=True, exist_ok=True)

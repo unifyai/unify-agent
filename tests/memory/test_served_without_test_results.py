@@ -41,7 +41,7 @@ def _records(tree, tested: bool) -> dict:
     lib = discover(tree)
     out = {}
     for f in lib.functions:
-        rec = {**ir.empty_record(f.item_id, "function"), "provenance": {"episodes": ["e1"]},
+        rec = {**ir.empty_record(f.item_id, "function"), "provenance": {"episodes": ["e1"]}, "level": "unchecked",
                "label": {"uses": {"clean": 1, "failed": 0, "neutral": 0}}}  # fmt: skip
         if tested:
             rec.update({k: v for k, v in FROM_TESTS.items() if k != "label"})

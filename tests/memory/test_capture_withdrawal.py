@@ -171,5 +171,5 @@ def test_the_request_always_withdraws_closed_captures_and_records_what_it_did():
     opening = inspect.getsource(RequestRun._export_copy)
     assert "library_withdraw_closed_captures" not in opening
     assert "withdrawn = withdrawn_captures(Repo(paths.memory))" in opening
-    assert "withdrawn=withdrawn," in opening and '"offered_in_place": sorted(' in opening
+    assert "withdrawn=withdrawn)" in opening and '"offered_in_place": sorted(' in opening
     assert opening.index("withdrawn_captures(Repo(paths.memory))") < opening.index("export_actor_library_mode(")

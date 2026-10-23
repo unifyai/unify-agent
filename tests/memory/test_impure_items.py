@@ -214,11 +214,12 @@ def test_a_failing_test_is_a_label_and_a_key_shaped_string_still_refuses(library
     assert res.passed, res.reasons
     findings = res.verification[ITEM]["label_findings"]
     # rev 2.1: the gate runs neither its tests nor its example calls (it runs no code); each is a "not run" label
-    # with why, never a refusal, and the example label adds that the item is a state form (impure)
+    # with why, never a refusal; nothing judges the item pure or impure
     from unify.memory.gate_policy import NOT_RUN_GATE
 
     assert any(f.startswith("not run: G3 ") and NOT_RUN_GATE in f for f in findings), findings
-    assert any(f.startswith("not run: G2 examples: ") and "(a state form)" in f for f in findings), findings
+    assert any(f.startswith("not run: G2 examples: ") for f in findings), findings
+    assert not [f for f in findings if "pure" in f or "state form" in f], findings
     mem = library_example_world[0]
     keyed = REPORT_SOURCE + '\n_KEY = "' + "sk-" + "a" * 40 + '"\n'
     bad = _gate(library_example_world).check(mem.head(), w.candidate(mem, _files(module=keyed)),

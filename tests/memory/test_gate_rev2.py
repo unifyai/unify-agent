@@ -97,7 +97,9 @@ def test_the_gate_runs_nothing_for_an_impure_item_and_labels_it(tmp_path, monkey
     )
     assert built.result.passed, built.result.reasons
     labels = built.result.verification["memory.ops.mail:send"]["label_findings"]
-    assert any(line.startswith("not run:") and "state form" in line for line in labels), labels
+    assert any(line.startswith("not run:") for line in labels), labels
+    # nothing judges the item pure or impure: no label says so
+    assert not [line for line in labels if "pure" in line or "state form" in line], labels
 
 
 PURE = '''"""Double a number."""
