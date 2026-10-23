@@ -324,6 +324,22 @@ READ_ALL = (
 )
 
 
+DELEGATE = (
+    "import json\n"
+    "idx = json.load(open('/inputs/attention/index.json'))\n"
+    "eps = [e for r in idx['entries'] for e in ((r.get('refs') or {}).get('episodes') or [])]\n"
+    "print(tools.delegate(task='Check your own box and roots, then say done.', episodes=eps[:1]))\n"
+)
+WAIT_HELPER = (
+    "got = ''\n"
+    "for _ in range(12):\n"
+    "    got += str(tools.wait(timeout=60))\n"
+    "    if '(done)' in got or 'ended' in got:\n"
+    "        break\n"
+    "print(got[-1500:])\n"
+)
+
+
 def decide_code(ids: list[str], plan: str) -> str:
     """The writer's deciding cell. *plan*: ``land`` (a note citing every new capture's episode, with its Rule
     section), ``land_no_rule`` (the same note without its Rule section), ``delete`` (remove the note and declare it
@@ -420,6 +436,28 @@ class WriterLane:
             plan = self.plan(ids) if callable(self.plan) else self.plan
             code = decide_code(ids, plan)
         return _cell(f"Step {n}.", code)
+
+
+class HelperLane:
+    """The writer's helpers' model: *probe* (a cell, or a callable of the request) runs first and its output is kept in
+    :attr:`out`; then ``tools.done`` with no claims. Every request body is kept."""
+
+    def __init__(self, probe: str | Callable[[dict], str] = "") -> None:
+        self.probe = probe
+        self.bodies: list[dict] = []
+        self.out: list[str] = []
+
+    def __call__(self, body: dict) -> Any:
+        self.bodies.append(body)
+        n = _n_assistant(body)
+        probe = self.probe(body) if callable(self.probe) else self.probe
+        if probe and n == 0:
+            return _cell("Probe.", probe)
+        if probe and n == 1:
+            self.out.append(tool_texts(body)[-1] if tool_texts(body) else "")
+        if n <= (1 if probe else 0):
+            return _cell("Done.", "print(tools.done('checked', []))\n")
+        return "done"
 
 
 # ── the in-process agents: actor, helpers, librarian ─────────────────────────────────────────────────────────────

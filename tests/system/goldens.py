@@ -97,3 +97,48 @@ def golden_of(render: dict[str, str]) -> tuple[dict[str, str], dict[str, int]]:
                 out[key] = text.replace(c.span, c.true)
                 applied[i] = applied.get(i, 0) + 1
     return out, applied
+
+
+FIRST_REQUESTS = "goldens/first_requests-{mode}.json"
+
+#: What varies between two runs of the same scripted requests (ids, names, clocks, places), and its stand-in.
+_VARYING = (
+    (r"\d{8}T\d{6}-[0-9a-f]{8}", "<episode>"),
+    (r"\b[0-9a-f]{40}\b", "<sha>"),
+    (r"\b[0-9a-f]{16}\b", "<id16>"),
+    (r"\b(actor|librarian|writer|fork|helper|h\d+)-[0-9a-f]{4,12}\b", r"\1-<n>"),
+    (r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?", "<time>"),
+    (r"\b\d{2}:\d{2}:\d{2}\b", "<clock>"),
+    (r"127\.0\.0\.1:\d+", "127.0.0.1:<port>"),
+    (r"/[\w./-]*/logs/sandbox_worlds/[\w.-]+", "<world>"),
+    (r'"duration_ms": \d+', '"duration_ms": <ms>'),
+    (r"\b\d+(\.\d+)? ?(s|ms) (left|elapsed|ago)\b", r"<n> \2 \3"),
+)
+
+
+def normalised(text: str) -> str:
+    for rx, to in _VARYING:
+        text = re.sub(rx, to, text)
+    return text
+
+
+def _roles_of(c: Correction, static_keys: list[str]) -> set[str]:
+    """The roles a correction is about: those of the static render keys (``<role>/<mode>/<what>``) its regex names."""
+    rx = re.compile(c.keys)
+    return {k.split("/", 1)[0] for k in static_keys if rx.search(k)}
+
+
+def design_true(texts: dict[str, str]) -> dict[str, str]:
+    """*texts* (``<role>/<mode>/<what>`` keys) with every correction for that role applied wherever its span occurs:
+    the design-true text a dynamic golden holds."""
+    import json
+    from pathlib import Path
+
+    static_keys = list(json.loads((Path(__file__).parent / GOLDENS).read_text()))
+    out = dict(texts)
+    for c in CORRECTIONS:
+        roles = _roles_of(c, static_keys)
+        for key, text in out.items():
+            if key.split("/", 1)[0] in roles and c.span in text:
+                out[key] = text.replace(c.span, c.true)
+    return out

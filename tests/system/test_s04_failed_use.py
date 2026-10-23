@@ -85,8 +85,9 @@ async def test_a_failed_use_is_recorded_not_reoffered_opens_an_entry_and_reaches
 @pytest.mark.timeout(1800)
 @pytest.mark.parametrize("mode", MEMORY_MODES)
 async def test_retire_is_reachable_and_withdraws_without_deleting(system, mode):
-    """R9.6 (change f, 0R.5): the writer, handed the failed use, retires the capture by a decision; it leaves every
-    listing at once, its files and record stay, and the ledger keeps the decision with its reason."""
+    """R9.6 (change f, 0R.5, the lead's ruling of 23 Oct): the writer, handed the failed use, retires the capture by a
+    decision, and the decision takes effect: the capture is kept on record, no listing serves it, its card says it was
+    retired, and the ledger keeps the decision with its reason."""
     s = system
     s.writer.plan = "retire_bad"
     cid = s.capture_of((await s.accepted_words(["stone", "river"], "reverse")).episode_id)
@@ -101,7 +102,10 @@ async def test_retire_is_reachable_and_withdraws_without_deleting(system, mode):
     assert bad and bad[0].state == "closed" and bad[0].decision == "retire", [(e.kind, e.state, e.decision) for e in bad]
     sink2: dict = {}
     await s.request(SW.words_request(["oak"]), ScriptedModel(
-        actor=SW.probe_turns(SW.probe_json("_try('items', lambda: [i.id for i in memory.items()])\n"), sink2),
+        actor=SW.probe_turns(SW.probe_json("_try('items', lambda: [i.id for i in memory.items()])\n"
+                                           f"_try('card', lambda: str(memory.get({item!r})))\n"), sink2),
         librarian=Always(lambda c: SW.librarian_answer([], nearest=[]))))
+    # the lead's ruling (R9.6): retire takes effect: kept on record, not served, and its card says it was retired
     assert item not in sink2["out"]["items"], sink2["out"]["items"]
     assert (s.captures().get(cid) or {}).get("procedure"), "a retired capture's files stay on record"
+    assert "retired" in str(sink2["out"]["card"]).lower(), sink2["out"]["card"][:600]

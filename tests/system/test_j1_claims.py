@@ -2,7 +2,8 @@
 cards and recorded procedures, the librarian and its answer, and memory words in a memory-off text:
 :func:`tests.system.render.scoped`) is in ``claims.tsv``, reviewed: a claim with the test that exercises it on the real
 harness, a known-false claim with its audit id and the test that fails on it, or an instruction, example or format. A
-new or changed sentence fails until it is reviewed; a factual sentence with no checker fails until one is written.
+new or changed sentence fails until it is reviewed; a factual sentence with no checker fails until one is written
+(``untestable``: a claim about a configuration no run of this harness can have, with the reason in its note).
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from pathlib import Path
 from tests.system.render import scoped
 
 HERE = Path(__file__).parent
-STATUSES = {"checked", "false", "nonfactual", "unchecked"}
+STATUSES = {"checked", "false", "nonfactual", "unchecked", "untestable"}
 
 
 def _registry() -> dict[str, dict]:

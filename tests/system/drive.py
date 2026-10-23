@@ -37,6 +37,7 @@ class System:
     server: Any
     port: int
     writer: SW.WriterLane = field(default_factory=SW.WriterLane)
+    helper: Any = field(default_factory=lambda: SW.HelperLane())
     sessions: list = field(default_factory=list)
     models: list = field(default_factory=list)
 
@@ -57,6 +58,7 @@ class System:
         s = cls(world, monkeypatch, mode, lanes, server, port)
         lanes.script("fork", *([SW.fork_script] * 400))
         lanes.script("writer", *([lambda body: s.writer(body)] * 400))
+        lanes.script("helper", *([lambda body: s.helper(body)] * 400))
         return s
 
     def close(self) -> None:
