@@ -1770,8 +1770,9 @@ COMMON_SECTION = (
     "that reviews each episode after it, the librarian when the run has one, the writer that keeps the library, and "
     "the helpers any of them starts. `tools.who()` lists who is on it now: each agent's name, role, state (running, "
     "waiting, idle or ended), what it can help with, and whom you should mention and when. Address an agent with "
-    "@<name> while it runs, or a role: @writer; @actor (every running actor); @librarian (the run's librarian, when "
-    "it has one); @fork (the fork of your own episode); @helpers (every running helper). `tools.send(text)` posts a message; `tools.messages()` reads the new ones for you without "
+    "@<name> while it runs, or a role: @writer; @actor (every running actor); @helpers (every running helper). The "
+    "librarian answers `memory.ask`; an episode's fork runs after its episode, and the writer reaches it as @fork. "
+    "`tools.send(text)` posts a message; `tools.messages()` reads the new ones for you without "
     "waiting, and `tools.messages(all=True)` every entry of the record, page by page; `tools.wait()` waits for the "
     "next one, and returns at once when no one who could answer is running. New messages for you also arrive "
     "between your steps. Use the record for back-and-forth: findings with the `<episode>/<part>` sources they rest "
@@ -1786,8 +1787,8 @@ _COMMON_ROLES_ALL = (
     "the helpers any of them starts."
 )
 _COMMON_ADDRESSES_ALL = (
-    "a role: @writer; @actor (every running actor); @librarian (the run's librarian, when "
-    "it has one); @fork (the fork of your own episode); @helpers (every running helper)."
+    "a role: @writer; @actor (every running actor); @helpers (every running helper). The "
+    "librarian answers `memory.ask`; an episode's fork runs after its episode, and the writer reaches it as @fork."
 )
 if COMMON_SECTION.count(_COMMON_ROLES_ALL) != 1 or COMMON_SECTION.count(_COMMON_ADDRESSES_ALL) != 1:
     raise ValueError("COMMON_SECTION's role sentences moved: COMMON_SECTION_NO_MEMORY must follow them")
@@ -1821,8 +1822,9 @@ RUN_SEND = RegisteredTool(
     summary="Post a message on the run's record to the agents it @mentions.",
     description=(
         "Post a message on the run's record, which every agent of the run shares, for the agents it names: "
-        "@<name>, or a role: @writer, @actor (every running actor), @librarian (the run's librarian, when it has one), "
-        "@fork (the fork of your own episode), @helpers (every running helper). Names that match no agent are listed "
+        "@<name>, or a role: @writer, @actor (every running actor), @helpers (every running helper); the writer also "
+        "reaches an episode's fork as @fork while it runs (the librarian is asked with `memory.ask`). Names that match "
+        "no agent are listed "
         "in the reply; a role the run does not have, or an agent that has ended, is refused; a message "
         "that addresses no agent is refused (a helper's goes to whoever started it). Send findings with the "
         "`<episode>/<part>` sources they rest on, questions, answers, confirmations, approvals and requests. Every "

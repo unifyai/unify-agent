@@ -96,4 +96,4 @@ def test_the_actor_is_never_told_to_mention_the_librarian_it_asks_with_memory_as
     # one way to ask the library: memory.ask, whose tool text says so; the record never offers a second
     assert "Mention @librarian" not in rr.prompt_lines("actor-1", "actor", home=home)
     # the common section names the librarian only as the run's, when it has one
-    assert "@librarian (the run's librarian, when it has one)" in rr.COMMON_SECTION
+    assert "The librarian answers `memory.ask`" in rr.COMMON_SECTION and "@librarian" not in rr.COMMON_SECTION

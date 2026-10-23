@@ -196,8 +196,13 @@ def who_text(view: RunRecordView, *, info: Optional[dict] = None) -> str:
         if m.get("who") in MEMORY_ROLES and not memory:
             continue
         lines.append(f"Mention @{m.get('who')} when {m.get('when')}.")
-    roles = ("@writer, @actor, " + ("@librarian, " if "librarian" in has else "") + "@fork (of your own episode), @helpers"
-             if memory else "@actor, @helpers")
+    if not memory:
+        roles = "@actor, @helpers"
+    elif view.role == "actor":
+        # the actor asks the librarian with memory.ask, and its episode's fork starts after the episode ends
+        roles = "@writer, @actor, @helpers"
+    else:
+        roles = "@writer, @actor, " + ("@librarian, " if "librarian" in has else "") + "@fork (of your own episode), @helpers"
     lines.append(f"Address an agent with @<name> while it runs, or a role: {roles}. Anyone may address anyone.")
     return "\n".join(lines)
 
