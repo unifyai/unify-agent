@@ -70,7 +70,7 @@ waiting.
   next cell is told, in one notice, which items changed.
 
 `in_episode` is not the default because of cost and evidence, in any world. Each pause adds a fork and a writer
-read, so an episode costs more: about twice as much per visit as `on` in the one evaluation so far (Continual-ARC).
+read, so an episode costs more than under `on`.
 No world has yet shown a gain within an episode. Use it only when the episodes are long enough that something learned
 early can pay off within the same episode, and measure it there.
 

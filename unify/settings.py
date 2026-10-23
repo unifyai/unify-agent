@@ -65,7 +65,8 @@ class ProductionSettings(BaseSettings):
     UNIFY_MAX_TOOL_LOOP_STEPS: int = 300
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Embeddings (memory's semantic search, unify/common/embeddings.py)
+    # Embeddings (memory's semantic search, unify/common/embeddings.py):
+    # deployment configuration, not a behaviour switch (unify/memory/integration/switch.py)
     # ─────────────────────────────────────────────────────────────────────────
     # The loopback lane OpenRouter-style embedding requests are posted to,
     # ``http://127.0.0.1:<port>/<path>``: the run's proxy, which holds the real
@@ -87,16 +88,18 @@ class ProductionSettings(BaseSettings):
     UNIFY_ENV_NAMESPACES: str = ""
     # Memory (unify/memory/integration/switch.py; CONFIG.md and docs/memory.md). ``UNIFY_MEMORY`` is the one memory
     # switch: ``on`` (the default; also unset or empty) keeps memory between episodes, ``in_episode`` adds memory
-    # during an episode (about twice the cost per visit), ``off`` is the no-memory baseline; anything else is refused.
-    # ``UNIFY_MEMORY_WRITER_MODEL`` is the writer's and its helpers' model (empty: UNIFY_MODEL).
+    # during an episode (at a higher cost), ``off`` is the no-memory baseline; anything else is refused.
     # ``UNIFY_MEMORY_CAP_USD`` is memory's spend cap for the memory home (a plain decimal string; empty: 20.00).
+    # Every other memory setting is deployment configuration, not a behaviour switch, each described in switch.py's
+    # "Deployment configuration" section: ``UNIFY_MEMORY_WRITER_MODEL`` is the writer's and its helpers' model
+    # (empty: UNIFY_MODEL).
     UNIFY_MEMORY: str = "on"
     UNIFY_MEMORY_WRITER_MODEL: str = ""
     UNIFY_MEMORY_CAP_USD: str = "20.00"
-    # The model-call lanes a launcher hands the controller (switch.py; never set by hand): each lane's loopback base
-    # URL and the inherited descriptor holding its token, read once at start-up and then removed from the
-    # environment, plus the writer lane's journal (an absolute path) and the writer model's pinned prices (JSON, USD
-    # per million tokens). Empty: no lane.
+    # The model-call lanes a launcher hands the controller (deployment configuration, switch.py; never set by hand):
+    # each lane's loopback base URL and the inherited descriptor holding its token, read once at start-up and then
+    # removed from the environment, plus the writer lane's journal (an absolute path) and the writer model's pinned
+    # prices (JSON, USD per million tokens). Empty: no lane.
     UNIFY_MEMORY_WRITER_BASE_URL: str = ""
     UNIFY_MEMORY_WRITER_TOKEN_FD: str = ""
     UNIFY_MEMORY_WRITER_JOURNAL: str = ""

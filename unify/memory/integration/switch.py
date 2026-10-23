@@ -1,9 +1,11 @@
-"""Memory's settings: the one memory switch, the writer's model and spend cap, and the model-call lanes.
+"""Memory's settings: the one memory switch and its spend cap, and the deployment configuration memory reads.
 
-The one switch, ``UNIFY_MEMORY``
-================================
+The behaviour settings: ``UNIFY_MEMORY`` and ``UNIFY_MEMORY_CAP_USD``
+======================================================================
 
-``UNIFY_MEMORY`` is the only memory setting that changes what the harness does. It takes exactly three values:
+``UNIFY_MEMORY`` chooses what memory does, and ``UNIFY_MEMORY_CAP_USD`` how much it may spend. They are the only
+memory behaviour settings; every other setting memory reads is deployment configuration (below). ``UNIFY_MEMORY``
+takes exactly three values:
 
 ``on`` (the default; also when unset or empty)
     Memory between episodes. Each episode is recorded in the memory home (``<UNIFY_HOME>/memory``). At its end the
@@ -15,10 +17,9 @@ The one switch, ``UNIFY_MEMORY``
     Everything ``on`` does, plus memory during an episode. The actor may pause at a checkpoint
     (``tools.checkpoint``), and each pause forks the segment so far into a ledger entry. The episode's copy of the
     library is re-pinned at cell boundaries to what the writer landed meanwhile. It is not the default because of cost
-    and evidence, in any world: each pause adds a fork and a writer read, so an episode costs more (about twice as much
-    per visit as ``on`` in the one evaluation so far, Continual-ARC), and no world has yet shown a gain within an
-    episode. It pays off only where episodes are long enough for something learned early to be used later in the same
-    one; a deployment turns it on where that is measured.
+    and evidence, in any world: each pause adds a fork and a writer read, so an episode costs more than under ``on``,
+    and no world has yet shown a gain within an episode. It pays off only where episodes are long enough for something
+    learned early to be used later in the same one; a deployment turns it on where that is measured.
 
 ``off``
     No memory: no memory home, no writer, no fork and no memory tools. This is the no-memory baseline.
@@ -26,47 +27,59 @@ The one switch, ``UNIFY_MEMORY``
 Any other value is refused when the settings are read, and the error lists the three values. The switch is read in
 one place, :func:`memory_mode`; every other reader asks :func:`memory_on` or :func:`in_episode`.
 
-Essential configuration (not switches)
-======================================
+``UNIFY_MEMORY_CAP_USD`` is memory's spend cap for one run (one ``unify act``, with the writer service it ran), in
+USD as a plain decimal string (default :data:`MEMORY_CAP_DEFAULT`). It covers the writer's and its helpers' calls, as
+recorded in the home's ``spend.jsonl`` since the service started; a lane relay holds the episode-end forks' calls to
+the same cap. It fails closed:
 
-* ``UNIFY_MEMORY_WRITER_MODEL``: the model the writer and its helpers run on. Empty means the actor's ``UNIFY_MODEL``.
-  The model must be one the pinned price catalogue bounds (:mod:`..call_bounds`), because the writer books every call
-  at its worst case until it is priced. Otherwise the writer does not start.
-* ``UNIFY_MEMORY_CAP_USD``: memory's spend cap for one run (one ``unify act``, with the writer service it ran), in USD
-  as a plain decimal string (default :data:`MEMORY_CAP_DEFAULT`). It covers the writer's and its helpers' calls, as
-  recorded in the home's ``spend.jsonl`` since the service started; a lane relay holds the episode-end forks' calls to
-  the same cap. It fails closed:
-  - a pass starts only when the room left under the cap holds one call at its worst case;
-  - an unpriced call is booked at its worst case;
-  - a value that is not a plain decimal above zero refuses the settings.
-  When the cap is reached, the library stops changing for the rest of the run and the actor is still served from it.
+- a pass starts only when the room left under the cap holds one call at its worst case;
+- an unpriced call is booked at its worst case;
+- a value that is not a plain decimal above zero refuses the settings.
 
-Model-call lanes (set by a launcher, not by hand)
+When the cap is reached, the library stops changing for the rest of the run and the actor is still served from it.
+
+Deployment configuration (not behaviour switches)
 =================================================
 
-The writer, the episode-end fork and the writer's helpers can each call the model on a lane of their own: a loopback
-relay that holds the provider key, with its own token and spend cap. A launcher hands each lane to the controller as
-a base URL plus an inherited descriptor holding the lane's token. The descriptor is read once, closed and removed
-from the environment, and the token is registered for redaction. No token ever reaches an actor box.
+Each setting below is deployment configuration, not a behaviour switch: a launcher or the host sets it to say which
+model runs, where its calls go, what they cost and how texts are embedded, and nothing sets one to choose what memory
+does. Where a missing value leaves a part of memory out, the entry says so.
 
-* Writer lane: ``UNIFY_MEMORY_WRITER_BASE_URL``, ``UNIFY_MEMORY_WRITER_TOKEN_FD``, the lane's journal
-  ``UNIFY_MEMORY_WRITER_JOURNAL`` and its pinned prices ``UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION``. Without the
-  lane, the writer's calls go on the controller's own provider route.
-* Fork lane: ``UNIFY_MEMORY_LIBRARY_FORK_BASE_URL`` and ``UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD``. Without it no fork
-  runs (``refused: no fork lane``), so no capture is made.
-* Helper lane: ``UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL`` and ``UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD``. Without it the
-  writer is not offered ``delegate``.
+* ``UNIFY_MEMORY_WRITER_MODEL``: the model the writer, its helpers and the kinship judge run on. Empty means the
+  actor's ``UNIFY_MODEL``. The model must be one the pinned price catalogue bounds (:mod:`..call_bounds`), because
+  the writer books every call at its worst case until it is priced; otherwise the writer does not start.
+* ``UNIFY_MODEL`` and ``UNIFY_REASONING_EFFORT`` (the actor's model and effort, :mod:`unify.settings`): memory reaches
+  them as the writer's model when ``UNIFY_MEMORY_WRITER_MODEL`` is empty, as the librarian's model and effort
+  (``librarian.actor_turn``), as the effort of the writer, its helpers and the kinship judge, and as the episode-end
+  fork's model (it continues the actor's own conversation).
+* Writer lane: ``UNIFY_MEMORY_WRITER_BASE_URL`` and ``UNIFY_MEMORY_WRITER_TOKEN_FD``, the lane's journal
+  ``UNIFY_MEMORY_WRITER_JOURNAL`` (where the relay records each call) and its pinned prices
+  ``UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION`` (which price a writer call the relay reports no charge for). Without
+  the lane, the writer's calls go on the controller's own provider route; without prices, such a call stays unpriced
+  and is booked at its worst case.
+* Fork lane: ``UNIFY_MEMORY_LIBRARY_FORK_BASE_URL`` and ``UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD``, the route of the
+  episode-end and segment forks. Without it no fork runs (``refused: no fork lane``), so no capture is made.
+* Helper lane: ``UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL`` and ``UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD``, the route of
+  the writer's helpers. Without it the writer is not offered ``delegate``, and its brief and tools leave helpers out.
+* Embeddings (:mod:`unify.common.embeddings`): ``UNIFY_EMBED_URL`` with ``UNIFY_EMBED_TOKEN_FD`` (the embedding lane,
+  :mod:`unify.lanes.embed_token`), or ``UNIFY_LOCAL_EMBEDDINGS`` (a small model in process). They say how the
+  library's "When to use" texts are embedded for the librarian's ``tools.search`` and the writer's ``tools.find``.
+  Without either, a text not yet embedded is refused and those tools list the library's rows unranked, saying why.
+* The ``similar`` tool's index (``PassConfig.similar_index``, :mod:`..similar`): not a setting; the writer service
+  always points it at the home's index folder.
 
-Each lane's base URL and descriptor are set together or not at all. Every refusal names the rule broken, never a
+A lane is a loopback relay that holds the provider key, with its own token and spend cap. A launcher hands each lane
+to the controller as a base URL plus an inherited descriptor holding the lane's token. The descriptor is read once,
+closed and removed from the environment, and the token is registered for redaction. No token ever reaches an actor
+box. Each lane's base URL and descriptor are set together or not at all. Every refusal names the rule broken, never a
 value, and is sticky for the life of the process.
 
-Fixed values
-============
+Numbers
+=======
 
-Every other number memory uses is a constant below. Each is the value the rev 2 evaluation ran with.
-
-Money stays a decimal string as written, never a float, and exponent forms are refused, so a value is read the same
-way by every consumer.
+The numbers memory uses are module constants, each beside the code it bounds (this module's are below). Money stays a
+decimal string as written, never a float, and exponent forms are refused, so a value is read the same way by every
+consumer.
 """
 
 from __future__ import annotations
