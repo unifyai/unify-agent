@@ -14,36 +14,62 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from unify.actor import tool_handlers as H
 from unify.common import tool_registry as R
 from unify.memory import librarian
 
 
 def _ctx():
-    return SimpleNamespace(roots={}, state=SimpleNamespace(policy=None))
+    return SimpleNamespace(roots={}, state=SimpleNamespace(policy=object()))
 
 
-def test_the_actor_reads_a_library_file_by_either_of_its_names(tmp_path, monkeypatch):
-    lib = tmp_path / "copy"
-    (lib / "notes" / "files").mkdir(parents=True)
-    (lib / "notes" / "files" / "sort-rows.md").write_text("Sort by the integer id.\n")
-    monkeypatch.setattr(H, "_library_root", lambda: str(lib))
-    for path in ("/memory/notes/files/sort-rows.md", "/memory-library/notes/files/sort-rows.md"):
+def _mount(tmp_path, monkeypatch, *, in_episode: bool = False):
+    """A library copy where the sandbox mounts it (``sandbox.host_path`` of the library mount), the request's copy
+    inside it (under in_episode, its ``current`` link), and a sandbox mask that hides ``.env`` files."""
+    from unify import sandbox
+    from unify.memory.integration import request as R
+
+    mount = tmp_path / "memory-checkout"
+    copy = mount / "current" if in_episode else mount
+    (copy / "notes" / "files").mkdir(parents=True)
+    (copy / "notes" / "files" / "sort-rows.md").write_text("Sort by the integer id.\n")
+    (copy / ".env").write_text("SECRET=1\n")
+    def host_path(path, policy):
+        text = str(path)
+        if text == H.LIBRARY or text.startswith(H.LIBRARY + "/"):
+            return str(mount) + text[len(H.LIBRARY) :]
+        return text
+
+    monkeypatch.setattr(sandbox, "host_path", host_path)
+    monkeypatch.setattr(R, "current", lambda: SimpleNamespace(copy_root=copy, paths=SimpleNamespace(checkout=mount)))
+    monkeypatch.setattr(
+        H, "_hidden", lambda virtual, policy: "hidden by the workspace sandbox rule `env`" if virtual.endswith(".env") else None,
+    )
+    return copy
+
+
+@pytest.mark.parametrize("in_episode", [False, True])
+def test_the_actor_reads_the_copy_the_sandbox_mounts_under_its_masks(tmp_path, monkeypatch, in_episode):
+    _mount(tmp_path, monkeypatch, in_episode=in_episode)
+    root = H.LIBRARY + ("/current" if in_episode else "")
+    for path in ("/memory/notes/files/sort-rows.md", f"{root}/notes/files/sort-rows.md"):
         got = H.read(_ctx(), {"path": path})
         assert got.status == "ok" and "Sort by the integer id." in got.text, (path, got.text)
-    listing = H.read(_ctx(), {"path": "/memory/notes"})
-    assert listing.status == "ok" and "files" in listing.text
+    masked = H.read(_ctx(), {"path": "/memory/.env"})
+    assert masked.status == "refused" and masked.form == "unreadable" and "SECRET" not in masked.text
     missing = H.read(_ctx(), {"path": "/memory/notes/none.md"})
     assert missing.status == "refused" and missing.form == "not_found"
     outside = H.read(_ctx(), {"path": "/etc/hostname"})
     assert outside.status == "refused" and outside.form == "outside_roots"
-    assert "memory.get(<its id>)" in outside.text and "/memory-library" in outside.text
+    assert "memory.get(<its id>)" in outside.text and H.LIBRARY in outside.text
     escape = H.read(_ctx(), {"path": "/memory/../etc/hostname"})
     assert escape.status == "refused"
 
 
-def test_without_a_library_the_refusal_is_as_before(monkeypatch):
-    monkeypatch.setattr(H, "_library_root", lambda: None)
+def test_without_a_library_mount_the_refusal_is_as_before(monkeypatch):
+    monkeypatch.setattr(H, "_library_view", lambda policy: None)
     got = H.read(_ctx(), {"path": "/memory/notes/x.md"})
     assert got.status == "refused" and got.form == "outside_roots"
     assert "memory.get" not in got.text and got.text.endswith("is outside /workspace")

@@ -194,29 +194,47 @@ LIBRARY = "/memory-library"
 _LIBRARY_NAMES = (LIBRARY, "/memory")
 
 
-def _library_root() -> Optional[str]:
-    """The host directory of the current request's library copy (the one its cells read at :data:`LIBRARY`), or None
-    when the run has no library."""
+def _library_view(policy: Any) -> Optional[tuple[str, str]]:
+    """``(box root, host directory)`` of the library copy as the workspace sandbox mounts it for this request's cells:
+    the host directory bound at :data:`LIBRARY` (``unify.sandbox``'s own mapping, so the read sees exactly what a cell
+    sees), and the box path of the copy the request reads (under ``UNIFY_MEMORY=in_episode``, its link to the current
+    pin inside that mount). None when the sandbox mounts no library."""
+    from unify import sandbox
+
+    try:
+        host = sandbox.host_path(LIBRARY, policy)
+    except Exception:  # noqa: BLE001 - no policy view: no library
+        return None
+    if host == LIBRARY or not os.path.isdir(host):
+        return None
+    box_root = LIBRARY
     try:
         from unify.memory.integration import request as _request
 
         run = _request.current()
-    except Exception:  # noqa: BLE001 - no memory integration: no library
-        return None
-    copy = getattr(run, "copy_root", None) or getattr(getattr(run, "paths", None), "checkout", None)
-    return str(copy) if copy is not None and os.path.isdir(copy) else None
+        copy = getattr(run, "copy_root", None)
+        checkout = getattr(getattr(run, "paths", None), "checkout", None)
+        if copy is not None and checkout is not None:
+            rel = os.path.relpath(os.fspath(copy), os.fspath(checkout))
+            if rel not in (".", "") and not rel.startswith(".."):
+                box_root = f"{LIBRARY}/{rel}"
+    except Exception:  # noqa: BLE001 - no memory run: the mount's root
+        pass
+    return box_root, host
 
 
-def _in_library(vpath: str) -> Optional[str]:
-    """*vpath* as a path under :data:`LIBRARY` when it names the library by either of its names, else None."""
-    for name in _LIBRARY_NAMES:
-        if vpath == name or vpath.startswith(name + "/"):
-            return LIBRARY + vpath[len(name) :]
+def _in_library(vpath: str, box_root: str) -> Optional[str]:
+    """*vpath* as a box path under :data:`LIBRARY` when it names the library: as the box names it, or by the name the
+    librarian and the writer use (``/memory``), which is the request's copy (*box_root*)."""
+    if vpath == LIBRARY or vpath.startswith(LIBRARY + "/"):
+        return vpath
+    if vpath == "/memory" or vpath.startswith("/memory/"):
+        return box_root + vpath[len("/memory") :]
     return None
 
 
-def _outside(tool: str, path: str) -> Any:
-    if _library_root() is not None:
+def _outside(tool: str, path: str, ctx: Any = None) -> Any:
+    if ctx is not None and _library_view(_policy(ctx)) is not None:
         # a run with a library: the refusal names both roots and the call that opens an entry
         return _refused(
             Refusal(
@@ -229,24 +247,30 @@ def _outside(tool: str, path: str) -> Any:
     return _refused(Refusal(f"{REFUSED}{path[:200]} is outside {WORKSPACE}", tool, "outside_roots"))
 
 
-def _read_library(vpath: str, offset: int) -> Any:
-    """``read`` of a path in the library copy (read-only), opened from the copy's root one component at a time."""
+def _read_library(ctx: Any, vpath: str, offset: int) -> Any:
+    """``read`` of a path in the library copy, read-only, as a cell would read it: the sandbox's own mount of the copy
+    and its own masks (credential files, ``.env`` files and the rest of :func:`_hidden`'s rules), opened from the
+    mount's root one component at a time."""
     from unify.memory import safe_paths as _safe
     from unify.memory import views as _views
 
-    root = _library_root()
+    policy = _policy(ctx)
+    view = _library_view(policy)
+    if view is None:
+        return _outside("read", vpath, ctx)
     try:
         prefix, parts = _safe.split(vpath, [LIBRARY])
     except _safe.Outside:
-        return _outside("read", vpath)
+        return _outside("read", vpath, ctx)
     virtual = _safe.virtual(prefix, parts)
     where = ({"path": virtual, "mode": "read"},)
-    if root is None:
-        return _outside("read", vpath)
+    hidden = _hidden(virtual, policy)
+    if hidden is not None:
+        return _reply(refusal("read", "unreadable", error=hidden, path=virtual), "refused", "unreadable", where)
     try:
-        text, mode = _views.read_entry(virtual, {LIBRARY: root}, offset)
+        text, mode = _views.read_entry(virtual, {LIBRARY: view[1]}, offset)
     except _safe.Outside:
-        return _outside("read", vpath)
+        return _outside("read", vpath, ctx)
     except (_safe.LinkFound, _safe.NotRegular) as exc:
         return _reply(refusal("read", "unreadable", error=exc.reason, path=virtual), "refused", "unreadable", where)
     except OSError:
@@ -276,14 +300,15 @@ def read(ctx: Any, args: dict) -> Any:
     vpath = _box_path(args.get("path"))
     offset = args.get("offset", 0)
     offset = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
-    library = _in_library(vpath)
+    view = _library_view(_policy(ctx)) if vpath == "/memory" or vpath.startswith(("/memory/", LIBRARY)) else None
+    library = _in_library(vpath, view[0]) if view is not None else None
     if library is not None:
-        return _read_library(library, offset)
+        return _read_library(ctx, library, offset)
     root = (ctx.roots or {}).get(WORKSPACE)
     try:
         prefix, parts = _safe.split(vpath, [WORKSPACE])
     except _safe.Outside:
-        return _outside("read", vpath)
+        return _outside("read", vpath, ctx)
     virtual = _safe.virtual(prefix, parts)
     where = ({"path": virtual, "mode": "read"},)
     if root is None:
@@ -295,7 +320,7 @@ def read(ctx: Any, args: dict) -> Any:
     try:
         text, mode = _views.read_entry(virtual, {WORKSPACE: root}, offset)
     except _safe.Outside:
-        return _outside("read", vpath)
+        return _outside("read", vpath, ctx)
     except (_safe.LinkFound, _safe.NotRegular) as exc:
         return _reply(refusal("read", "unreadable", error=exc.reason, path=virtual), "refused", "unreadable", where)
     except OSError:
@@ -317,14 +342,16 @@ async def grep(ctx: Any, args: dict) -> Any:
     vpath = _box_path(args.get("path") or WORKSPACE)
     offset = args.get("offset", 0)
     offset = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
-    library = _in_library(vpath)
-    if library is not None and _library_root() is not None:
-        # the library copy is mounted read-only in the workspace sandbox at LIBRARY: the search runs there
+    view = _library_view(_policy(ctx))
+    library = _in_library(vpath, view[0]) if view is not None else None
+    if library is not None:
+        # the library copy is mounted read-only in the workspace sandbox at LIBRARY: the search runs there, under the
+        # sandbox's own masks
         vpath = library
     try:
-        prefix, parts = _safe.split(vpath, [WORKSPACE, LIBRARY] if vpath.startswith(LIBRARY) else [WORKSPACE])
+        prefix, parts = _safe.split(vpath, [WORKSPACE, LIBRARY] if library is not None else [WORKSPACE])
     except _safe.Outside:
-        return _outside("grep", vpath)
+        return _outside("grep", vpath, ctx)
     virtual = _safe.virtual(prefix, parts)
     where = ({"path": virtual, "mode": "search"},)
     policy = _policy(ctx)
