@@ -5,7 +5,7 @@
   - scope: only ``memory/`` and ``notes/``, never the harness-generated paths;
   - when to use: every new or changed function and note carries its writer-written ``When to use`` section, with
     its four parts (:mod:`.when_to_use`; shape only, never wording), and every folder the pass changes holds a
-    ``README.md`` with some text;
+    ``README.md`` with some text; every new or changed note holds a ``## Rule`` section with text;
   - links: no dangling ``uses:``/``Notes:`` target;
   - fixture provenance: every new or changed file under ``tests/data/`` came through ``fixture()`` and re-derives
     from the recording's bytes (:mod:`.fixtures`); a parsed fixture (its reader would run) and a replay case file
@@ -225,7 +225,8 @@ class LibraryChecks:
         self._readmes()
 
     def _when_to_use(self) -> None:
-        """Every new or changed function and note carries its "when to use" section, its four parts present."""
+        """Every new or changed function and note carries its "when to use" section, its four parts present, and every
+        new or changed note its ``## Rule`` section."""
         run = self.run
         functions = [(it.item, "function") for it in self._edited()]
         notes = [
@@ -244,7 +245,7 @@ class LibraryChecks:
                     continue  # an unreadable definition is refused elsewhere
                 problems = when_to_use.function_problems(ast.get_docstring(node) or "")
             else:
-                problems = when_to_use.note_problems(text)
+                problems = when_to_use.note_problems(text) + when_to_use.rule_problems(text)
             for problem in problems:
                 run.fail("G1", f"{item} {problem}", item)
 

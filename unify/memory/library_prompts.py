@@ -597,8 +597,9 @@ _WHAT_TO_WRITE_IN_CODE = (
     "`Input:` line; a `When to use:` section (below); and, optionally, a `Notes:` line naming note paths.\n"
     "- Notes go in `notes/<topic>/<slug>.md`: markdown (a fact, a pitfall, a how-to, or how to combine functions) "
     "with front matter `title`, `description` (one line, shown in the index) and `uses` (the ids of the functions "
-    "it uses). `memory.get` serves a note's front matter and its `## Rule` section, at most "
-    "<<note_rule_chars>> characters; the rest of the file (an `## Evidence` section, say) is read at its path. A link is written only in a note's `uses` or a function's `Notes:` line, and must name an "
+    "it uses), and a `## Rule` section. `memory.get` serves a note's front matter and its `## Rule` section, at most "
+    "<<note_rule_chars>> characters; the rest of the file (the cases it came from, under `## Evidence`, say) is read "
+    "at its path. The gate refuses a new or changed note without a `## Rule` section with text. A link is written only in a note's `uses` or a function's `Notes:` line, and must name an "
     "item that exists. A new item starts as `on-trial`; later passes revise or remove it. A function's linked "
     "note says its preconditions and its known failures.\n"
     + WHEN_TO_USE_TEXT

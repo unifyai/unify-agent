@@ -2,7 +2,8 @@
 
 The library gate refuses a new or changed function or note without its "when to use" section, and the items of a
 changed folder without a README.md. A world that builds a pass's candidate adds them as a writer does:
-:func:`with_section` to a module's public functions, :func:`note_with_section` to a note and :func:`with_readmes`
+:func:`with_section` to a module's public functions, :func:`note_with_section` to a note (with its ``## Rule``
+section) and :func:`with_readmes`
 to the files of a candidate. Each leaves what already has one as it is.
 """
 
@@ -70,7 +71,15 @@ def with_section(source: str) -> str:
 
 
 def note_with_section(text: str) -> str:
-    """A note's *text* with the section appended to its body when it has none."""
+    """A note's *text* with its body under a ``## Rule`` heading when it has none (the heading goes after the front
+    matter), and the "when to use" section appended when it has none."""
+    if when_to_use.rule_problems(text):
+        lines = text.splitlines(keepends=True)
+        at = 0
+        if lines and lines[0].strip() == "---":
+            at = next((i + 1 for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), 0)
+        rest = "".join(lines[at:]).lstrip("\n")
+        text = "".join(lines[:at]) + f"## {when_to_use.RULE}\n" + (rest if rest.strip() else "The rule.\n")
     if when_to_use.note_section(text) is not None:
         return text
     return text.rstrip("\n") + "\n\n" + note_lines()

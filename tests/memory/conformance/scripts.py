@@ -149,7 +149,7 @@ def fork_sorting(*, segment_reply: str = FORK_REPLY):
 NOTE_ID = "notes/files/sort-rows.md"
 NOTE_TEXT = (
     "---\ntitle: Sorting the rows of a file\ndescription: what to check before writing sorted rows\nuses: []\n---\n"
-    "- read the id column as an integer, never as text\n- write every row once, the header first\n\n"
+    "## Rule\n- read the id column as an integer, never as text\n- write every row once, the header first\n\n"
     "## When to use\n"
     "- **Saved for:** sorting the rows of a delimited file by a numeric column.\n"
     "- **Recognise:** a file of rows with an id column and a file to write them to.\n"

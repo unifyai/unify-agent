@@ -14,6 +14,8 @@ next heading; a line may start with a list marker (``- ``) and a label may be bo
 part's text may go on over the lines after its label. Every part is present once, with text holding a letter or
 a digit.
 
+A note also holds a ``## Rule`` section with text (:func:`rule_problems`): the part of it ``memory.get`` serves.
+
 Folders: every package directory ``memory/<package>/`` and every topic directory ``notes/<topic>/`` holds a
 ``README.md`` the writer keeps: what the folder holds and how its items relate. The gate checks that each folder
 a pass changes holds one with some text.
@@ -122,6 +124,25 @@ def note_section(text: str) -> str | None:
 def note_problems(text: str) -> list[str]:
     """What a note's ``When to use`` section lacks."""
     return section_problems(note_section(text), f"`## {SECTION}` section")
+
+
+#: The heading of a note's rule: what ``memory.get`` serves of a note besides its front matter
+#: (:func:`.library_helper._note_rule`); the rest of the note is read at its path.
+RULE = "Rule"
+
+
+def rule_problems(text: str) -> list[str]:
+    """What a note's ``## Rule`` section lacks: missing, or without a letter or a digit before the next ``## ``."""
+    lines = (text or "").splitlines()
+    start = next((i for i, line in enumerate(lines) if line.strip().lower() == f"## {RULE}".lower()), None)
+    if start is None:
+        return [f"has no `## {RULE}` section (what memory.get serves of a note besides its front matter)"]
+    body = []
+    for line in lines[start + 1 :]:
+        if line.startswith("## "):
+            break
+        body.append(line)
+    return [] if _WORD.search("\n".join(body)) else [f"has an empty `## {RULE}` section"]
 
 
 def folder(path: str) -> str | None:

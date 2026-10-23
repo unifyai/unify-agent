@@ -44,6 +44,7 @@ title: Totals per currency
 description: how to total payments
 uses: []
 ---
+## Rule
 Group the rows first.
 
 ## When to use
@@ -184,6 +185,19 @@ def test_a_new_note_without_the_section_is_refused(tmp_path):
     assert v.run.fails == []
 
 
+def test_a_new_or_changed_note_without_a_rule_section_is_refused(tmp_path):
+    """``memory.get`` serves a note's front matter and its ``## Rule`` section: the gate requires one with text."""
+    assert when_to_use.rule_problems(NOTE) == []
+    item = "notes/payments/totals.md"
+    for text, why in (
+        (NOTE.replace("## Rule\n", ""), "has no `## Rule` section"),
+        (NOTE.replace("Group the rows first.\n", ""), "has an empty `## Rule` section"),
+    ):
+        v = _checks(tmp_path, [_item(item=item, kind="note")], c_bodies={item: ("note", text, True)})
+        v._when_to_use()
+        assert [(c, r.split(" (")[0], i) for c, r, i in v.run.fails] == [("G1", f"{item} {why}", item)]
+
+
 def test_a_changed_folder_without_a_readme_refuses_its_items(tmp_path):
     files = {"memory/calc/sums.py": b"", "notes/payments/totals.md": NOTE.encode()}
     v = _function_run(tmp_path, FUNCTION, files)
@@ -211,5 +225,9 @@ def test_the_writer_is_told_the_shape_the_gate_checks():
     for label in when_to_use.PARTS:
         assert f"`{label}:`" in flat
     assert "`When to use:`" in flat and "`## When to use`" in flat and "README.md" in flat
+    from unify.memory.library_prompts import _WHAT_TO_WRITE_IN_CODE
+
+    notes = " ".join(_WHAT_TO_WRITE_IN_CODE.split())
+    assert "and a `## Rule` section" in notes and "without a `## Rule` section with text" in notes
     example = WHEN_TO_USE_TEXT.split("For example:\n", 1)[1].split("  The gate", 1)[0]
     assert when_to_use.function_problems("Summary.\n\n" + textwrap.dedent(example)) == []
