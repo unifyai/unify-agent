@@ -1,51 +1,47 @@
-"""Capture groups: which new captures the writer reads together, and when a group is due (rev 2.1).
+"""Capture groups: which captures the writer reads together, and when a group is due.
 
-The writer's job is transfer: it reads several related captures together with the library items they touch, and
-makes or reshapes items that hold beyond the episodes they came from. A pass over one capture cannot see what varies
-and what stays, so each ``new_experience`` entry waits until its group is due, and a pass is handed one group.
+The writer's job is transfer: it reads related captures together with the library items they touch, and makes or
+reshapes items that hold beyond the episodes they came from. Transfer needs at least two instances of the same kind of
+work, so a pass is handed a new capture only together with its **history**: earlier captures related to it. A capture
+with no related capture is never written up alone; it stays served for reuse (the library exports every capture as
+soon as it is stored) and waits until a related capture arrives. An entry whose episode left no capture is closed by
+the harness (:data:`NO_CAPTURE`) and never runs a pass.
 
-**Membership** comes from the harness's own records, never from an id, a word, a request's text or a stream
-position, and nothing is run. Two captures are related when their records show at least one of:
+**Membership** comes from the harness's records, never from an id, a word, a request's text or a stream position, and
+nothing is run. Two captures are related when their records show at least one of:
 
 * ``sequence``: their procedures make the same ordered sequence of at least :data:`SEQUENCE_MIN` tool calls
   (``env.<channel>.<method>`` in the order written, a call repeated at once kept once:
-  :func:`.capture_shape.call_sequence`), so they do the same steps through the world. One shared call is not enough:
-  in a world with one action channel every acting capture makes it, so a single call would chain all work into one
-  group;
+  :func:`.capture_shape.call_sequence`), so they do the same steps through the world;
+* ``subsequence``: their procedures share a run of :data:`SEQUENCE_MIN` consecutive calls;
 * ``items``: their episodes used a shared library item: called it, or it refused or errored when called (the
   evidence store's use rows with an observed call). An item that was only at the episode's pin, shown or served
-  relates nothing: the same few general items are served to nearly every episode, so a served item would chain all
-  work into one group;
+  relates nothing: the same few general items are served to nearly every episode;
 * ``input``: they have the same entry form and the same non-empty input shape below the shared envelope: the key
   paths, named or not, and leaf types of the recorded data the capture's signature describes, less the key paths
-  every capture of the home has (:data:`ENVELOPE_MIN` or more captures with a shape; fewer show no envelope). For a
-  ``value`` capture that is the value it reads; for a ``state`` or ``state_env`` capture, the structured data its
-  state holds (the JSON its messages carry). A state with no structured data (text only) has no input shape, by the
-  same rule ``memory.find`` uses: text has no structure to compare. A shape every capture shares (a world's request
-  envelope) distinguishes none of them, so it relates nothing.
+  every capture of the home has (:data:`ENVELOPE_MIN` or more captures with a shape; fewer show no envelope);
+* ``judged``: a judge that read the two captures' behaviour (their code, input shape, calls and outcome) named one as
+  doing the same kind of work as the other (the ledger's ``kin`` rows).
 
-A group is a connected set of related captures. The outcome each member's signals gave is carried to the writer as
-a fact of the member, not used to join: an edge on the outcome alone would join unrelated work in any world with one
-kind of verdict. The writer decides membership by reading: it may decide members differently (which splits the
-group), and it may take any closed entry into its pass read-only (:func:`.attention_tools.take`).
+A call feature (a whole sequence or a run of calls) that more than half of the home's acting captures make, and at
+least :data:`ENVELOPE_MIN` of them, is the world's own envelope, like a request envelope every capture reads: it
+distinguishes none of them, so it relates nothing. One shared call alone never relates two captures either: in a world
+with one action channel every acting capture makes it.
 
-**When a group is due** (counters only, the same in every world; the capture-group design's readiness rule):
+The outcome each member's signals gave is carried to the writer as a fact of the member, not used to join.
 
-* *formed*: two or more of its members are open;
-* *joined*: an open member is related to a capture an earlier pass already decided (a closed entry), so that
-  earlier work is read again together with the new;
-* *waited*: a member still alone (no open or closed relation) is due after :data:`W` later new captures, or once no
-  new capture has arrived for :data:`IDLE_S` seconds, so nothing waits for ever;
-* at most one pass per group at a time: a group with a member handed to a running pass is not due; what joins it
-  meanwhile waits for that pass to end.
+**When a group is due** (counters only, the same in every world): a group of related captures with at least one open
+(new, not yet written) capture is due when it holds at least two captures, the new ones and their history; at most one
+pass per group at a time (a group with a member handed to a running pass is not due). There is no due-alone rule: no
+count of later captures and no idle time hands a capture with no related capture.
 
 Every other kind of entry (bad news, late evidence, a message, a deferral, a repeated use) is handed at once, as
-before: it is about one thing that happened.
+before: it is about an item that exists, which is its history.
 
-**What a group pass is given** (:func:`group_doc`, written to ``/inputs/attention/group.json``): its members (the
-handed entries and their captures), the related closed entries (their captures and what earlier passes decided), why
-each pair is related, and the library items the group touches: those the members' episodes used, were served or
-failed with, and those earlier passes landed from related captures.
+**What a group pass is given** (:func:`group_doc`, written to ``/inputs/attention/group.json``): its new members, its
+history (the related closed captures, the most related first, then the most recent, at most :data:`HISTORY_MAX`), why
+each pair is related, and the library items the group touches: those the members' episodes used, were served or failed
+with, and those earlier passes landed from related captures.
 
 **Why a group formed** is logged with its pass (the ledger's ``group`` row, :func:`reasons`): how many related pairs
 it has and how many of them each relation kind joined, so an audit can count them.
@@ -59,12 +55,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-#: Later new captures after which a capture still alone is due.
-W = 8
-#: The fewest tool calls an ordered call sequence must hold to relate two captures.
+#: The most related closed captures (the history) a group's pass is handed, the most related first.
+HISTORY_MAX = 8
+#: The fewest tool calls an ordered call sequence (or a shared run of calls) must hold to relate two captures.
 SEQUENCE_MIN = 2
-#: Seconds with no new capture after which every waiting capture is due.
-IDLE_S = 600
+#: The reason the harness closes an entry whose episode left no capture: nothing to write up, no pass.
+NO_CAPTURE = "no_capture"
 #: The entry kinds that wait for their group; every other kind is handed at once.
 GROUPED_KINDS = frozenset({"new_experience"})
 GROUP_FILE = "group.json"
@@ -74,7 +70,7 @@ ENVELOPE_MIN = 3
 USED_COUNTS = ("called", "refused", "errored", "refused_modified", "errored_modified",
                "runtime_ok", "runtime_refused", "runtime_errored")
 #: The relation kinds, as :func:`related` names them.
-RELATION_KINDS = ("sequence", "items", "input")
+RELATION_KINDS = ("sequence", "subsequence", "items", "input", "judged")
 @dataclass(frozen=True)
 class Profile:
     """What the harness's records say of one entry's capture (nothing run): its entry form, the ``env`` chains its
@@ -91,6 +87,8 @@ class Profile:
     #: every library item its episodes touched (used, at the pin, shown or served): what the writer is shown, never a
     #: relation (``items`` holds the used ones)
     touched: frozenset = frozenset()
+    #: the entries a judge of behaviour named as the same kind of work (the ledger's ``kin`` rows)
+    kin: frozenset = frozenset()
 
 
 @dataclass
@@ -107,17 +105,45 @@ class Group:
     due: str | None = None
 
 
-def related(a: Profile, b: Profile) -> list[str]:
-    """Why two captures are related (module docstring), as ``"sequence: env.x.y > env.z.w"``, ``"items: <id>"`` or
-    ``"input"``; [] when they are not. Sharing only a tool call, or only an outcome, relates nothing."""
+def call_features(p: Profile) -> frozenset:
+    """The call features of a capture: its whole ordered call sequence (when it has at least :data:`SEQUENCE_MIN`
+    calls) and every run of :data:`SEQUENCE_MIN` consecutive calls in it."""
+    seq = p.sequence
+    runs = {tuple(seq[i : i + SEQUENCE_MIN]) for i in range(len(seq) - SEQUENCE_MIN + 1)}
+    return frozenset(runs | ({tuple(seq)} if len(seq) >= SEQUENCE_MIN else set()))
+
+
+def common_features(profiles: Iterable[Profile]) -> frozenset:
+    """The call features more than half of the acting captures make, and at least :data:`ENVELOPE_MIN` of them: the
+    world's own envelope of calls, which distinguishes none of them."""
+    acting = [p for p in profiles if p.sequence]
+    counts: dict[tuple, int] = {}
+    for p in acting:
+        for f in call_features(p):
+            counts[f] = counts.get(f, 0) + 1
+    return frozenset(f for f, n in counts.items() if n >= ENVELOPE_MIN and 2 * n > len(acting))
+
+
+def related(a: Profile, b: Profile, common: frozenset = frozenset()) -> list[str]:
+    """Why two captures are related (module docstring), as ``"sequence: env.x.y > env.z.w"``, ``"subsequence: ..."``,
+    ``"items: <id>"``, ``"input"`` or ``"judged"``; [] when they are not. Sharing only a tool call, only an outcome, or
+    only a call feature in *common* (:func:`common_features`) relates nothing."""
     out: list[str] = []
-    if len(a.sequence) >= SEQUENCE_MIN and a.sequence == b.sequence:
+    whole = len(a.sequence) >= SEQUENCE_MIN and a.sequence == b.sequence and tuple(a.sequence) not in common
+    if whole:
         out.append("sequence: " + " > ".join(a.sequence[:8]) + (" > ..." if len(a.sequence) > 8 else ""))
+    else:
+        runs = sorted((call_features(a) & call_features(b)) - common)
+        runs = [r for r in runs if len(r) == SEQUENCE_MIN]
+        if runs:
+            out.append("subsequence: " + " > ".join(runs[0]))
     items = sorted(a.items & b.items)
     if items:
         out.append("items: " + ", ".join(items[:5]))
     if a.form is not None and a.form == b.form and a.input and a.input == b.input:
         out.append("input")
+    if b.entry in a.kin or a.entry in b.kin:
+        out.append("judged")
     return out
 
 
@@ -141,15 +167,17 @@ def groups(
     entries: Mapping[str, Any],
     profile_of: Callable[[Any], Profile],
     *,
-    now: dt.datetime,
+    now: dt.datetime | None = None,
 ) -> list[Group]:
-    """The groups of the ledger's grouped entries (*entries*: the fold, by id), each with whether and why it is due
-    (module docstring). An entry with no readable capture is a profile with nothing to relate: it waits alone."""
+    """The groups of the ledger's grouped entries that have a capture (*entries*: the fold, by id), each with whether
+    and why it is due (module docstring). An entry with no capture is in no group: the ledger closes it
+    (:data:`NO_CAPTURE`). *now* is accepted for the callers' clock and not read: no time makes a group due."""
     live = ("open", "handed", "read", "closed")
-    grouped = [e for e in entries.values() if e.kind in GROUPED_KINDS and e.state in live]
+    grouped = [e for e in entries.values() if e.kind in GROUPED_KINDS and e.state in live and e.refs.captures]
     if not any(e.state == "open" for e in grouped):
         return []
     profiles = {e.entry: profile_of(e) for e in grouped}
+    common = common_features(profiles.values())
     parent = {e.entry: e.entry for e in grouped}
 
     def find(x: str) -> str:
@@ -166,7 +194,7 @@ def groups(
         for b in ids[i + 1 :]:
             if a not in open_ids and b not in open_ids:
                 continue
-            why = related(profiles[a], profiles[b])
+            why = related(profiles[a], profiles[b], common)
             if why:
                 pairs.append((a, b, why))
                 ra, rb = find(a), find(b)
@@ -175,11 +203,6 @@ def groups(
     members: dict[str, list] = {}
     for e in grouped:
         members.setdefault(find(e.entry), []).append(e)
-    created = sorted(
-        (e for e in entries.values() if e.kind in GROUPED_KINDS),
-        key=lambda e: (e.created_at, e.entry),
-    )
-    last_new = _parse(created[-1].created_at) if created else None
     out: list[Group] = []
     for root, es in members.items():
         opened = sorted((e for e in es if e.state == "open"), key=lambda e: (e.created_at, e.entry))
@@ -192,20 +215,14 @@ def groups(
             pending=any(e.state in ("handed", "read") for e in es),
             relations=[{"a": a, "b": b, "why": why} for a, b, why in pairs if find(a) == root],
         )
+        # the history a pass reads: the related closed captures, the most related first, at most HISTORY_MAX
+        g.context = by_strength(g)[:HISTORY_MAX]
         if g.pending:
             g.due = None
         elif len(g.open) >= 2:
             g.due = "formed"
         elif g.context:
-            g.due = "joined"
-        else:
-            first = g.open[0]
-            later = sum(1 for e in created if (e.created_at, e.entry) > (first.created_at, first.entry))
-            idle = (now - last_new).total_seconds() if last_new is not None else 0.0
-            if later >= W:
-                g.due = "waited"
-            elif idle >= IDLE_S:
-                g.due = "idle"
+            g.due = "history"
         out.append(g)
     return sorted(out, key=lambda g: (g.open[0].created_at, g.open[0].entry))
 
@@ -282,7 +299,8 @@ class HomeProfiles:
         own = {"capture:" + c for c in cids}
         items = frozenset(i for i in self.items_of(entry.refs.episodes) if i not in own)
         touched = frozenset(i for i in self.touched_of(entry.refs.episodes) if i not in own)
-        return Profile(entry.entry, cids, form, effects, shape, items, outcome, sequence, touched)
+        kin = frozenset(k for k in getattr(entry, "kin", ()) if isinstance(k, str))
+        return Profile(entry.entry, cids, form, effects, shape, items, outcome, sequence, touched, kin)
 
 
 def _read_json(path: Path) -> Any:

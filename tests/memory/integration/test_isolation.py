@@ -209,65 +209,63 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
 
     monkeypatch.setattr(consolidate, "unillm_turn", fake_turn_factory)
 
-    ctx = contextvars.copy_context()
-    run = ctx.run(request_mod.RequestRun.begin, "Pay Ada back from pay.csv.")
-    answer = run.take_outcome(
-        {
-            "solved": False,
-            "summary": f"the checker says {SENTINEL}",
-            "checks": [{"name": "c", "passed": False, "reason": SENTINEL}],
-        },
-    )
-    assert answer["accepted"] is True and SENTINEL not in json.dumps(answer)
-    ts = "2026-10-08T12:00:00+00:00"
-    tpath = transcripts.transcripts_dir() / f"{run.episode_id}.jsonl"
-    tpath.parent.mkdir(parents=True, exist_ok=True)
-    rows = [
-        {
-            "seq": 0,
-            "ts": ts,
-            "session": run.episode_id,
-            "type": "message",
-            "message": {"role": "user", "content": "Pay Ada back from pay.csv."},
-        },
-        {
-            "seq": 1,
-            "ts": ts,
-            "session": run.episode_id,
-            "type": "message",
-            "message": {"role": "assistant", "content": "Paid."},
-        },
-    ]
-    tpath.write_text("".join(json.dumps(r) + "\n" for r in rows))
     emitted: list[dict] = []
     progress: list[str] = []
-    with asyncio.Runner() as runner:
-        runner.run(
-            run.finish(None, progress=progress.append, emit=emitted.append),
-            context=ctx,
+
+    def episode(ask: str, name: str) -> Any:
+        """One request: the checker's outcome with the sentinel, the transcript, the request's end (which starts the
+        writer service), and the episode-end fork's files as a fork leaves them (no fork lane exists here, so a
+        stand-in writes them), with a procedure that reads the pay file and writes *name*."""
+        ctx = contextvars.copy_context()
+        run = ctx.run(request_mod.RequestRun.begin, ask)
+        answer = run.take_outcome(
+            {
+                "solved": False,
+                "summary": f"the checker says {SENTINEL}",
+                "checks": [{"name": "c", "passed": False, "reason": SENTINEL}],
+            },
         )
-    assert started, f"the request started no writer service (progress: {progress})"
-    # the episode-end fork, settled as a fork leaves it (here no fork lane exists, so a stand-in writes what a fork
-    # writes), gives the ledger the episode's entry for the service's pass
+        assert answer["accepted"] is True and SENTINEL not in json.dumps(answer)
+        ts = "2026-10-08T12:00:00+00:00"
+        tpath = transcripts.transcripts_dir() / f"{run.episode_id}.jsonl"
+        tpath.parent.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {"seq": 0, "ts": ts, "session": run.episode_id, "type": "message", "message": {"role": "user", "content": ask}},
+            {"seq": 1, "ts": ts, "session": run.episode_id, "type": "message",
+             "message": {"role": "assistant", "content": "Paid."}},
+        ]  # fmt: skip
+        tpath.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        with asyncio.Runner() as runner:
+            runner.run(run.finish(None, progress=progress.append, emit=emitted.append), context=ctx)
+        fork_dir = Paths.under(home).state_dir / "memory-staging" / run.episode_id
+        fork_dir.mkdir(parents=True, exist_ok=True)
+        (fork_dir / "summary.md").write_text("## Asked\nPay a person back.\n## Approach\n- read pay.csv\n")
+        (fork_dir / "procedure.py").write_text(
+            '"""Pay a person back from the pay file. Accepted: not shown."""\n\n\n'
+            "def run(state, env):\n"
+            '    """Read the pay file and write the payment; nothing is handed back."""\n'
+            '    env.files.read("pay.csv")\n'
+            f"    env.files.write({name!r})\n"
+            "    return None\n",
+        )
+        (fork_dir / "broke.md").write_text("none\n")
+        (fork_dir / "fork.json").write_text(
+            json.dumps({"episode": run.episode_id, "status": "ok", "files": ["summary.md", "procedure.py", "broke.md"]}),
+        )
+        return run
+
+    # two requests doing the same kind of work: a capture is only written up with a related one, so the second
+    # gives the first its pass, which the service runs here, in-process, as it runs it
     from unify.memory.integration.paths import Paths
 
-    fork_dir = Paths.under(home).state_dir / "memory-staging" / run.episode_id
-    fork_dir.mkdir(parents=True, exist_ok=True)
-    (fork_dir / "summary.md").write_text("## Asked\nPay Ada back.\n## Approach\n- read pay.csv\n")
-    (fork_dir / "fork.json").write_text(
-        json.dumps({"episode": run.episode_id, "status": "ok", "files": ["summary.md"]}),
-    )
-    # rev 2.1: a capture alone waits for its group; the service steps once the idle time has passed, so it is due
-    from datetime import datetime, timedelta, timezone
-
-    from unify.memory import capture_groups
-
-    later = datetime.now(timezone.utc) + timedelta(seconds=capture_groups.IDLE_S + 1)
-    stepped = ws.step(home, settings=SETTINGS, now=later)
+    run = episode("Pay Ada back from pay.csv.", "paid.csv")
+    assert started, f"the request started no writer service (progress: {progress})"
+    episode("Pay Bo back from pay.csv.", "paid-bo.csv")
+    stepped = [ws.step(home, settings=SETTINGS) for _ in range(3) if not sent]
 
     assert (
         sent
-    ), f"no pass ran (progress: {progress}; step: {stepped})"  # otherwise the check below proves nothing
+    ), f"no pass ran (progress: {progress}; steps: {stepped})"  # otherwise the check below proves nothing
     assert staged, "nothing was staged for the writer"
     assert any(e.get("phase") == "service" for e in emitted), emitted
     assert SENTINEL.encode() not in fake_tracks.dump_home(home)

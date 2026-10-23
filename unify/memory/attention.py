@@ -51,10 +51,11 @@ The age backstop: when the oldest open entry of any kind is older than the 90th-
 handed in the last :data:`STARVATION_PASSES` passes, it is handed first. :data:`K` entries per pass, the same
 everywhere; the writer may take more.
 
-**Capture groups** (rev 2.1, :mod:`.capture_groups`): the writer service hands with a grouping, so a
-``new_experience`` entry waits until its group of related captures is due (formed, joined, or waited out by counters),
-and a pass is then handed that group's open members with a ``group`` row naming its related closed entries. Every
-other kind is still handed at once.
+**Capture groups** (:mod:`.capture_groups`): the writer service hands with a grouping, so a ``new_experience``
+entry with a capture waits until a related capture exists (another new one, or its history: earlier related ones),
+and a pass is then handed that group's new members with a ``group`` row naming its history. A capture with no related
+capture is never handed alone; an entry whose episode left no capture is closed by the harness and runs no pass. A
+judge's ``kin`` rows (:meth:`Ledger.record_kin`) are one of the relations. Every other kind is still handed at once.
 
 **Reopening.** A ``late_evidence`` entry reopens every closed entry that names one of the items its episode used or
 produced, when the signal is newer than that entry's last close; each reopen names its cause.
@@ -278,6 +279,10 @@ class AttentionEntry:
     handed_at: str | None = None
     #: later occurrences of its capture counted while it was closed (``occurrence`` rows)
     occurrences: int = 0
+    #: the entries a judge of behaviour named as doing the same kind of work (``kin`` rows): a grouping relation
+    kin: tuple[str, ...] = ()
+    #: whether a judge was asked about it (a ``kin`` row, with or without kin): it is asked once
+    kin_judged: bool = False
 
     @property
     def active(self) -> bool:
@@ -353,6 +358,11 @@ def fold(rows: Iterable[Mapping[str, Any]]) -> dict[str, AttentionEntry]:
                 refs=e.refs.merged(Refs.from_row(row.get("refs"))),
                 sources=e.sources + ((src,) if isinstance(src, str) else ()),
             )
+        elif op == "kin":
+            named = row.get("kin")
+            if isinstance(named, list):
+                more = tuple(k for k in named if is_entry_id(k) and k != eid and k not in e.kin)
+                out[eid] = replace(e, kin=e.kin + more, kin_judged=True)
         elif op == "occurrence":
             src = row.get("src")
             out[eid] = replace(
@@ -1207,8 +1217,22 @@ class Ledger:
                 return []
             group_row: dict | None = None
             if grouping is not None:
-                from .capture_groups import GROUPED_KINDS
+                from .capture_groups import GROUPED_KINDS, NO_CAPTURE
 
+                # an episode that left no capture has nothing to write up with others: the harness closes its entry,
+                # and no pass runs on it
+                bare = [e for e in pending if e.kind in GROUPED_KINDS and not e.refs.captures]
+                if bare:
+                    at = self.now()
+                    self._write([{"op": "close", "entry": e.entry, "pass_id": None, "decision": "nothing_to_keep",
+                                  "items": [], "reason_ref": NO_CAPTURE, "by": "harness", "at": at}
+                                 for e in bare])  # fmt: skip
+                    for e in bare:
+                        state[e.entry] = replace(e, state="closed", decision="nothing_to_keep",
+                                                 reason_ref=NO_CAPTURE, closed_at=at)  # fmt: skip
+                    pending = [e for e in pending if e not in bare]
+                    if not pending:
+                        return []
                 now_state = {e.entry: e for e in state.values()}
                 waiting_ids = {e.entry for e in state.values() if e.state == "open"} - {e.entry for e in pending}
                 for wid in waiting_ids:
@@ -1219,13 +1243,10 @@ class Ledger:
                     if not due:
                         return []
                     g = due[0]
+                    # a group's pass reads its members together: a member missed before is not handed alone
                     members = [e for e in g.open if e in pending][:k]
                     if not members:
                         return []
-                    alone_members = [e for e in members if e.misses >= ALONE_AFTER_MISSES
-                                     or e.undecided >= ALONE_AFTER_MISSES]  # fmt: skip
-                    if alone_members:
-                        members = alone_members[:1]
                     group_row = {"op": "group", "pass_id": pass_id, "group": g.id, "due": g.due,
                                  "members": [e.entry for e in members],
                                  "context": [e.entry for e in g.context],
@@ -1526,6 +1547,19 @@ class Ledger:
             ]
             self._write(rows)
         return [r["entry"] for r in rows]
+
+    def record_kin(self, entry: str, kin: Iterable[str], why: str) -> bool:
+        """Record that a judge of behaviour (:mod:`.kinship`) was asked about *entry* and named the entries *kin* as
+        doing the same kind of work (a ``kin`` row: a grouping relation, :mod:`.capture_groups`; with no kin, the row
+        records that it was asked); *why* is the judge's reason. Unknown ids are left out. Returns whether any entry
+        was named; nothing is written for an unknown *entry*."""
+        with self.locked():
+            state = self.entries()
+            if entry not in state:
+                return False
+            named = [k for k in dict.fromkeys(kin) if isinstance(k, str) and k in state and k != entry]
+            self._write([{"op": "kin", "entry": entry, "kin": named, "why": str(why)[:2000], "at": self.now()}])
+        return bool(named)
 
     def mark_not_reached(self, why: str, entry_ids: Iterable[str] | None = None) -> list[str]:
         """End what the run could not reach, with *why* (:data:`NOT_REACHED`): the given entries, or every entry still

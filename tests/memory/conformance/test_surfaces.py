@@ -116,10 +116,13 @@ def _served(home: Path, seen: list, text: str = "Noted."):
     return turn
 
 
-def _check_ids_on_calls(lanes: FL.Lanes) -> None:
-    """A3: every writer call carries its pass and entries; every fork call its episode (and a segment's, its number)."""
+def _check_ids_on_calls(lanes: FL.Lanes, *, writer_ran: bool = True) -> None:
+    """A3: every writer call carries its pass and entries; every fork call its episode (and a segment's, its number).
+    *writer_ran* False: the surface left no capture to write up, so no writer call was made at all."""
     writer = lanes.of("writer")
-    assert writer and all(ID16.fullmatch(c.meta.get("x-unify-pass-id", "")) for c in writer), \
+    if not writer_ran:
+        assert not writer, [c.meta for c in writer][:3]
+    assert (writer or not writer_ran) and all(ID16.fullmatch(c.meta.get("x-unify-pass-id", "")) for c in writer), \
         [c.meta for c in writer][:3]
     assert all(all(ID16.fullmatch(e) for e in c.meta.get("x-unify-entries", "").split(".")) for c in writer)
     forks = lanes.of("fork")
@@ -184,8 +187,10 @@ async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world
     segs = sorted(e.refs.segment for e in entries if e.kind == "new_experience" and e.refs.segment)
     ends = [e for e in entries if e.kind == "new_experience" and not e.refs.segment]
     assert segs == [1] and len(ends) == 1, [(e.kind, e.refs.row()) for e in entries]
+    # a conversation leaves no procedure: the harness closes each entry, and no writer pass runs on nothing
     assert all(e.state == "closed" and e.decision == "nothing_to_keep" for e in entries)
-    _check_ids_on_calls(lanes)
+    assert all(e.reason_ref == "no_capture" for e in entries)
+    _check_ids_on_calls(lanes, writer_ran=False)
 
 
 # --- surface 2 -------------------------------------------------------------------------------------------------------
@@ -222,12 +227,20 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
     s = await H.cli_session(core_world, monkeypatch, model, first, host)
     assert s.code == 0, s.lines[-5:]
     H.wait_until_settled(home)
+    # one capture alone is never written up: the same kind of work again gives it a related capture, and the pass
+    again = f"Sort the rows of inbox.csv by id into {SX.SECOND_FILE}."
+    again_code = code.split("print(tools.send(")[0].replace("sorted.csv", SX.SECOND_FILE)
+    s1b = await H.cli_session(core_world, monkeypatch,
+                              ScriptedModel(actor=[reply(calls=[cell(again_code)]), reply("Done."), reply("Good.")]),
+                              again, H.replies())
+    assert s1b.code == 0, s1b.lines[-5:]
+    H.wait_until_settled(home)
     seen: list = []
     s2 = await H.cli_session(core_world, monkeypatch, ScriptedModel(actor=[_served(home, seen)]),
                              "Anything new in the inbox?", H.replies())
     assert s2.code == 0
     H.wait_until_settled(home)
-    facts = H.check_run(home, lanes, actor_model=model, own_texts=[first, shown, "Anything new in the inbox?"])
+    facts = H.check_run(home, lanes, actor_model=model, own_texts=[first, shown, again, "Anything new in the inbox?"])
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     stores = _stores(home)
     # one verdict the actor saw, right after its answer: rev 2 records the answers as dialogue actions on the env
@@ -255,6 +268,10 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
     assert seen and SX.NOTE_ID in seen[0]["items"] and seen[0]["evidence"] is not None
     landed = [p for p in H._jsonl(paths.state_dir / "pass-results.jsonl") if (p.get("items") or {}).get("landed")]
     assert landed and SX.NOTE_ID in landed[0]["items"]["landed"]
+    # the pass that landed it read the two related captures together
+    groups = [r for r in H._jsonl(paths.state_dir / "memory-attention" / "ledger.jsonl") if r.get("op") == "group"]
+    assert groups and all(len(r["members"]) + len(r["context"]) >= 2 for r in groups), groups
+    assert groups[0]["reasons"]["sequence"] >= 1, groups
     # A1: the five exchanges, on one record
     mesh = check_mesh(home)
     assert mesh["fork_to_writer"] >= 1 and mesh["writer_to_fork"] >= 1 and mesh["fork_answer"] == 1, mesh
@@ -270,8 +287,7 @@ async def _wait_for_item_served(home: Path, item: str, timeout_s: float = 300.0)
     next cell re-pins to) holds *item* (its path in the memory); that commit, or None when it was not served in time.
     The service lands on main and publishes ``served`` after it, and under load it can group the segment entries into
     fewer passes, so neither main moving nor the item on main is enough: the wait is for the item where cells read it.
-    A segment's capture alone waits for its group (rev 2.1); while the service is idle it is aged past the grouping's
-    idle time (:func:`harness.age_waiting_captures`), so it is due without the test waiting ten minutes."""
+    A segment's capture is written up with the related capture an earlier request left."""
     import asyncio
     import time
 
@@ -286,8 +302,6 @@ async def _wait_for_item_served(home: Path, item: str, timeout_s: float = 300.0)
         head = served_head(repo)
         if repo.run("ls-tree", "--name-only", head, "--", item).strip() == item:
             return head
-        if not (ws.read_state(home) or {}).get("pass_id"):
-            H.age_waiting_captures(home)
         await asyncio.sleep(0.25)
     return None
 
@@ -303,8 +317,17 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
     home = Path(core_world["state"])
     paths = Paths.under(home)
     (Path(core_world["workspace"]) / "inbox.csv").write_text(SX.INBOX)
-    _forever(lanes, "fork", SX.fork_by_request(SX.TOOL_FORK_REPLY, when="inbox.csv", segment_reply=SX.TOOL_FORK_REPLY))
+    _forever(lanes, "fork", SX.fork_sorting(segment_reply=SX.TOOL_FORK_REPLY))
     _forever(lanes, "writer", SX.writer_policy())
+    # an earlier request did the same kind of work: its capture is the history the first segment's capture is
+    # written up with, while the long episode runs
+    earlier = f"Sort the rows of inbox.csv by id into {SX.SECOND_FILE}."
+    e0 = await H.cli_session(core_world, monkeypatch, ScriptedModel(actor=[
+        reply(calls=[cell("import csv\nrows = sorted(csv.DictReader(open('inbox.csv')), key=lambda r: int(r['id']))\n"
+                          f"open({SX.SECOND_FILE!r}, 'w').write(str(rows))\n")]),
+        reply("Sorted.")]), earlier, H.replies())
+    assert e0.code == 0, e0.lines[-5:]
+    H.wait_until_settled(home)
     sort_code = ("import csv\n"
                  "rows = sorted(csv.DictReader(open('inbox.csv')), key=lambda r: int(r['id']))\n"
                  "w = csv.DictWriter(open('sorted.csv', 'w', newline=''), fieldnames=['id', 'amount'])\n"
@@ -337,7 +360,7 @@ async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch
     s = await H.cli_session(core_world, monkeypatch, model, first, H.replies())
     assert s.code == 0, s.lines[-5:]
     H.wait_until_settled(home)
-    facts = H.check_run(home, lanes, actor_model=model, own_texts=[first, SX.SUMMARY])
+    facts = H.check_run(home, lanes, actor_model=model, own_texts=[earlier, first, SX.SUMMARY])
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     assert "compression_fork" in model.kinds()
     # the actor's call and the compaction each started a segment fork; the compaction's fork captured the same
@@ -374,14 +397,21 @@ async def test_surface_4_an_outcome_that_arrives_two_requests_later(core_world, 
     home = Path(core_world["state"])
     paths = Paths.under(home)
     (Path(core_world["workspace"]) / "inbox.csv").write_text(SX.INBOX)
-    _forever(lanes, "fork", SX.fork_by_request(SX.TOOL_FORK_REPLY, when="inbox.csv"))
+    _forever(lanes, "fork", SX.fork_sorting())
     _forever(lanes, "writer", SX.writer_policy())
     code = ("import csv\n"
             "rows = sorted(csv.DictReader(open('inbox.csv')), key=lambda r: int(r['id']))\n"
             "w = csv.DictWriter(open('sorted.csv', 'w', newline=''), fieldnames=['id', 'amount'])\n"
             "w.writeheader(); w.writerows(rows)\nprint(len(rows))\n")
     texts = ["Sort the rows of inbox.csv by id into sorted.csv.", "How many rows were there?", "Thanks.",
-             "Anything else?"]
+             "Anything else?", f"Sort the rows of inbox.csv by id into {SX.SECOND_FILE}."]
+    # request 0: the same kind of work earlier, so request 1's capture has a related capture to be written up with
+    z = await H.cli_session(core_world, monkeypatch,
+                            ScriptedModel(actor=[reply(calls=[cell(code.replace("sorted.csv", SX.SECOND_FILE))]),
+                                                 reply("Sorted.")]),
+                            texts[4], H.replies())
+    assert z.code == 0
+    H.wait_until_settled(home)
     # request 1: the work, and no verdict
     a = await H.cli_session(core_world, monkeypatch, ScriptedModel(actor=[reply(calls=[cell(code)]), reply("Sorted.")]),
                             texts[0], H.replies())

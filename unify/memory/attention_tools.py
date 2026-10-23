@@ -384,11 +384,15 @@ def export_group(att: AttentionPass, handed: list) -> dict | None:
     except Exception:  # noqa: BLE001 - without the evidence store the captures' own records still describe them
         evidence = None
     profiles = cg.HomeProfiles(att.ledger.state_dir, evidence)
+    # the home's shared call features relate nothing, as when the group was formed
+    common = cg.common_features(
+        profiles(e) for e in entries.values() if e.kind in cg.GROUPED_KINDS and e.refs.captures and e.state != "not_reached"
+    )
     pairs = []
     everyone = [*members, *context]
     for i, a in enumerate(everyone):
         for b in everyone[i + 1 :]:
-            why = cg.related(profiles(a), profiles(b))
+            why = cg.related(profiles(a), profiles(b), common)
             if why:
                 pairs.append({"a": a.entry, "b": b.entry, "why": why})
     group = cg.Group(id=str(row.get("group") or ""), open=members, context=context, relations=pairs,

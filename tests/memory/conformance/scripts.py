@@ -105,6 +105,47 @@ TOOL_FORK_REPLY = (
     "```path: procedure.py\n" + TOOL_PROC + "```\n\n"
     "```path: broke.md\nnone\n```\n"
 )
+#: Another episode's procedure for the same kind of work: the same calls, another output file (so its shape differs and
+#: it is a capture of its own, related to :data:`TOOL_PROC`'s by their shared call sequence).
+SECOND_FILE = "sorted_rows.csv"
+TOOL_PROC_B = '''"""Sort the inbox rows by id into a file of sorted rows. Accepted: not shown."""
+
+
+def run(state, env):
+    """Read the inbox file and write its rows, sorted by id, to a new file; nothing is handed back."""
+    env.worktree_workspace.read("inbox.csv")
+    env.worktree_workspace.write("sorted_rows.csv")
+    return None
+'''
+TOOL_FORK_REPLY_B = (
+    "```path: summary.md\n"
+    "## Asked\nSort the rows of a file by their id into a new file.\n"
+    "## Approach\n- Read the rows, sorted them by id, wrote them to a new file (`cell:0` \"sorted(\").\n"
+    "## Worked\n- Sorting by the integer id.\n"
+    "## Failed\n- none\n"
+    "## Outcome\nnot shown\n"
+    "```\n\n"
+    "```path: procedure.py\n" + TOOL_PROC_B + "```\n\n"
+    "```path: broke.md\nnone\n```\n"
+)
+
+
+def fork_sorting(*, segment_reply: str = FORK_REPLY):
+    """The fork's script when two requests sort the inbox: the second procedure for the request that writes
+    :data:`SECOND_FILE`, the first for any other request on the inbox, a summary-only reply otherwise (and
+    *segment_reply* for a segment fork)."""
+
+    def answer(body: dict) -> str:
+        if is_segment(body):
+            return segment_reply
+        text = _all_text(body)
+        if SECOND_FILE in text:
+            return TOOL_FORK_REPLY_B
+        return TOOL_FORK_REPLY if "inbox.csv" in text else FORK_REPLY
+
+    return answer
+
+
 NOTE_ID = "notes/files/sort-rows.md"
 NOTE_TEXT = (
     "---\ntitle: Sorting the rows of a file\ndescription: what to check before writing sorted rows\nuses: []\n---\n"
@@ -122,8 +163,9 @@ OUTCOME_SOLVED = {"solved": True, "checks": [{"name": "rows", "passed": True, "r
 
 
 def decide_code(ids: list[str], *, land: bool = True) -> str:
-    """A writer cell that decides each handed entry from its kind: the first ``new_experience`` while the note is not
-    in the library lands it (``new_item``, citing its episode, or its segment ``<episode>.s<n>``); a
+    """A writer cell that decides each handed entry from its kind: the ``new_experience`` entries of a pass (the
+    related captures it was handed together) land the note while it is not in the library (one ``new_item``
+    decision closing them all, citing their episodes, or their segments ``<episode>.s<n>``); a
     ``late_evidence`` while it is retires it (``retire``); every other entry is ``nothing_to_keep``, each decided on
     its own (so one the ledger refuses holds no other back); then the manifest and ``tools.finish``."""
     return (
@@ -136,7 +178,7 @@ def decide_code(ids: list[str], *, land: bool = True) -> str:
         "there = os.path.exists(note)\n"
         "land, retire, keep = [], [], []\n"
         "for r in rows:\n"
-        f"    if r['kind'] == 'new_experience' and not there and not land and {land!r}:\n"
+        f"    if r['kind'] == 'new_experience' and not there and {land!r}:\n"
         "        land.append(r)\n"
         "    elif r['kind'] == 'late_evidence' and there:\n"
         "        retire.append(r)\n"
@@ -232,6 +274,8 @@ def fork_mesh(body: dict):
 
     if is_segment(body) or "inbox.csv" not in _all_text(body):
         return FORK_REPLY
+    if SECOND_FILE in _all_text(body):
+        return TOOL_FORK_REPLY_B  # the second sorting episode's fork writes its blocks and says nothing on the record
     n = _fork_turns(body)
     if n == 0:
         return _cell("Tell the writer.", f"tools.send({FORK_NOTE!r})")
