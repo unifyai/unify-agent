@@ -431,8 +431,8 @@ LAND_CAPTURE = RegisteredTool(
         "whole job on a request: the reader, its applies as a precondition, then the procedure), the source case "
         "(the request with the value its episode handed back, <name>.case<k>.source.case.json) and each case you "
         "name in cases, a test of the recorded result with one refusal test in tests/test_<name>.py, and the "
-        "manifest entries (role procedure, with its reader, recipe and cases; the recipe). The gate runs the recipe "
-        "on every case and lands the procedure only if all pass. When the capture's same_as names a capture already "
+        "manifest entries (role procedure, with its reader, recipe and cases; the recipe). The gate runs no recipe: "
+        "it lists the cases on the procedure's label. When the capture's same_as names a capture already "
         "landed, this request becomes a new case of that procedure instead. You may change any of them before you "
         "finish."
     ),
@@ -443,7 +443,14 @@ LAND_CAPTURE = RegisteredTool(
             "name": {"type": "string", "description": "the procedure's name, a plain module name"},
             "cases": {
                 "type": "array",
-                "items": {"type": "object"},
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "input": {"description": "a source id, or {\"source\", \"slice\"}"},
+                        "expected": {"description": "a source id, or {\"source\", \"slice\"}"},
+                    },
+                    "required": ["input", "expected"],
+                },
                 "description": (
                     'more cases of the capture\'s episode, each {"input": <source>, "expected": <source>} as '
                     "fixture takes them (a source id or {\"source\", \"slice\"}): an input the request or the "
@@ -1253,7 +1260,16 @@ TEST = RegisteredTool(
         "properties": {
             "item": {"type": "string", "description": "A function id, memory.<package>.<module>:<name>."},
             "on": {"type": "string", "description": "The recorded input: '<episode>' or '<episode>/<part>'."},
-            "expect": {"type": "object", "description": "What you expect, stated before the run."},
+            "expect": {
+                "type": "object",
+                "description": "What you expect, stated before the run.",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["returns", "raises", "refuses"]},
+                    "value": {"description": "for 'returns': the value it returns"},
+                    "exception": {"type": "string", "description": "for 'raises': the exception's class name"},
+                },
+                "required": ["kind"],
+            },
         },
         "required": ["item", "on", "expect"],
         "additionalProperties": False,
