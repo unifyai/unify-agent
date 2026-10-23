@@ -181,3 +181,86 @@ def test_a_writer_pass_opens_a_capture_handed_to_it(tmp_path, monkeypatch):
     monkeypatch.setattr(lh, "HANDED_CAPTURES", str(handed))
     assert lh.CAPTURE_PREFIX + cid in lh._capture_ids()
     assert lh._capture_dir(cid) == str(handed / cid)
+
+
+def test_natural_forms_resolve(tmp_path):
+    """The forms of one note's path an agent may write (its id, its ``topic/slug``, and its path under
+    ``/memory-library`` or ``/memory``) open the same entry: ``memory.get`` takes all four (one package for every
+    role); the actor's and a teammate's ``tools.read`` takes both box names, the librarian's its ``/memory`` path, and
+    the writer's ``tools.read`` its relative forms too, each giving the note's bytes. A path that leaves the roots is
+    refused for each, and nothing outside is read."""
+    from types import SimpleNamespace
+
+    from tests.memory.test_capture_examples import _cell, _copy
+    from unify.memory import safe_paths, views
+    from unify.memory.writer_pass import _natural_path
+
+    root, _ = _copy(tmp_path)
+    note = "notes/text/dates.md"
+    text = (root / note).read_text()
+    forms = [note, "text/dates", f"{H.LIBRARY}/{note}", f"{H.MEMORY_ALIAS}/{note}"]
+    got = _cell(root, f"print(json.dumps({{'ids': [memory.get(f).id for f in {forms!r}], "
+                      f"'outside': err(memory.get, {H.LIBRARY + '/../etc/hostname'!r})}}))\n")  # fmt: skip
+    assert got["ids"] == [note] * 4
+    assert got["outside"][0] == "NotFound", got["outside"]
+
+    # the actor's and a teammate's read: either box name is the copy the box mounts
+    view = H.LibraryView(mount=root, copy=root, link="", mounts=())
+    places = {H._library_place(view, f) for f in forms[2:]}
+    assert len(places) == 1
+    shown, host_root, _ = places.pop()
+    assert views.read_entry(shown, {H.LIBRARY: str(host_root)})[0] == text
+    with pytest.raises(safe_paths.Outside):
+        H._library_place(view, f"{H.LIBRARY}/../etc/hostname")
+
+    # the librarian's read: the library under /memory, and nothing outside it
+    ctx = SimpleNamespace(state=SimpleNamespace(copy=root))
+    assert librarian.read(ctx, {"path": forms[3]}).text == text
+    refused = librarian.read(ctx, {"path": "/memory/../etc/hostname"})
+    assert refused.status == "refused" and "is outside the library, /memory" in refused.text
+
+    # the writer's read: what it naturally writes resolves to the one /memory path
+    roots = {"/memory": root, "/inputs": tmp_path / "inputs"}
+    (tmp_path / "inputs").mkdir()
+    for form in (note, f"memory/{note}", forms[3]):
+        resolved = _natural_path(form, roots)
+        assert resolved == forms[3], (form, resolved)
+        assert views.read_entry(resolved, {"/memory": str(root)})[0] == text
+    assert _natural_path("../etc/hostname", roots) == "../etc/hostname"
+    with pytest.raises(safe_paths.Outside):
+        views.read_entry("/memory/../etc/hostname", {"/memory": str(root)})
+
+
+@pytest.mark.asyncio
+async def test_helper_ask(tmp_path, monkeypatch):
+    """An actor-started helper (a teammate) asks the request's librarian as the actor does: its tools offer the ask only
+    in a run with a librarian, its question reaches the librarian and comes back answered, and once the request's
+    librarian sessions are at their bound its question is refused, naming where to send it instead."""
+    import json
+    from types import SimpleNamespace
+
+    from tests.memory import test_librarian_answer_once as A
+    from unify.memory.integration import request as RQ
+
+    with_librarian = R.allow_list("teammate", H.actor_flags("teammate", librarian=True))
+    without = R.allow_list("teammate", H.actor_flags("teammate", librarian=False))
+    assert "ask_library" in with_librarian and "ask_library" not in without
+    assert "ask_library" not in R.list_text(without, "teammate", memory=False)
+
+    turn = A.Turn([A.FITS])
+    session = A._session(tmp_path, turn)
+    ctx = A._ctx(session)
+    ctx.agent = "teammate"
+    got = await H.ask_library(ctx, {"question": A.REQUEST})
+    assert got.status == "ok", got
+    assert [f["id"] for f in json.loads(got.text)["fits"]] == [A.TOTAL] and len(turn.calls) == 1
+
+    # the bound: the actor's and its first teammates' sessions are open; a later teammate's question is refused
+    full = SimpleNamespace(copy_root=A._copy(tmp_path / "bound"), episode_id=None, pin=None, in_episode=None,
+                           librarian_sessions=[SimpleNamespace(mode="ask")] * librarian.MAX_ASK_SESSIONS)  # fmt: skip
+    monkeypatch.setattr(RQ, "current", lambda: full)
+    late = SimpleNamespace(agent="teammate", state=H.ActorRequestState(
+        open_librarian=librarian.opener(turn_factory=lambda: A.Turn([])), request_text=A.REQUEST))
+    refused = await H.ask_library(late, {"question": A.REQUEST})
+    assert refused.status == "refused", refused
+    assert "@actor" in refused.text and f"{librarian.MAX_ASK_SESSIONS} librarian sessions" in refused.text
