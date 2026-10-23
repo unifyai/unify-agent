@@ -1106,10 +1106,12 @@ def stop_service(
     def left() -> list[int]:
         return service_group(doc, read_members(home))
 
-    if doc.get("state") == "stopped" and not lock_holders(service_dir(home) / LOCK_FILE) and not left():
-        # the service wrote its last state, nothing holds the home and nothing of its group is left: nothing to stop
-        # (a step, or a test, that ran the loop in its own process is never signalled); a child it left running is
-        # stopped below like any other
+    caller = doc.get("pgid") == os.getpgid(0)
+    if doc.get("state") == "stopped" and not lock_holders(service_dir(home) / LOCK_FILE) and (caller or not left()):
+        # the loop wrote its last state and nothing holds the home. In the caller's own process group, the loop ran
+        # inside the caller (a step, or a test; a service leads a group of its own): the caller's group is never
+        # signalled. Otherwise nothing of its group is left: nothing to stop. A child a service left running when it
+        # ended is stopped below like any other.
         return Terminated(True, "clean")
 
     def alive() -> bool:
