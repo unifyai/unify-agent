@@ -190,18 +190,25 @@ SHOULD_MENTION: dict[str, tuple[dict[str, str], ...]] = {
 #: The one common prompt section, the same bytes in every role's prompt (defined in the shared tool registry with the
 #: comms tools it describes).
 COMMON_SECTION = _registry.COMMON_SECTION
+#: The common section of a run without memory (``UNIFY_MEMORY=off``): no writer, fork or librarian named.
+COMMON_SECTION_NO_MEMORY = _registry.COMMON_SECTION_NO_MEMORY
 
 
 def prompt_lines(name: str, role: str, spawner: Optional[str] = None, *, home: Optional[Path | str] = None) -> str:
     """What every agent on the record reads after its cache-preserving prefix: :data:`COMMON_SECTION` (the same bytes
     for every role), then its own roster lines: its name and whom its role should mention, and when. A role that
     outlives its instances (:data:`INSTANCE_ROLES`) is named only when the run has it (seeded in *home*; no *home*:
-    not named), so no agent is told to mention someone the run does not have.
+    not named), so no agent is told to mention someone the run does not have; a run without memory
+    (``UNIFY_MEMORY=off``) reads :data:`COMMON_SECTION_NO_MEMORY` and is never told to mention a writer, fork or
+    librarian.
     """
-    lines = [COMMON_SECTION, "", f"On the record you are `{name}` ({role})."]
+    memory = _registry.memory_is_on()
+    lines = [_registry.common_section(memory), "", f"On the record you are `{name}` ({role})."]
     for m in SHOULD_MENTION.get(role, ()):
         who = (spawner or "") if m["who"] == "<starter>" else m["who"]
         if who in INSTANCE_ROLES and (home is None or not role_seeded(home, who)):
+            continue
+        if who in _registry.MEMORY_ROLES and not memory:   # a run without memory has no writer, fork or librarian
             continue
         if who:
             lines.append(
@@ -862,7 +869,9 @@ class RunRecord(Record):
         help_text = " ".join(clean_text(help_text).split())
         if len(help_text) > HELP_CHARS:
             help_text = help_text[:HELP_CHARS] + "…"
-        mention = [dict(m) for m in SHOULD_MENTION.get(role, ())]
+        memory = _registry.memory_is_on()
+        mention = [dict(m) for m in SHOULD_MENTION.get(role, ())
+                   if memory or m["who"] not in _registry.MEMORY_ROLES]   # without memory: no writer, fork or librarian
         if role == "helper":
             mention = [
                 {"who": spawner or "the agent that started you", "when": m["when"]}
@@ -1750,7 +1759,9 @@ class RunRecordView:
         sender = sender or self.name
         names = [f"@{n}" for n in self.record.live_agents() if n != sender]
         # rev 2: a role that outlives its instances is offered only once the run has seeded it
-        roles = [f"@{r}" for r in ROLE_ADDRESSES if r not in INSTANCE_ROLES or role_seeded(self.record.home, r)]
+        memory = _registry.memory_is_on()
+        roles = [f"@{r}" for r in ROLE_ADDRESSES if (r not in INSTANCE_ROLES or role_seeded(self.record.home, r))
+                 and (memory or r not in _registry.MEMORY_ROLES)]   # without memory: no writer, fork or librarian
         return ", ".join(dict.fromkeys(names + roles))
 
     def messages_all(self, limit: int = 50) -> tuple[list[dict], int]:
@@ -1800,6 +1811,7 @@ __all__ = [
     "role_seeded",
     "seed_role",
     "COMMON_SECTION",
+    "COMMON_SECTION_NO_MEMORY",
     "MAX_RECORD_BYTES",
     "ROLES",
     "RUN_OPTIONS",
