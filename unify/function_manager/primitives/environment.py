@@ -66,9 +66,6 @@ class EnvironmentNamespace:
                 return method
         return None
 
-    def method_names(self) -> list[str]:
-        return sorted(method.name for method in self.methods)
-
     def effect_counts(self) -> Dict[str, int]:
         counts = {effect: 0 for effect in EFFECTS}
         for method in self.methods:

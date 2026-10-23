@@ -52,9 +52,6 @@ class StandInChannel:
                 pass
         self._done.set()
 
-    def handler_threads_alive(self) -> bool:
-        return False
-
 
 def fd_listing_code() -> str:
     """A cell printing, as JSON, every descriptor the interpreter's process holds (number -> link target) and the

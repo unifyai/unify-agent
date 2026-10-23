@@ -150,7 +150,7 @@ def _assert_ended(opened: list) -> None:
     for session in opened:
         assert session.closed
         assert not session.box_alive()
-        assert not session.threads_alive()
+        assert not session.threads.alive()
         assert session.interp is None
 
 

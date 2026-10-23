@@ -243,17 +243,11 @@ class LoopLogger:
     def __init__(self, cfg: LoopConfig, log_steps: bool | str) -> None:
         self._label = cfg.label
         self._log_steps = log_steps
-        self._first_llm_logged = False
-        self._defer_after_first_llm: list[tuple[str, str]] = []
         self._thinking_emitted = False
 
     @property
     def log_steps(self):
         return self._log_steps
-
-    @property
-    def log_label(self):
-        return self._label
 
     def info(self, msg, prefix=""):
         txt = f"{prefix} [{self._label}] {msg}"
@@ -269,19 +263,6 @@ class LoopLogger:
 
     def begin_thinking(self) -> None:
         self._thinking_emitted = False
-        self.flush_deferred()
-
-    def flush_deferred(self) -> None:
-        """Emit the lines held back until the first LLM thinking line.
-
-        A loop that ends before its first LLM step never reaches that line,
-        so the loop also calls this on the way out.
-        """
-        if not self._first_llm_logged:
-            self._first_llm_logged = True
-            for p, m in self._defer_after_first_llm:
-                self.info(m, prefix=p)
-            self._defer_after_first_llm.clear()
 
     def emit_thinking_with_path(self, path) -> None:
         self._thinking_emitted = True
@@ -291,12 +272,6 @@ class LoopLogger:
         if not self._thinking_emitted:
             self._thinking_emitted = True
             self.info("LLM thinking…", prefix=ICONS["llm_thinking"])
-
-    def defer_after_first_llm(self, msg: str, prefix: str = "") -> None:
-        if self._first_llm_logged:
-            self.info(msg, prefix=prefix)
-        else:
-            self._defer_after_first_llm.append((prefix, msg))
 
 
 class _LoopToolFailureTracker:
@@ -1717,8 +1692,5 @@ async def async_tool_loop_inner(
         raise
     finally:
         _cell_reply.unbind(_reply_token)
-        # A loop stopped before its first LLM step still logs its stop.
-        if log_steps:
-            logger.flush_deferred()
         with suppress(Exception):
             TOOL_LOOP_LINEAGE.reset(_token)

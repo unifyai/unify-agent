@@ -15,7 +15,6 @@ from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 R = TypeVar("R")
-T = TypeVar("T")
 
 
 def run_coro_sync(factory: Callable[[], Awaitable[R]]) -> R:

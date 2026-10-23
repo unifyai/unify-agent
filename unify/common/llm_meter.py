@@ -123,13 +123,6 @@ class RunMeter:
                 return None
             return self._known_cost.get(purpose, Decimal(0))
 
-    def total_cost_usd(self) -> Optional[Decimal]:
-        """The run's cost over every purpose; ``None`` if any call's was unknown."""
-        with self._lock:
-            if any(self._unknown_cost_calls.values()):
-                return None
-            return sum(self._known_cost.values(), Decimal(0))
-
     @property
     def cost(self) -> Dict[str, float]:
         """Deprecated float view: the reported costs per purpose.

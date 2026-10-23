@@ -18,35 +18,14 @@ _THINKING_ICON = ICONS["llm_thinking"]
 
 
 class PendingThinkingLog:
-    """Manages the combined 'LLM thinking… → /path' log for LLM calls.
-
-    Callers set a thinking suffix (the parenthesised metadata) before
-    ``generate()``.  The pending callback emits the combined one-liner.
-    If ``UNILLM_LOG_DIR`` is unset the callback never fires, so
-    ``emit_fallback`` produces a plain thinking line instead.
-    """
+    """The 'LLM thinking… → /path' log line of an LLM call: the client's pending callback emits it once the call's
+    log file path is known (never when ``UNILLM_LOG_DIR`` is unset)."""
 
     def __init__(self, origin: str) -> None:
         self._origin = origin
-        self._suffix: str = ""
-        self._emitted: bool = False
-
-    def set_thinking_context(self, suffix: str) -> None:
-        self._suffix = suffix
-        self._emitted = False
 
     def on_pending_path(self, path: Path) -> None:
-        self._emitted = True
-        LOGGER.info(
-            f"{_THINKING_ICON} [{self._origin}] LLM thinking…{self._suffix} → {path}",
-        )
-
-    def emit_fallback(self) -> None:
-        if not self._emitted:
-            self._emitted = True
-            LOGGER.info(
-                f"{_THINKING_ICON} [{self._origin}] LLM thinking…{self._suffix}",
-            )
+        LOGGER.info(f"{_THINKING_ICON} [{self._origin}] LLM thinking… → {path}")
 
 
 def resolve_default_model() -> tuple[str, str | None]:

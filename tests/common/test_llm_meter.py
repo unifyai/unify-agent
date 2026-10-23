@@ -70,7 +70,6 @@ def test_an_unreported_cost_is_unknown_never_zero(cost):
     _add(meter, cost)
     assert meter.calls["planning"] == 2
     assert meter.cost_usd("planning") is None
-    assert meter.total_cost_usd() is None
     assert meter.known_cost_usd("planning") == Decimal("0.25")
     assert meter.unknown_cost_calls("planning") == 1
     snapshot = meter.snapshot()
@@ -84,7 +83,6 @@ def test_an_unreported_cost_is_unknown_never_zero(cost):
 def test_a_fresh_meter_costs_zero():
     meter = RunMeter()
     assert meter.cost_usd("planning") == Decimal(0)
-    assert meter.total_cost_usd() == Decimal(0)
     assert meter.snapshot()["cost"] == {"planning": "0"}
 
 

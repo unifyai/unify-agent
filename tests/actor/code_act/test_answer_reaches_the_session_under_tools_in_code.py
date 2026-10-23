@@ -212,7 +212,7 @@ def _assert_in_code_requests(model: ScriptedModel, opened: list) -> None:
         assert call.request["tools"] == R.json_tools("actor")
     assert [s.agent for s in opened] == ["actor"]
     for session in opened:
-        assert session.closed and not session.box_alive() and not session.threads_alive()
+        assert session.closed and not session.box_alive() and not session.threads.alive()
 
 
 # ── one request ──────────────────────────────────────────────────────────────

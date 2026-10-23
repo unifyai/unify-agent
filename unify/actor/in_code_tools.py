@@ -320,8 +320,6 @@ class InCodeTools:
         interp = self.interp
         return bool(interp is not None and interp.box_alive())
 
-    def threads_alive(self) -> bool:
-        return self.threads.alive()
 
     # -- cells -------------------------------------------------------------------------------------------------
 

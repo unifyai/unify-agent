@@ -402,7 +402,7 @@ def test_a_handler_thread_past_its_deadline_closes_the_channel_and_is_tracked_un
         out = await h.call("echo", {})
         closed = await h.ended()
         # the gate may not start while the thread lives
-        alive = (h.channel.handler_threads_alive(), pass_threads.alive())
+        alive = (h.channel.threads.alive(), pass_threads.alive())
         idle_early = await pass_threads.wait_idle(0.05)
         release.set()
         idle = await pass_threads.wait_idle(5)

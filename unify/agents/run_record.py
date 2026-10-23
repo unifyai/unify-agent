@@ -833,11 +833,6 @@ class RunRecord(Record):
                 seqs.add(s)
         self._delivered[agent] = (upto, seqs)
 
-    def delivered_to(self, name: str) -> tuple[int, set[int]]:
-        """``(block cursor, seqs delivered)`` for *name*, from the delivery log."""
-        with self._lock:
-            upto, seqs = self._delivered.get(name, (0, set()))
-            return upto, set(seqs)
 
     # -- the roster ---------------------------------------------------------------------------------------------
 

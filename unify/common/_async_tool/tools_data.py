@@ -15,7 +15,6 @@ from .tools_utils import ToolCallMetadata, create_tool_call_message
 from .messages import (
     insert_tool_message_after_assistant,
     _normalise_kwargs_for_bound_method,
-    is_mutable,
 )
 from ..tool_spec import normalise_tools
 from ..llm_helpers import method_to_schema
@@ -122,10 +121,6 @@ class ToolsData:
         self.pending: Set[asyncio.Task] = set()
         self.info: Dict[asyncio.Task, ToolCallMetadata] = {}
         self.completed_results: Dict[str, str] = {}
-
-    def _mutable(self, msg: dict) -> bool:
-        """True when *msg* has not yet been included in any dispatched request."""
-        return is_mutable(self._client, msg)
 
     def save_task(self, coro, metadata: ToolCallMetadata):
         self.pending.add(coro)

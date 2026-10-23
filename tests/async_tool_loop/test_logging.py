@@ -258,62 +258,20 @@ async def test_thinking_log_fallback_without_log_dir(llm_config, unify_logs):
 
 class TestPendingThinkingLog:
 
-    def test_combined_line_with_context(self, unify_logs):
-        """When a pending path arrives and thinking context is set,
-        a single combined '🧠 ... LLM thinking…(suffix) → /path' line is emitted."""
+    def test_the_pending_path_gives_one_thinking_line(self, unify_logs):
+        """A pending path arrives: one '🧠 [origin] LLM thinking… → /path' line, without ids."""
         from pathlib import Path
 
-        log = PendingThinkingLog("FastBrain")
-        log.set_thinking_context(" (test)")
-        log.on_pending_path(Path("/tmp/fake.cache_pending.txt"))
+        log = PendingThinkingLog("ProactiveSpeech")
+        log.on_pending_path(Path("/tmp/fake.txt"))
 
         out = unify_logs.text
         assert "🧠" in out
-        assert "[FastBrain]" in out
-        assert "LLM thinking…" in out
-        assert "(test)" in out
+        assert "[ProactiveSpeech]" in out
+        assert "LLM thinking… → /tmp/fake.txt" in out
         assert "generation_id" not in out
         assert "source_id" not in out
-        assert "→ /tmp/fake.cache_pending.txt" in out
-        lines = [l for l in out.splitlines() if "FastBrain" in l]
-        assert len(lines) == 1
-
-    def test_fallback_without_log_dir(self, unify_logs):
-        """When no pending path arrives, emit_fallback produces a plain thinking line."""
-        log = PendingThinkingLog("ConversationManager")
-        log.set_thinking_context(" (UserWebcamStarted)")
-        log.emit_fallback()
-
-        out = unify_logs.text
-        assert "🧠" in out
-        assert "[ConversationManager]" in out
-        assert "LLM thinking…" in out
-        assert "(UserWebcamStarted)" in out
-        assert "→" not in out
-
-    def test_fallback_suppressed_after_pending(self, unify_logs):
-        """If pending callback already fired, emit_fallback is a no-op."""
-        from pathlib import Path
-
-        log = PendingThinkingLog("ProactiveSpeech")
-        log.on_pending_path(Path("/tmp/fake.txt"))
-
-        assert len(unify_logs.records) == 1, "the pending path should log once"
-        unify_logs.clear()
-
-        log.emit_fallback()
-        assert unify_logs.records == []
-
-    def test_no_context_produces_generic_line(self, unify_logs):
-        """Without set_thinking_context, the combined line has no suffix."""
-        from pathlib import Path
-
-        log = PendingThinkingLog("ProactiveSpeech")
-        log.on_pending_path(Path("/tmp/fake.txt"))
-
-        out = unify_logs.text
-        assert "LLM thinking… →" in out
-        assert "ProactiveSpeech" in out
+        assert len([l for l in out.splitlines() if "ProactiveSpeech" in l]) == 1
 
     def test_new_llm_client_attaches_pending_log(self):
         """new_llm_client with origin should attach _pending_thinking_log."""

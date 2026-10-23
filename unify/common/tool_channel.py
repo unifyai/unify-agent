@@ -44,7 +44,7 @@ Shared state (one owner or one lock each; handlers of up to 17 boxes of a pass m
   ``/inputs`` happens on the loop when the helper ends;
 - each channel's own fields: the channel's serve task.
 
-The gate: :meth:`Channel.handler_threads_alive` and :meth:`HandlerThreads.alive` say whether a handler thread is still
+The gate: :meth:`HandlerThreads.alive` (a channel's ``threads``) says whether a handler thread is still
 running; the pass waits for none to be alive before its gate or landing starts (:meth:`HandlerThreads.wait_idle`).
 """
 
@@ -742,16 +742,10 @@ class Channel:
         """A call is being answered (the interpreter pauses the cell clock meanwhile)."""
         return self._in_flight is not None
 
-    def call_in_flight(self) -> str | None:
-        """The tool of the call being answered now, or None (the interpreter pauses the cell clock while one is)."""
-        return self._in_flight
-
     def box_gone(self) -> None:
         """The box was killed or ended: a reply still to be written is dropped, and the call's row says so."""
         self._box_gone = True
 
-    def handler_threads_alive(self) -> bool:
-        return self.threads.alive()
 
     # -- serving -----------------------------------------------------------------------------------------------
 
@@ -1070,4 +1064,3 @@ def _close_fd(fd: int) -> None:
         os.close(fd)
     except OSError:
         pass
-
