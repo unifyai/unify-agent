@@ -127,6 +127,7 @@ EVENTS = (
     "refused",
     "error",
     "stop-cleared",
+    "signal-refused",
 )
 MODULE = "unify.memory.writer_service"
 
@@ -1137,14 +1138,24 @@ def stop_service(
                     + max(0.0, (new_end - _now()).total_seconds())
                     + grace_s
                 )
+    # never signalled, whatever the records say: the caller's own process group, the caller and its parent (a stop
+    # that ran inside the group it names, or a record that names the caller, ends unverified instead)
+    own_group, own = os.getpgid(0), {os.getpid(), os.getppid()}
+
     def signal_all(sig: int) -> None:
         if owns(doc):
+            if pgid == own_group:
+                event(home, "signal-refused", target="group", why="the caller's own process group")
+                return
             try:
                 kill(pgid, sig)
             except (ProcessLookupError, PermissionError):
                 pass
             return
         for pid in left():
+            if pid in own:
+                event(home, "signal-refused", target="pid", why="the caller or its parent")
+                continue
             try:
                 kill_pid(pid, sig)
             except (ProcessLookupError, PermissionError):

@@ -366,6 +366,31 @@ def test_a_stopped_service_doc_naming_a_live_caller_is_never_signalled(svc):
     assert sent == [] and done == ws.Terminated(True, "clean", ())
 
 
+def test_a_stop_never_signals_the_callers_group_the_caller_or_its_parent_in_any_state(svc):
+    """Whatever the records say, a stop refuses to signal the caller's own process group, the caller itself and its
+    parent: a running record naming the caller's group, and a dead service's recorded members that are the caller and
+    its parent, both end with no signal sent to them and an unverified stop, each refusal an event."""
+    folder = ws.service_dir(svc.home)
+    folder.mkdir(parents=True, exist_ok=True)
+    me, parent = os.getpid(), os.getppid()
+    beat = ws.stamp(datetime.now(timezone.utc))
+    running = {"v": 1, "pid": me, "pgid": os.getpgid(0), "proc_start": ws.proc_start(me),
+               "pgid_start": ws.proc_start(os.getpgid(0)) or "", "heartbeat_at": beat, "state": "running"}  # fmt: skip
+    dead = {"v": 1, "pid": 4_000_000, "pgid": 4_000_000, "proc_start": "1", "pgid_start": "1", "heartbeat_at": beat,
+            "state": "running", "members": [[me, ws.proc_start(me)], [parent, ws.proc_start(parent)]]}  # fmt: skip
+    for doc in (running, dead):
+        (folder / ws.STOP_FILE).unlink(missing_ok=True)
+        (folder / ws.STATE_FILE).write_text(json.dumps(doc))
+        sent = []
+        done = ws.stop_service(svc.home, "drain", "test", kill=lambda *a: sent.append(("group",) + a),
+                               kill_pid=lambda *a: sent.append(("pid",) + a), grace_s=0.1, term_s=0.1,
+                               settle_s=0.1, wait_s=0.2)  # fmt: skip
+        assert not [a for a in sent if a[1] in (me, parent, os.getpgid(0))], (doc["state"], sent)
+        assert not done.verified, done
+    refused = [r for r in ws.events(svc.home) if r.get("event") == "signal-refused"]
+    assert {r["target"] for r in refused} == {"group", "pid"}
+
+
 # --- 4: idle exit -------------------------------------------------------------------------------------------------------
 
 
