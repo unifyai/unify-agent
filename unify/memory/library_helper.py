@@ -1066,9 +1066,10 @@ Request = _REQUEST_NAMES["Request"]
 
 @checked(name="memory.request")
 def request() -> str:
-    """The request you are working on, as a stored procedure's recipe and reader take it: its text (a str), with
-    ``.text`` and ``.data`` (the JSON objects and arrays the text contains, in order). A procedure's card shows the
-    one call that applies its recipe to it.
+    """The request you are working on (in a teammate's cells, the request the actor works on, which the teammate's
+    work serves), as a stored procedure's recipe and reader take it: its text (a str), with ``.text`` and ``.data``
+    (the JSON objects and arrays the text contains, in order). A procedure's card shows the one call that applies its
+    recipe to it.
 
     Returns:
         The current request: a str with ``.text`` and ``.data``.

@@ -361,14 +361,14 @@ async def test_the_host_gives_the_acts_request_and_refuses_when_none_is_known(tm
     nothing = session(None, "d")
     refused = ask(nothing)
     assert refused.status == "refused" and refused.form == "unavailable"
-    # the memory run's request is the actor's fallback only: a teammate gets only the task it was given
+    # the memory run's request is the fallback of the actor and a teammate alike: a teammate works on the run's
+    # request, which what it was asked serves (that stays its first message)
     monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(request="the memory run's request"))
     assert json.loads(ask(nothing).text) == {"text": "the memory run's request", "data": []}
     # the channel's real context (the request's binding, as the channel copies it per call) names its agent
     assert nothing.binding.agent == "actor"
     assert json.loads(H.current_request(nothing.binding, {}).text) == {"text": "the memory run's request", "data": []}
     teammate = ask(nothing, agent="teammate")
-    assert teammate.status == "refused" and teammate.form == "unavailable"
-    assert "the memory run's request" not in teammate.text
+    assert json.loads(teammate.text) == {"text": "the memory run's request", "data": []}
     for tools in (text, structured, message, nothing, shown, arc, mixed):
         await tools.close()

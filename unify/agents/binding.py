@@ -148,6 +148,7 @@ def bind_run_record(*, request: str, user_reads: bool) -> Binding:
         return await _start_helper(pool, helper, spawner, task, request_seq)
 
     pool = Pool(record, start_helper=start)
+    pool.request = str(request or "")
     entry = record.append_harness(
         USER,
         str(request or ""),

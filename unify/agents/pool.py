@@ -28,6 +28,9 @@ class Pool:
     ) -> None:
         self.record = record
         self._start_helper = start_helper
+        #: the request the run's main agent works on (its text), which every helper's task serves; the memory package
+        #: and ``tools.request()`` read it in a helper's cells too, its own task staying its first message
+        self.request: Optional[str] = None
         self._tasks: dict[str, asyncio.Task] = {}
         #: every helper this pool started or tried to start, in order (the run record's limits count these)
         self._started: list[str] = []

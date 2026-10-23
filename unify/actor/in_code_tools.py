@@ -573,7 +573,9 @@ def open_for_act(
     """The in-code tools of one ``act()`` (the actor's request, or a teammate's when *agents* is a teammate's
     binding). *agents*: the act's
     :class:`unify.agents.binding.Binding`; *shadow*: the namespace the worker's proxy serves to its cells;
-    *response_format*: the request's, whose check ``tools.answer`` applies; *request*: the act's request, which the memory package reads through ``current_request``."""
+    *response_format*: the request's, whose check ``tools.answer`` applies; *request*: the act's request, which the
+    actor's memory package reads through ``current_request``; a teammate's reads the run's request instead (the pool's,
+    :attr:`unify.agents.pool.Pool.request`), its own task being its first message."""
     from unify import sandbox as _sandbox
     from unify.actor import tool_handlers as H
     from unify.common.record_adapters import AgentRecordAdapter
@@ -591,8 +593,13 @@ def open_for_act(
     policy = _sandbox.build_policy()
     # the run record's view of this agent; else the agent record
     view = agents.comms_view() if hasattr(agents, "comms_view") else None
+    agent = "actor" if agents.name == root else "teammate"
+    if agent == "teammate":
+        # the request the memory package and tools.request() read is the run's, which the teammate's task serves
+        # (its task, the act's request, is its first message); never the task itself
+        request = getattr(pool, "request", None) or None
     return InCodeTools(
-        agent="actor" if agents.name == root else "teammate",
+        agent=agent,
         name=agents.name,
         record=view if view is not None else AgentRecordAdapter(pool),
         workspace_root=str(policy.workspace),

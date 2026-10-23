@@ -987,9 +987,10 @@ CURRENT_REQUEST = RegisteredTool(
     name="current_request",
     summary="the request you are working on, for the memory package (never called from a cell).",
     description=(
-        "The request this agent is working on: its text, and the JSON objects and arrays the text contains, in "
-        "order of appearance, as data (the bound `request.data`). The `memory` package calls it so that "
-        "`memory.ask()` and `memory.match()` ask about the current request."
+        "The request this agent is working on (for a teammate, the request the actor works on, which its work "
+        "serves): its text, and the JSON objects and arrays the text contains, in order of appearance, as data (the "
+        "bound `request.data`). The `memory` package calls it so that `memory.ask()` and `memory.match()` ask about "
+        "the current request."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     refusals={"unavailable": "the current request is not available here ({why})"},
@@ -1013,6 +1014,16 @@ REQUEST = RegisteredTool(
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     refusals={"unavailable": "the request's text is not available here ({why})"},
     roles=(_A, _T),
+    # a teammate works for the actor: the request is the actor's, and what it was asked is its own first message
+    role_text={
+        _T: {
+            "summary": "the exact text of the request the actor works on, which your work serves.",
+            "description": (
+                "The exact text of the request the actor works on, which your work serves (what you were asked to "
+                "do is your first message). Take the values you need from it in code (split, parse, index)."
+            ),
+        },
+    },
     returns="the request's text, a str.",
     examples=("text = tools.request()\nrows = text.splitlines()",),
     when="When your work needs values the request holds: read them from its text in code.",

@@ -77,7 +77,8 @@ class ActorRequestState:
     #: the request's librarian session, once a question opened it; it ends with the request (``InCodeTools.close``)
     librarian: Any = None
     #: the request this agent works on, as ``current_request`` gives it to the memory package: its text, and the
-    #: structured request as JSON data (None for a text or a message); None: not known here
+    #: structured request as JSON data (None for a text or a message); for a teammate the run's request, which its
+    #: task serves (the task is its first message); None: not known here
     request_text: Optional[str] = None
     request_data: Any = None
 
@@ -593,14 +594,14 @@ async def ask_library(ctx: Any, args: dict) -> Any:
     # the current request, as current_request gives it to the cells: part of what an answer answered
     request = getattr(state, "request_text", None)
     if not isinstance(request, str) or not request:
-        request = _memory_run_request() if getattr(ctx, "agent", None) == "actor" else None
+        request = _memory_run_request()
     try:
         if getattr(session, "evidence", None) is not None:
             # the harness's evidence serving on: the situation's latest message goes with the question
             text = await session.ask(
                 question,
                 request=request,
-                last_message=_memory_run_last_message() if getattr(ctx, "agent", None) == "actor" else None,
+                last_message=_memory_run_last_message(),
                 **({"schema": schema} if schema is not None else {}),
             )
         else:
@@ -657,15 +658,15 @@ def _memory_run_last_message() -> Optional[str]:
 
 
 def current_request(ctx: Any, args: dict) -> Any:
-    """The request the calling agent works on, as JSON text ``{"text": ..., "data": ...}``: the ``act()`` request the
-    request's state holds (:func:`request_of`), else, for the actor only, the memory run's (``integration.request``);
-    *data* is the JSON objects and arrays the text contains, in order (:func:`request_data`); a teammate gets only the
-    task it was given. The memory package calls it through the channel
-    client; it is never in a cell's ``tools``. Refused when no request is known, or when its JSON is larger than a
-    reply carries."""
+    """The request the calling agent works on, as JSON text ``{"text": ..., "data": ...}``: the request the request's
+    state holds (:func:`request_of`: the actor's ``act()`` request, or for a teammate the run's request its task
+    serves), else the memory run's (``integration.request``); *data* is the JSON objects and arrays the text contains,
+    in order (:func:`request_data`). A teammate's own task is never given here. The memory package calls it through
+    the channel client; it is never in a cell's ``tools``. Refused when no request is known, or when its JSON is
+    larger than a reply carries."""
     state = ctx.state
     text, data = getattr(state, "request_text", None), getattr(state, "request_data", None)
-    if (not isinstance(text, str) or not text) and getattr(ctx, "agent", None) == "actor":
+    if not isinstance(text, str) or not text:
         text = _memory_run_request()
         data = request_data(text) if text else None
     if not isinstance(text, str) or not text:
@@ -680,10 +681,11 @@ def current_request(ctx: Any, args: dict) -> Any:
 
 def request(ctx: Any, args: dict) -> Any:
     """``tools.request()``: the exact text of the request the calling agent works on (:func:`current_request`'s
-    text), in every run, with or without memory. Refused when no request is known."""
+    text: for a teammate the run's request, which its task serves), in every run, with or without memory. Refused when
+    no request is known."""
     state = ctx.state
     text = getattr(state, "request_text", None)
-    if (not isinstance(text, str) or not text) and getattr(ctx, "agent", None) == "actor":
+    if not isinstance(text, str) or not text:
         text = _memory_run_request()
     if not isinstance(text, str) or not text:
         return _refused(refusal("request", "unavailable", why="no current request is known"))
