@@ -318,6 +318,82 @@ def test_a_captures_uses_reach_its_card_the_catalogue_the_search_rows_the_librar
     assert f"later uses: {later}" in searched
 
 
+#: A captured procedure that refuses an input it was not built for (its own ``MemoryInputError``, as a library function
+#: raises one).
+REFUSING_PROC = '''"""Total each named row of the request's table. Accepted: not shown."""
+
+
+class MemoryInputError(ValueError):
+    """The request carries no table of named rows."""
+
+
+def read_input(request):
+    """The request's rows, by name."""
+    if not request.data or not isinstance(request.data[0], dict) or "rows" not in request.data[0]:
+        raise MemoryInputError("the request carries no table of named rows")
+    return request.data[0]["rows"]
+
+
+def run(value):
+    """Each row's total, in name order."""
+    return [sum(value[k]) for k in sorted(value)]
+'''
+ONE_CALL = '''
+seen = []
+sys.addaudithook(lambda e, a: seen.append([e, list(a)]) if e == "memory.call" else None)
+got = err(memory.get(CID), ASKED) if REFUSE else memory.get(CID)(ASKED)
+print(json.dumps({"got": got, "events": seen}))
+'''
+
+
+def test_capture_use_is_metered(tmp_path):
+    """A capture called once cleanly (one request) and once refused (another) shows two later uses, one clean and one
+    refused: on its card, in the served evidence and in its record; the writer's usage table counts both calls, and the
+    metering view of the items a decision named counts both requests, one of them clean."""
+    from unify.memory import metering, usage
+
+    home = tmp_path / "home"
+    stores = open_stores(Paths.under(home))
+    state = Path(stores.paths.state_dir)
+    store = cp.store_dir(state)
+    row = cp.capture_trace_step(_staging(state, "e1", {"procedure.py": REFUSING_PROC}), _capture_ep("e1"), store)
+    assert row["safety"] == "ok"
+    item = "capture:" + row["capture_id"]
+    first, _ = _export(tmp_path / "first", store, _served(stores, store, tmp_path / "first"))
+    clean = _cell(first, f"CID, ASKED, REFUSE = {item!r}, {ASKED!r}, False\n" + ONE_CALL)
+    refused = _cell(first, f"CID, ASKED, REFUSE = {item!r}, 'nothing to total here', True\n" + ONE_CALL)
+    assert clean["got"] == [6, 9]
+    assert refused["got"][0] == "ArgumentError" and "refused this input" in refused["got"][1], refused["got"]
+    assert [e[1][2] for e in clean["events"]] == ["ok"] and [e[1][2] for e in refused["events"]] == ["refused"]
+    _index_use(stores, "e2", clean["events"])
+    _index_use(stores, "e3", refused["events"])
+
+    found = serving.item_evidence(stores, captures=cp.load(store), home=None)[item]
+    assert found["later_uses"] == {"episodes": 2, "returned": 1, "refused": 1, "raised": 0}
+    assert serving.record_capture_uses(stores, store, [item]) == [item]
+    rec = json.loads((store / row["capture_id"] / cp.RECORD_FILE).read_text())
+    assert sorted((u["episode"], u["outcome"]) for u in rec["uses"]) == [("e2", "returned"), ("e3", "refused")]
+
+    root, _ = _export(tmp_path / "second", store, _served(stores, store, tmp_path / "second"))
+    card = _cell(root, f"print(json.dumps(str(memory.get({item!r}))))\n")
+    assert "Later uses: 2 calls in 2 episodes: 1 returned, 1 refused" in card, card
+
+    # the writer's usage table: two requests called it, two calls
+    table = usage.usage_table(stores.evidence, ["e2", "e3"], [item])
+    line = next(x for x in table.splitlines() if x.startswith(item + " |"))
+    assert [c.strip() for c in line.split("|")][4:6] == ["2", "2"], line  # requests calling, calls
+
+    # metering: an earlier decision named the capture; its later uses are the two requests, one clean
+    seq = dict(stores.evidence.db.execute("SELECT episode_id, seq FROM episodes").fetchall())
+    ledger = state / "memory-attention" / "ledger.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"op": "close", "entry": "E1", "pass_id": "p1", "decision": "note",
+                                  "items": [item]}) + "\n")  # fmt: skip
+    passes = [{"pass_id": "p1", "entries": {"closed": ["E1"]}, "episodes_seq_at_end": min(seq["e2"], seq["e3"]) - 1}]
+    view = metering.items_view(home, passes, [{"entry": "E1", "basis": "read_equal_split", "share_usd": "0.01"}])
+    assert [(r["item"], r["later_calls"], r["later_clean"]) for r in view] == [(item, 2, 1)]
+
+
 def test_every_field_a_capture_reader_asks_for_is_written(tmp_path, monkeypatch):
     stores, store, cid, acting = _store_two_captures(tmp_path / "home")
     root, _ = _export(tmp_path / "copy", store, _served(stores, store, tmp_path / "copy"))
