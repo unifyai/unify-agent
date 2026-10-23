@@ -1392,7 +1392,7 @@ def _mem(name: str) -> str:
 # (unify.actor.tool_handlers); the librarian's are inside the library, /memory. Each reads its own roots in its texts.
 _WORKSPACE_READ = {
     "type": "object",
-    "properties": {"path": {"type": "string", "description": "A file or folder under /workspace."}, "offset": _OFFSET},
+    "properties": {"path": {"type": "string", "description": "A file or folder under one of your roots."}, "offset": _OFFSET},
     "required": ["path"],
     "additionalProperties": False,
 }
@@ -1400,7 +1400,7 @@ _WORKSPACE_GREP = {
     "type": "object",
     "properties": {
         "pattern": {"type": "string", "description": "A Python regular expression."},
-        "path": {"type": "string", "description": "A file or folder under /workspace to search; default /workspace."},
+        "path": {"type": "string", "description": "A file or folder under one of your roots; default /workspace."},
         "offset": {"type": "integer", "description": "hit number to start the page at"},
     },
     "required": ["pattern"],
@@ -1414,6 +1414,20 @@ _WORKSPACE_READ_TEXT = {
     "description": "Read a file or list a directory under /workspace. " + _READ_PAGE,
     "refusals": {
         "outside_roots": "{path} is outside /workspace",
+        "not_found": "{path} does not exist",
+        "unreadable": "{error} for {path!r}",
+    },
+    "examples": ('page = tools.read("/workspace")\nprint(page[:2000])',),
+}
+#: The actor's and a teammate's read in a run with a library: the workspace, and the library copy their box mounts
+#: read-only at /memory-library (``/memory``, as the librarian and the writer name it, is the same copy).
+_WORKSPACE_LIBRARY_READ_TEXT = {
+    "summary": "read a file or list a directory under /workspace or of the library (/memory-library), 8000 bytes a page.",
+    "description": "Read a file or list a directory under /workspace, or of the library under /memory-library (read-only; "
+    "/memory names the same library). " + _READ_PAGE,
+    "refusals": {
+        "outside_roots": "{path} is outside /workspace and the library (/memory-library, read-only); an entry of the "
+        "library opens with memory.get(<its id>)",
         "not_found": "{path} does not exist",
         "unreadable": "{error} for {path!r}",
     },
@@ -1442,6 +1456,20 @@ _WORKSPACE_GREP_TEXT = {
     },
     "examples": ('hits = tools.grep(r"def \\w+_total", "/workspace")',),
 }
+#: The actor's and a teammate's grep in a run with a library (as :data:`_WORKSPACE_LIBRARY_READ_TEXT`).
+_WORKSPACE_LIBRARY_GREP_TEXT = {
+    "summary": "search files with a regular expression (default under /workspace; the library under /memory-library).",
+    "description": "Search files under a /workspace path (default /workspace), or of the library under /memory-library "
+    "(read-only; /memory names the same library), with a Python regular expression; " + _GREP_PAGE,
+    "refusals": {
+        "outside_roots": "{path} is outside /workspace and the library (/memory-library, read-only); an entry of the "
+        "library opens with memory.get(<its id>)",
+        "not_found": "{path} does not exist",
+        "bad_pattern": "{reason}",
+        "unreadable": "{error} for {path!r}",
+    },
+    "examples": ('hits = tools.grep(r"def \\w+_total", "/workspace")',),
+}
 _LIBRARY_GREP_TEXT = {
     "summary": "search the library's files with a regular expression (default under /memory).",
     "description": "Search files of the library under a /memory path (default /memory) with a Python regular "
@@ -1462,7 +1490,9 @@ _IN_CODE: dict[str, dict] = {
     "read": dict(
         roles=(*_ALL, _L),
         role_args={_L: _LIBRARY_READ, _A: _WORKSPACE_READ, _T: _WORKSPACE_READ},
-        role_text={_A: _WORKSPACE_READ_TEXT, _T: _WORKSPACE_READ_TEXT, _L: _LIBRARY_READ_TEXT},
+        # a run with memory: the actor and a teammate also read the library copy; a run without: the workspace only
+        role_text={_A: _WORKSPACE_LIBRARY_READ_TEXT, _T: _WORKSPACE_LIBRARY_READ_TEXT, _L: _LIBRARY_READ_TEXT},
+        off_text=_WORKSPACE_READ_TEXT,
         # the librarian's read is inside the library only
         add_refusals={"outside_library": "{path} is outside the library, /memory"},
         returns="the file's text from offset (or the directory's listing), at most 8000 bytes, with `.next`: the "
@@ -1479,7 +1509,8 @@ _IN_CODE: dict[str, dict] = {
     "grep": dict(
         roles=(*_ALL, _L),
         role_args={_L: _LIBRARY_GREP, _A: _WORKSPACE_GREP, _T: _WORKSPACE_GREP},
-        role_text={_A: _WORKSPACE_GREP_TEXT, _T: _WORKSPACE_GREP_TEXT, _L: _LIBRARY_GREP_TEXT},
+        role_text={_A: _WORKSPACE_LIBRARY_GREP_TEXT, _T: _WORKSPACE_LIBRARY_GREP_TEXT, _L: _LIBRARY_GREP_TEXT},
+        off_text=_WORKSPACE_GREP_TEXT,
         add_refusals={"not_found": "{path} does not exist", "outside_library": "{path} is outside the library, /memory"},
         returns="the hits as `path:line: text` lines, one page at a time, with `.next`: the hit number of the next "
         "page, or None.",
