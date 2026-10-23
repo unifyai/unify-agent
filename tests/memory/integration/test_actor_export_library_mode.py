@@ -186,6 +186,87 @@ async def test_a_cell_imports_the_library_and_cannot_write_it(
     assert set(KEPT) <= set(seen) and not any("tests" in f.split("/") for f in seen)
 
 
+#: A key value as a provider writes one (key-shaped: the sandbox's own key shapes), and a credential file's content.
+KEY_VALUE = "sk-or-v1-" + "0123456789abcdef" * 4
+ENV_VALUE = "seeded-env-value-7f3a9c"
+
+
+def _seed_copy(checkout: Path, files: dict[str, str]) -> None:
+    """Write *files* into the read-only library copy, as material that reached it would sit there."""
+    for rel, text in files.items():
+        p = checkout / rel
+        for d in [p.parent, *p.parent.parents]:
+            if d == checkout.parent:
+                break
+            if d.exists():
+                os.chmod(d, d.stat().st_mode | stat.S_IWUSR)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_the_sandbox_masks_apply_to_the_library_copy(world, monkeypatch):  # noqa: F811
+    """A credential file, a credential directory and a file holding a key value inside the library copy are hidden
+    from a cell's own opens and refused by the harness's file tools, as in the workspace; the rest of the copy reads
+    as it is."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    paths = Paths.under(world["state"])
+    mem, sha = _library_repo(paths.memory)
+    export_actor_library_mode(mem.git_dir, sha, paths.checkout)
+    _seed_copy(paths.checkout, {
+        "notes/text/.env": f"TOKEN={ENV_VALUE}\n",
+        "notes/text/keys.md": f"## Rule\n- the key is {KEY_VALUE}\n",
+        "notes/text/.ssh/config": f"IdentityFile {ENV_VALUE}\n",
+        "notes/text/control.md": "## Rule\n- control-visible\n",
+    })
+    monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(index="", paths=paths, library_mode=True))
+    root = sandbox.LIBRARY_MOUNT + "/notes/text/"
+    ex = Cells()
+    try:
+        out = await _cell(
+            ex,
+            "def _open(p):\n"
+            "    try:\n"
+            "        return open(p).read()\n"
+            "    except OSError as exc:\n"
+            "        return 'unreadable ' + type(exc).__name__\n"
+            f"[_open({root + '.env'!r}), _open({root + 'keys.md'!r}), _open({root + '.ssh/config'!r}),"
+            f" _open({root + 'control.md'!r})]",
+        )
+    finally:
+        await ex.close()
+    env, keys, ssh, control = list(out)
+    assert "control-visible" in control
+    for text in (env, keys, ssh):
+        assert ENV_VALUE not in text and KEY_VALUE not in text, text
+    assert "mask-env-file" in env and "mask-credentials" in keys, (env, keys)
+    policy = sandbox.build_policy(fresh=True)
+    mounts = sandbox.late_readonly_mounts(policy, [paths.checkout])
+    copy = Path(os.path.realpath(paths.checkout)) / "notes" / "text"
+    assert sandbox.late_readable_violation(copy / ".env", policy, mounts)[0] == "mask-env-file"
+    assert sandbox.late_readable_violation(copy / "keys.md", policy, mounts) == (
+        "mask-credentials", f"{copy / 'keys.md'} holds a key-shaped value")
+    assert sandbox.late_readable_violation(copy / ".ssh" / "config", policy, mounts)[0] == "mask-credentials"
+    assert sandbox.late_readable_violation(copy / "control.md", policy, mounts) is None
+
+
+def test_a_key_value_is_found_across_a_chunk_boundary_and_never_through_a_link(tmp_path, monkeypatch):
+    monkeypatch.setattr(sandbox, "_KEY_SCAN_CHUNK", 64)
+    split = tmp_path / "split.md"
+    split.write_text("the key, past the first chunk:" + " " * 30 + KEY_VALUE + "\n")
+    plain = tmp_path / "plain.md"
+    plain.write_text("a note about a desk-lamp-that-glows-bright and nothing else\n" * 10)
+    link = tmp_path / "link.md"
+    link.symlink_to(split)
+    assert sandbox._holds_key_value(split)
+    assert not sandbox._holds_key_value(plain)
+    assert not sandbox._holds_key_value(link)
+    found = {p.name: (rule, is_dir) for p, rule, is_dir in sandbox._late_masks(tmp_path)}
+    assert found == {"split.md": ("mask-credentials", False)}
+
+
 @needs_bwrap
 def test_wrap_argv_binds_late_only_the_memory_checkout_of_the_state_directory(
     world,  # noqa: F811
