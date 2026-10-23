@@ -651,6 +651,20 @@ def current_request(ctx: Any, args: dict) -> Any:
     return _reply(reply)
 
 
+def request(ctx: Any, args: dict) -> Any:
+    """``tools.request()``: the exact text of the request the calling agent works on (:func:`current_request`'s
+    text), in every run, with or without memory. Refused when no request is known."""
+    state = ctx.state
+    text = getattr(state, "request_text", None)
+    if (not isinstance(text, str) or not text) and getattr(ctx, "agent", None) == "actor":
+        text = _memory_run_request()
+    if not isinstance(text, str) or not text:
+        return _refused(refusal("request", "unavailable", why="no current request is known"))
+    if len(text.encode("utf-8")) > REQUEST_REPLY_BYTES:
+        return _refused(refusal("request", "unavailable", why="the request is larger than a reply carries"))
+    return _reply(text)
+
+
 __all__ = [
     "ActorRequestState",
     "actor_binding",

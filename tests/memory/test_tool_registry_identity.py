@@ -144,7 +144,7 @@ def test_the_allow_lists_follow_the_profiles_and_the_design():
     teammate = set(R.allow_list("teammate", FULL))
     assert actor == {
         "read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "answer",
-        "sh", "check_examples",
+        "request", "sh", "check_examples",
     }  # fmt: skip
     assert teammate == actor | {"ask"}  # any agent may start agents
     # learned skills are dropped in rev 2: no agent stores skills
@@ -382,6 +382,8 @@ ADDED_TOOLS = (
     "land_capture",
     "answer",
     "current_request",
+    # the actor's and a teammate's reader of the request's exact text, in every run
+    "request",
     "search",
     "check_examples",
     # the attention ledger's writer tools and the writer's stated tests (UNIFY_MEMORY_ATTENTION_LEDGER, _WRITER_TESTS)

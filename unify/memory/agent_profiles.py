@@ -63,6 +63,8 @@ _ACTOR_IN_CODE = [
     "stop",
     "delegate",
     "answer",
+    # the request's exact text, in every run
+    "request",
     # only with memory on (registry flag "librarian")
     "ask_library",
     "sh",

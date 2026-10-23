@@ -1967,6 +1967,7 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     SEARCH,
     KEEP_NOTE,
     CURRENT_REQUEST,
+    REQUEST,
     SH,
     CHECK_EXAMPLES,
     OPEN_ENTRIES,
@@ -2140,6 +2141,7 @@ _ACTOR_HANDLED = {
     "delegate": False,
     "answer": False,
     "current_request": False,
+    "request": False,
 }
 
 
