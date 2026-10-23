@@ -98,7 +98,9 @@ def test_cards_from_the_generated_helper(tmp_path):
         fn.splitlines()[0]
         == "memory.text.dates:parse_date(s: str) -> str  [on-trial, curated item, no record]"
     )
-    assert "def parse_date(s: str) -> str:" in fn and "Notes: notes/text/dates.md" in fn
+    # the card shows the docstring, never the source; the call that prints the source ends it
+    assert "def parse_date" not in fn and "Notes: notes/text/dates.md" in fn
+    assert fn.rstrip("\n").endswith(f"Its source: print(memory.get({DATE!r}).text)")
     assert "Links to: notes/text/dates.md\nLinked from: notes/text/dates.md\n" in fn
     assert "Use: no record yet\n" in fn and "Verification:" not in fn
     assert "History (newest first):\n  abc123def456 add dates\n" in fn
@@ -466,7 +468,7 @@ import memory.text.tests.test_dates as t
 assert getattr(double, "__memory_item__") == "memory.text.guard:double"
 assert not hasattr(t.test_parse_date, "__memory_item__")
 text = str(memory.get(double))
-assert "def double(x):" in text and "[on-trial" in text
+assert "def double(x):" not in text and "def double(x):" in memory.get(double).text and "[on-trial" in text
 assert memory.items("text")
 memory.get(double).fits({"date": "2026-10-09"})
 print(json.dumps(events))

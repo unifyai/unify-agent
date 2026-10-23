@@ -636,6 +636,6 @@ def test_a_functions_error_carries_one_note_on_what_to_do_next(tmp_path):
         f"print(memory.get({PAINT!r})). Do this step yourself, or look for another item with memory.items()."
     ]
     assert crash == [
-        f"raised inside the stored function {CELL}; its card shows its source and records: "
-        f"print(memory.get({CELL!r}))."
+        f"raised inside the stored function {CELL}; its card shows its records: "
+        f"print(memory.get({CELL!r})), and its source: print(memory.get({CELL!r}).text)."
     ]

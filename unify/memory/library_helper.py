@@ -1458,17 +1458,50 @@ def _capture_support(rec: dict, row: dict) -> Any:
     return got if isinstance(got, dict) else None
 
 
-#: The most characters of a recorded procedure's code its card prints; the whole code is the item's ``text``.
-CAPTURE_CARD_CHARS = 2000
+#: The most characters a function's or a recorded procedure's card takes (no prompt flooding). A card never prints
+#: code: ``item.text`` holds a function's source and a recorded procedure's whole code, and the card names that call.
+CARD_CHARS = 2000
+#: The most characters of an item's docstring its card shows.
+CARD_DOC_CHARS = 800
 
 
-def _capture_code(text: str | None, iid: str) -> str:
-    """A recorded procedure's code as its card prints it: at most :data:`CAPTURE_CARD_CHARS` characters, ending with
-    where the rest is when there is more."""
-    code = (text or "(its procedure cannot be read)").rstrip("\n")
-    if len(code) <= CAPTURE_CARD_CHARS:
-        return code
-    return code[:CAPTURE_CARD_CHARS].rstrip() + f"\n… (the rest of its code: print(memory.get({iid!r}).text))"
+def _short_doc(doc: str | None) -> str:
+    """*doc* as a card shows it: at most :data:`CARD_DOC_CHARS` characters, cut with "…"."""
+    text = (doc or "").strip()
+    return text if len(text) <= CARD_DOC_CHARS else text[: CARD_DOC_CHARS - 1].rstrip() + "…"
+
+
+def _code_pointer(iid: str, what: str) -> str:
+    """The card's line that names the call printing an item's *what* (its source, its code)."""
+    return f"Its {what}: print(memory.get({iid!r}).text)"
+
+
+def _module_outline(text: str | None) -> tuple[str, str]:
+    """A recorded procedure's code as its card describes it, never the code itself: its module docstring and its
+    functions' names with their parameters (``read_input(text), run(value)``), from a parse; ('', '') when it does not
+    parse."""
+    try:
+        tree = ast.parse(text or "")
+    except (SyntaxError, ValueError):
+        return "", ""
+    names = [
+        f"{node.name}({', '.join(a.arg for a in node.args.posonlyargs + node.args.args)})"
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    return ast.get_docstring(tree) or "", ", ".join(names)
+
+
+def _bounded_card(head: list[str], body: list[str], iid: str, what: str) -> str:
+    """A card of *head* lines, a blank line and *body* lines, at most :data:`CARD_CHARS` characters: the body is cut
+    first and the call that prints the item's *what* always ends it."""
+    pointer = _code_pointer(iid, what)
+    text = "\n".join(head + [""] + body + [pointer])
+    if len(text) <= CARD_CHARS:
+        return text + "\n"
+    room = CARD_CHARS - len(pointer) - 3
+    cut = "\n".join(head + [""] + body)[: max(0, room - 1)].rstrip() + "…"
+    return cut + "\n" + pointer + "\n"
 
 
 def _capture_lines(iid: str, rec: dict) -> list[str]:
@@ -1554,11 +1587,11 @@ class FitEvidence(Fit):
 class Item:
     """One item of the library, a function or a note: a frozen record with every member typed.
 
-    ``print(item)`` shows its card: a function's signature, a recorded example call and its source with its
+    ``print(item)`` shows its card, bounded and with no code: a function's signature, a recorded example call and its
     docstring; a note's front matter and its ``## Rule`` section (the whole note stays readable at its path); a
-    recorded procedure's code, up to a few thousand characters (``item.text`` holds all of it); then its status and
-    what it rests on, its recorded failures and later uses, its links both ways and the library commits that changed
-    it.
+    recorded procedure's docstring and the names of its functions; then its status and what it rests on, its recorded
+    failures and later uses, its links both ways and the library commits that changed it. ``item.text`` holds the
+    code (a function's source, a recorded procedure's whole code), and the card ends with that call.
 
     Members:
         id: a function is ``memory.<package>.<module>:<name>`` (a captured procedure ``capture:`` and 16 hex
@@ -1697,8 +1730,8 @@ class Item:
                 )
             else:
                 note = (
-                    f"raised inside the stored function {self.id}; its card shows its source and records: "
-                    f"print(memory.get({self.id!r}))."
+                    f"raised inside the stored function {self.id}; its card shows its records: "
+                    f"print(memory.get({self.id!r})), and its source: print(memory.get({self.id!r}).text)."
                 )
             if hasattr(raised, "add_note") and note not in getattr(raised, "__notes__", ()):
                 raised.add_note(note)
@@ -1717,7 +1750,7 @@ class Item:
         raise NotFound(
             call,
             f"it could not be called ({detail}).",
-            hint=f"Its card shows its source: print(memory.get({self.id!r})).",
+            hint=f"Its source: print(memory.get({self.id!r}).text).",
         )
 
 
@@ -2163,7 +2196,7 @@ class _Catalog:
             history=_history(row),
             support=_support_line("curated item", row.get("support")),
         )
-        return built, self._card(iid, row, text, missing)
+        return built, self._card(iid, row, _short_doc(doc), missing)
 
     def _note(self, iid: str, row: dict) -> tuple[Item, str]:
         text, missing = "", ""
@@ -2188,12 +2221,13 @@ class _Catalog:
         return built, self._card(iid, row, text.rstrip("\n"), missing)
 
     def _card(self, wanted: str, row: dict, body: str, missing: str) -> str:
-        """One item in full, as ``print(memory.get(ref))`` shows it: a function's signature, with an example call quoted from
+        """One item, as ``print(memory.get(ref))`` shows it: a function's signature, with an example call quoted from
         its tests (``Example (from <test id>): <call>``) when one is recorded and still in its test file, then its
-        source with its docstring; or a note's text. Then its links both ways, its status with what it rests on (its
-        kind, the episodes it comes from and its confirmed uses) and, for a function, its effect (and why, for an item
-        left out of the index or given a reason), its verification and use records, and the subjects of the library
-        commits that changed it, newest first."""
+        docstring (*body*), never its source, and at the end the call that prints the source; or a note's Rule (*body*).
+        Then its links both ways, its status with what it rests on (its kind, the episodes it comes from and its
+        confirmed uses) and, for a function, its effect (and why, for an item left out of the index or given a
+        reason), its verification and use records, and the subjects of the library commits that changed it, newest
+        first. A function's card is at most :data:`CARD_CHARS` characters (:func:`_bounded_card`)."""
         status = _status_of(row)
         function = row["kind"] == "function"
         if function:
@@ -2215,8 +2249,8 @@ class _Catalog:
             out.append(f"Status: {row['status_reason']}.")
         out += _evidence_lines(_evidence(), wanted)
         out += _label_lines(row.get("label"), _evidence() is not None)
-        out.append("")
-        out.append(f"(its {'source' if function else 'text'} cannot be read: {missing})" if missing else body)
+        head = list(out)
+        out = [f"(its {'source' if function else 'text'} cannot be read: {missing})" if missing else body]
         out += [
             "",
             "Links to: " + (", ".join(self._named(self.linked(wanted, "links_to"))) or "none"),
@@ -2234,7 +2268,9 @@ class _Catalog:
             out.append("History: none recorded")
         if not self.data.get("history_complete", True):
             out.append(f"(history covers the newest {self.data.get('history_scanned')} library commits only)")
-        return "\n".join(out) + "\n"
+        if function:
+            return _bounded_card(head, out, wanted, "source")
+        return "\n".join(head + [""] + out) + "\n"
 
     def _capture(self, iid: str) -> tuple[Item, str]:
         d = _capture_dir(iid[len(CAPTURE_PREFIX) :])
@@ -2271,9 +2307,14 @@ class _Catalog:
             broke = saved.get("broke")
             out += [f"  broke: {b}" for b in (broke if isinstance(broke, list) else []) if isinstance(b, str)]
         if asked:
-            out.append(f"Asked: {' '.join(asked.split())}")
-        out += ["", _capture_code(text, iid)]
-        return built, "\n".join(out) + "\n"
+            out.append(f"Asked: {_cut(' '.join(asked.split()), 300)}")
+        doc, functions = _module_outline(text)
+        body = [_short_doc(doc)] if doc else []
+        if functions:
+            body.append(f"Functions: {functions}")
+        if text is None:
+            body.append("(its procedure cannot be read)")
+        return built, _bounded_card(out, body, iid, "code")
 
 
 @checked(name="memory.get")

@@ -644,7 +644,7 @@ LIBRARIAN_FIRST = (
     "    print('NETWORK REFUSED', type(exc).__name__)\n"
     "print('ENV', sorted(os.environ))\n"
     "print('WORKSPACE', os.path.exists('/workspace'))\n"
-    f"print(memory.get({TOTAL!r}))\n"
+    f"print(memory.get({TOTAL!r}))\nprint(memory.get({TOTAL!r}).text)\n"
     "tools.finish({'fits': [{'id': 'memory.nope:x', 'call': 'x', 'why': 'y'}]})\n"
 )
 #: The procedure's fit carries the call that applies its recipe to the current request.

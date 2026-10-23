@@ -3,8 +3,8 @@
 A procedure that acts through its episode's tools (``run(state, env)``) is not run by any call: a call cannot pass it
 tools, and no cell has ``exec`` or a ``state``. Its card, a call's refusal and the librarian's brief say so, show its
 code with ``memory.get(id).text``, and say that the same tool calls made in a cell with the agent's own tools do its
-work; the librarian's answer cannot offer a call of it. A card prints at most ``CAPTURE_CARD_CHARS`` of any
-procedure's code, ending with where the rest is. The package's ``memory.ask`` prints one best fit and at most one
+work; the librarian's answer cannot offer a call of it. A card prints no code at all and at most ``CARD_CHARS``
+characters, ending with the call that prints the code. The package's ``memory.ask`` prints one best fit and at most one
 fallback, never a menu, with the words the request-start block uses.
 """
 
@@ -49,7 +49,7 @@ def test_an_acting_capture_is_not_run_by_any_call_and_its_card_says_how_its_work
     assert "exec(" not in lh.BY_HAND
 
 
-def test_a_capture_card_prints_a_bounded_part_of_its_code_and_says_where_the_rest_is(tmp_path):
+def test_a_capture_card_prints_no_code_is_bounded_and_ends_with_the_call_that_prints_the_code(tmp_path):
     from tests.memory.test_capture_trace import _ep as capture_ep
     from tests.memory.test_capture_trace import _staging
     from unify.memory.integration.consolidate import open_stores
@@ -58,16 +58,15 @@ def test_a_capture_card_prints_a_bounded_part_of_its_code_and_says_where_the_res
     stores = open_stores(Paths.under(tmp_path / "home"))
     state = Path(stores.paths.state_dir)
     long_proc = VALUE_PROC + "".join(f"\n\n# step {i}: {'x' * 70}" for i in range(200)) + "\n"
-    assert len(long_proc) > 4 * lh.CAPTURE_CARD_CHARS
+    assert len(long_proc) > 4 * lh.CARD_CHARS
     row = cp.capture_trace_step(_staging(state, "e9", {"procedure.py": long_proc}), capture_ep("e9"), cp.store_dir(state))
     root, _ = _export(tmp_path / "copy", cp.store_dir(state), None)
     iid = "capture:" + row["capture_id"]
     got = _cell(root, f"i = memory.get({iid!r})\nprint(json.dumps([str(i), i.text]))\n")
     card, text = got
     assert text == long_proc
-    assert f"(the rest of its code: print(memory.get({iid!r}).text))" in card
-    code = card.split("\n\n", 1)[1]
-    assert len(code) <= lh.CAPTURE_CARD_CHARS + 200 and len(card) < len(long_proc) // 3
+    assert card.rstrip("\n").endswith(f"Its code: print(memory.get({iid!r}).text)")
+    assert "def " not in card and "# step" not in card and len(card) <= lh.CARD_CHARS
 
 
 def test_the_librarian_cannot_offer_a_call_of_an_acting_capture(tmp_path):
