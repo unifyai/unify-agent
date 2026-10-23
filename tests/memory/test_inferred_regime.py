@@ -541,7 +541,7 @@ def test_the_request_takes_a_late_verdict_on_a_recorded_episode_only(tmp_path, m
 def test_the_status_text_states_what_it_rests_on():
     counts = {"clean": 3, "failed": 1, "neutral": 0}
     assert trust.basis_text("on-trial", trust.BASIS_NO_OUTCOME_SIGNALS, {}) == (
-        "on-trial: no outcome signal has arrived for any use of this item (it has not been used)"
+        "on-trial: no outcome signal has arrived for any use of this item (no later use yet)"
     )
     assert trust.basis_text(
         "on-trial", trust.BASIS_NO_OUTCOME_SIGNALS, {"clean": 2}

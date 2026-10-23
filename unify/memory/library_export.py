@@ -787,11 +787,10 @@ def catalogue_text(
         lines.append(f"Saved against:\n- Asked: {goal or 'not recorded'}\n")
         lines += _in_place_lines(replaced.get(CAPTURE_PREFIX + cid))
         input_line = signature_text(sig)
-        state = rec.get("status") if isinstance(rec.get("status"), str) else "on-trial"
         example = worked_example(rec)
         kind = "fixed answer" if example else "recorded procedure"
         lines.append(
-            f"Evidence: {support_text(kind, support(rec))}; status {state}; "
+            f"Evidence: {support_text(kind, support(rec))}; "
             + ("reader none (a worked example)" if example else "reader read_input")
             + f"; applies: {'yes' if _applies_stated(sig) and not example else 'no'}"
             + ("; tried and failed: never offered to run" if failed else "")

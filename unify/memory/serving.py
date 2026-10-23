@@ -306,7 +306,12 @@ def evidence_doc(evidence: Mapping[str, dict], stated: Mapping[str, str], status
             "contradictions": list(e.get("contradictions") or []),
             "status_basis": basis,
             "counts": dict(counts),
-            "status_text": trust.basis_text(statuses.get(item) or trust.ON_TRIAL, basis, counts),
+            # a recorded procedure is named by what it is, never by a trial status that reads as second-class
+            "status_text": trust.basis_text(
+                "recorded procedure" if item.startswith("capture:") else statuses.get(item) or trust.ON_TRIAL,
+                basis,
+                counts,
+            ),
             "conditions": stated.get(item, ""),
         }
     return {"v": 1, "items": items}

@@ -121,7 +121,7 @@ def test_a_refusal_changes_nothing():
     out = tr.apply_outcome(tr.UNCHECKED, None, refused)
     assert (out.status, out.level, out.episodes) == (tr.ON_TRIAL, tr.UNCHECKED, ())
     assert tr.track(refused)["intermediate"]["refusals"] == 4
-    assert tr.record_line(tr.track(refused)) == "it has not been used since it was stored"
+    assert tr.record_line(tr.track(refused)) == "no later use recorded yet"
 
 
 def test_an_adopted_item_stays_until_retirement_fires_and_then_loses_its_confirmation():

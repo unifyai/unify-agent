@@ -80,9 +80,9 @@ STATUS_LINES_IN_CODE = (
     "- `on-trial` items passed the library's checks and have had little use; `adopted` items have also been "
     "used without errors. "
     "Every item's brackets also say what it rests on: its kind (a curated item the library's writer made, a "
-    "recorded procedure an earlier attempt captured, or a fixed answer to read), how many episodes it comes "
-    "from, and how many uses had an outcome that confirmed it. An item from one episode may hold only for that "
-    "case.\n"
+    "recorded procedure that re-runs work an earlier request accepted, or a fixed answer to read), how many "
+    "episodes it comes from and in how many the work was accepted, and how many later uses had an outcome that "
+    "confirmed it.\n"
 )
 #: The opening of every in-code guide: the bound name, the help pointer and that using the library is optional.
 _OPENING_IN_CODE = (

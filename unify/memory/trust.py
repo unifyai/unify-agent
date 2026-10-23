@@ -368,7 +368,7 @@ def record_line(t: Mapping[str, Any]) -> str:
     ran = int((t.get("implicit") or {}).get("reused_episodes") or 0)
     if ran:
         return f"its record has no verdicts; it ran without errors in {ran} episodes"
-    return "it has not been used since it was stored"
+    return "no later use recorded yet"
 
 
 def status_text(status: str, basis: str | None) -> str:
@@ -420,7 +420,7 @@ def basis_text(status: str, basis: str, counts: Mapping[str, int]) -> str:
     clean, failed = int(counts.get(CLEAN) or 0), int(counts.get(FAILED) or 0)
     if basis == BASIS_NO_OUTCOME_SIGNALS:
         used = clean + failed + int(counts.get(NEUTRAL) or 0)
-        tail = f" ({used} use{'s' if used != 1 else ''} without one)" if used else " (it has not been used)"
+        tail = f" ({used} use{'s' if used != 1 else ''} without one)" if used else " (no later use yet)"
         return f"{status}: no outcome signal has arrived for any use of this item{tail}"
     how = {
         BASIS_VERDICTS: "judged by the verdict after each answered call",

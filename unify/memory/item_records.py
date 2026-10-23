@@ -377,21 +377,29 @@ def support(record: Mapping | None) -> dict | None:
     def count(v: Any) -> int:
         return v if isinstance(v, int) and not isinstance(v, bool) else 0
 
+    cases = rec.get("cases") if isinstance(rec.get("cases"), list) else []
+    accepted = {
+        c.get("episode")
+        for c in cases
+        if isinstance(c, Mapping) and isinstance(c.get("episode"), str) and c.get("outcome") == "positive"
+    }
     return {
         "episodes": len({e for e in eps if isinstance(e, str)}),
         "confirmed_uses": count(verdicts.get("accepted")) + count(ends.get("positive")),
+        "accepted": len(accepted),
     }
 
 
 def support_text(kind: str, facts: Mapping | None) -> str:
     """A card's support, in words: its kind (``curated item``, ``recorded procedure`` or ``fixed answer``), the
-    episodes it comes from, and its confirmed uses when it has any; the kind alone, with ``no record``, when *facts*
-    is None."""
+    episodes it comes from, in how many of them the work was accepted (a recorded procedure re-runs accepted work),
+    and its confirmed uses when it has any; the kind alone, with ``no record``, when *facts* is None."""
     if not isinstance(facts, Mapping):
         return f"{kind}, no record"
     n = facts.get("episodes") if isinstance(facts.get("episodes"), int) else 0
     m = facts.get("confirmed_uses") if isinstance(facts.get("confirmed_uses"), int) else 0
-    text = f"{kind} from {n} episode{'' if n == 1 else 's'}"
+    a = facts.get("accepted") if isinstance(facts.get("accepted"), int) else 0
+    text = f"{kind} from {n} episode{'' if n == 1 else 's'}" + (f", accepted in {a}" if a else "")
     if m:
         text += f", {m} confirmed use{'' if m == 1 else 's'}"
     return text

@@ -1149,6 +1149,8 @@ class RunReport:
         self.level: str = kw.get("level", "unknown")
         self.status: str = kw.get("status", "unknown")
         self.record: str = kw.get("record", "")
+        # what a recorded procedure rests on, printed in place of the level and status a curated item shows
+        self.rests_on: str = kw.get("rests_on", "")
         # the exception a library function raised in this process (None otherwise): an item call re-raises it, the
         # same object with its traceback, as a direct call would
         self._raised: BaseException | None = kw.get("raised")
@@ -1160,8 +1162,8 @@ class RunReport:
         else:
             out.append(f"error: {self.error}" + (f": {self.detail}" if self.detail else ""))
         out.append("conditions: " + self.conditions)
-        out.append(f"level {self.level}, status {self.status}")
-        out.append(self.record or "it has not been used since it was stored")
+        out.append(f"rests on: {self.rests_on}" if self.rests_on else f"level {self.level}, status {self.status}")
+        out.append(self.record or "no later use recorded yet")
         out.append("Its result is unchecked: nothing here compares it with what your request needs.")
         return "\n".join(out) + "\n"
 
@@ -1498,6 +1500,7 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
         conditions=conditions,
         conditions_code=code,
         record=_record_line(rec.get("track") if isinstance(rec.get("track"), dict) else None),
+        rests_on=_support_line("recorded procedure", rec.get("support")) or "recorded procedure",
         **base,
     )
 
@@ -1596,7 +1599,8 @@ def _support_line(kind: str, facts: Any) -> str:
         return ""  # no record of what it rests on: the card says nothing rather than a count it does not have
     n = facts.get("episodes") if isinstance(facts.get("episodes"), int) else 0
     m = facts.get("confirmed_uses") if isinstance(facts.get("confirmed_uses"), int) else 0
-    text = f"{kind} from {n} episode{'' if n == 1 else 's'}"
+    a = facts.get("accepted") if isinstance(facts.get("accepted"), int) else 0
+    text = f"{kind} from {n} episode{'' if n == 1 else 's'}" + (f", accepted in {a}" if a else "")
     return text + (f", {m} confirmed use{'' if m == 1 else 's'}" if m else "")
 
 
@@ -2373,8 +2377,9 @@ class _Catalog:
         if example is not None:
             return self._example(iid, built, example, rec, asked, text)
         out = [
-            f"{iid}  [{status}" + (f", {built.support}" if built.support else "") + "]",
-            "A captured procedure: calling it runs it in a separate confined process on text or JSON values.",
+            f"{iid}  [{built.support or 'recorded procedure'}]",
+            "A recorded procedure: it re-runs work an earlier request accepted. Calling it runs it in a separate "
+            "confined process on text or JSON values.",
         ]
         out += _evidence_lines(_evidence(), iid)
         if rec.get("outcome") in _NEGATIVE:
