@@ -150,8 +150,7 @@ GUIDE_LIBRARIAN = (
 #: (a part name and a quote copied from that part) is checked host-side, as a measure only (:mod:`.summaries`).
 SUMMARY_FORMAT = (
     "`summary.md` has five headed sections, in this order:\n"
-    "`## Asked`: what the request asked, in general terms: the kind of task, what it was given and what it had to "
-    "produce. Name a specific value only where the task depends on it.\n"
+    "`## Asked`: what the request asked: what it was given and what it had to produce.\n"
     "`## Approach`: the steps taken, in order, one line each.\n"
     "`## Worked`: what worked, one line each.\n"
     "`## Failed`: what failed and why, one line each; write `none` if nothing failed.\n"
@@ -508,10 +507,7 @@ def write_brief_now(
 
 #: The drafting contract when tools are called from code: the reason the writer generalises drafts is its own brief's.
 CANDIDATE_CONTRACT_IN_CODE = (
-    "Draft from what you saw: code that worked, the cases it ran on (values as they were recorded), and notes. "
-    "Where you can, write a reusable function or lesson in general form, with the values that vary as "
-    "parameters. Where your work is specific to this case, still write it down as it is: the library writer builds "
-    "from these drafts and may generalise them with other episodes."
+    "Draft from what you saw: code that worked, the cases it ran on (values as they were recorded), and notes."
 )
 
 
@@ -586,7 +582,7 @@ _WHAT_TO_WRITE_IN_CODE = (
     "- A procedure comes with its recipe: one function in its module, named apply_ followed by the procedure's "
     "name (apply_total for total), that is handed a new request as the harness hands it (its text, with .text and "
     ".data), reads from it every value the job needs, calls the procedure and the helpers, and returns what the job "
-    "hands back. A value copied from the request you learned from is wrong on the next request; derive it. The "
+    "hands back. The "
     "procedure's manifest entry adds \"role\": \"procedure\", \"recipe\" (the recipe's id; the recipe is an item "
     "too) and \"cases\": its case files, each an input with its known output, made with `tools.fixture(...)` "
     "given expected: the source request with the value its episode handed back (source \"request:0\", expected "
@@ -599,9 +595,10 @@ _WHAT_TO_WRITE_IN_CODE = (
     "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
     "the function's tests, `memory/<package>/tests/test_<module>.py::test_<case>`, with no doctest and no "
     "`Input:` line; a `When to use:` section (below); and, optionally, a `Notes:` line naming note paths.\n"
-    "- Notes go in `notes/<topic>/<slug>.md`: free-form markdown (a fact, a pitfall, a how-to, or how to combine "
-    "functions) with front matter `title`, `description` (one line, shown in the index) and `uses` (the ids of the "
-    "functions it uses). A link is written only in a note's `uses` or a function's `Notes:` line, and must name an "
+    "- Notes go in `notes/<topic>/<slug>.md`: markdown (a fact, a pitfall, a how-to, or how to combine functions) "
+    "with front matter `title`, `description` (one line, shown in the index) and `uses` (the ids of the functions "
+    "it uses). `memory.get` serves a note's front matter and its `## Rule` section, at most "
+    "<<note_rule_chars>> characters; the rest of the file (an `## Evidence` section, say) is read at its path. A link is written only in a note's `uses` or a function's `Notes:` line, and must name an "
     "item that exists. A new item starts as `on-trial`; later passes revise or remove it. A function's linked "
     "note says its preconditions and its known failures.\n"
     + WHEN_TO_USE_TEXT
@@ -631,15 +628,15 @@ _WHAT_TO_WRITE_IN_CODE = (
 
 _WRITE_RULES_IN_CODE = (
     "# Rules\n"
-    "1. Store anything that repeats or is likely to repeat, in any domain: readers, calculations, call "
-    "sequences, and whole-job procedures built from smaller tested functions. A procedure is verified by "
+    "1. What you store is your decision, in any domain: readers, calculations, call sequences, and whole-job "
+    "procedures built from smaller tested functions. A procedure is verified by "
     "replaying its episode: a work-tree procedure must reproduce the recorded file changes, a tool procedure the "
     "recorded calls, and a dialogue procedure the recorded reply the environment then accepted. A procedure "
     "of any other kind cannot be verified, so it stays a draft.\n"
     "2. Start from the working model's own code when it already wrote it (its cells and its work-tree diff). "
-    "Generalise it: values that vary become parameters, and the function raises "
-    '`MemoryInputError("<what was expected>")` on an input it was not built for. Check and refuse shapes, not '
-    "observed values. The gate replaces the fixture values the tests load with unseen values of the same type and "
+    "A function raises "
+    '`MemoryInputError("<what was expected>")` on an input it was not built for. '
+    "The gate replaces the fixture values the tests load with unseen values of the same type and "
     "reruns the tests: the function must not then raise `MemoryInputError` or another exception on a call it "
     "accepted before. A field with a fixed domain is declared in `field_types`.\n"
     "3. Judge outcomes from the records. The harness never reads environment text for a verdict: "
@@ -688,8 +685,8 @@ ATTENTION_TEXT = (
     "You are given entries that need your attention; decide each with `tools.decide`. New captures come to you as a "
     "group: captures whose records show they act through the same tools, touch the same library items or read the "
     "same shape of input, with the related captures earlier passes already decided and the library items the group "
-    "touches (/inputs/attention/group.json). Read them together with the library: your job is items that hold "
-    "beyond any one capture. Open entries listed beside them may share a rule with yours; look with "
+    "touches (/inputs/attention/group.json). Read them together with the library and decide what to keep. Open "
+    "entries listed beside them may share a rule with yours; look with "
     "`tools.open_entries` and `tools.find`, and `tools.take` those that do; taking a closed entry shows its material "
     "and what was decided, read-only. /inputs/attention/index.json lists your entries, each with the material it "
     "owes a read (its summary, its "
@@ -700,15 +697,14 @@ ATTENTION_TEXT = (
 )
 #: What an item is, (the brief's What to write).
 IMPURE_TEXT = (
-    "- An item is written for a kind of situation, with what varies as its inputs. It may take the current state "
-    "and act through the environment's tools. When you land or change one, say the kind of situation it is for, "
-    "and which of its values are inputs and which are constants, with the source of each constant. The episodes "
-    "it comes from are its evidence, not its scope. Notes and checklists are items too.\n"
+    "- An item may take the current state and act through the environment's tools. When you land or change one, "
+    "its label states the situation it is for, which of its values are inputs and which are constants, with the "
+    "source of each constant, and the episodes it comes from. Notes and checklists are items too.\n"
 )
 #: The manifest fields of an item's stated provenance.
 IMPURE_MANIFEST_DOCS = (
-    "  - Every item may state, and every item you land or change states: `situation`, the kind of situation it is "
-    "for, in general words; `inputs`, what varies (for example `state.data[0].lines`); `constants`, each value it "
+    "  - Every item may state, and every item you land or change states: `situation`, the situation it is for; "
+    "`inputs`, its values that are inputs (for example `state.data[0].lines`); `constants`, each value it "
     "holds fixed "
     "with its source (`{\"value\": \"tax rate 0.2\", \"source\": \"<episode>/action:3\"}`); and for a function "
     "`effects`, `none`, `reads`, `writes` or `unknown` (what its calls do to the environment). A note that is a "
@@ -845,8 +841,7 @@ def with_switches(body: str) -> str:
         "7. Code never holds a literal equal to a value that varies across its recorded inputs (text of "
         "<<lint_min>> or more characters, or a number with 2 or more significant digits): make it a parameter.\n",
         "7. Say which of an item's values are inputs and which are constants, each constant with its source "
-        "(`inputs`, `constants`): a value copied from one episode is a constant only where its source says it "
-        "holds for the kind of situation the item is for.\n",
+        "(`inputs`, `constants`).\n",
     )
     body = _swap(
         body,
@@ -864,6 +859,13 @@ def with_switches(body: str) -> str:
     body = with_labels_only(body, recipe_rule)
     body = _swap(body, "\n# What to write\n", "\n" + TESTS_TEXT + "\n\n# What to write\n")
     return body
+
+
+def _note_rule_chars() -> int:
+    """How much of a note ``memory.get`` serves (:data:`.library_helper.NOTE_RULE_CHARS`), as the brief states it."""
+    from .library_helper import NOTE_RULE_CHARS
+
+    return NOTE_RULE_CHARS
 
 
 def record_text() -> str:
@@ -1067,6 +1069,7 @@ def _write_brief_in_code(
             "item_extra": item_extra,
             "manifest_extra_docs": manifest_docs,
             "lint_min": lint_min,
+            "note_rule_chars": _note_rule_chars(),
             "pytest_env": _env(pytest_env),
         },
     )
@@ -1152,10 +1155,10 @@ RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         "Then do that step with your own code",
     ),
     (
-        "store anything that repeats",
+        "what to store is the writer's decision",
         "what to store",
         ("write",),
-        "Store anything that repeats",
+        "What you store is your decision",
     ),
     (
         "procedures are replayed",

@@ -292,7 +292,7 @@ def _stated(raw: dict, item: str, kind: str) -> dict:
         situation = raw["situation"]
         if not isinstance(situation, str) or not situation.strip() or len(situation) > _STATED_TEXT_MAX:
             raise ManifestError(
-                f"{item}: situation is the kind of situation the item is for, in at most {_STATED_TEXT_MAX} "
+                f"{item}: situation is the situation the item is for, in at most {_STATED_TEXT_MAX} "
                 f"characters, given {_key_repr(situation)}",
             )
         out["situation"] = " ".join(situation.split())

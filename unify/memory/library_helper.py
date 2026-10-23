@@ -1669,6 +1669,35 @@ def _relative(text: str) -> str | None:
     return None
 
 
+#: The most characters of a note an agent is served by default: its ``## Rule`` section (or, for a note written before
+#: notes had one, its opening), never its evidence appendix; the whole file stays readable at its library path.
+NOTE_RULE_CHARS = 2000
+
+
+def _note_rule(text: str, iid: str) -> str:
+    """What ``memory.get`` serves of note *iid*: its front matter and its ``## Rule`` section (a note without one: its
+    text), at most :data:`NOTE_RULE_CHARS` characters, ending with where the rest is when there is more."""
+    lines = text.splitlines()
+    head: list[str] = []
+    body = lines
+    if lines and lines[0].strip() == "---":
+        end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+        if end is not None:
+            head, body = lines[: end + 1], lines[end + 1 :]
+    start = next((i for i, line in enumerate(body) if line.strip().lower() == "## rule"), None)
+    if start is not None:
+        stop = next((i for i, line in enumerate(body[start + 1 :], start + 1) if line.startswith("## ")), len(body))
+        body = body[start:stop]
+    served = "\n".join(head + body).rstrip("\n")
+    rest = len(served) < len(text.rstrip("\n"))
+    if len(served) > NOTE_RULE_CHARS:
+        served, rest = served[:NOTE_RULE_CHARS].rstrip(), True
+    if rest:
+        # the library's root as this box names it, so the path opens with this agent's own tools.read
+        served += f"\n… (the rest of the note, its evidence included: tools.read('{_ROOT.rstrip('/')}/{iid}'))"
+    return served + "\n"
+
+
 def _capture_ids() -> list[str]:
     """The captured procedures' ids, in id order: those exported into the copy, and those handed to a writer pass
     (:data:`HANDED_CAPTURES`)."""
@@ -1767,6 +1796,20 @@ class Item:
     reason: str = ""
     support: str = ""
 
+    def _on_request(self) -> "Item | None":
+        """What a call with no arguments runs on the current request: this item when it is a captured procedure
+        (it reads the request itself), its recipe when it is a procedure with one, else None."""
+        if self.id.startswith(CAPTURE_PREFIX):
+            return self
+        try:
+            row = _Catalog("memory.get(...)()").rows.get(self.id) or {}
+        except Exception:  # noqa: BLE001 - no catalogue here: the call is made as written
+            return None
+        recipe = row.get("recipe")
+        if isinstance(recipe, str) and recipe and recipe != self.id:
+            return dataclasses.replace(self, id=recipe)
+        return self if recipe == self.id else None
+
     def __repr__(self) -> str:
         return f"Item({self.id!r}" + (f", reason={shown(self.reason)}" if self.reason else "") + ")"
 
@@ -1819,7 +1862,14 @@ class Item:
 
         Example:
             memory.get('memory.text.dates:parse_date')('2026-10-09')
+
+        With no arguments, a procedure that takes the request (a captured procedure, or a procedure with a recipe)
+        runs on the current request, as ``memory.request()`` gives it: one call re-runs the stored work on it.
         """
+        if not args and not kwargs:
+            target = self._on_request()
+            if target is not None:
+                return target(request())
         report = _RUN_TARGET(self.id, *args, **kwargs)
         if report.outcome == "returned":
             return report.result
@@ -2284,7 +2334,7 @@ class _Catalog:
     def _note(self, iid: str, row: dict) -> tuple[Item, str]:
         text, missing = "", ""
         try:
-            text = _read(iid)
+            text = _note_rule(_read(iid), iid)
         except _FileUnreadable as exc:
             missing = exc.error
         status = _status_of(row)

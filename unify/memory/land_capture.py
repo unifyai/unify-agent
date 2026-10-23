@@ -759,7 +759,7 @@ def _land(args, store, box, episode, blob, batch, python, parse, work, pass_id=N
     if same is None:
         lines.append(
             "- the functions written here have no `When to use:` section in their docstrings yet, and the package "
-            "folder may have no README.md: write them (what the request asked for in general terms, how to "
+            "folder may have no README.md: write them (what the request asked for, how to "
             "recognise it, what it is not for, one example request), or the gate refuses the items",
         )
     lines.append("Change any of them before you finish; check judges them as any other change.")

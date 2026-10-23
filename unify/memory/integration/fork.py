@@ -140,9 +140,10 @@ CAPTURE_BULLETS = (
     "request (`request` is its text, `request.data` the list of the JSON objects and arrays it contains) and returns "
     "the value `run` works on.\n"
     "  `run` returns the result you handed back when you handed one back, and None when the outcome of the work is "
-    "what it did (its tool calls, the files it changed). Where your code used a value you typed into a cell, read it "
-    "from `state` or the request instead. If the work has conditions on its input or its result, write them as "
-    "`applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or False. Its "
+    "what it did (its tool calls, the files it changed). Calling a stored procedure with no arguments runs it on the "
+    "current request (`read_input` gets the request's text). If the work has conditions on its input or its result, "
+    "write them as `applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or "
+    "False. Its "
     "docstring says whether the record shows the work accepted, quoting the line that shows it, or says \"not "
     "shown\". When no code that ran here did the work (it was all in the conversation, or edits made directly), write no "
     "`procedure.py`: `summary.md` and `broke.md` say what happened.\n"
@@ -160,7 +161,7 @@ RECORD_CALLS_ONLY = (
 #: not stated, since nothing the fork writes can act on it.
 INSTRUCTION = (
     "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
-    "Now write down what would help with similar requests later, as files: write each file as a fenced block in "
+    "Now write down what you choose to keep from this episode, as files: write each file as a fenced block in "
     "your reply, in the format below. " + RECORD_CALLS_ONLY + "\n\n"
     "What to write:\n"
     "- `summary.md`: a short account of this episode for a reader who has not seen it, in the format below.\n"
@@ -172,8 +173,8 @@ INSTRUCTION = (
     "(the return value). Each value must appear in this conversation as it is (a tool's reply, a file's content "
     "or a cell's printed output), so it can be copied from the record; leave out a case with a value that does "
     "not.\n"
-    "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
-    "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
+    "- `notes.md`: each thing that failed and why, and any other lesson, each quoting the short line or error "
+    "message from this conversation it comes from. If nothing here "
     "is worth keeping, write `notes.md` saying so.\n"
     + CAPTURE_BULLETS
     + "\n"
@@ -210,7 +211,7 @@ SEGMENT_FORMAT_EXAMPLE = (
 )
 SEGMENT_INSTRUCTION = (
     "This is a pause in your work on this request, which goes on after it; nothing you write now changes it. Write "
-    "down what would help with similar work later, for the part of the work since the last pause: the cells "
+    "down what you choose to keep from the part of the work since the last pause: the cells "
     "{cells}. Write each file as a fenced block in your reply, in the format below. " + RECORD_CALLS_ONLY + "\n\n"
     "What to write:\n"
     "- `summary.md`: a short account of this part of the episode for a reader who has not seen it, in the format "

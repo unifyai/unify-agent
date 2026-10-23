@@ -478,7 +478,7 @@ POOL = RegisteredTool(
         f"{POOL_RELATED_PAGE} at a time from offset. op='decide': records a decision in "
         "/memory/.pass/manifest.json's pool block and returns that block; decision 'merged' (target: the item this "
         "manifest lists that holds it), 'superseded' (target: the item or entry that replaces it), 'retired' "
-        "(reason; closes the entry for good: it is wrong or not reusable), 'defer' (reason; keeps it open for a later "
+        "(reason; closes the entry for good), 'defer' (reason; keeps it open for a later "
         "pass; with episodes, those episodes join the entry as more evidence; id='new' with "
         "episodes opens a deferred entry for them), 'reopened' (reason; opens a closed entry again) or 'open' "
         "(removes an earlier decision on that id). Decisions take effect when the gate judges the pass."

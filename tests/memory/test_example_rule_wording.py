@@ -13,7 +13,7 @@ def test_the_pool_text_gives_no_second_episode_reason_to_defer():
     # rev 2: the decisions are stated by the pool tool's own help, which the brief points to
     assert 'tools.help("pool")' in brief
     pool_help = tool_registry.registry()["pool"].description
-    assert "'retired' (reason; closes the entry for good: it is wrong or not reusable)" in pool_help
+    assert "'retired' (reason; closes the entry for good)" in pool_help
     assert "lacks only another episode" not in pool_help
 
 

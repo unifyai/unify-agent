@@ -442,7 +442,7 @@ def first_message(att: AttentionPass, req: Any, wall: str) -> str:
             + ".\n"
             "/inputs/attention/group.json says why the harness put them together (from its records only), what earlier "
             f"passes decided, and the {lib} library {'item' if lib == 1 else 'items'} the group touches. Read them "
-            "together with the library, and make or reshape items that hold beyond any one of them. What each entry "
+            "together with the library, and decide what to keep. What each entry "
             "owes a read is in /inputs/attention/index.json; decide each with tools.decide.\n"
             f"Wall clock for this pass: {wall} s.\n"
         )

@@ -128,7 +128,7 @@ RULES: tuple[tuple[str, str, str], ...] = (
     ("B135", "writer", "Never compute an expected value with the function's own expression"),
     ("B136", "writer", "never assert on the clock"),
     ("B138", "writer", "recorded-inputs file"),
-    ("B140", "writer", "values that vary become parameters"),
+    # B140 ("values that vary become parameters") is gone: the harness never steers what is stored, either way
     ("B141", "writer", "Never store credentials or session tokens"),
     ("B145", "writer", "a candidate with fewer items or tests is labelled so"),
     ("B147", "writer", "G1, layout and provenance"),
