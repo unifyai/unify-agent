@@ -23,8 +23,9 @@ nothing is run. Two captures are related when their records show at least one of
 * ``judged``: a judge that read the two captures' behaviour (their code, input shape, calls and outcome) named one as
   doing the same kind of work as the other (the ledger's ``kin`` rows).
 
-A call feature (a whole sequence or a run of calls) that more than half of the home's captures make, and at least
-:data:`ENVELOPE_MIN` of them, is the world's own envelope, like a request envelope every capture reads: it
+A call feature (a whole sequence or a run of calls) that more than half of the home's calling captures make (those
+whose recorded procedure makes a call: the features' own domain), and at least :data:`ENVELOPE_MIN` of them, is the
+world's own envelope, like a request envelope every capture reads: it
 distinguishes none of them, so it relates nothing. One shared call alone never relates two captures either: in a world
 with one action channel every capture that calls it makes it.
 
@@ -117,15 +118,17 @@ def call_features(p: Profile) -> frozenset:
 
 
 def common_features(profiles: Iterable[Profile]) -> frozenset:
-    """The call features more than half of the home's captures make, and at least :data:`ENVELOPE_MIN` of them: the
-    world's own envelope of calls, which distinguishes none of them. Every capture counts: no subset is picked by what
-    its code looks like."""
-    every = list(profiles)
+    """The call features more than half of the home's calling captures make (those whose recorded procedure makes a
+    call: the features' own domain), and at least :data:`ENVELOPE_MIN` of them: the world's own envelope of calls,
+    which distinguishes none of them."""
+    # the call features' own domain: the captures whose recorded procedure makes a call (a capture that makes none
+    # has no call feature to share or not); no other property of the code is read
+    calling = [p for p in profiles if p.sequence]
     counts: dict[tuple, int] = {}
-    for p in every:
+    for p in calling:
         for f in call_features(p):
             counts[f] = counts.get(f, 0) + 1
-    return frozenset(f for f, n in counts.items() if n >= ENVELOPE_MIN and 2 * n > len(every))
+    return frozenset(f for f, n in counts.items() if n >= ENVELOPE_MIN and 2 * n > len(calling))
 
 
 def related(a: Profile, b: Profile, common: frozenset = frozenset()) -> list[str]:

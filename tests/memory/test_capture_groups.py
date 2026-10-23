@@ -123,9 +123,9 @@ def test_the_history_is_the_most_related_closed_captures_at_most_history_max():
 
 
 def test_a_call_feature_most_captures_make_relates_nothing_and_a_rarer_run_of_calls_does():
-    """A world's own envelope of calls (made by more than half of the home's captures) distinguishes none of them; a
-    shared run of two calls that few make relates two captures. Every capture counts, whether or not it makes calls:
-    no subset is picked by what its code looks like."""
+    """A world's own envelope of calls (made by more than half of the captures that make calls) distinguishes none of
+    them; a shared run of two calls that few make relates two captures. A capture that makes no call has no call
+    feature: it neither adds to nor dilutes the envelope."""
     env = ("env.chat.ask", "env.chat.reply")
     ps = [_p(f"{i:x}" * 16, sequence=env) for i in range(4)]
     rare_a = _p("a" * 16, sequence=("env.files.read", "env.files.write", *env))
@@ -135,9 +135,8 @@ def test_a_call_feature_most_captures_make_relates_nothing_and_a_rarer_run_of_ca
     assert cg.related(ps[0], ps[1], common) == []
     assert cg.related(rare_a, rare_b, common) == ["subsequence: env.files.read > env.files.write"]
     assert cg.related(ps[0], ps[1]) == ["sequence: env.chat.ask > env.chat.reply"]  # with no envelope known
-    # captures with no calls count too: with as many of them, the same four make no envelope (not more than half)
-    quiet = [_p(f"q{i}" * 8, sequence=()) for i in range(4)]
-    assert env not in cg.common_features([*ps, *quiet])
+    quiet = [_p(f"q{i}" * 8, sequence=()) for i in range(8)]
+    assert cg.common_features([*ps, rare_a, rare_b, *quiet]) == common
 
 
 def test_a_judges_kin_row_relates_two_captures_and_unknown_ids_are_left_out(tmp_path):
