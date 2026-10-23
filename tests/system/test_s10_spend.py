@@ -101,3 +101,29 @@ async def test_a_cap_smaller_than_one_call_makes_no_memory_model_call_and_captur
         actor=SW.probe_turns(SW.probe_json("_try('items', lambda: [i.id for i in memory.items()])\n"), sink),
         librarian=Always(lambda c: SW.librarian_answer([], nearest=[]))))
     assert {f"capture:{a}", f"capture:{b}"} <= set(sink["out"]["items"]), sink["out"]
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(3600)
+@pytest.mark.parametrize("mode", ["on"])
+async def test_the_judge_is_shown_at_most_forty_candidates_and_bounded_code(system, mode):
+    """R2.3 / R6.9 (P): with more than 40 earlier captures, the judge is shown at most 40, the new capture's code at
+    most 4,000 characters and each earlier one's at most 600 (the long ones are clipped with a marker)."""
+    # the design's bounds (P, 2.3), not the module's constants: a changed constant must fail here
+    candidates, new_code, earlier_code = 40, 4000, 600
+    s = system
+    s.writer.plan = "keep"
+    s.writer.kin = False  # nothing is related: every capture stays open and each new one is judged
+    first = SW.LONG_MARK
+    for k in range(first, first + candidates + 2):
+        await s.accepted_words([f"w{k}"], f"mark{k}")
+    assert len(s.captures()) >= candidates + 2, len(s.captures())
+    last = SW._first_user(s.writer.judge_bodies[-1])
+    labels = re.findall(r"^\[(\d+)\]:$", last, re.M)
+    assert labels and len(labels) <= candidates, len(labels)
+    new, _, earlier = last.partition("The earlier procedures:")
+    assert len(new.split("code:\n", 1)[-1]) <= new_code + 200, len(new)
+    for block in re.split(r"^\[\d+\]:$", earlier, flags=re.M)[1:]:
+        assert len(block.split("code:\n", 1)[-1]) <= earlier_code + 200, len(block)
+    assert "the rest of the code is not shown" in last

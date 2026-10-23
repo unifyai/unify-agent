@@ -44,6 +44,13 @@ async def _tally_episode(s, *, call: str | None, librarian):
     return r
 
 
+async def _tally_episode_unsettled(s, *, librarian):
+    SW.seed_tally(s.workspace)
+    model = ScriptedModel(actor=[reply(calls=[cell(SW.TALLY_CELL)]), reply("The tally is updated."), reply("Good.")],
+                          librarian=librarian)
+    return await s.request(SW.TALLY_REQUEST, model, SW.accepted_host())
+
+
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(1800)
@@ -76,9 +83,16 @@ async def test_an_item_only_served_relates_nothing(system, mode):
     assert s.library_main_has(SW.NOTE_ID)
     passes = len(s.writer.passes)
     served = Always(lambda call: SW.librarian_answer([SW.fit(SW.NOTE_ID, call=f"print(memory.get({SW.NOTE_ID!r}))")]))
-    c = s.capture_of((await _tally_episode(s, call=None, librarian=served)).episode_id)
+    # this build writes no use row for an item that was only served, so the fixture writes the row a build that
+    # records served items would write (shown, never called) for both requests, before their captures are grouped:
+    # the relation must still not count it
+    rc = await _tally_episode_unsettled(s, librarian=served)
+    s.seed_served_row(rc.episode_id, SW.NOTE_ID)
+    s.settle()
+    c = s.capture_of(rc.episode_id)
     r = await s.request(SW.SUM_REQUEST, ScriptedModel(
         actor=[reply(calls=[cell(SW.SUM_CELL)]), reply("12"), reply("Good.")], librarian=served), SW.accepted_host())
+    s.seed_served_row(r.episode_id, SW.NOTE_ID)
     s.settle()
     n = s.capture_of(r.episode_id)
     assert not _groups_with(s, _entries(s, c), _entries(s, n)), [g.get("reasons") for g in s.ledger_rows("group")]
@@ -99,3 +113,34 @@ async def test_the_history_handed_with_a_new_capture_is_at_most_eight(system, mo
     assert groups and len(s.captures()) >= 11, (len(groups), len(s.captures()))
     assert all(len(g.get("context") or []) <= 8 for g in groups), [len(g.get("context") or []) for g in groups]
     assert max(len(g.get("members") or []) + len(g.get("context") or []) for g in groups) >= 2, groups
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(2400)
+@pytest.mark.parametrize("mode", MEMORY_MODES)
+async def test_the_pass_is_shown_only_the_items_its_captures_used_or_are_linked_to(system, mode):
+    """R6.7 (P): ``group.json``'s library items are those the group's captures called or are linked to; an item that
+    was only served (a row the fixture writes, as for the served-item test) is not among them."""
+    s = system
+    s.writer.plan = "keep"
+    s.writer.kin = "same_world"
+    x = "capture:" + s.capture_of((await s.accepted_tally()).episode_id)
+    a = "capture:" + s.capture_of((await s.accepted_words(["stone"], "reverse")).episode_id)
+    s.writer.probe = lambda body: (
+        "import json, os\n"
+        "docs = [json.load(open(os.path.join(r, 'group.json'))) for r, d, f in os.walk('/inputs') if 'group.json' in f]\n"
+        "print('SYSJSON:' + json.dumps({'docs': docs}))\n")
+    model = ScriptedModel(
+        actor=[reply(calls=[cell(SW.words_cell(["glass"], op="mark1") + f"print(memory.get({a!r})())\n")]),
+               reply(json.dumps(SW.words_answer(["glass"], op="mark1"))), reply("Good.")],
+        librarian=Always(lambda c: SW.librarian_answer([SW.fit(x, call=f"print(memory.get({x!r}))")])))
+    r = await s.request(SW.words_request(["glass"], op="mark1"), model, SW.accepted_host())
+    s.seed_served_row(r.episode_id, x)  # served to this request, never called
+    s.settle()
+    assert s.writer.probes, "no pass ran for the group"
+    docs = SW.marked(s.writer.probes[-1])["docs"]
+    assert docs, "the pass was handed no group.json"
+    items = set(docs[-1].get("library_items") or [])
+    assert a in items, (sorted(items), "the item a member's episode called is the group's")
+    assert x not in items, (sorted(items), "an item only served to a member's episode is not the group's")

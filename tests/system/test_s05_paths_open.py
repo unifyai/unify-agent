@@ -41,8 +41,13 @@ def _actor_prep(acting: str):
     return first_cell
 
 
+#: Paths the writer's brief names for what exists only in some passes: a refused earlier pass's drafts and gate
+#: results, and what a launched helper staged (the brief says when each exists).
+WRITER_CONDITIONAL = ("/inputs/gate/", "/inputs/drafts/", "/inputs/helpers/")
+
+
 def _writer_probe(body: dict) -> list[str]:
-    texts = {"writer first message": SW._first_user(body)}
+    texts = {"writer first message": SW._first_user(body), "writer brief": SW._system(body)}
     gather = (
         SW.GATHER_REFUSALS
         + f"TEXTS = {texts!r}\n"
@@ -55,8 +60,9 @@ def _writer_probe(body: dict) -> list[str]:
         "    'get an unknown capture': _err(lambda: memory.get('capture:0000000000000000')),\n"
         "}\n"
         f"MISSING = {SW.PROBED_MISSING!r}\n"
+        f"CONDITIONAL = {WRITER_CONDITIONAL!r}\n"
     )
-    return [SW.probe_json(gather + SW.OPEN_PREP)] + [SW.OPEN_STEP_CELL] * 10
+    return [SW.probe_json(gather + SW.OPEN_PREP)] + [SW.OPEN_STEP_CELL] * 16
 
 
 def _librarian_prep(call) -> str:
@@ -107,3 +113,71 @@ async def test_every_path_and_handle_shown_opens_and_refusals_name_a_working_cal
     assert "out" in actor and "out" in lib, (sorted(actor), sorted(lib))
     problems += _problems("actor", actor["out"]) + _problems("librarian", lib["out"])
     assert not problems, "\n".join(map(str, problems))
+
+
+#: Secrets seeded into the library copy: a credential file by name, and a key-shaped string in an ordinary note.
+ENV_SECRET = "seeded-env-value-7f3a9c"
+KEY_SECRET = "sk-or-v1-" + "0123456789abcdef" * 4
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(1800)
+@pytest.mark.parametrize("mode", MEMORY_MODES)
+async def test_library_reads_apply_the_sandbox_masks(system, mode):
+    """R7.6 (the mask half): whatever path an actor reads the library by (``tools.read``, ``tools.grep``, the box's
+    own files), the sandbox's masks apply: a credential file and a secret-shaped string in a seeded library never
+    reach the actor."""
+    s = system
+    s.writer.plan = "land"
+    await s.accepted_words(["stone"], "reverse")
+    await s.accepted_words(["glass"], "upper")
+    # the export copies only the library's listed items, so masked material cannot be seeded through main: it is
+    # placed in the request's own copy, host side, once the box has mounted it (the mount shows it), as material a
+    # landed item could carry
+    seeded = {"notes/text/seed-control.md": "---\ntitle: control\n---\n## Rule\n- seed-control-visible\n",
+              "notes/text/.env": f"TOKEN={ENV_SECRET}\n",
+              "notes/text/keys.md": f"---\ntitle: keys\n---\n## Rule\n- the key is {KEY_SECRET}\n"}
+
+    def seed(call):
+        import os
+        import stat
+
+        for rel, text in seeded.items():
+            p = s.copy() / rel
+            mode = p.parent.stat().st_mode
+            os.chmod(p.parent, mode | stat.S_IWUSR)  # the copy is read-only on disk too; the fixture opens it
+            try:
+                p.write_text(text)
+            finally:
+                os.chmod(p.parent, mode)
+        return sorted(seeded)
+
+    sink: dict = {}
+    code = SW.probe_json(
+        "_try('read_env', lambda: str(tools.read('/memory-library/notes/text/.env')))\n"
+        "_try('read_keys', lambda: str(tools.read('/memory-library/notes/text/keys.md')))\n"
+        f"_try('grep', lambda: str(tools.grep({ENV_SECRET[:12]!r}, '/memory-library')))\n"
+        "_try('grep_key', lambda: str(tools.grep('sk-or-v1', '/memory-library')))\n"
+        "import os\n"
+        "def _walk():\n"
+        "    got = []\n"
+        "    for r, d, f in os.walk('/memory-library'):\n"
+        "        for n in f:\n"
+        "            try:\n"
+        "                got.append(open(os.path.join(r, n), errors='replace').read())\n"
+        "            except OSError as e:\n"
+        "                got.append('unreadable ' + n)\n"
+        "    return '\\n'.join(got)\n"
+        "_try('box_files', _walk)\n"
+        "_try('get_keys', lambda: str(memory.get('notes/text/keys.md')))\n"
+        f"out['leaks'] = sorted(k for k, v in out.items() if {ENV_SECRET!r} in str(v) or {KEY_SECRET!r} in str(v))\n"
+        "out['control'] = 'seed-control-visible' in str(out.get('box_files'))\n"
+        "out['files'] = sorted(os.path.relpath(os.path.join(r, n), '/memory-library') for r, d, f in os.walk('/memory-library')"
+        " for n in f if 'notes' in r)\n"
+    )
+    await s.request(SW.words_request(["oak"]), ScriptedModel(
+        actor=SW.probe_turns(code, sink, on_first=seed), librarian=Always(lambda c: SW.librarian_answer([], nearest=[]))))
+    # the control: the seeded library is the one the box mounts (an ordinary seeded file is readable there)
+    assert sink["out"]["control"], ("the seeded library is not the one the box mounts", sink["out"]["files"])
+    assert not sink["out"]["leaks"], {k: str(sink["out"].get(k))[:300] for k in sink["out"]["leaks"]}

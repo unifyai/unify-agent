@@ -91,10 +91,17 @@ def _summary(asked: str, approach: str) -> str:
     )
 
 
+#: Ops ``mark<k>`` with k at or above this carry a long comment block, so their code is longer than any bound on the
+#: code a judge is shown (kinship: 4,000 characters for the new capture, 600 for each earlier one).
+LONG_MARK = 100
+PADDING = "".join(f"# step {i}: every word is kept in its place and only its letters change.\n" for i in range(90))
+
+
 def words_proc(op: str) -> str:
     if _mark(op) is not None:
         k = _mark(op)
-        return (f'"""Write each word of the request\'s list in capitals followed by {k} marks."""\n\n' + _READ
+        return (f'"""Write each word of the request\'s list in capitals followed by {k} marks."""\n\n'
+                + (PADDING + "\n" if k >= LONG_MARK else "") + _READ
                 + f'def run(value):\n    """Each word in capitals with {k} marks."""\n'
                 + f'    return [w.upper() + {"!" * k!r} for w in value]\n')
     return WORDS_PROC[op]
@@ -351,6 +358,10 @@ def decide_code(ids: list[str], plan: str) -> str:
         "    rest = new + rest\n"
         "for r in rest:\n"
         "    try:\n"
+        "        if plan == 'retire_bad' and r['kind'] == 'use_went_badly':\n"
+        "            print(tools.decide([r['entry']], 'retire', items=list((r.get('refs') or {}).get('items') or []),"
+        " reason='its recorded use failed and no change repairs it'))\n"
+        "            continue\n"
         "        print(tools.decide([r['entry']], 'nothing_to_keep', reason='nothing general'))\n"
         "    except Exception as exc:\n"
         "        print(type(exc).__name__, exc)\n"
@@ -427,7 +438,8 @@ def probe_json(expr_code: str) -> str:
         "    except BaseException as e:\n"
         "        out[key] = 'RAISED ' + type(e).__name__ + ': ' + str(e)\n"
         + expr_code
-        + f"\nprint({MARK!r} + json.dumps(out, default=repr))\n"
+        + f"\nprint({MARK!r} + json.dumps({{k: (v[:6000] if isinstance(v, str) else v) for k, v in out.items()}},"
+        " default=repr))\n"
     )
 
 
@@ -526,7 +538,11 @@ _HANDLES = (_re.compile(r"capture:[0-9a-f]{16}"), _re.compile(r"(?<![\w/])notes/
 _CALL = _re.compile(r"(memory\.get\(\s*'[^'<>]*'\s*\)(?:\(\))?|memory\.items\(\)|memory\.ask\(\)|"
                     r"tools\.take\(\s*'[^'<>]*'\s*\)|tools\.read\(\s*'[^'<>]*'\s*\)|"
                     r"exec\(memory\.get\(\s*'[^'<>]*'\s*\)\.text,\s*ns\))")
-_SKIP = ("/memory/.pass", "/outputs")
+try:
+    _COND = tuple(CONDITIONAL)
+except NameError:
+    _COND = ()
+_SKIP = ("/memory/.pass", "/outputs") + _COND
 _found = {}
 for _src, _t in list(TEXTS.items()) + list(REFUSALS.items()):
     for _m in _PATH.finditer(_t):

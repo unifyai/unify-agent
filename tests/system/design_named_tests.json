@@ -1,0 +1,42 @@
+{
+ "doc": "artifacts/orchestrator/REDESIGN-REV2-20261021/REV2.2-DESIGN.md (continual-harness-research)",
+ "sha256": "8dc2af5c23439560f2ebec8b5653c827a670aafe8c4283cb869f521ff4ca196a",
+ "note": "Every test file and test name the design doc names (backticked test_* names and test_*.py files). Re-extract when the doc changes: the test checks the doc's sha only as a record.",
+ "files": [
+  "test_attention_ledger.py",
+  "test_brief_states_the_gate.py",
+  "test_capture_examples.py",
+  "test_capture_forms_on_request.py",
+  "test_capture_groups.py",
+  "test_capture_stubs.py",
+  "test_librarian_role.py",
+  "test_librarian_role_leftovers.py",
+  "test_library_checks.py",
+  "test_library_prompts.py",
+  "test_memory_paths_one_way.py",
+  "test_metering.py",
+  "test_no_storage_steering.py",
+  "test_paths_shown_open.py",
+  "test_registry_object_arguments_declare_their_keys.py",
+  "test_request_start_block.py",
+  "test_served_without_test_results.py",
+  "test_try_first_guide.py",
+  "test_when_to_use.py",
+  "test_writer_prompts.py",
+  "test_writer_service.py"
+ ],
+ "names": [
+  "test_actor_memory_section",
+  "test_ask_structured",
+  "test_capture_card_has_no_discouraging_wording",
+  "test_capture_served_before_any_pass",
+  "test_capture_use_is_metered",
+  "test_every_printed_path_opens",
+  "test_helper_ask",
+  "test_merged_capture_stays_served",
+  "test_metering",
+  "test_natural_forms_resolve",
+  "test_refusals_name_a_next_step",
+  "test_usage"
+ ]
+}

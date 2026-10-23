@@ -98,3 +98,17 @@ async def test_every_model_call_of_a_memory_run_is_scripted_and_boxes_have_no_ne
                    .split("\0") if "=" in x)
         assert not _no_key(env), _no_key(env)
         assert env.get(sw.WRITER_BASE_URL, loop).startswith(loop), env.get(sw.WRITER_BASE_URL)
+
+
+def test_a_teammates_librarian_session_is_routed_as_the_librarian():
+    """The scripted model routes a request by its session's role (the system message), never by a phrase the question
+    quotes: a teammate's librarian session quotes the teammate's own "a helper in a team" text."""
+    from tests.scripted_model import HELPER_FRAGMENT, LIBRARIAN_FRAGMENT, kind_of
+
+    question = f"Question from the agent:\nYou are `h1`{HELPER_FRAGMENT}`actor-1` asked you: check the words."
+    librarian = {"messages": [{"role": "system", "content": LIBRARIAN_FRAGMENT + " of stored work."},
+                              {"role": "user", "content": question}], "tools": [{"name": "execute_code"}]}
+    helper = {"messages": [{"role": "system", "content": "## How you work here"},
+                           {"role": "user", "content": question}], "tools": [{"name": "execute_code"}]}
+    assert kind_of(librarian) == "librarian"
+    assert kind_of(helper) == "helper"

@@ -29,6 +29,10 @@ Kinds, how each is recognised, and where the request is built:
   is ``cache_discipline.COMPRESSION_FORK_INSTRUCTION``.
 * ``compactor``: ``context_compression.compress_messages`` (the fallback when
   the fork gives no summary); system ``COMPRESSION_PROMPT``.
+* ``librarian``: a request's librarian (its system message opens with
+  :data:`LIBRARIAN_FRAGMENT`), whoever asked it: checked before ``helper``, so a
+  teammate's librarian session, whose question quotes the teammate's own text,
+  is never taken for the teammate.
 * ``helper``: a helper's turn (``agents.spawn``); its first request names it
   "a helper in a team".
 * ``query_llm``: any other request with no tools (cells' ``query_llm``).
@@ -183,10 +187,12 @@ def kind_of(request: dict) -> str:
         return "compression_fork"
     if marks["compactor"] in system:
         return "compactor"
-    if users and HELPER_FRAGMENT in users[0]:
-        return "helper"
+    # the role first, from the session's own system message: a librarian's session is the librarian's whoever asks
+    # (a teammate's question quotes the teammate's own "a helper in a team" text, which must not make it a helper)
     if LIBRARIAN_FRAGMENT in system:
         return "librarian"
+    if users and HELPER_FRAGMENT in users[0]:
+        return "helper"
     if not names:
         return "query_llm"
     return "actor"

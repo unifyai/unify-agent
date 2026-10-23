@@ -78,3 +78,30 @@ async def test_a_failed_use_is_recorded_not_reoffered_opens_an_entry_and_reaches
     # within the request that failed, the failed item was never offered again (Q2.2: the same-request rule)
     assert item not in (out["ask"] if isinstance(out["ask"], list) else []), \
         f"the failed item was offered again in the same request: {out['ask']}"
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(1800)
+@pytest.mark.parametrize("mode", MEMORY_MODES)
+async def test_retire_is_reachable_and_withdraws_without_deleting(system, mode):
+    """R9.6 (change f, 0R.5): the writer, handed the failed use, retires the capture by a decision; it leaves every
+    listing at once, its files and record stay, and the ledger keeps the decision with its reason."""
+    s = system
+    s.writer.plan = "retire_bad"
+    cid = s.capture_of((await s.accepted_words(["stone", "river"], "reverse")).episode_id)
+    item = f"capture:{cid}"
+    sink: dict = {}
+    await s.request(NO_LIST, ScriptedModel(
+        actor=SW.probe_turns(SW.probe_json(f"_try('call', lambda: memory.get({item!r})())\n"), sink),
+        librarian=Always(lambda c: SW.librarian_answer([], nearest=[]))))
+    assert str(sink["out"]["call"]).startswith("RAISED"), sink["out"]
+    s.settle()
+    bad = [e for e in s.entries() if e.kind == "use_went_badly" and item in (e.refs.items or ())]
+    assert bad and bad[0].state == "closed" and bad[0].decision == "retire", [(e.kind, e.state, e.decision) for e in bad]
+    sink2: dict = {}
+    await s.request(SW.words_request(["oak"]), ScriptedModel(
+        actor=SW.probe_turns(SW.probe_json("_try('items', lambda: [i.id for i in memory.items()])\n"), sink2),
+        librarian=Always(lambda c: SW.librarian_answer([], nearest=[]))))
+    assert item not in sink2["out"]["items"], sink2["out"]["items"]
+    assert (s.captures().get(cid) or {}).get("procedure"), "a retired capture's files stay on record"

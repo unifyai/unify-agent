@@ -63,20 +63,9 @@ async def test_a_teammate_uses_the_actors_request(system, mode):
             pass
         return reply(calls=[cell("tools.answer('checked')\n")])
 
-    from tests.scripted_model import LIBRARIAN_FRAGMENT
-
-    steps = [h_first, h_second]
-
-    def helper_kind(call):
-        # the scripted model classes a request by its text: a teammate's librarian session quotes the teammate's
-        # "a helper in a team" text, so it arrives here; it is answered as the librarian
-        if LIBRARIAN_FRAGMENT in SW.system_text(call):
-            return librarian(call)
-        return steps.pop(0)(call) if steps else reply("done")
-
     model = ScriptedModel(
         actor=[reply(calls=[cell(f"print(tools.delegate({TASK!r}))\n")]), reply(calls=[cell(WAIT)]), reply("Done.")],
-        helper=Always(helper_kind),
+        helper=[h_first, h_second, Always(reply("done"))],  # a teammate's librarian session is routed as librarian
         librarian=Always(librarian),
     )
     await s.request(request, model)

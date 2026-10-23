@@ -172,6 +172,27 @@ class System:
         repo = self.stores().memory
         return repo.run("ls-tree", "--name-only", "main", "--", rel).strip() == rel
 
+    # ── seeding (a fixture's own writes, named as such: used only where the harness writes nothing to test against) ──
+
+    def seed_served_row(self, episode_id: str, item: str) -> None:
+        """Write an ``item_use`` row saying *item* was only served (shown) in *episode_id*, never called: what a build
+        that records served items writes. Used to prove a test would see served items counted as used."""
+        db = self.stores().evidence.db
+        db.execute("INSERT OR IGNORE INTO item_use(item, episode_id) VALUES (?, ?)", (item, episode_id))
+        db.execute("UPDATE item_use SET shown = 1 WHERE item = ? AND episode_id = ?", (item, episode_id))
+        db.commit()
+
+    def seed_library(self, files: dict[str, str], message: str = "seed") -> None:
+        """Commit *files* onto the library's ``main`` (a seeded library: content the harness would refuse to land)."""
+        repo = self.stores().memory
+        base = repo.head()
+        with repo.temp_checkout() as wt:
+            for rel, text in files.items():
+                (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+                (wt / rel).write_text(text)
+            sha = repo.commit_all(wt, message, {"Seed": "system-test"})
+        repo.fast_forward("main", sha, expected_old=base)
+
     def item_evidence(self) -> dict:
         """The served evidence of the last request's copy, by item id (``.memory/item_evidence.json``'s ``items``)."""
         p = self.copy() / ".memory" / "item_evidence.json"

@@ -25,3 +25,11 @@ def system(core_world, monkeypatch, mode):  # noqa: F811
         yield s
     finally:
         s.close()
+
+
+@pytest.fixture(scope="session")
+def rendered() -> dict[str, str]:
+    """Every static text an agent is shown, per role and mode (:func:`tests.system.render.render_all`)."""
+    from tests.system.render import render_all
+
+    return render_all()

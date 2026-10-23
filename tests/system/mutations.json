@@ -178,5 +178,66 @@
   "tests": [
    "tests/system/test_s02b_relations_and_history_bound.py::test_an_item_only_served_relates_nothing[on]"
   ]
+ },
+ {
+  "id": "M19",
+  "what": "every use row counts as used: an item only served enters the group's library items",
+  "file": "unify/memory/capture_groups.py",
+  "old": "        used_sql = (\"(\" + \" + \".join(f\"COALESCE({c}, 0)\" for c in cols) + \") > 0\") if cols else \"0\"\n",
+  "new": "        used_sql = \"1\"  # MUTATION M18\n",
+  "tests": [
+   "tests/system/test_s02b_relations_and_history_bound.py::test_the_pass_is_shown_only_the_items_its_captures_used_or_are_linked_to[on]"
+  ]
+ },
+ {
+  "id": "M20",
+  "what": "the judge is shown up to 60 earlier captures",
+  "file": "unify/memory/kinship.py",
+  "old": "CANDIDATES = 40\n",
+  "new": "CANDIDATES = 60  # MUTATION M20\n",
+  "tests": [
+   "tests/system/test_s10_spend.py::test_the_judge_is_shown_at_most_forty_candidates_and_bounded_code[on]"
+  ]
+ },
+ {
+  "id": "M21",
+  "what": "the scripted model routes by the helper phrase before the session's role (the old misrouting)",
+  "file": "tests/scripted_model.py",
+  "old": "    if LIBRARIAN_FRAGMENT in system:\n        return \"librarian\"\n    if users and HELPER_FRAGMENT in users[0]:\n        return \"helper\"\n",
+  "new": "    if users and HELPER_FRAGMENT in users[0]:\n        return \"helper\"\n    if LIBRARIAN_FRAGMENT in system:  # MUTATION M21\n        return \"librarian\"\n",
+  "tests": [
+   "tests/system/test_s00_no_real_model.py::test_a_teammates_librarian_session_is_routed_as_the_librarian"
+  ]
+ },
+ {
+  "id": "M22",
+  "what": "a new environment knob that switches memory, unreviewed",
+  "file": "unify/memory/integration/request.py",
+  "old": "LOCK_TIMEOUT_S = 60.0\n",
+  "new": "LOCK_TIMEOUT_S = 60.0\n_MUTANT = __import__(\"os\").environ.get(\"UNIFY_MEMORY_SHADOW_SWITCH\")  # MUTATION M22\n",
+  "tests": [
+   "tests/system/test_j9_knobs.py::test_every_knob_is_reviewed_and_every_row_is_named"
+  ]
+ },
+ {
+  "id": "M23",
+  "what": "the pass limits table states 12 reader calls per turn while 16 are enforced",
+  "file": "unify/memory/agent_profiles.py",
+  "old": "{\"limit\": \"reader calls per model turn\", \"value\": 16, \"unit\": \"calls\"},",
+  "new": "{\"limit\": \"reader calls per model turn\", \"value\": 12, \"unit\": \"calls\"},  # MUTATION M23",
+  "tests": [
+   "tests/system/test_j3_constants.py::test_the_pass_limits_table_is_the_enforced_constants",
+   "tests/system/test_j3_constants.py::test_each_stated_number_is_its_constant[0]"
+  ]
+ },
+ {
+  "id": "M24",
+  "what": "an unreviewed change to a sentence the librarian is shown",
+  "file": "unify/memory/librarian.py",
+  "old": "Rank by fit to the question",
+  "new": "Rank by fit to the request",
+  "tests": [
+   "tests/system/test_j1_claims.py::test_every_in_scope_sentence_is_reviewed"
+  ]
  }
 ]

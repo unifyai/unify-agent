@@ -1,0 +1,48 @@
+# The knob census (guard J9): every environment variable or setting unify/ names (knob_scan.scan), reviewed.
+# class: memory-switch (only UNIFY_MEMORY and UNIFY_MEMORY_CAP_USD may be) | deployment | internal | test-only | not-a-knob
+name	class	note
+HOME	internal	process environment
+LD_PRELOAD	internal	process environment (sandbox)
+MEMORY_BOX_OPEN_LOG	internal	box plumbing set by the harness
+MEMORY_K	not-a-knob	a Python name in loop_stop.__all__, not an environment variable
+MEMORY_PIN	internal	box plumbing (audit H3-1: pin.py is unreachable)
+MEMORY_PYTHON	internal	the memory box interpreter; audit H4: undocumented in settings and CONFIG
+PATH	internal	process environment
+PYTEST_CURRENT_TEST	test-only	audit H3-1: memory/inputs.py, unreachable
+PYTHONPATH	internal	process environment
+TOOLS_CHANNEL	internal	box plumbing set by the harness
+UNIFY_CELL_ENV_ALLOW	deployment	environment names a cell may see
+UNIFY_CELL_LLM_MODELS	deployment	models a cell may call
+UNIFY_EMBED_TOKEN	deployment	the embedding route token (name only)
+UNIFY_EMBED_TOKEN_FD	deployment	the embedding route token descriptor
+UNIFY_EMBED_URL	deployment	audit H4: changes memory's behaviour in practice: search ranks by meaning or lists unranked
+UNIFY_ENV_NAMESPACES	deployment	world namespaces
+UNIFY_HOME	deployment	path
+UNIFY_LOCAL_EMBEDDINGS	deployment	audit H4: changes memory's behaviour in practice: search ranks by meaning or lists unranked
+UNIFY_LOCAL_ROOT	deployment	path
+UNIFY_LOG_DIR	deployment	path
+UNIFY_MAX_OUTPUT_TOKENS	deployment	actor limit
+UNIFY_MAX_TOOL_LOOP_STEPS	deployment	actor limit
+UNIFY_MEMORY	memory-switch	off / on / in_episode
+UNIFY_MEMORY_CAP_USD	memory-switch	memory's spend cap (decimal string)
+UNIFY_MEMORY_LIBRARY_FORK_BASE_URL	deployment	audit H4: changes memory's behaviour in practice: without the fork lane no fork runs and nothing is captured
+UNIFY_MEMORY_LIBRARY_FORK_TOKEN	deployment	the fork lane token (name only; never logged)
+UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD	deployment	the fork lane token descriptor
+UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL	deployment	audit H4: changes memory's behaviour in practice: without the helper lane the writer has no delegate and another brief
+UNIFY_MEMORY_LIBRARY_HELPER_TOKEN	deployment	the helper lane token (name only)
+UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD	deployment	the helper lane token descriptor
+UNIFY_MEMORY_WRITER_BASE_URL	deployment	the writer lane route
+UNIFY_MEMORY_WRITER_JOURNAL	deployment	audit H4: changes memory's behaviour in practice: cost settlement from the lane journal
+UNIFY_MEMORY_WRITER_MODEL	deployment	audit H4: changes memory's behaviour in practice: the writer's, its helpers' and the judge's model
+UNIFY_MEMORY_WRITER_PRICES_USD_PER_MILLION	deployment	audit H4: changes memory's behaviour in practice: prices set the worst case that decides when a pass may start
+UNIFY_MEMORY_WRITER_TOKEN	deployment	the writer lane token (name only)
+UNIFY_MEMORY_WRITER_TOKEN_FD	deployment	the writer lane token descriptor
+UNIFY_MODEL	deployment	the actor model (the librarian runs on it too)
+UNIFY_REASONING_EFFORT	deployment	the actor effort (the librarian runs on it too)
+UNIFY_SANDBOX_MASKED	internal	the sandbox mask notice name
+UNIFY_WORKSPACE_NETWORK	deployment	workspace network
+UNIFY_WORKSPACE_PROXY_PORT	deployment	workspace proxy
+UNILLM_LLM_GATEWAY_KEY	internal	a credential name the writer service strips from its children (never read for its value)
+UNILLM_LOG_DIR	deployment	path
+UNILLM_OTEL_LOG_DIR	deployment	path
+XDG_CACHE_HOME	internal	process environment
