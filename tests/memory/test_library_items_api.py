@@ -262,11 +262,11 @@ def test_each_call_checks_its_argument_types_before_any_work(tmp_path):
     by_number, by_kind, by_topic, missing, fits, page = (text for _, text, _ in got)
     assert by_number == (
         "memory.get(3): ref is 3 (int).\n"
-        "Expected ref: str | Item | Callable, e.g. memory.get('notes/reports/summary.md')."
+        "Expected ref: str | Item | Callable, e.g. memory.get('notes/<topic>/<name>.md')."
     )
     assert by_kind == (
         "memory.items(kind='notes'): kind is 'notes' (str).\n"
-        "Expected kind: 'function' | 'note' | None, e.g. memory.items('notes/reports', kind='note')."
+        "Expected kind: 'function' | 'note' | None, e.g. memory.items('notes/<topic>', kind='note')."
     )
     assert by_topic.startswith("memory.items(3): topic is 3 (int).\nExpected topic: str | None, e.g. memory.items(")
     assert missing.startswith("memory.get(): missing a required argument: 'ref'.")
@@ -608,7 +608,13 @@ def test_every_public_call_is_checked_and_documented():
         doc = fn.__doc__ or ""
         for header in ("Args:", "Returns:", "Raises:", "Example:"):
             assert f"\n    {header}\n" in doc or f"\n        {header}\n" in doc, (name, header)
-    assert set(library_helper.__all__) >= {"get", "items", "Item", "Items", "Fit", "NotFound", "ArgumentError"}
+    assert set(library_helper.__all__) >= {"get", "items", "Item", "Items", "Fit"}
+    # the errors are names of the package, named in its documentation, but out of __all__ so that help(memory) does
+    # not print each one's inherited exception machinery
+    errors = {"Ambiguous", "ArgumentError", "ContractError", "NotFound", "WrongCall"}
+    assert not errors & set(library_helper.__all__)
+    assert all(isinstance(getattr(library_helper, n), type) for n in errors)
+    assert all(f"memory.{n}" in library_helper.__doc__ for n in errors)
     assert not {"index", "show", "find", "match", "run"} & set(library_helper.__all__)
     assert not [n for n in ("index", "show", "find", "match", "run") if hasattr(library_helper, n)]
     assert {"ask", "get", "items"} <= layout.RESERVED_PACKAGES

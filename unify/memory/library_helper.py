@@ -9,44 +9,48 @@
 
 An :class:`Item` is a frozen record of one function, note or recorded procedure: ``id``, ``kind``, ``summary``,
 ``applies``, ``evidence``, ``status``, ``example``, ``text``, ``links``, ``history`` (and ``reason``, from ``ask``).
-``print(item)`` shows its card; ``item.fits(inputs)`` is its own applicability check (a :class:`Fit`); a function
+``print(item)`` shows its card, a bounded summary with no code; ``item.text`` holds a function's source, a recorded
+procedure's code or a note's Rule. ``item.fits(inputs)`` is its own applicability check (a :class:`Fit`); a function
 item is called directly, ``item(*args)``: the call is tracked, and what the function raises reaches the caller
-unchanged; calling a note raises an error that says what to do instead. A procedure with a recipe (one function
-that applies it to a request where one call can do the job) shows on its card the one call that applies it to the
-current request, ``memory.get(<recipe id>)(memory.request())``; nothing runs it until that call is made. A recorded
-procedure that acts through its episode's tools (``run(state, env)``) is not run by any call: its card shows its code
-and says how its work is done from here. Every call checks its arguments' types first, and every error of the
-package's own names the call as written, what was expected with an example call, and the nearest valid targets or
-the right call. The whole typed contract is ``memory/__init__.pyi`` beside this file; ``help(memory)`` shows the
-same calls and types. Library functions also import as ordinary modules: ``from memory.text.dates import
-parse_date``.
+unchanged; calling a note raises an error that says what to do instead. A procedure with a recipe (one function that
+applies it to a request where one call can do the job) shows on its card the one call that applies it to the current
+request; nothing runs it until that call is made. A recorded procedure that acts through its episode's tools
+(``run(state, env)``) is not run by any call: its card says how its work is done from here. Library functions also
+import as ordinary modules: ``from memory.<package>.<module> import <name>``.
 
-The harness generates this file as ``memory/__init__.py`` in every copy of the library; edits are discarded. It
-imports only the standard library and its sibling ``memory/_contract.py``, and reads only files beside the package:
-``INDEX.md``, ``links.json`` and the harness's data under ``.memory/``.
-
-Imported as the package ``memory``, it also wraps each public function of every library module as that module is
-imported (:class:`_CallFinder`), so that each call raises the audit event ``memory.call`` with the item id, a short
-digest of the arguments (never their values) and the outcome: ``ok``, ``refused`` (a ``MemoryInputError`` left it)
-or ``error`` (any other exception). The wrapper returns what the function returns and re-raises what it raises,
-unchanged; whatever audit hooks the process has decide what is kept. The package's own calls raise
-``memory.helper_call`` the same way: ``memory:get``, ``memory:items`` and ``memory:ask`` (lookups and questions), a
-function item's call as ``memory:run`` and ``Item.fits`` as ``memory:match``.
-
-``Item.fits`` reads what the stored procedure was saved against (a landed procedure's row in ``.memory/find.json``'s
-``procedures``, a recorded procedure's files under ``.memory/captures/``) and compares its structure with what was
-passed; it runs nothing (no reader and no ``applies`` runs to recognise or rank a procedure). It raises
-``memory.match_result`` with the row it found. A tracked call (calling a function item) also raises
-``memory.run_result`` with its target and outcome. Neither event carries a value or a result. A call that raised also
-raises ``memory.call_failed`` with the id, the exception's type, the first line of its message and, for the package's
-own calls, the arguments' shape (types and sizes, never values).
-
-With the harness's evidence beside the package (``.memory/item_evidence.json``), each card also states what the
-item's status rests on, its recorded failures, its later uses and its stated conditions; ``Item.fits`` gives a
-:class:`FitEvidence` (structurally similar or not, with the item's recorded failures: evidence, never a claim that it
-does what is needed); and a library item the writer retired or superseded (``.memory/withdrawn_items.json``) is
-withdrawn as a capture is: no listing shows it, and asking for it by its id gives what replaced it.
+Every call checks its arguments' types first. The package's errors, ``memory.NotFound``, ``memory.Ambiguous``,
+``memory.WrongCall`` and ``memory.ArgumentError`` (each a ``memory.ContractError``), name the call as written, what was
+expected with an example call, and the nearest valid targets or the right call. The whole typed contract is
+``memory/__init__.pyi`` beside this file.
 """
+
+# How the package works (for the harness's readers; not part of what help(memory) shows):
+#
+# The harness generates this file as ``memory/__init__.py`` in every copy of the library; edits are discarded. It
+# imports only the standard library and its sibling ``memory/_contract.py``, and reads only files beside the package:
+# ``INDEX.md``, ``links.json`` and the harness's data under ``.memory/``.
+#
+# Imported as the package ``memory``, it also wraps each public function of every library module as that module is
+# imported (:class:`_CallFinder`), so that each call raises the audit event ``memory.call`` with the item id, a short
+# digest of the arguments (never their values) and the outcome: ``ok``, ``refused`` (a ``MemoryInputError`` left it)
+# or ``error`` (any other exception). The wrapper returns what the function returns and re-raises what it raises,
+# unchanged; whatever audit hooks the process has decide what is kept. The package's own calls raise
+# ``memory.helper_call`` the same way: ``memory:get``, ``memory:items`` and ``memory:ask`` (lookups and questions), a
+# function item's call as ``memory:run`` and ``Item.fits`` as ``memory:match``.
+#
+# ``Item.fits`` reads what the stored procedure was saved against (a landed procedure's row in ``.memory/find.json``'s
+# ``procedures``, a recorded procedure's files under ``.memory/captures/``) and compares its structure with what was
+# passed; it runs nothing (no reader and no ``applies`` runs to recognise or rank a procedure). It raises
+# ``memory.match_result`` with the row it found. A tracked call (calling a function item) also raises
+# ``memory.run_result`` with its target and outcome. Neither event carries a value or a result. A call that raised
+# also raises ``memory.call_failed`` with the id, the exception's type, the first line of its message and, for the
+# package's own calls, the arguments' shape (types and sizes, never values).
+#
+# With the harness's evidence beside the package (``.memory/item_evidence.json``), each card also states what the
+# item's status rests on, its recorded failures, its later uses and its stated conditions; ``Item.fits`` gives a
+# :class:`FitEvidence` (structurally similar or not, with the item's recorded failures: evidence, never a claim that
+# it does what is needed); and a library item the writer retired or superseded (``.memory/withdrawn_items.json``) is
+# withdrawn as a capture is: no listing shows it, and asking for it by its id gives what replaced it.
 
 from __future__ import annotations
 
@@ -158,15 +162,13 @@ def item_count(body: str) -> int:
 
 
 #: The contract: what ``help(memory)`` and ``from memory import *`` show.
+#: The errors (``Ambiguous``, ``ArgumentError``, ``ContractError``, ``NotFound``, ``WrongCall``) stay names of the
+#: package, ``memory.NotFound`` and the rest, but are left out here: the module's documentation names them in one line
+#: rather than printing each one's inherited exception machinery, so ``help(memory)`` stays short.
 __all__ = [
-    "Ambiguous",
-    "ArgumentError",
-    "ContractError",
     "Fit",
     "Item",
     "Items",
-    "NotFound",
-    "WrongCall",
     "get",
     "items",
     "request",
@@ -1247,7 +1249,7 @@ SANDBOX_LIBRARY = "/memory-library"
 _SUMMARY_CHARS = 100
 _ID_COLUMN = 60
 _GET_EXPECTED = "an item id, a function name, or a note slug"
-_GET_EXAMPLE = "memory.get('notes/reports/summary.md')"
+_GET_EXAMPLE = "memory.get('notes/<topic>/<name>.md')"
 _TOPIC_EXPECTED = "a package or a notes topic"
 _MODULE_PATH = re.compile(r"memory/([a-z][a-z0-9_]*)/([a-z][a-z0-9_]*)\.py")
 #: What reading a malformed generated file can raise inside a call (:func:`_guard`).
@@ -1670,7 +1672,7 @@ class Item:
             NotFound: the library copy cannot be read.
 
         Example:
-            memory.get('memory.text.dates:parse_date').fits({'date': '2026-10-09'})
+            memory.get('memory.<package>.<module>:<name>').fits({'date': '2026-10-09'})
         """
         return _FIT(self.id, inputs)
 
@@ -1699,7 +1701,7 @@ class Item:
                 episode's tools, which no call runs.
 
         Example:
-            memory.get('memory.text.dates:parse_date')('2026-10-09')
+            memory.get('memory.<package>.<module>:<name>')('2026-10-09')
 
         With no arguments, a procedure that takes the request (a captured procedure of the value or state form, or a
         procedure with a recipe) runs on the current request, as ``memory.request()`` gives it: one call re-runs the
@@ -2120,14 +2122,14 @@ class _Catalog:
             self.call,
             f"no topic named {topic!r}.",
             expected=_TOPIC_EXPECTED,
-            example=f"memory.items({(near or topics or ['notes/reports'])[0]!r})",
+            example=f"memory.items({(near or topics or ['notes/<topic>'])[0]!r})",
             nearest=near,
             hint="Browse every topic with memory.items().",
         )
 
     def _example_id(self) -> str:
         listed = self.listed()
-        return listed[0] if listed else "notes/reports/summary.md"
+        return listed[0] if listed else "notes/<topic>/<name>.md"
 
     # -- building items
 
@@ -2335,7 +2337,7 @@ def get(ref: str | Item | Callable) -> Item:
         WrongCall: the name is a topic, not an item; the error gives the call that lists it.
 
     Example:
-        memory.get('notes/reports/summary.md')
+        memory.get('notes/<topic>/<name>.md')
     """
     call = call_text("memory.get", (ref,))
     return _guard(call, _get, ref, call)
@@ -2350,9 +2352,9 @@ def items(topic: str | None = None, kind: Kind | None = None) -> Items:
     """Browse the library: every item (but the retired), or one topic's, of one kind or both.
 
     Args:
-        topic: a package (``'reports'``, ``'memory.reports'``), a module (``'reports.totals'``), a notes topic
-            (``'notes/reports'``; a bare ``'reports'`` also takes the notes topic of that name) or ``'captures'``;
-            None for the whole library.
+        topic: a package (``'<package>'``, ``'memory.<package>'``), a module (``'<package>.<module>'``), a notes
+            topic (``'notes/<topic>'``; a bare ``'<topic>'`` also takes the notes topic of that name) or
+            ``'captures'``; None for the whole library.
         kind: ``'function'`` or ``'note'``; None for both.
 
     Returns:
@@ -2365,7 +2367,7 @@ def items(topic: str | None = None, kind: Kind | None = None) -> Items:
         WrongCall: the name is an item's, not a topic's; the error gives the call that opens it.
 
     Example:
-        memory.items('notes/reports', kind='note')
+        memory.items('notes/<topic>', kind='note')
     """
     call = call_text(
         "memory.items",

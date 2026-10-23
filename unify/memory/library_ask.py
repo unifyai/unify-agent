@@ -70,7 +70,8 @@ def _catalogue_rows() -> int:
     rows = data.get("procedures") if isinstance(data, dict) else None
     return sum(1 for r in rows if isinstance(r, dict)) if isinstance(rows, list) else 0
 
-__all__ = [*__all__, "ask", "AskSchemaError"]
+# AskSchemaError stays a name of the package (memory.AskSchemaError) but, as the other errors, out of __all__
+__all__ = [*__all__, "ask"]
 #: The reply's fields with a schema (the host's ``librarian.SCHEMA_VALUE`` / ``SCHEMA_ERROR``).
 _SCHEMA_VALUE, _SCHEMA_ERROR = "value", "schema_error"
 #: How deep a schema type may nest (a bound on a self-referring dataclass).
