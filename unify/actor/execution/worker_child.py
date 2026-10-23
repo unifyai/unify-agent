@@ -460,7 +460,8 @@ class _LazyModule:
     """A module name bound in the cells' globals that imports the module on its first attribute access.
 
     Nothing of the module runs when the worker starts: its code runs inside the cell that first uses it, under
-    that cell's timeout, as an ``import`` line in the cell would. Then the name in the namespace is rebound to
+    that cell's timeout, as an ``import`` line in the cell would: before the cell's own code when the cell's code names
+    it (``Worker.load_named``), else at its first attribute access. Then the name in the namespace is rebound to
     the real module, when it still holds this object. A failed import raises :class:`ImportError` naming the
     module, chained to the cause, as the cell's error (an interrupt or an exit passes unchanged); the next
     access tries again. ``import <name>`` in a cell goes through the normal import system as before.
@@ -1190,6 +1191,23 @@ class Worker:
             assert self.loop is not None
             self._running = (msg.get("id"), self.loop.create_task(self.run_cell(msg)))
 
+    def load_named(self, source: str) -> None:
+        """Import each lazy module whose name the cell's code uses (:func:`_cell_names`) before the cell runs, inside
+        the cell: under its clock and its audit, as the first use would. The cell then sees the module itself wherever
+        it uses the name, so ``help(memory)``, ``memory.__doc__`` or ``type(memory)`` in the first cell that names it
+        describe the module, never the stand-in. A failed import leaves the name lazy: the cell's own use of it
+        raises, as before."""
+        if not self._lazy:
+            return
+        names = _cell_names(source)
+        for name in self._lazy:
+            held = self.ns.get(name)
+            if name in names and isinstance(held, _LazyModule):
+                try:
+                    held._load()
+                except ImportError:
+                    pass  # the cell's own use raises it, chained to the cause
+
     async def run_cell(self, msg: dict) -> None:
         cid = msg.get("id")
         self._describe_cache.clear()
@@ -1213,6 +1231,7 @@ class Worker:
             try:
                 if self.audit is not None:
                     self._audit("begin")
+                self.load_named(msg["source"])
                 exec(compile(msg["source"], "<string>", "exec"), ns)
                 result = await ns["__exec_wrapper"]()
             finally:
@@ -1245,6 +1264,39 @@ class Worker:
                 **({"audit": self._audit_drain()} if self.audit is not None else {}),
             },
         )
+
+
+#: Where the host's cell wrapper (``unify.common.box_interpreter.wrap_cell``) puts the cell's own code: the string it
+#: assigns to this name inside ``__exec_wrapper``, which it compiles and runs at the namespace's top level.
+CELL_CODE_NAME = "__s"
+
+
+def _cell_names(source: str) -> set:
+    """The names a cell's code uses: the code the wrapper carries (:data:`CELL_CODE_NAME`; else *source* itself),
+    parsed, never run, for every name it reads or binds. Code that does not parse names nothing."""
+    import ast
+
+    flags = ast.PyCF_ONLY_AST | ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+    try:
+        tree = compile(source, "<cell>", "exec", flags, dont_inherit=True)
+        code = next(
+            (
+                node.value.value
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == CELL_CODE_NAME
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ),
+            None,
+        )
+        if code is not None:
+            tree = compile(code, "<cell>", "exec", flags, dont_inherit=True)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return set()
+    return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
 
 
 def _harness_files() -> frozenset[str]:

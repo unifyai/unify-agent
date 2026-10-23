@@ -92,8 +92,9 @@ async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted
                 "'parse_date' in shown, parse_date('2026-10-09')]",
             ),
         )
-        assert out[0].startswith("<module 'memory'") and "first use" in out[0]
-        # the name now holds the real package, and ``import memory`` is the same module
+        # the first cell that names it imports it before its first line runs: the name holds the real package from
+        # the start, and ``import memory`` is the same module
+        assert out[0].startswith("<module 'memory' from ") and "first use" not in out[0], out[0]
         assert list(out)[1:] == ["module", True, True, "2026-10-09"]
         assert _ok(await _run(ex, run, "import memory as m\nm is memory")) is True
         # a library function that raises, and a helper that raises: both counted

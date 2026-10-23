@@ -142,8 +142,8 @@ def test_memory_and_help_are_bound_in_the_writers_cells_with_no_import(tmp_path,
     writer, model = _writer(tmp_path, [_cell("c1", BOUND), *_end()])
     _run(writer)
     out = model.outputs["c1"]
-    # lazy until the first use, which imports the generated package inside the cell
-    assert "TYPE _LazyModule" in out and "INDEX True" in out, out
+    # imported by the first cell that names it, inside that cell, before its first line runs
+    assert "TYPE module" in out and "INDEX True" in out, out
     assert "number of items" in out and "Error" not in out, out
 
 
@@ -151,7 +151,7 @@ def test_memory_and_help_are_bound_in_the_writers_cells_with_no_import(tmp_path,
 def test_memory_and_help_are_bound_in_a_helpers_cells_with_no_import(tmp_path, monkeypatch):
     library = "def index():\n    return 'helper index\\n'\n"
     out = _helper(tmp_path, [("c1", BOUND)], library=library)["c1"]
-    assert "TYPE _LazyModule" in out and "INDEX True" in out, out
+    assert "TYPE module" in out and "INDEX True" in out, out
     assert "number of items" in out and "Error" not in out, out
 
 

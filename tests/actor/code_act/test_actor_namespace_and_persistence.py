@@ -230,16 +230,23 @@ async def test_in_library_mode_memory_is_bound_with_no_import_even_when_empty(wo
     assert (paths.checkout / "memory" / "__init__.py").is_file()
     session = _session(world["state"], agent)
     try:
+        # bound before any cell, and nothing of the library ran: a cell that does not name it leaves it unimported
         first = _out(
             await session.run_cell(
+                "import sys\n"
                 "y = 41\n"
-                "print('LAZY', 'imported on first use' in repr(memory))\n"
+                "print('BOUND', 'memory' in dir(), 'IMPORTED', 'memory' in sys.modules)\n",
+            ),
+        )
+        assert "BOUND True IMPORTED False" in first, first
+        # the first cell that names it imports it before its own code runs, so even its first line sees the module
+        second = _out(
+            await session.run_cell(
+                "print('NEXT', y + 1, type(memory).__name__)\n"
                 "print('EMPTY', 'The library is empty.' in memory.index())\n",
             ),
         )
-        assert "LAZY True" in first and "EMPTY True" in first, first
-        second = _out(await session.run_cell("print('NEXT', y + 1, type(memory).__name__)"))
-        assert "NEXT 42 module" in second, second
+        assert "NEXT 42 module" in second and "EMPTY True" in second, second
         names = _names(session.opening())
         assert {"tools", "memory"} <= names, names
     finally:

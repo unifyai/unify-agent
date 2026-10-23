@@ -135,7 +135,9 @@ def wrap_cell(code: str, filename: str, *, last_value: bool = False) -> str:
     the code itself still runs with the namespace's own builtins. A top-level ``await`` (and ``async for``,
     ``async with``) is allowed, as in a notebook: such code compiles to a coroutine, which the wrapper awaits; code
     without one runs as before, and a value that is itself a coroutine is returned, not awaited. *last_value*: a final
-    expression statement is evaluated apart and its value is the cell's result (the actor's cells)."""
+    expression statement is evaluated apart and its value is the cell's result (the actor's cells). The code is the
+    string the wrapper assigns to ``__s`` (``worker_child.CELL_CODE_NAME``), where the worker child reads which names it
+    uses before it runs (``Worker.load_named``)."""
     lines = [
         "async def __exec_wrapper():",
         "    __b = __import__('builtins')",

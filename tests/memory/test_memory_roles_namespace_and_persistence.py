@@ -72,21 +72,19 @@ CHECK = (*PREBOUND, *MUST_NOT)
 
 
 def probe(names) -> str:
-    """A first cell, before any import line: ``x = 41``, then which of *names* are bound (a bare name read in a
-    ``try``, so it works with any builtins the box keeps; a lazy ``memory`` is not imported by it)."""
-    lines = ["x = 41", "_bound = []"]
-    for n in names:
-        lines += ["try:", f"    {n}", f"    _bound.append({n!r})", "except NameError:", "    pass"]
-    lines.append("print('BOUND', sorted(_bound))")
-    return "\n".join(lines) + "\n"
+    """A first cell, before any import line: ``x = 41``, then which of *names* are bound, in the namespace or its
+    builtins, read from their listings and never by the name itself: a cell that names ``memory`` imports it before
+    it runs."""
+    return (
+        "x = 41\n"
+        "_b = __builtins__\n"
+        "_here = set(dir()) | set(_b if isinstance(_b, dict) else dir(_b))\n"
+        f"_bound = [n for n in {list(names)!r} if n in _here]\n"
+        "print('BOUND', sorted(_bound))\n"
+    )
 
-#: the first cell of every role: before any import line, which names are bound, whether `memory` is still lazy
+#: the first cell of every role: before any import line, which names are bound, and that no library code ran yet
 PROBE = probe(CHECK) + (
-    "try:\n"
-    "    _lazy = 'imported on first use' in repr(memory)\n"
-    "except NameError:\n"
-    "    _lazy = False\n"
-    "print('LAZY', _lazy)\n"
     "import sys\n"
     "print('LOADED', 'memory' in sys.modules)\n"
 )
@@ -139,8 +137,7 @@ def _assert_first_request(messages: list[dict], role: str) -> None:
 
 def _assert_probe(output: str, role: str) -> None:
     assert sorted(_bound(output)) == sorted(PREBOUND), (role, output)
-    assert "LAZY True" in output, (role, output)
-    assert "LOADED False" in output, (role, output)  # no library code ran before a cell used it
+    assert "LOADED False" in output, (role, output)  # no library code ran before a cell named it
 
 
 def _assert_next(output: str, role: str) -> None:
@@ -318,13 +315,14 @@ SWEEP_WRITE = (
     "open('/memory/memory/sweep/__init__.py', 'w').write('')\n"
     "open('/memory/memory/sweep/value.py', 'w').write('def f():\\n    return 1\\n')\n"
     "import memory.sweep.value as early\n"
+    "before = memory\n"
     "print('FIRST', early.f(), memory.sweep.value.f())\n"
 )
 SWEEP_EDIT = "open('/memory/memory/sweep/value.py', 'w').write('def f():\\n    return 22\\n')\nprint('EDITED')\n"
 SWEEP_AGAIN = (
-    "lazy = 'imported on first use' in repr(memory)\n"
+    "fresh = memory is not before\n"
     "import importlib\n"
-    "print('AGAIN', importlib.import_module('memory.sweep.value').f(), early.f(), lazy)\n"
+    "print('AGAIN', importlib.import_module('memory.sweep.value').f(), early.f(), fresh)\n"
     "print('ATTR', memory.sweep.value.f())\n"
 )
 
@@ -335,7 +333,8 @@ def test_a_library_module_edited_after_its_import_is_imported_again_with_the_new
     _, _, out = _pass(tmp_path, [SWEEP_WRITE, SWEEP_EDIT, SWEEP_AGAIN, "print('LAST')"])
     assert "FIRST 1 1" in out["c1"], out["c1"]
     assert "EDITED" in out["c2"], out["c2"]
-    # the new code on a new import; the name bound earlier keeps its code; `memory` is lazy again
+    # the new code on a new import; the name bound earlier keeps its code; `memory` was dropped and is imported
+    # again by the cell that names it
     assert "AGAIN 22 1 True" in out["c3"], out["c3"]
     assert "ATTR 22" in out["c3"], out["c3"]
 
@@ -346,7 +345,7 @@ def test_the_first_use_of_memory_is_in_that_cell_s_open_log(tmp_path, monkeypatc
     writer, _, out = _pass(
         tmp_path,
         [
-            "x = 1\nprint('NO USE', 'imported on first use' in repr(memory))",
+            "x = 1\nimport sys\nprint('NO USE', 'memory' not in sys.modules)",
             "print('USE', isinstance(memory.index(), str))",
             "print('LAST')",
         ],
