@@ -229,6 +229,8 @@ def items_data(
             "use": use_totals(rec) if rec else None,
             # what it rests on: the episodes it comes from and its confirmed uses (rev 2.1, every card shows it)
             "support": support(rec),
+            # the episodes it comes from, by id: the recorded procedures of those episodes are the ones it generalises
+            "episodes": _provenance_episodes(rec),
             "history": h[:HISTORY_SHOW],
             "history_more": max(0, len(h) - HISTORY_SHOW),
             # its evidence label (what its effects, tests and uses show; only when recorded)
@@ -810,6 +812,13 @@ def catalogue_text(
                     lines.append(f"Broke: {line}\n")
         out.append("".join(lines))
     return "".join(out)
+
+
+def _provenance_episodes(rec: Mapping | None) -> list[str]:
+    """An item's provenance episodes (its record's ``provenance.episodes``), in order; [] when none are recorded."""
+    prov = rec.get("provenance") if isinstance(rec, Mapping) else None
+    eps = prov.get("episodes") if isinstance(prov, Mapping) else None
+    return [e for e in eps if isinstance(e, str)] if isinstance(eps, list) else []
 
 
 def _capture_reader(rec: Mapping, source: Any) -> str:

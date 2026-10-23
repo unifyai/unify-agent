@@ -135,3 +135,21 @@ def test_the_catalogue_states_each_forms_real_reader(tmp_path):
     assert "reader: the request's state" in card("state")
     assert "acts through the episode's tools" in card("env") and "reader read_input" not in card("env")
     assert "reader read_input" in card("value")
+
+
+def test_a_writer_item_and_the_captures_it_generalises_link_both_ways(tmp_path):
+    from unify.memory.library_helper import ITEMS_FILE
+
+    root, ids = _copy(tmp_path)
+    data = json.loads((root / ITEMS_FILE).read_text())
+    item = sorted(i for i, r in data["items"].items() if r.get("kind") == "function")[0]
+    data["items"][item]["episodes"] = ["ep-1"]  # the episode every fixture capture comes from
+    (root / ITEMS_FILE).write_text(json.dumps(data))
+    got = _cell(
+        root,
+        f"print(json.dumps({{'item': str(memory.get({item!r})), "
+        f"'cap': str(memory.get('capture:{ids['state']}'))}}))\n",
+    )
+    line = next(x for x in got["item"].splitlines() if x.startswith("Generalises: "))
+    assert f"capture:{ids['state']}" in line and f"capture:{ids['value']}" in line
+    assert f"Generalised by: {item}" in got["cap"]

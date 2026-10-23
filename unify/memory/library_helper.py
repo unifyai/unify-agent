@@ -2346,6 +2346,23 @@ class _Catalog:
 
     # -- building items
 
+    def generalises(self, iid: str) -> list[str]:
+        """The recorded procedures item *iid* generalises: those whose episodes are among the episodes it comes
+        from (its row's ``episodes``)."""
+        mine = set((self.rows.get(iid) or {}).get("episodes") or ())
+        out = []
+        for cid in self.captures:
+            rec = _read_json(os.path.join(_capture_dir(cid[len(CAPTURE_PREFIX) :]), "record.json"))
+            eps = rec.get("episodes") if isinstance(rec, dict) else None
+            if mine and isinstance(eps, list) and mine & {e for e in eps if isinstance(e, str)}:
+                out.append(cid)
+        return out
+
+    def generalised_by(self, cid: str, rec: dict) -> list[str]:
+        """The library items that generalise recorded procedure *cid*: those that come from one of its episodes."""
+        eps = {e for e in rec.get("episodes") or () if isinstance(e, str)}
+        return [i for i, row in self.rows.items() if eps & set(row.get("episodes") or ())] if eps else []
+
     def item(self, iid: str, reason: str = "") -> Item:
         """The :class:`Item` of a known id, with its card."""
         if iid.startswith(CAPTURE_PREFIX):
@@ -2462,6 +2479,7 @@ class _Catalog:
             "",
             "Links to: " + (", ".join(self.linked(wanted, "links_to")) or "none"),
             "Linked from: " + (", ".join(self.linked(wanted, "linked_from")) or "none"),
+            "Generalises: " + (", ".join(self.generalises(wanted)) or "no recorded procedure"),
             "Verification: " + _summary(row.get("verification")),
             "Use: " + _summary(row.get("use")),
         ]
@@ -2504,6 +2522,9 @@ class _Catalog:
         if example is not None:
             return self._example(iid, built, example, rec, asked, text)
         out = [f"{iid}  [{built.support or 'recorded procedure'}]", *_capture_lines(iid, rec)]
+        by = self.generalised_by(iid, rec)
+        if by:
+            out.append("Generalised by: " + ", ".join(by))
         out += _evidence_lines(_evidence(), iid)
         if rec.get("outcome") in _NEGATIVE:
             out.append("Tried and failed: it is listed to show what broke, never run.")
