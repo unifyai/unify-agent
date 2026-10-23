@@ -407,7 +407,7 @@ def _labels(
 
 
 def evidence_basis(item: str, facts: Iterable[EpisodeUse]) -> tuple[str, dict]:
-    """What *item*'s status rests on (:data:`.trust.STATUS_BASES`) and how its uses were judged (``{"clean",
+    """What *item*'s status rests on (:data:`.item_label.STATUS_BASES`) and how its uses were judged (``{"clean",
     "failed", "neutral"}``), over the episodes of *facts* that used it: its uses' own signals
     (:func:`.trust.status_basis`), and an episode-level signal its regime observes on an episode that used it (a
     verdict in ``dense``, an end outcome in ``sparse``, a correction in ``implicit``), positive or negative."""
