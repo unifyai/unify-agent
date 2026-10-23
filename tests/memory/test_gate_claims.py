@@ -3,8 +3,8 @@
 :data:`unify.memory.gate_policy.GATE` says what the gate runs (``runs``: nothing), what refuses and what only labels.
 Every agent-visible text (:mod:`tests.memory.agent_texts`: briefs, openings, first messages, tool texts per role,
 refusals, the land_capture reply and the gate's own lines as real merges write them) is read for claims of running:
-the gate (re)running, replaying or executing something, landing something only if a run passes, or the harness having
-already run a capture. A claim passes only when it is negated in its own sentence ("the gate runs no code", "nothing
+the gate or the harness (re)running, replaying or executing something, tests or recipes being re-run or replayed,
+landing something only if a run passes, or a check's reply holding test output. A claim passes only when it is negated in its own sentence ("the gate runs no code", "nothing
 ... is replayed"), or when :data:`GATE` says the gate runs that thing, which it never does. The tool texts that state
 what the gate does are the same strings :mod:`unify.memory.gate_policy` holds, and the numbers the briefs state are
 read from the constants that enforce them.
@@ -20,10 +20,10 @@ from unify.memory import gate_policy as gp
 
 #: Claims of running code, as regular expressions over flattened text.
 CLAIMS = (
-    re.compile(r"\bgate\b[^.;:]{0,30}?\b(?:re-?runs?|replays?|executes?|runs)\b", re.I),
-    re.compile(r"\b(?:re-?runs?|re-?running|replay(?:s|ed|ing)?)\b", re.I),
+    re.compile(r"\b(?:gate|harness)\b[^.;:]{0,40}?\b(?:re-?runs?|replays?|executes?|runs|has already run)\b", re.I),
+    re.compile(r"\b(?:re-?runs?|replays?)\b[^.;]{0,20}\b(?:tests?|recorded calls|recipes?|cases)\b", re.I),
+    re.compile(r"\btests? (?:re-?run|replay)\b", re.I),
     re.compile(r"\blands?\b[^.;]{0,80}\bonly if\b", re.I),
-    re.compile(r"\bhas already run\b", re.I),
     re.compile(r"\boutput of any failing test\b", re.I),
 )
 #: A claim in a sentence that negates it is no claim: "the gate runs no code", "nothing ... is replayed".
