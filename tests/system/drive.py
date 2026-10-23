@@ -119,7 +119,7 @@ class System:
         self.settle()
         return r
 
-    async def accepted_tally(self, *, librarian: Any = None):
+    async def accepted_tally(self, *, librarian: Any = None, again: bool = False):
         """An accepted episode of the tally world (an acting procedure); settled after."""
         from tests.scripted_model import Always, ScriptedModel, cell, reply
 
@@ -127,7 +127,7 @@ class System:
         model = ScriptedModel(actor=[reply(calls=[cell(SW.TALLY_CELL)]), reply("The tally is updated."),
                                      reply("Good.")],
                               librarian=librarian or Always(lambda c: SW.librarian_answer([], nearest=[])))
-        r = await self.request(SW.TALLY_REQUEST, model, SW.accepted_host())
+        r = await self.request(SW.TALLY_REQUEST_B if again else SW.TALLY_REQUEST, model, SW.accepted_host())
         self.settle()
         return r
 

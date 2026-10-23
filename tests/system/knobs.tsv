@@ -5,10 +5,7 @@ HOME	internal	process environment
 LD_PRELOAD	internal	process environment (sandbox)
 MEMORY_BOX_OPEN_LOG	internal	box plumbing set by the harness
 MEMORY_K	not-a-knob	a Python name in loop_stop.__all__, not an environment variable
-MEMORY_PIN	internal	box plumbing (audit H3-1: pin.py is unreachable)
-MEMORY_PYTHON	internal	the memory box interpreter; audit H4: undocumented in settings and CONFIG
 PATH	internal	process environment
-PYTEST_CURRENT_TEST	test-only	audit H3-1: memory/inputs.py, unreachable
 PYTHONPATH	internal	process environment
 TOOLS_CHANNEL	internal	box plumbing set by the harness
 UNIFY_CELL_ENV_ALLOW	deployment	environment names a cell may see

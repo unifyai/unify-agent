@@ -46,7 +46,7 @@ def _actor_prep(acting: str):
 WRITER_CONDITIONAL = ("/inputs/gate/", "/inputs/drafts/", "/inputs/helpers/")
 
 
-def _writer_probe(body: dict) -> list[str]:
+def _writer_prep(body: dict) -> str:
     texts = {"writer first message": SW._first_user(body), "writer brief": SW._system(body)}
     gather = (
         SW.GATHER_REFUSALS
@@ -62,7 +62,7 @@ def _writer_probe(body: dict) -> list[str]:
         f"MISSING = {SW.PROBED_MISSING!r}\n"
         f"CONDITIONAL = {WRITER_CONDITIONAL!r}\n"
     )
-    return [SW.probe_json(gather + SW.OPEN_PREP)] + [SW.OPEN_STEP_CELL] * 16
+    return SW.probe_json(gather + SW.OPEN_PREP)
 
 
 def _librarian_prep(call) -> str:
@@ -96,7 +96,7 @@ def _problems(role: str, out: dict) -> list:
 async def test_every_path_and_handle_shown_opens_and_refusals_name_a_working_call(system, mode):
     s = system
     s.writer.plan = "land"
-    s.writer.probe = _writer_probe
+    s.writer.probe = SW.SteppedProbe(_writer_prep)  # step cells only while something is left to open
     await s.accepted_words(["stone", "river"], "reverse")
     await s.accepted_words(["glass", "cloud"], "upper")  # the group's pass: the writer probes its own box
     acting = "capture:" + s.capture_of((await s.accepted_tally()).episode_id)

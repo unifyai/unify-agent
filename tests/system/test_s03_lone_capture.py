@@ -24,8 +24,9 @@ from tests.system.drive import MEMORY_MODES
 async def test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped(system, mode):
     s = system
     words = ["stone", "river"]
+    keep = "open('/workspace/kept-from-request-1.txt', 'w').write('kept')\n"  # "it persists across tasks"
     r1 = await s.request(SW.words_request(words), ScriptedModel(actor=[
-        reply(calls=[cell(SW.words_cell(words))]), reply(json.dumps(SW.words_answer(words))), reply("Good.")]),
+        reply(calls=[cell(SW.words_cell(words) + keep)]), reply(json.dumps(SW.words_answer(words))), reply("Good.")]),
         SW.accepted_host())
     s.settle()
     cid = s.capture_of(r1.episode_id)
@@ -36,11 +37,13 @@ async def test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped(
     # still servable on the next request, with no pass
     sink: dict = {}
     item = f"capture:{cid}"
-    code = SW.probe_json(f"_try('items', lambda: [i.id for i in memory.items()])\n"
+    code = SW.probe_json("_try('kept', lambda: open('/workspace/kept-from-request-1.txt').read())\n"
+                         f"_try('items', lambda: [i.id for i in memory.items()])\n"
                          f"_try('call', lambda: memory.get({item!r})())\n")
     await s.request(SW.words_request(["oak"]), ScriptedModel(
         actor=SW.probe_turns(code, sink), librarian=Always(lambda c: SW.librarian_answer([SW.fit(item)]))))
     assert item in sink["out"]["items"] and sink["out"]["call"] == ["KAO"], sink["out"]
+    assert sink["out"]["kept"] == "kept", ("the working directory did not persist across requests", sink["out"]["kept"])
     # an entry with no capture (a segment's, a summary-only fork's) runs no pass: the harness closes it (R1.4, 0.5)
     for e in s.entries():
         if e.kind == "new_experience" and not e.refs.captures:

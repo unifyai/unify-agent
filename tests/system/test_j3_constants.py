@@ -36,19 +36,21 @@ def _cases():
     from unify.memory import librarian as LB
     from unify.memory import library_helper as LH
     from unify.memory import messaging as MS
+    from unify.memory import writer_pass as WP
 
     return [
         ("reader calls per model turn", r"reader calls per model turn: (\d+)", R.READERS_PER_TURN),
         ("read_episode parts per call", r"read_episode parts per call: (\d+)", R.READ_PARTS_PER_CALL),
-        ("cells per model turn", r"cells per model turn: (\d+)", R.CELLS_PER_TURN),
+        ("cells per model turn", r"cells per model turn: (\d+)", WP._MAX_CELLS_PER_TURN),
         ("fits at most", r"`fits` holds at most (\w+)", LB.MAX_FITS),
         ("helpers at once", r"at most (\d+) at once and \d+", MS.RUN_PASS_OPTIONS.max_live),
         ("helpers in all", r"at most \d+ at once and (\d+)", MS.RUN_PASS_OPTIONS.max_total),
         ("a note's Rule as served", r"## Rule` section, at most ([\d,]+) characters", LH.NOTE_RULE_CHARS),
+        ("librarian sessions per request", r"opens at most (\d+) librarian sessions", LB.MAX_ASK_SESSIONS),
     ]
 
 
-@pytest.mark.parametrize("i", range(7))
+@pytest.mark.parametrize("i", range(8))
 def test_each_stated_number_is_its_constant(rendered, i):
     name, pattern, value = _cases()[i]
     stated = _stated(rendered, pattern)
@@ -58,10 +60,15 @@ def test_each_stated_number_is_its_constant(rendered, i):
 
 
 def test_the_pass_limits_table_is_the_enforced_constants():
+    """The limits a writer's pass is told (``agent_profiles._pass_limits``) are the values the pass enforces: the
+    reader page (``views.VIEW_BYTES``), reader calls per turn and parts per call (the tool registry), cells per turn
+    (``writer_pass._MAX_CELLS_PER_TURN``)."""
     from unify.common import tool_registry as R
     from unify.memory import agent_profiles as AP
+    from unify.memory import views, writer_pass, writer_tools
 
-    table = {r["limit"]: r["value"] for r in AP._PASS_LIMITS}
-    assert table["reader calls per model turn"] == R.READERS_PER_TURN, table
-    assert table["read_episode parts per call"] == R.READ_PARTS_PER_CALL, table
-    assert table["cells per model turn"] == R.CELLS_PER_TURN, table
+    table = {r["limit"]: r["value"] for r in AP._pass_limits()}
+    assert table["reader page"] == views.VIEW_BYTES, table
+    assert table["reader calls per model turn"] == R.READERS_PER_TURN == writer_pass.READERS_PER_TURN, table
+    assert table["read_episode parts per call"] == R.READ_PARTS_PER_CALL == writer_tools.READ_PARTS_PER_CALL, table
+    assert table["cells per model turn"] == writer_pass._MAX_CELLS_PER_TURN, table

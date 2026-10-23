@@ -94,7 +94,9 @@ def _summary(asked: str, approach: str) -> str:
 #: Ops ``mark<k>`` with k at or above this carry a long comment block, so their code is longer than any bound on the
 #: code a judge is shown (kinship: 4,000 characters for the new capture, 600 for each earlier one).
 LONG_MARK = 100
-PADDING = "".join(f"# step {i}: every word is kept in its place and only its letters change.\n" for i in range(90))
+#: Real code, not a comment (the judge is shown code with its comments stripped): a long table of the steps.
+PADDING = "_STEPS = (\n" + "".join(f"    \"step {i}: every word is kept in its place and only its letters change\",\n"
+                                     for i in range(90)) + ")\n"
 
 
 def words_proc(op: str) -> str:
@@ -137,6 +139,13 @@ TALLY_PROC = (
     '    env.worktree_workspace.write("tally.json")\n'
     "    return None\n"
 )
+
+
+#: The same kind of work again, in another request's words: its procedure makes the same calls (a capture of its own,
+#: related to :data:`TALLY_PROC`'s by their call sequence).
+TALLY_REQUEST_B = "Apply the moves in moves.json to tally.json once more."
+TALLY_PROC_B = TALLY_PROC.replace('"""Apply the moves file to the tally file."""', '"""Apply a file of moves to the tally."""').replace(
+    '    env.worktree_workspace.read("moves.json")\n', '    moves = env.worktree_workspace.read("moves.json")\n')
 
 
 def seed_tally(workspace: Path) -> None:
@@ -188,6 +197,8 @@ def fork_script(body: dict) -> str:
     if is_segment(body):
         return SEGMENT_REPLY
     text = _all_text(body)
+    if "to tally.json once more" in text:
+        return fork_tally_reply().replace(TALLY_PROC, TALLY_PROC_B)
     if "moves.json" in text:
         return fork_tally_reply()
     if "Add up the values." in text:
@@ -658,6 +669,11 @@ def open_prep_cell(texts: dict[str, str], refusals: dict[str, str]) -> str:
 OPEN_STEP_CELL = probe_json(OPEN_STEP)
 
 
+def open_step_cell(k: int) -> str:
+    """The *k*-th opening step: the same work, a cell of its own (an agent repeating one cell is stopped)."""
+    return probe_json(f"_step = {k}\n" + OPEN_STEP)
+
+
 def opening_turns(first_cell: Callable[[Any], str], sink: dict, *, answer: Callable[[Any], Any] | None = None):
     """A role's script that opens everything its first cell's texts show: *first_cell(call)* gives the prep cell
     (built from that call's texts), then step cells until nothing is left; the last output goes to ``sink['out']``,
@@ -673,7 +689,7 @@ def opening_turns(first_cell: Callable[[Any], str], sink: dict, *, answer: Calla
             return answer(call) if answer else reply("Checked.")
         got = marked(last_tools(call))
         if got.get("left", 0) > 0 or "fails" not in got:
-            return reply(calls=[cell(OPEN_STEP_CELL)])
+            return reply(calls=[cell(open_step_cell(state["n"]))])
         sink["out"] = got
         return answer(call) if answer else reply("Checked.")
 
@@ -688,3 +704,30 @@ def _err(fn):
     except BaseException as e:
         return type(e).__name__ + ": " + str(e)
 """
+
+
+class SteppedProbe:
+    """A writer probe that opens everything its first cell found: the first cell (*first(body)*), then a step cell of its
+    own each turn while anything is left, then nothing more (the pass goes on). Per pass (by its first message)."""
+
+    def __init__(self, first: Callable[[dict], str], most: int = 40) -> None:
+        self.first = first
+        self.most = most
+        self.done: dict[str, int] = {}
+
+    def __call__(self, body: dict) -> list[str]:
+        key = _first_user(body)[:200]
+        n = _n_assistant(body)
+        if n == 0:
+            self.done.pop(key, None)
+            return [self.first(body)]
+        if key not in self.done:
+            texts = tool_texts(body)
+            try:
+                left = marked(texts[-1] if texts else "").get("left", 0)
+            except AssertionError:
+                left = 0
+            if left <= 0 or n >= self.most:
+                self.done[key] = n
+        sent = self.done.get(key, n + 1)
+        return [self.first(body)] + [open_step_cell(k) for k in range(1, sent)]

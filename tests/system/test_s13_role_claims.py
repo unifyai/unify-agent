@@ -330,3 +330,47 @@ async def test_the_librarians_notes_reach_a_later_librarian_and_search_lists_eve
         assert "/memory/" in line, line
     for k in ("by_slug", "by_path", "by_item"):
         assert not str(sink["out"][k]).startswith("RAISED"), (k, sink["out"][k])
+
+
+EPISODES_PROBE = SW.probe_json(
+    "import json, os\n"
+    "idx = json.load(open('/inputs/attention/index.json'))\n"
+    "eps = sorted({e for r in idx['entries'] for e in ((r.get('refs') or {}).get('episodes') or [])})\n"
+    "out['episodes'] = eps\n"
+    "docs = {}\n"
+    "for e in eps:\n"
+    "    try:\n"
+    "        docs[e] = json.load(open('/inputs/episodes/' + e + '.json'))\n"
+    "    except (OSError, ValueError) as exc:\n"
+    "        docs[e] = 'UNREADABLE ' + str(exc)\n"
+    "out['keys'] = {e: sorted(d) if isinstance(d, dict) else d for e, d in docs.items()}\n"
+    "out['whole'] = {e: '__blob__' not in json.dumps(d) for e, d in docs.items()}\n"
+    "refs = sorted({str(v) for d in docs.values() if isinstance(d, dict) for a in (d.get('actions') or [])"
+    " for k, v in ((a.get('response') or {}) if isinstance(a.get('response'), dict) else {}).items()"
+    " if k in ('blob_before', 'blob_after') and v})\n"
+    "out['blob_refs'] = refs\n"
+    "out['blobs_missing'] = [b for b in refs if not os.path.exists('/inputs/blobs/' + b)]\n"
+)
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(1800)
+@pytest.mark.parametrize("mode", ["on"])
+async def test_the_writers_inputs_hold_whole_episodes_and_their_blobs(system, mode):
+    """The writer's brief: "/inputs/episodes/<episode>.json: each batch episode's full record (request, observations,
+    cells, actions, work-tree diff), each value whole"; "/inputs/blobs/<id> holds the bytes of a file a work-tree
+    action read or wrote (its response's `blob_before` and `blob_after`)"."""
+    s = system
+    s.writer.plan = "keep"
+    s.writer.probe = EPISODES_PROBE
+    await s.accepted_tally()
+    await s.accepted_tally(again=True)  # the same calls: related by their sequence, written up together
+    assert s.writer.probes, "no pass ran for the two tally captures"
+    out = SW.marked(s.writer.probes[0])
+    assert out["episodes"], out
+    for e, keys in out["keys"].items():
+        assert isinstance(keys, list) and {"request", "cells", "actions"} <= set(keys), (e, keys)
+    assert all(out["whole"].values()), out["whole"]
+    assert out["blob_refs"], "no work-tree action of the batch names a blob (the claim cannot be checked here)"
+    assert not out["blobs_missing"], out["blobs_missing"]

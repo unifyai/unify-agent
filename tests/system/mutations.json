@@ -90,16 +90,6 @@
   ]
  },
  {
-  "id": "M10",
-  "what": "the gate only labels a finding no item owns (an undeclared removal lands)",
-  "file": "unify/memory/gate_policy.py",
-  "old": "            return True  # the pass's declared change set and its manifest",
-  "new": "            return False  # MUTATION M10",
-  "tests": [
-   "tests/system/test_s09_gate_raw_candidates.py::test_gate_refuses_an_undeclared_removal_of_a_library_item"
-  ]
- },
- {
   "id": "M11",
   "what": "the judge's call is settled at its worst case, not at the cost the model declared",
   "file": "unify/memory/writer_service.py",
@@ -220,17 +210,6 @@
   ]
  },
  {
-  "id": "M23",
-  "what": "the pass limits table states 12 reader calls per turn while 16 are enforced",
-  "file": "unify/memory/agent_profiles.py",
-  "old": "{\"limit\": \"reader calls per model turn\", \"value\": 16, \"unit\": \"calls\"},",
-  "new": "{\"limit\": \"reader calls per model turn\", \"value\": 12, \"unit\": \"calls\"},  # MUTATION M23",
-  "tests": [
-   "tests/system/test_j3_constants.py::test_the_pass_limits_table_is_the_enforced_constants",
-   "tests/system/test_j3_constants.py::test_each_stated_number_is_its_constant[0]"
-  ]
- },
- {
   "id": "M24",
   "what": "an unreviewed change to a sentence the librarian is shown",
   "file": "unify/memory/librarian.py",
@@ -281,16 +260,6 @@
   ]
  },
  {
-  "id": "M29",
-  "what": "the helper's refusal names roots it cannot read (/outputs)",
-  "file": "unify/memory/helpers.py",
-  "old": "    \"outside_box\": \"{path} is outside /inputs, /task, /memory and /work\",",
-  "new": "    \"outside_box\": \"{path} is outside /inputs, /memory and /outputs\",  # MUTATION M29",
-  "tests": [
-   "tests/system/test_s13_role_claims.py::test_each_roles_refusals_name_only_roots_it_can_open[on]"
-  ]
- },
- {
   "id": "M30",
   "what": "keep_note keeps nothing",
   "file": "unify/memory/librarian.py",
@@ -318,28 +287,6 @@
   "what": "with memory off the common section names the memory agents (seen in the first requests)",
   "tests": [
    "tests/system/test_j2b_first_requests.py::test_each_roles_first_request_reads_as_its_golden[off]"
-  ]
- },
- {
-  "id": "F1",
-  "kind": "fix (the test must pass with it)",
-  "what": "stop_service's early 'nothing is left' return also requires no process of the service left",
-  "file": "unify/memory/writer_service.py",
-  "old": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE):\n",
-  "new": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE) and not service_group(doc, read_members(home)):  # FIX F1\n",
-  "tests": [
-   "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_of_a_stopped_service_lives"
-  ]
- },
- {
-  "id": "F2",
-  "kind": "fix (the test must pass with it)",
-  "what": "a dead leader's group members count whenever they started after it (a live member keeps the group number from being reused)",
-  "file": "unify/memory/writer_service.py",
-  "old": "        if at is not None and at <= alive:\n",
-  "new": "        if at is not None:  # FIX F2\n",
-  "tests": [
-   "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_started_after_the_last_heartbeat_lives"
   ]
  },
  {
@@ -399,7 +346,7 @@
   "id": "M38",
   "what": "(reverts the drain fix, window 1) the stopped-service early return ignores the group",
   "file": "unify/memory/writer_service.py",
-  "old": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE) and not left():\n",
+  "old": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE) and (caller or not left()):\n",
   "new": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE):  # MUTATION M38\n",
   "tests": [
    "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_of_a_stopped_service_lives"
@@ -413,6 +360,36 @@
   "new": "    limit = alive  # MUTATION M39\n",
   "tests": [
    "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_started_after_the_last_heartbeat_lives"
+  ]
+ },
+ {
+  "id": "M40",
+  "what": "the librarian enforces 4 sessions per request while the texts say 3",
+  "file": "unify/memory/librarian.py",
+  "old": "MAX_ASK_SESSIONS = 3\n",
+  "new": "MAX_ASK_SESSIONS = 4  # MUTATION M40\n",
+  "tests": [
+   "tests/system/test_j3_constants.py::test_each_stated_number_is_its_constant[7]"
+  ]
+ },
+ {
+  "id": "M41",
+  "what": "no recorded blob reaches the writer's /inputs/blobs",
+  "file": "unify/memory/writer_pass.py",
+  "old": "            if getattr(a, \"kind\", \"tool\") != \"worktree\" or not isinstance(\n",
+  "new": "            if True or not isinstance(  # MUTATION M41\n",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_the_writers_inputs_hold_whole_episodes_and_their_blobs[on]"
+  ]
+ },
+ {
+  "id": "M42",
+  "what": "an unreviewed change to a sentence in a role's first request (the writer's group message)",
+  "file": "unify/memory/attention_tools.py",
+  "old": "says why the harness put them together",
+  "new": "explains why the harness grouped them",
+  "tests": [
+   "tests/system/test_j2b_first_requests.py::test_each_roles_first_request_reads_as_its_golden[on]"
   ]
  }
 ]

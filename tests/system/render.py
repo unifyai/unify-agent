@@ -56,7 +56,12 @@ def _tools(out: dict, prefix: str, agent: str, flags: frozenset, memory: bool) -
     reg = R.registry()
     for nm in names:
         out[f"{prefix}/help/{nm}"] = R.help_text(nm, agent, memory=memory)
-        for form, text in sorted((reg[nm].refusals if nm in reg else {}).items()):
+        if nm not in reg:
+            continue
+        # the refusals this role is given: its own texts where the tool has them for it, else the shared ones
+        own, texts = R._own_text(reg[nm], "refusals", agent, memory)
+        table = texts if own and isinstance(texts, dict) else reg[nm].refusals
+        for form, text in sorted(table.items()):
             out[f"{prefix}/refusal/{nm}/{form}"] = _template(text)
     for form, text in sorted(R.GENERAL_REFUSALS.items()):
         out[f"{prefix}/refusal/general/{form}"] = _template(text)
@@ -108,7 +113,6 @@ def render_all() -> dict[str, str]:
                 _tools(out, prefix, agent, flags, memory)
                 out[f"{prefix}/common_section"] = R.common_section(memory)
             if memory:
-                out[f"actor/{mode}/guide_library"] = LP.guide_library()
                 out[f"actor/{mode}/guide_librarian"] = LP.GUIDE_LIBRARIAN
                 out[f"actor/{mode}/library_line"] = HK.LIBRARY_LINE
                 out[f"actor/{mode}/start_head"] = LB.START_HEAD
