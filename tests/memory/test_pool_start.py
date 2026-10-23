@@ -22,6 +22,9 @@ from tests.memory.test_pool import ITEM, MAN
 from tests.memory.test_pool import EMPTY, INDEX, _finish_with, _open, _Stores
 from tests.memory.test_writer_pass import _call, needs_bwrap
 
+#: The counts of one store pass's chain (:func:`unify.memory.chain.counts`).
+CHAIN_KEYS = ("parsed", "staged", "pooled_at_start", "batch_map_rows", "read_by_writer", "adopted")
+
 FILL = (
     "def fill(grid, colour=0):\n"
     '    """Fill every enclosed region with colour.\n\n    More text.\n    """\n'
@@ -182,7 +185,7 @@ def test_an_adopted_staged_candidate_merges_in_the_same_pass(tmp_path, monkeypat
     }
     assert CID in out.pool["changed"] and st.pool().entries[LID].status == "open"
     # every hop carried the one candidate
-    assert out.chain == dict.fromkeys(chain.KEYS, 1)
+    assert out.chain == dict.fromkeys(CHAIN_KEYS, 1)
 
 
 def test_finish_refuses_an_adopt_ref_that_names_nothing_staged(tmp_path, monkeypatch):
@@ -239,7 +242,7 @@ def test_with_staging_off_the_writer_sees_no_staging_anywhere(tmp_path, monkeypa
         "candidate:" not in model.outputs["r"] and "staging" not in model.outputs["r"]
     )
     assert "/inputs/staging" not in model.seen[1]["content"]
-    assert out.chain == dict.fromkeys(chain.KEYS, 0)
+    assert out.chain == dict.fromkeys(CHAIN_KEYS, 0)
     assert not any(e.kind == "candidate" for e in st.pool().entries.values())
 
 

@@ -41,16 +41,6 @@ def is_literal(node: ast.AST | None) -> bool:
     return False
 
 
-def _params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
-    a = node.args
-    names = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
-    if a.vararg is not None:
-        names.add(a.vararg.arg)
-    if a.kwarg is not None:
-        names.add(a.kwarg.arg)
-    return names
-
-
 def _entry(tree: ast.Module) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
     fns = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     if not fns:
@@ -63,10 +53,6 @@ def _entry(tree: ast.Module) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
         return next(iter(fns.values()))
     public = [f for name, f in fns.items() if not name.startswith("_")]
     return public[0] if public else next(iter(fns.values()))
-
-
-
-
 
 
 def _gives_value(node: ast.Return) -> bool:
@@ -90,4 +76,3 @@ def returns_a_value(module_source: Any, name: str) -> bool:
     if fn is None:
         return True
     return any(_gives_value(n) for stmt in _body(fn) for n in ast.walk(stmt) if isinstance(n, ast.Return))
-

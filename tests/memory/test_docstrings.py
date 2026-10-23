@@ -1,8 +1,4 @@
-"""The lean docstring standard: parsing, the gate's reasons, self-explaining refusals."""
-
-import ast
-
-import pytest
+"""Docstring sections as the When-to-use reader parses them."""
 
 from unify.memory import docstrings
 
@@ -33,10 +29,6 @@ Effect: read
 Input: path"""
 
 
-def _fn(src):
-    return ast.parse(src).body[0]
-
-
 def test_parse_reads_every_section_and_the_line_fields():
     d = docstrings.parse(FULL)
     assert d.summary == "Read the ledger into rows."
@@ -56,43 +48,6 @@ def test_parse_reads_every_section_and_the_line_fields():
     assert d.lines == {"Effect": "read", "Input": "path"}
 
 
-def test_a_complete_docstring_has_no_problems():
-    assert docstrings.problems(FULL, ["path", "strict"], "path") == []
-
-
-def test_each_missing_required_part_is_named():
-    no_returns = FULL.replace("Returns:\n    A list of dicts, one per row.\n\n", "")
-    assert docstrings.problems(no_returns, ["path", "strict"], "path") == [
-        "has no Returns: section",
-    ]
-    no_example = FULL.split("Example:")[0] + "Effect: read\nInput: path"
-    assert docstrings.problems(no_example, ["path", "strict"], "path") == [
-        "has no Example: section with a `>>>` example",
-    ]
-    assert docstrings.problems(FULL, ["path", "strict", "limit"], "path") == [
-        "Args: does not describe parameter(s) limit",
-    ]
-    assert docstrings.problems(FULL, ["path", "strict"], "bytes") == [
-        "Args: the entry of the first parameter `path` does not name its input form `bytes`",
-    ]
-    no_error = FULL.replace("MemoryInputError: when", "ValueError: when")
-    assert docstrings.problems(no_error, ["path", "strict"], "path") == [
-        "Raises: does not name MemoryInputError and when it is raised",
-    ]
-    bare = "Read it.\n\nEffect: read\nInput: path"
-    assert docstrings.problems(bare, ["path"], "path") == [
-        "has no Args: section (one `name: description` line per parameter)",
-        "has no Returns: section",
-        "has no Raises: section naming MemoryInputError and when it is raised",
-        "has no Example: section with a `>>>` example",
-    ]
-    assert "has no one-line summary (its first line)" in docstrings.problems(
-        "",
-        [],
-        None,
-    )
-
-
 def test_examples_heading_is_accepted_and_inline_text_is_kept():
     doc = FULL.replace("Example:", "Examples:").replace(
         "Returns:\n    A list of dicts, one per row.",
@@ -100,74 +55,6 @@ def test_examples_heading_is_accepted_and_inline_text_is_kept():
     )
     d = docstrings.parse(doc)
     assert d.sections["Returns"] == "a list of dicts, one per row."
-    assert docstrings.problems(doc, ["path", "strict"], "path") == []
-
-
-def test_params():
-    fn = _fn("def f(a, /, b, *rest, c=1, **kw):\n    pass\n")
-    assert docstrings.params(fn) == ["a", "b", "rest", "c", "kw"]
-
-
-def test_the_example_must_call_the_function_on_a_fixture_and_show_its_result():
-    """A real example calls the function itself with an argument, shows a result and reads a fixture."""
-    split = docstrings.problems(
-        FULL,
-        ["path", "strict"],
-        "path",
-        name="read_ledger",
-        channel="w",
-    )
-    assert len(split) == 1 and split[0].startswith(
-        "Example: no example calls `read_ledger(...)` with an argument and shows its result",
-    )  # the call's result is only shown by a later example
-    one = FULL.replace(
-        '>>> rows = read_ledger("env/w/tests/data/ledger.csv")\n    >>> rows[0]["vendor_id"]',
-        '>>> read_ledger("env/w/tests/data/ledger.csv")[0]["vendor_id"]',
-    )
-    assert one != FULL
-    assert (
-        docstrings.problems(
-            one,
-            ["path", "strict"],
-            "path",
-            name="read_ledger",
-            channel="w",
-        )
-        == []
-    )
-    assert docstrings.fixture_paths(docstrings.parse(one), "w") == [
-        "env/w/tests/data/ledger.csv",
-    ]
-    skipped = one.replace('["vendor_id"]', '["vendor_id"]  # doctest: +SKIP')
-    assert docstrings.problems(
-        skipped,
-        ["path", "strict"],
-        "path",
-        name="read_ledger",
-        channel="w",
-    ) == [
-        "Example: an example is skipped (`+SKIP`); every example must run",
-    ]
-    no_fixture = one.replace('"env/w/tests/data/ledger.csv"', "path")
-    assert docstrings.problems(
-        no_fixture,
-        ["path", "strict"],
-        "path",
-        name="read_ledger",
-        channel="w",
-    ) == [
-        "Example: no example reads a recorded input from a fixture under env/w/tests/",
-    ]
-    elsewhere = one.replace("env/w/tests/", "env/other/tests/")
-    assert docstrings.fixture_paths(docstrings.parse(elsewhere), "w") == []
-    ellipsis = one.replace("    'V-17'", "    ...")
-    assert docstrings.problems(
-        ellipsis,
-        ["path", "strict"],
-        "path",
-        name="read_ledger",
-        channel="w",
-    )
 
 
 def test_section_aliases():
@@ -175,62 +62,3 @@ def test_section_aliases():
         "Read.\n\nParameters:\n    path: a path.\n\nReturn:\n    Rows.\n",
     )
     assert d.args == [("path", "a path.")] and d.sections["Returns"] == "Rows."
-
-
-FN = "read_ledger"
-FIXTURE = '"env/w/tests/data/ledger.csv"'
-
-
-def _example(body: str) -> docstrings.Docstring:
-    return docstrings.parse(
-        "Read.\n\nExample:\n" + "\n".join("    " + ln for ln in body.splitlines()),
-    )
-
-
-@pytest.mark.parametrize(
-    ("body", "want"),
-    [
-        (f">>> read_ledger({FIXTURE})[0]['a']\n'x'", []),
-        (f">>> read_ledger({FIXTURE}).keys()\ndict_keys(['a'])", []),
-        (
-            f">>> import json\n>>> rec = json.load(open({FIXTURE}))\n>>> read_ledger(rec)\n[1]",
-            [],
-        ),
-        (f">>> env.w.read_ledger({FIXTURE})\n[1]", []),
-        (f">>> read_ledger({FIXTURE}) == read_ledger({FIXTURE})\nTrue", ["calls"]),
-        (f">>> (read_ledger({FIXTURE}), 3)[1]\n3", ["calls"]),
-        (f">>> isinstance(read_ledger({FIXTURE}), list)\nTrue", ["calls"]),
-        (f">>> read_ledger({FIXTURE})\n[...]", ["calls"]),
-        (f">>> read_ledger({FIXTURE})\n{{...}}", ["calls"]),
-        (f">>> read_ledger({FIXTURE}).index(read_ledger({FIXTURE}))\n0", ["calls"]),
-        (f">>> rows = read_ledger({FIXTURE})\n>>> rows[0]\n1", ["calls"]),
-        (
-            f">>> read_ledger({FIXTURE})\nTraceback (most recent call last):\nMemoryInputError: x",
-            ["calls"],
-        ),
-        (f">>> _ = {FIXTURE}\n>>> read_ledger([{{'a': 1}}])[0]['a']\n1", ["fixture"]),
-    ],
-    ids=[
-        "item",
-        "method",
-        "bound-name",
-        "module-attribute",
-        "self-comparison",
-        "discarded",
-        "wrapped",
-        "bracket-ellipsis",
-        "brace-ellipsis",
-        "twice",
-        "assigned",
-        "refusal-only",
-        "fixture-ignored",
-    ],
-)
-def test_only_a_shown_call_on_the_fixture_counts(body, want):
-    """The shown output is the call's own value, made once on the fixture."""
-    got = docstrings.example_problems(_example(body), FN, "w")
-    kinds = [
-        "calls" if p.startswith(f"Example: no example calls `{FN}(...)`") else "fixture"
-        for p in got
-    ]
-    assert kinds == want, got

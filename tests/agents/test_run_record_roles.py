@@ -17,7 +17,7 @@ from unify.agents import run_record as rr
 from unify.agents.options import Options
 from unify.common import tool_registry as R
 from unify.settings import SETTINGS
-from tests.memory.test_helpers import helper_boxes  # noqa: F401,F811 (fixture)
+from tests.memory.test_helpers import helper_boxes, helper_result  # noqa: F401,F811 (fixture)
 from tests.agents.roster import read_roster
 
 RECORD_TOOLS = {"send", "messages", "wait", "who"}
@@ -136,7 +136,7 @@ def test_no_helper_box_bind_reaches_the_run_record(tmp_path, helper_boxes):
 
     async def go():
         out = await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, out.split()[1])
+        await helper_result(ctx, out.split()[1])
         await messaging.close(pr, "done")
 
     asyncio.run(go())
@@ -200,7 +200,7 @@ def test_a_helper_box_that_tries_to_open_the_run_record_is_refused(tmp_path):
 
     async def go():
         out = await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, out.split()[1])
+        await helper_result(ctx, out.split()[1])
         await messaging.close(pr, "done")
 
     before = rr.record_path(home).read_bytes() if rr.record_path(home).exists() else b""
@@ -268,7 +268,7 @@ def test_a_writer_delegates_to_a_helper_and_the_helper_answers_on_the_run_record
         info: dict = {}
         got = await messaging.call(pr, "writer", "wait", {}, info)
         assert "e1 computes w * h" in got and info["outcome"] == "message"
-        await helpers.result(ctx, name)
+        await helper_result(ctx, name)
         assert await messaging.close(pr, "the writer finished") == {name: "ended"}
         return name
 
@@ -305,7 +305,7 @@ def test_a_helper_message_that_names_no_one_goes_to_the_writer(tmp_path, helper_
 
     async def go():
         out = await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, out.split()[1])
+        await helper_result(ctx, out.split()[1])
         await messaging.close(pr, "done")
 
     asyncio.run(go())

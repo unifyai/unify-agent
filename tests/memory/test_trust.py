@@ -38,7 +38,6 @@ def test_dense_rejected_answers_twice_retire_and_accepted_answers_adopt_with_ver
     assert (out.status, out.basis, out.level) == (tr.ADOPTED, tr.BASIS_VERDICTS, tr.CONFIRMED_BY_OUTCOMES)
     t = tr.track(accepted)
     assert t["verdicts"] == {"accepted": 3, "rejected": 0}
-    assert tr.record_line(t) == "its record has verdicts: 3 accepted, 0 rejected"
 
 
 def test_dense_clean_uses_without_any_accepted_verdict_stay_on_trial():
@@ -99,10 +98,7 @@ def test_implicit_and_none_adopt_on_clean_runs_and_never_claim_correctness():
         out = tr.apply_outcome(tr.REPRODUCES_ITS_CASE, None, clean)
         assert (out.status, out.basis) == (tr.ADOPTED, tr.BASIS_IMPLICIT)
         assert out.level == tr.REPRODUCES_ITS_CASE  # implicit outcomes never confirm
-        assert tr.status_text(out.status, out.basis) == "adopted (implicit)"
-        line = tr.record_line(tr.track(clean))
-        assert line == "its record has no verdicts; it ran without errors in 3 episodes"
-        _no_correctness_claim(line, out.reason)
+        _no_correctness_claim(out.reason)
 
 
 def test_implicit_corrections_after_answers_retire_and_none_cannot_see_them():
@@ -121,7 +117,6 @@ def test_a_refusal_changes_nothing():
     out = tr.apply_outcome(tr.UNCHECKED, None, refused)
     assert (out.status, out.level, out.episodes) == (tr.ON_TRIAL, tr.UNCHECKED, ())
     assert tr.track(refused)["intermediate"]["refusals"] == 4
-    assert tr.record_line(tr.track(refused)) == "no later use recorded yet"
 
 
 def test_an_adopted_item_stays_until_retirement_fires_and_then_loses_its_confirmation():

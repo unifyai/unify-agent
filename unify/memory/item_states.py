@@ -84,16 +84,6 @@ def level_from_stored(value: Any, default: str | None = STORED_DEFAULT_LEVEL) ->
     return default
 
 
-def level_rank(level: str) -> int:
-    """The position of *level* in :data:`LEVELS` (lowest 0); an unknown level ranks lowest."""
-    return LEVELS.index(level) if level in LEVELS else 0
-
-
-def lowest(*levels: str) -> str:
-    """The lowest of *levels* (:data:`UNCHECKED` for none)."""
-    return min(levels, key=level_rank) if levels else UNCHECKED
-
-
 def level_of_record(verification: Any) -> str:
     """The evidence level of an item from its verification record (the gate's, as the item record keeps it).
 

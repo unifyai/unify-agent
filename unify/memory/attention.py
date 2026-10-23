@@ -29,7 +29,7 @@ onto a closed one it is counted only (an ``occurrence`` row: no new entry, nothi
 is contrary (from its signals, never from running it), which reopens the entry (``append_ref``, then ``reopen`` by
 ``contrary_occurrence``).
 
-**Lifecycle** (:data:`STATES`): ``open`` -> ``handed`` (to a pass, :meth:`Ledger.hand`, or pulled in by the writer,
+**Lifecycle**: ``open`` -> ``handed`` (to a pass, :meth:`Ledger.hand`, or pulled in by the writer,
 :meth:`Ledger.take`) -> ``read`` (verified from the pass's own read evidence, :meth:`Ledger.verify_reads`; never from
 what the writer says) -> ``closed`` (with a decision, :meth:`Ledger.decide`). Handed but not read when the pass ends,
 an entry goes back (``return``); after two such misses it is handed alone; after a third it is ``unreadable``, with
@@ -92,13 +92,11 @@ Kind = Literal[
     "deferred",
     "message",
 ]
-State = Literal["open", "handed", "read", "closed", "unreadable", "not_reached"]
 Decision = Literal["new_item", "changed_item", "merged_into", "note", "retire", "nothing_to_keep", "defer"]
 NotReached = Literal["spend_cap", "run_ended", "service_stopped", "lifetime"]
 ReturnWhy = Literal["handed_not_read", "read_not_decided", "suspend", "service_restart"]
 
 KINDS: tuple[str, ...] = get_args(Kind)
-STATES: tuple[str, ...] = get_args(State)
 DECISIONS: tuple[str, ...] = get_args(Decision)
 NOT_REACHED: tuple[str, ...] = get_args(NotReached)
 RETURN_WHYS: tuple[str, ...] = get_args(ReturnWhy)
@@ -135,8 +133,6 @@ LOCK_FILE = "ledger.lock"
 SYNC_FILE = "sync-state.json"
 SCHEMA = 1
 
-#: Where a pass's material is, as the writer's box shows it.
-INPUTS = "/inputs"
 ATTENTION_INPUTS = "/inputs/attention"
 STAGING_INPUTS = "/inputs/staging"
 CAPTURES_INPUTS = "/inputs/captures"

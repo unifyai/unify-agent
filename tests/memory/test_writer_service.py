@@ -26,6 +26,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.memory import service_step
 from tests.agents.roster import read_roster
 from unify.agents import run_record as rr
 from unify.memory import attention
@@ -887,7 +888,7 @@ def _step(home, runner, monkeypatch, **kw):
 
     monkeypatch.setattr(request, "actor_effort", lambda: "low")
     monkeypatch.setattr(ws, "check_writer_settings", lambda settings: None)
-    return ws.step(home, settings=_settings(**kw.pop("over", {})), runner=runner, **kw)
+    return service_step.step(home, settings=_settings(**kw.pop("over", {})), runner=runner, **kw)
 
 
 def test_a_step_runs_one_pass_over_the_open_entries_and_then_finds_nothing_open(

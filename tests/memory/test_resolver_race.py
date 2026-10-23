@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from unify.memory import helpers, memory_files, safe_paths, tool_spec, views, writer_pass
+from unify.common import tool_registry
 from unify.memory import writer_tools as wt
 from tests.memory.test_helpers import EPS as HELPER_EPS
 from tests.memory.test_helpers import _ctx
@@ -161,7 +162,7 @@ def _calls(writer, roots, box, ctx, st, resolve):
     """One round of every handler on the swapped paths: (label, reply text)."""
 
     def lib(name, args):
-        return asyncio.run(writer._library_tool(name, args, roots)).text
+        return writer._reader_call(name, args, roots).text
 
     def helper(name, args):
         return str(asyncio.run(helpers._tool(ctx, name, args, st, resolve))[0])
@@ -236,12 +237,10 @@ def test_swapped_links_and_fifos_never_reach_a_reply_or_hang_a_call(tmp_path):
                 replies.append(
                     (
                         "bounded grep",
-                        asyncio.run(
-                            writer._library_tool(
-                                "grep",
-                                {"pattern": "needle", "path": "/memory"},
-                                roots,
-                            ),
+                        writer._reader_call(
+                            "grep",
+                            {"pattern": "needle", "path": "/memory"},
+                            roots,
                         ).text,
                     ),
                 )
@@ -290,13 +289,11 @@ def test_a_fifo_leaf_is_refused_by_every_reader_and_never_blocks(tmp_path):
     ctx, st, resolve = _helper_state(tmp_path, box)
     fifo = box / "memory" / "pipe"
     os.mkfifo(fifo)
-    got = asyncio.run(writer._library_tool("read", {"path": "/memory/memory/pipe"}, roots))
+    got = writer._reader_call("read", {"path": "/memory/memory/pipe"}, roots)
     assert got.form == "unreadable" and "not a regular file" in got.text
     out = asyncio.run(helpers._tool(ctx, "read", {"path": "/work/pipe"}, st, resolve))[0]
     assert tool_spec.form_of(out) == "unreadable"
-    got = asyncio.run(
-        writer._library_tool("grep", {"pattern": "x", "path": "/memory/memory"}, roots),
-    )
+    got = writer._reader_call("grep", {"pattern": "x", "path": "/memory/memory"}, roots)
     assert got.status == "ok"
     assert views.grep("x", "/memory/memory/pipe", roots) == "(no hits)"
     fixture_fifo = box / "memory" / "pkg" / "tests" / "data" / "f.jsonl"
@@ -372,11 +369,9 @@ def test_a_grep_child_failure_is_a_fixed_text_with_no_host_path(tmp_path, monkey
     with pytest.raises(views.SearchFailed) as raised:
         views.grep_bounded("needle", "/memory", roots)
     assert host not in str(raised.value)
-    got = asyncio.run(
-        writer._library_tool("grep", {"pattern": "needle", "path": "/memory"}, roots),
-    )
+    got = writer._reader_call("grep", {"pattern": "needle", "path": "/memory"}, roots)
     assert got.form == "search_failed" and got.status == "refused"
-    assert host not in got.text and got.text == "refused: " + wt.SEARCH_FAILED
+    assert host not in got.text and got.text == "refused: " + tool_registry.SEARCH_FAILED
     out = asyncio.run(helpers._tool(ctx, "grep", {"pattern": "needle", "path": "/work"}, st, resolve))[0]
     assert tool_spec.form_of(out) == "search_failed" and host not in out
     assert "search_failed" in tool_spec.refusal_codes()["grep"]

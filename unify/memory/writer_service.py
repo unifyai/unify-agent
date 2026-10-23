@@ -19,8 +19,7 @@ same way: the new service writes ``takeover`` naming the old one.
 ``not_reached: spend_cap`` and the service idles; with entries open, one pass (``hand(k)`` with the capture grouping,
 :mod:`.capture_groups`: other kinds at once, else one due group of related captures; the pass, ``verify_reads``, then
 the unread ones go back); else idle, and after :data:`IDLE_EXIT_S` with nothing open it exits. A heartbeat thread
-rewrites ``service.json`` every :data:`HEARTBEAT_S`. Each turn of the loop is :func:`_iteration`; :func:`step` runs
-exactly one such turn in the calling process (deterministic step mode, for the offline replay).
+rewrites ``service.json`` every :data:`HEARTBEAT_S`. Each turn of the loop is :func:`_iteration`.
 
 **Bounds, stated, never steering:** the service's lifetime (:data:`LIFETIME_S`), memory's spend cap for the home
 (``UNIFY_MEMORY_CAP_USD``: a pass starts only when the room left under the cap holds one writer call at its worst case;
@@ -1512,19 +1511,6 @@ def _capture_if_new(service: "Service") -> None:
         event(service.home, "error", where="capture", error=type(exc).__name__)
 
 
-#: Why a turn of the loop ran no pass (:func:`_iteration`, :func:`step`).
-IDLE_WHY = (
-    "stopping",
-    "lifetime",
-    "lease",
-    "refused",
-    "nothing_open",
-    "spend_cap",
-    "nothing_handed",
-    "busy",
-)
-
-
 def _raised_pass_row(
     home: Path, pass_id: str, handed: list, exc: BaseException, returned: Any, settled: str, settings: Any
 ) -> None:
@@ -1606,12 +1592,13 @@ async def _iteration(
     runner: Runner,
     clock: Callable[[], datetime],
 ) -> dict:
-    """One turn of the service's loop, shared by :func:`service_main` and :func:`step`: the stop marker (and
+    """One turn of the service's loop (:func:`service_main`): the stop marker (and
     SIGTERM), the service's end (its lifetime), a pass left running to resume, else the capture step, ``sync``, the
     cap (every entry still owed is ``not_reached: spend_cap``), the lifetime's margin for a new pass, and one pass
     over up to K handed entries (one due capture group, or the other kinds of entry at once). Returns what it did
     (:func:`_turn_result`): ``stop`` names why the service must stop (None: go on); ``why_idle`` why no pass ran
-    (:data:`IDLE_WHY`)."""
+    (``stopping``, ``lifetime``, ``lease``, ``refused``, ``nothing_open``, ``spend_cap``, ``nothing_handed`` or
+    ``busy``)."""
     from .attention import K
     from .integration.switch import PASS_WALL_S
 
@@ -1913,92 +1900,6 @@ def _grouping(service: Any, sources: Any, clock: Callable[[], datetime]) -> Call
         return groups(entries, profiles, now=clock())
 
     return grouping
-
-
-async def step_async(
-    home: Path | str,
-    *,
-    settings: Any = None,
-    now: Optional[datetime] = None,
-    runner: Optional[Runner] = None,
-) -> dict:
-    """Deterministic step mode (the offline replay drives the service loop in-process): exactly one turn of
-    :func:`service_main`'s loop (:func:`_iteration`, the same code) in the calling process, returning when it is done.
-    No fork or ``setsid``, no heartbeat thread, no idle sleep, no idle exit, no SIGTERM handler; the model turns are
-    the pass's own (``consolidate.unillm_turn``, which the replay routes), or *runner*'s.
-
-    The step holds the home's lock while it runs: when a service (or another step) holds it, nothing is done and
-    ``why_idle`` is ``busy``. The step is the service for its duration: the writer's roster row (run record on) is taken back
-    (``rejoin``) and left ``idle``; a pass a crash left running is resumed first; at a stop (the stop marker, the
-    lease) the step does what the service does when it stops for that reason (the entries still owed are marked
-    ``not_reached`` as :data:`NOT_REACHED_BY` says, the writer's row ends). The service's lifetime is a bound on a
-    live process and does not apply to a step; the host's lease does, against *now* (UTC; default the clock).
-
-    Returns ``{"pass_id", "resumed", "handed", "read", "closed", "returned", "ended", "usd", "usd_known",
-    "why_idle", "stop"}``: the entry ids the pass was handed, verified read, closed and sent back; ``usd`` is what
-    the service settled (known plus unpriced calls at their worst case; None when nothing was readable), and
-    ``why_idle`` why no pass ran (:data:`IDLE_WHY`), or None."""
-    from .attention import Ledger
-    from .integration.switch import memory_cap_usd, writer_refusal
-
-    home = Path(home)
-    settings = settings if settings is not None else _settings()
-    if runner is None:
-        from .integration.consolidate import run_attention_pass as runner  # type: ignore[no-redef]
-    out = _turn_result()
-    refused = writer_refusal(settings)
-    if refused is not None:
-        event(home, "refused", reason=refused)
-        out.update(why_idle="refused", stop="refused")
-        return out
-    lock_fd = try_lock(service_dir(home) / LOCK_FILE)
-    if lock_fd is None:
-        out["why_idle"] = "busy"
-        return out
-    os.set_inheritable(lock_fd, False)
-    at = (lambda: now) if now is not None else _now
-    service: Optional[Service] = None
-    try:
-        service = Service(home, settings, lock_fd, started=at(), record_members=False)
-        service.cap = memory_cap_usd(settings)
-        # a cap an earlier step of this run reached stays as the service keeps it: noted once; a lane's refusal holds
-        # every later pass of the run back (the service's own cap is the room, checked afresh each step)
-        rows = events(home)
-        starts = [i for i, r in enumerate(rows) if r.get("event") == "start"]
-        reached = [r for r in rows[(starts[-1] + 1) if starts else 0 :] if r.get("event") == "cap-reached"]
-        service.cap_noted = bool(reached)
-        service.capped = any(r.get("by") == "proxy" for r in reached)
-        record = _hold_writer_row(home)
-        ledger = Ledger(home)
-        resumable = pending_passes(home)
-        ledger.return_orphans(live_pass_ids=resumable)
-        service.set("idle")
-        out = await _iteration(service, ledger, resumable[:1], runner=runner, clock=at)
-        if out["stop"] is not None:
-            reached = NOT_REACHED_BY.get(out["stop"])
-            if reached is not None:
-                ledger.mark_not_reached(reached)
-            _end_writer_row(record, out["stop"])
-        return out
-    finally:
-        # stopped whatever happened: a later stop or start never takes the caller's process for a running service
-        if service is not None:
-            try:
-                service.set("stopped")
-            except OSError:
-                pass
-        os.close(lock_fd)
-
-
-def step(
-    home: Path | str,
-    *,
-    settings: Any = None,
-    now: Optional[datetime] = None,
-    runner: Optional[Runner] = None,
-) -> dict:
-    """:func:`step_async` from code that is not in an event loop."""
-    return asyncio.run(step_async(home, settings=settings, now=now, runner=runner))
 
 
 async def service_main(

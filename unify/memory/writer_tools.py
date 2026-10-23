@@ -2,7 +2,7 @@
 (:mod:`unify.common.tool_registry`).
 
 Every tool JSON the writer, the curator or a helper receives is rendered from the registry (through
-:mod:`.agent_profiles`), and every refusal text comes from a spec's ``refusals`` (or :data:`GENERAL_REFUSALS` for the
+:mod:`.agent_profiles`), and every refusal text comes from a spec's ``refusals`` (or :data:`.tool_spec.GENERAL_REFUSALS` for the
 answers the pass loop itself gives), each with a stable form code that the structured tool events record.
 
 Tool state is derived from files the model can see: fixture provenance from the fixture files themselves
@@ -28,22 +28,16 @@ from . import views as _views
 from unify.common import tool_registry as _registry
 
 from .tool_spec import GENERAL, refusal
-from .tool_spec import GENERAL_REFUSALS as _GENERAL_REFUSALS
 
 #: parts per read_episode call, reader calls per model turn and cells per model turn (stated in the descriptions)
 READ_PARTS_PER_CALL = _registry.READ_PARTS_PER_CALL
 READERS_PER_TURN = _registry.READERS_PER_TURN
 CELLS_PER_TURN = _registry.CELLS_PER_TURN
-#: grep's answer when its search process fails for a reason other than the pattern (a fixed text: the
-#: process's own output can name host paths)
-SEARCH_FAILED = _registry.SEARCH_FAILED
 #: where the manifest lives in the writer's box
 MANIFEST = ".pass/manifest.json"
 
 _POOL_STATUS = ("open", "closed", "any")
 
-#: Answers the pass loop gives on any tool, by stable form code (defined with the specs in :mod:`.tool_spec`).
-GENERAL_REFUSALS = _GENERAL_REFUSALS
 #: The numbers the per-turn answers state, filled in when a caller does not give them.
 _GENERAL_FIELDS = {
     "readers_per_turn": {"limit": READERS_PER_TURN},

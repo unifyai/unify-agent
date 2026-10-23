@@ -12,6 +12,7 @@ import pytest
 from unify.memory import similar
 from unify.memory.trigger import PassRequest
 from tests.memory.test_writer_library_tools import EPS
+from tests.memory.test_transcripts_whole import read_transcript
 from tests.memory.test_writer_pass import Turns, _call, _writer
 
 CANDIDATE = 'def area(w, h):\n    """Area of a w by h rectangle."""\n    return w * h\n'
@@ -251,9 +252,7 @@ def test_a_writer_that_delegates_gets_the_helpers_messages_and_staged_files(tmp_
         "error" in m for m in stored.values()
     )
     # whole, in sha-checked chunk files (transcripts.record_transcript, the one way every agent stores its own)
-    from unify.memory import transcripts
-
-    kept = transcripts.read_transcript(tmp_path / "records", "p1", "call-2")
+    kept = read_transcript(tmp_path / "records", "p1", "call-2")
     assert len(kept) == stored["call-2"]["lines"] and all(
         json.loads(x)["helper"] == "call-2" for x in kept
     )

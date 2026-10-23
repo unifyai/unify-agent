@@ -287,11 +287,6 @@ def safety(source: str, rel: str = PROCEDURE_FILE) -> str | None:
 # --- what the episode handed back -----------------------------------------------------------------------------
 
 
-def digest(value: Any) -> str:
-    """The first 16 hex digits of the sha256 of *value*'s canonical JSON."""
-    return hashlib.sha256(canonical(value).encode("utf-8", "surrogatepass")).hexdigest()[:16]
-
-
 def answered_action(ep: Any) -> int | None:
     """The index in ``ep.actions`` of the action whose value :func:`handed_back` gives (the last answered dialogue
     action, whose arguments are the fixture source ``args:<i>``); None when the value comes from the final reply or
@@ -369,13 +364,6 @@ def final_value_signals(signals: Iterable[Any], ep: Any) -> list:
     else:
         kept = [max(checker, key=_given_order)]
     return kept
-
-
-def completed(ep: Any) -> bool:
-    """Whether the episode is a completed attempt: it handed back a value or changed the work tree."""
-    found, _ = handed_back(ep)
-    before, after = getattr(ep, "worktree_before", None), getattr(ep, "worktree_after", None)
-    return found or (after is not None and after != before)
 
 
 # --- the store ------------------------------------------------------------------------------------------------

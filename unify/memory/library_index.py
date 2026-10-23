@@ -16,7 +16,6 @@ from collections.abc import Callable
 
 from .item_states import HIDDEN, ON_TRIAL, STATUSES
 from .layout import FUNCTION_ID, NOTE_ID, Library
-from .library_helper import item_count, split_index
 
 INDEX_VIEW_TOKENS = 4000
 # STATUSES and HIDDEN (imported above from item_states) stay importable from here: other modules read them here
@@ -216,10 +215,3 @@ def render_index(
     if not by_pkg and not by_topic:
         out.append(_EMPTY)
     return "".join(out)
-
-
-def listed(index: str) -> int:
-    """How many items an index lists."""
-    return sum(item_count(body) for _, body in split_index(index)[1])
-
-

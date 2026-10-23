@@ -18,6 +18,12 @@ from unify.memory.integration import consolidate, switch
 from tests.memory.test_writer_library_tools import _episode
 from tests.memory.test_writer_pass import needs_bwrap
 
+
+async def helper_result(ctx, call: str) -> str:
+    """Wait for helper *call* to end and return its last text."""
+    await ctx.pass_record.ended[call].wait()
+    return ctx.replies[call]
+
 EPS = {
     "e1": _episode(
         "e1",
@@ -151,7 +157,7 @@ def _run(args, ctx):
         if tool_spec.form_of(out):
             return out
         name = out.split()[1]
-        reply = await helpers.result(ctx, name)
+        reply = await helper_result(ctx, name)
         assert await messaging.close(ctx.pass_record, "the writer finished") == {
             name: "ended",
         }
@@ -292,7 +298,7 @@ def test_helpers_run_concurrently_and_so_do_their_model_calls(
     async def go():
         for task, eps in (("A", ["e1"]), ("B", ["e2"])):
             await helpers.handle({"task": task, "episodes": eps}, ctx)
-        replies = [await helpers.result(ctx, c) for c in ("call-1", "call-2")]
+        replies = [await helper_result(ctx, c) for c in ("call-1", "call-2")]
         await messaging.close(ctx.pass_record, "the writer finished")
         return replies
 

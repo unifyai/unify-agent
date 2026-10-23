@@ -359,37 +359,16 @@ def apply_outcome(level: str | None, prior: str | None, uses: Iterable[Use]) -> 
     return Outcome(d.status, new, d.basis, d.rule, d.reason, d.episodes)
 
 
-def record_line(t: Mapping[str, Any]) -> str:
-    """One line saying what the track record holds, never claiming more: verdicts when there are any, otherwise the
-    episodes it ran in without errors; never the word for correctness."""
-    v = t.get("verdicts") or {}
-    acc, rej = int(v.get("accepted") or 0), int(v.get("rejected") or 0)
-    if acc or rej:
-        return f"its record has verdicts: {acc} accepted, {rej} rejected"
-    ran = int((t.get("implicit") or {}).get("reused_episodes") or 0)
-    if ran:
-        return f"its record has no verdicts; it ran without errors in {ran} episodes"
-    return "no later use recorded yet"
-
-
-def status_text(status: str, basis: str | None) -> str:
-    """The status as the index shows it: ``adopted (implicit)`` for an adoption without verdicts."""
-    if status == ADOPTED and basis == BASIS_IMPLICIT:
-        return f"{ADOPTED} (implicit)"
-    return status
-
-
 # --- what a status rests on ---------------------------------------------------
 
 #: What an item's status rests on, by the signals its uses carry: verdicts after its answered calls, outcomes at the
 #: end of its episodes, implicit signals only (its stated result condition), or no outcome signal at all.
 BASIS_END_OUTCOMES = "end_outcomes"
 BASIS_NO_OUTCOME_SIGNALS = "no_outcome_signals"
-STATUS_BASES = (BASIS_VERDICTS, BASIS_END_OUTCOMES, BASIS_IMPLICIT, BASIS_NO_OUTCOME_SIGNALS)
 
 
 def status_basis(uses: Iterable[Use]) -> str:
-    """What a status decided from *uses* rests on (:data:`STATUS_BASES`): ``verdicts`` when any use carries a
+    """What a status decided from *uses* rests on: ``verdicts`` when any use carries a
     verdict, else ``end_outcomes`` when any carries an end outcome, else ``implicit`` when any carries a stated
     condition's result or a correction, else ``no_outcome_signals`` (no use, or uses that only returned, raised or
     refused). A contrary signal on a use its record does not attribute (``episode_negative``) counts as its regime

@@ -25,14 +25,6 @@ from typing import Iterable
 
 STAGING_PREFIX = "/inputs/staging/"
 _CANDIDATE = re.compile(r"candidates/[^/]+\.py")
-KEYS = (
-    "parsed",
-    "staged",
-    "pooled_at_start",
-    "batch_map_rows",
-    "read_by_writer",
-    "adopted",
-)
 
 
 def staged_candidates(views: dict) -> list[str]:
@@ -152,7 +144,7 @@ def counts(
     read: Iterable[str],
     provenance: Iterable[dict],
 ) -> dict:
-    """The chain counts (:data:`KEYS`) of one store pass. *views*: its staging by episode; *root*: where staging
+    """The chain counts of one store pass. *views*: its staging by episode; *root*: where staging
     was read (for the fork's parse records); *staged_entry*: staging ref -> pool entry id at the pass's start;
     *pool_ids*: the entries the pool held at the start; *batch_rows*: the batch map's rows; *read*: the paths the
     writer read (:func:`read_paths`); *provenance*: the gate's rows for the landed items.

@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any
 
 VERSION = 1
-FORMS = ("function", "note", "checklist")
 DECLARED = ("none", "reads", "writes", "unknown")
 TEST_OUTCOMES = ("as_stated", "not_as_stated", "error", "timeout", "not_run")
 STATUS_BASES = ("verdicts", "end_outcomes", "implicit", "no_outcome_signals")

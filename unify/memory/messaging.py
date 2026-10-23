@@ -60,8 +60,6 @@ STOP_SPEC = _registry.STOP
 ASK_SPEC = _registry.ASK
 
 SPECS = (SEND_SPEC, MESSAGES_SPEC, WAIT_SPEC, WHO_SPEC, REPLY_SPEC, STOP_SPEC, ASK_SPEC)
-#: Every tool this module answers.
-NAMES = frozenset(s.name for s in SPECS)
 
 #: The record's facts as every brief states them: the brief stays constant and points at the first message, which
 #: carries the common section every agent reads and this agent's roster lines.

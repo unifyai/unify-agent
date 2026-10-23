@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.memory.test_helpers import EPS, _ctx, _msg, _tc
+from tests.memory.test_helpers import EPS, _ctx, _msg, _tc, helper_result
 from tests.memory.test_helper_messaging import Steps
 from tests.memory.test_tool_channel_box import _descendants
 from tests.memory.test_writer_pass import Turns, _call, _e1, _ME
@@ -114,7 +114,7 @@ def _helper(tmp_path: Path, cells: list[tuple[str, str]], *, library: str | None
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-1")  # rev 2 names helpers call-1, call-2, ...
+        await helper_result(ctx, "call-1")  # rev 2 names helpers call-1, call-2, ...
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())

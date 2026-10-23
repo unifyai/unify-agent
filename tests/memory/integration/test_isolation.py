@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from tests.memory import service_step
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from tests.memory.integration import fake_tracks
 from tests.memory.integration.test_checkout import _seed
@@ -165,7 +166,7 @@ async def test_a_cell_sees_the_export_and_no_store(world, monkeypatch):  # noqa:
 def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
     """The checker's free text (an outcome's summary and reasons) never lands in the home, the request's events, the
     signals, or anything a writer pass reads. Rev 2: the request starts the writer service and never runs a pass
-    itself, so the pass runs here as the service runs it, in-process (``writer_service.step``)."""
+    itself, so the pass runs here as the service runs it, in-process (``tests.memory.service_step.step``)."""
     from unify.memory import writer_service as ws
     from unify.memory.integration import consolidate
 
@@ -261,7 +262,7 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
     run = episode("Pay Ada back from pay.csv.", "paid.csv")
     assert started, f"the request started no writer service (progress: {progress})"
     episode("Pay Bo back from pay.csv.", "paid-bo.csv")
-    stepped = [ws.step(home, settings=SETTINGS) for _ in range(3) if not sent]
+    stepped = [service_step.step(home, settings=SETTINGS) for _ in range(3) if not sent]
 
     assert (
         sent

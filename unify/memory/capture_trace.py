@@ -2,7 +2,8 @@
 
 A capture records what its episode did: a pointer list into the episode's own record (its request, observations,
 cells and actions with their responses; :func:`trace_of`), never a copy. The procedure the fork wrote takes one of
-three forms (:data:`FORMS`, read from its code by :func:`entry_point`, never run to find out):
+three forms (``value``, ``state`` and ``state_env``, read from its code by :func:`entry_point`, never run to find
+out):
 
 ==============  ============================================================================================
 form            contract
@@ -30,17 +31,11 @@ import copy
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
-from typing import Any, Literal, get_args
+from typing import Any
 
 from .fixtures import canonical
 from .request_value import request_data
 
-Form = Literal["value", "state", "state_env"]
-Outcome = Literal["positive", "contrary", "none"]
-FORMS: tuple[str, ...] = get_args(Form)
-OUTCOMES: tuple[str, ...] = get_args(Outcome)
-#: The record version a trace capture stamps (``record.json`` and its ``captures-events.jsonl`` row).
-VERSION = 2
 #: Calls one replay serves at most (an outer bound, not a quota): past it the run raises ``TooManyCalls``.
 MAX_REPLAY_CALLS = 2000
 #: Issued calls a box's result lists (each call's arguments clipped), for the evidence that names a differing call.

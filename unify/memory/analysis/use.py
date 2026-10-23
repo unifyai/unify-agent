@@ -148,7 +148,6 @@ SHOWN_VERSION = 1
 #: Used only for legacy recordings, which have no ``shown_record``.
 HEADER_PREFIX = "Memory library: candidates to check, not authority."
 
-EXPOSURE_SOURCES = ("record", "legacy_text", "unknown")
 #: A cell's status: its structured result had no error, had one, had one too large to read, the cell was
 #: empty, or there was no structured result for it.
 CELL_STATUSES = ("ok", "error", "unread", "empty", "unknown")

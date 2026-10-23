@@ -11,7 +11,7 @@ import time
 import pytest
 
 from unify.memory import helpers, messaging, tool_spec
-from tests.memory.test_helpers import EPS, _ctx, _msg, _tc, helper_boxes  # noqa: F401 (fixture)
+from tests.memory.test_helpers import EPS, _ctx, _msg, _tc, helper_boxes, helper_result  # noqa: F401 (fixture)
 from tests.memory.test_writer_pass import needs_bwrap
 
 RECORD_TOOLS = {"send", "messages", "wait", "who"}
@@ -92,7 +92,7 @@ def test_two_helpers_model_calls_are_in_flight_at_the_same_time(tmp_path, helper
     async def go():
         await helpers.handle({"task": "A", "episodes": ["e1"]}, ctx)
         await helpers.handle({"task": "B", "episodes": ["e2"]}, ctx)
-        await asyncio.gather(helpers.result(ctx, "call-1"), helpers.result(ctx, "call-2"))
+        await asyncio.gather(helper_result(ctx, "call-1"), helper_result(ctx, "call-2"))
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
@@ -115,7 +115,7 @@ def test_a_helper_mentions_another_helper_and_its_wait_returns_it(tmp_path, help
         await helpers.handle({"task": "A", "episodes": ["e1"]}, ctx)
         await helpers.handle({"task": "B", "episodes": ["e2"]}, ctx)
         await asyncio.wait_for(
-            asyncio.gather(helpers.result(ctx, "call-1"), helpers.result(ctx, "call-2")),
+            asyncio.gather(helper_result(ctx, "call-1"), helper_result(ctx, "call-2")),
             5,
         )
         await messaging.close(ctx.pass_record, "the writer finished")
@@ -174,7 +174,7 @@ def test_a_helper_reads_the_writers_inputs_read_only(tmp_path, helper_boxes):
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-1")
+        await helper_result(ctx, "call-1")
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
@@ -204,7 +204,7 @@ def test_in_the_real_box_the_writers_inputs_read_and_refuse_writes(tmp_path):
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-1")
+        await helper_result(ctx, "call-1")
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
@@ -251,7 +251,7 @@ def test_the_recorded_helper_calls_that_were_refused_now_work(tmp_path, helper_b
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-1")
+        await helper_result(ctx, "call-1")
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())
@@ -279,7 +279,7 @@ def test_a_helper_cell_imports_the_library_as_the_writer_sees_it(tmp_path):
 
     async def go():
         await helpers.handle({"task": "t", "episodes": ["e1"]}, ctx)
-        await helpers.result(ctx, "call-1")
+        await helper_result(ctx, "call-1")
         await messaging.close(ctx.pass_record, "the writer finished")
 
     asyncio.run(go())

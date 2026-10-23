@@ -75,7 +75,7 @@ from . import writer_tools as _wt
 from .integration.fork_worker import QUOTA_BYTES, QUOTA_FILES, allowed
 from .library_prompts import CANDIDATE_CONTRACT_IN_CODE
 from . import sandbox_run as _sandbox
-from .tool_spec import GENERAL, REFUSED, Refusal, ToolSpec, form_of, refusal
+from .tool_spec import GENERAL, Refusal, ToolSpec, form_of, refusal
 
 #: The directory under the run's state dir that holds every helper's output (``<pass>/<name>/``).
 HELPERS_DIR = "memory-helpers"
@@ -1574,12 +1574,6 @@ def _stopped_by(pr: _messaging.PassRecord, call: str, status: str) -> str:
     if status == "operational step guard":
         return "step_guard"
     return "error"
-
-
-async def result(ctx: DelegateContext, call: str) -> str:
-    """Wait for helper *call* to end and return its last text (for callers that need the end, such as tests)."""
-    await ctx.pass_record.ended[call].wait()
-    return ctx.replies[call]
 
 
 def _finish(

@@ -12,11 +12,9 @@ import logging
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 
 def enabled() -> bool:

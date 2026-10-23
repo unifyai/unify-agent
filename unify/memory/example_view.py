@@ -3,7 +3,7 @@ docstring's ``Example:`` line show of how to call it.
 
 An item record may keep one example call of its function (``{"test", "line", "call"}``), picked by a gate before
 rev 2.1 from the calls its tests made; the gate now runs no test, so it picks none. Whatever shows a kept call
-re-quotes it from the tree first (:func:`verified_example`, :func:`call_text`: the call expression at the recorded
+re-quotes it from the tree first (:func:`verified_example`, :func:`quote_call`: the call expression at the recorded
 line, whitespace runs collapsed to one space, comments dropped, cut past :data:`EXAMPLE_MAX_CHARS`): a test edited
 since gives other text at that line, and then nothing is shown, so a stale call is never quoted. Pure, standard
 library only.
@@ -135,12 +135,6 @@ def _quote_from(read: ReadFile, test_file: str, line: int, name: str) -> str | N
     return quote_call(source, line, name)
 
 
-def call_text(tree: Path, test_file: str, line: int, name: str) -> str | None:
-    """The call of *name* at *line* of the test file *test_file* (tree-relative) of the library copy at *tree*,
-    quoted as :func:`quote_call` does; None when the file or the call is not there."""
-    return _quote_from(tree_reader(tree), test_file, line, name)
-
-
 def file_of_test(test: str) -> str:
     """The file of a test id (``memory/<pkg>/tests/test_x.py::test_y`` gives ``memory/<pkg>/tests/test_x.py``)."""
     return test.split("::", 1)[0]
@@ -219,5 +213,3 @@ def example_of(
         return example_text(ex) if ex is not None else None
 
     return get
-
-

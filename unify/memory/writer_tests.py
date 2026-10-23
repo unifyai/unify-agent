@@ -17,7 +17,7 @@ environment): a snapshot of the writer's library copy read-only at ``/memory``, 
 ``/out`` writable. Outer bounds, not steering: :data:`TEST_S` per test, the box's rlimits and :data:`MAX_CASE_BYTES`
 of recorded input per test.
 
-**Outcomes** (:data:`OUTCOMES`), in this order: ``timeout`` (the box ran out of time), ``not_run`` (it gave no
+**Outcomes**, in this order: ``timeout`` (the box ran out of time), ``not_run`` (it gave no
 result), then the expectation: ``as_stated``, ``not_as_stated``, or ``error`` (the item raised where the expectation
 did not say it would).
 """
@@ -45,7 +45,6 @@ from .sandbox_run import PYTHON, SandboxResult, run_confined
 ExpectKind = Literal["returns", "raises", "refuses"]
 Outcome = Literal["as_stated", "not_as_stated", "error", "timeout", "not_run"]
 EXPECT_KINDS: tuple[str, ...] = get_args(ExpectKind)
-OUTCOMES: tuple[str, ...] = get_args(Outcome)
 TESTS_FILE = "tests.jsonl"
 #: One test's wall bound (an outer bound, not a quota).
 TEST_S = 30.0
@@ -311,26 +310,6 @@ def _append(path: Path, row: dict) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
-
-
-def results(path: Path | str) -> list[TestResult]:
-    """Every finished test of a pass's ``tests.jsonl`` (its stated row joined to its result row)."""
-    stated: dict[str, dict] = {}
-    out = []
-    for r in _rows(Path(path)):
-        if r.get("phase") == "stated" and isinstance(r.get("test_id"), str):
-            stated[r["test_id"]] = r
-        elif r.get("phase") == "result" and r.get("test_id") in stated:
-            s = stated[r["test_id"]]
-            try:
-                exp = Expectation.of(s.get("stated"))
-            except WriterTestRefused:
-                continue
-            out.append(
-                TestResult(r["test_id"], str(s.get("item")), str(s.get("on")), exp, r.get("outcome"),
-                           str(r.get("detail") or ""), str(r.get("seconds") or "0")),
-            )  # fmt: skip
-    return out
 
 
 @dataclass

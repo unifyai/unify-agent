@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from tests.memory.test_capture_examples import ROWS, _cell, _copy
-from unify.memory import librarian, library_prompts, trust
+from unify.memory import librarian, library_prompts
 from unify.memory.item_records import support, support_text
 
 #: Wording that marks a stored entry as second-class or tells an agent to wait for or prefer curated items.
@@ -69,7 +69,6 @@ def test_the_texts_agents_read_never_rank_captures_below_curated_items():
         assert "may hold only for that case" not in text and "not yet reviewed" not in text
         assert "wait for" not in text
     assert "an item's kind (a curated item, a note or a recorded procedure) is never a reason" in librarian.BRIEF
-    assert trust.record_line({}) == "no later use recorded yet"
 
 
 def test_support_says_a_recorded_procedure_rests_on_accepted_work():

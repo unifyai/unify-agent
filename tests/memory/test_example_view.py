@@ -35,12 +35,17 @@ def test_fills():
 # --- the quote --------------------------------------------------------------------------------------------
 
 
+def _call_text(root, test_file: str, line: int, name: str):
+    """The call of *name* at *line* of *test_file* in the library copy at *root*, as an item's card re-quotes it."""
+    return ev._quote_from(ev.tree_reader(root), test_file, line, name)
+
+
 def test_a_one_line_call_is_quoted_as_written(tmp_path):
     root = _tree(tmp_path / "lib")
-    assert ev.call_text(root, TESTS, 5, "parse_date") == QUOTED
-    assert ev.call_text(root, TESTS, 5, "week") is None  # no call of that name there
-    assert ev.call_text(root, TESTS, 4, "parse_date") is None  # not at that line
-    assert ev.call_text(root, "memory/text/tests/test_nope.py", 5, "parse_date") is None
+    assert _call_text(root, TESTS, 5, "parse_date") == QUOTED
+    assert _call_text(root, TESTS, 5, "week") is None  # no call of that name there
+    assert _call_text(root, TESTS, 4, "parse_date") is None  # not at that line
+    assert _call_text(root, "memory/text/tests/test_nope.py", 5, "parse_date") is None
 
 
 def test_a_multi_line_call_is_collapsed_without_its_comments_from_any_of_its_lines():
@@ -78,7 +83,7 @@ def test_only_files_under_memory_are_read(tmp_path):
         "memory/text/tests/test_link.py",
         "notes/text/dates.md",
     ):
-        assert ev.call_text(root, rel, 1, "parse_date") is None, rel
+        assert _call_text(root, rel, 1, "parse_date") is None, rel
 
 
 # --- the pick ---------------------------------------------------------------------------------------------

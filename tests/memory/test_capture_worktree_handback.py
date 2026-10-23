@@ -28,7 +28,6 @@ def _worktree_episode(
 def test_a_work_tree_change_with_no_answered_action_hands_back_nothing():
     ep = _worktree_episode("e1")
     assert cp.handed_back(ep) == (False, None)
-    assert cp.completed(ep) is True  # still a completed attempt: the work tree changed
     assert cp.answered_action(ep) is None
 
 

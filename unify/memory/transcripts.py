@@ -5,7 +5,7 @@ under the pass's record folder, ``<pass_record_root>/<pass_id>/``: the writer's 
 the list ``transcript.json``, another agent's (a helper the writer launched) as ``transcript-<agent>-<n>.jsonl``
 with ``transcript-<agent>.json``. A chunk holds about :data:`CHUNK_BYTES`; a longer line is a chunk of its own,
 whole. The list names each chunk with its sha256, byte count and line count, so a reader can page through the
-transcript and check each page (:func:`read_transcript`).
+transcript and check each page.
 
 The git note of the writer's transcript (:func:`note_lines`) carries the lines themselves while they fit
 :data:`NOTE_BYTES`, else one row naming the chunks and their digests. A transcript that cannot be written to files
@@ -18,7 +18,6 @@ import hashlib
 import json
 import os
 import re
-import stat
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -61,15 +60,6 @@ def _write_new(path: Path, data: bytes) -> None:
     )
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
-
-
-def _read_plain(path: Path) -> bytes:
-    """A regular file's bytes, never through a link."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    with os.fdopen(fd, "rb") as fh:
-        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-            raise OSError(f"{path} is not a regular file")
-        return fh.read()
 
 
 def _pages(lines: list[str], chunk_bytes: int) -> Iterable[list[str]]:
@@ -133,27 +123,6 @@ def write_chunks(
         (json.dumps(manifest, sort_keys=True, indent=1) + "\n").encode("utf-8"),
     )
     return manifest
-
-
-def read_transcript(
-    root: str | os.PathLike,
-    pass_id: str,
-    agent: str = WRITER,
-) -> list[str]:
-    """The lines of a transcript :func:`write_chunks` stored, chunk by chunk, each checked against its sha256 in
-    the list (a :class:`ValueError` names a chunk that does not match)."""
-    folder = Path(root) / _check_name("pass id", pass_id)
-    manifest = json.loads(
-        _read_plain(folder / f"{_prefix(_check_name('agent', agent))}.json"),
-    )
-    lines: list[str] = []
-    for chunk in manifest["chunks"]:
-        name = _check_name("chunk name", chunk["name"])
-        data = _read_plain(folder / name)
-        if hashlib.sha256(data).hexdigest() != chunk["sha256"]:
-            raise ValueError(f"transcript chunk {name} does not match its sha256")
-        lines.extend(data.decode("utf-8").splitlines())
-    return lines
 
 
 def record_transcript(

@@ -315,7 +315,7 @@ def test_capture_stores_brief_and_tools_by_hash_and_keeps_what_was_seen():
     assert rows[0]["message"]["content"] == f"(brief sha256 {brief_sha})"
     # the first user message is kept whole, beyond the per-string cut
     assert rows[1]["message"]["content"] == msgs[1]["content"]
-    assert len(msgs[1]["content"]) > writer_pass.TRANSCRIPT_STRING_CHARS
+    assert len(msgs[1]["content"]) > writer_pass._OUTPUT_CAP  # the per-string cut of a bounded view
     assert rows[3]["message"]["content"] == "the whole result before compaction"
     assert rows[3]["compacted"] is True
 

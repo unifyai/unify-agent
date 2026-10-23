@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,21 @@ import pytest
 from unify.memory import transcripts
 from unify.memory.redact import Redactor
 from unify.memory.writer_pass import WriterPass, transcript_lines
+
+
+def read_transcript(root, pass_id: str, agent: str = transcripts.WRITER) -> list[str]:
+    """The lines of a transcript :func:`unify.memory.transcripts.write_chunks` stored, chunk by chunk, each checked
+    against its sha256 in the list (a :class:`ValueError` names a chunk that does not match)."""
+    folder = Path(root) / pass_id
+    prefix = "transcript" if agent == transcripts.WRITER else f"transcript-{agent}"
+    manifest = json.loads((folder / f"{prefix}.json").read_bytes())
+    lines: list[str] = []
+    for chunk in manifest["chunks"]:
+        data = (folder / chunk["name"]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != chunk["sha256"]:
+            raise ValueError(f"transcript chunk {chunk['name']} does not match its sha256")
+        lines.extend(data.decode("utf-8").splitlines())
+    return lines
 
 SECRET = "planted-fake-token-91c0e2aa"  # pragma: allowlist secret
 
@@ -86,7 +102,7 @@ def test_a_500_message_transcript_is_stored_whole_and_reads_back_identical(tmp_p
         page = data.decode().splitlines()
         assert len(page) == chunk["lines"]
         paged += page
-    assert paged == expected == transcripts.read_transcript(tmp_path, "p1")
+    assert paged == expected == read_transcript(tmp_path, "p1")
     rows = [json.loads(ln) for ln in paged]
     assert [r["i"] for r in rows[1:]] == list(
         range(500),
@@ -111,12 +127,12 @@ def test_a_changed_chunk_is_named_on_read(tmp_path):
     )
     assert (
         len(manifest["chunks"]) > 2
-        and transcripts.read_transcript(tmp_path, "p2") == lines
+        and read_transcript(tmp_path, "p2") == lines
     )
     victim = tmp_path / "p2" / manifest["chunks"][1]["name"]
     victim.write_text(victim.read_text().replace("y", "Y", 1))
     with pytest.raises(ValueError, match=manifest["chunks"][1]["name"]):
-        transcripts.read_transcript(tmp_path, "p2")
+        read_transcript(tmp_path, "p2")
 
 
 def test_a_line_longer_than_a_page_is_one_whole_chunk(tmp_path):
@@ -129,7 +145,7 @@ def test_a_line_longer_than_a_page_is_one_whole_chunk(tmp_path):
         chunk_bytes=1_000,
     )
     assert [c["lines"] for c in manifest["chunks"]] == [1, 1, 1]
-    assert transcripts.read_transcript(tmp_path, "p3") == lines
+    assert read_transcript(tmp_path, "p3") == lines
 
 
 def test_a_helper_uses_the_same_mechanism_beside_the_writer(tmp_path):
@@ -144,7 +160,7 @@ def test_a_helper_uses_the_same_mechanism_beside_the_writer(tmp_path):
     ]
     assert (w["agent"], h["agent"]) == ("writer", "helper-1") and h["lines"] == 10
     assert (
-        transcripts.read_transcript(tmp_path, "p4", "helper-1")[1:]
+        read_transcript(tmp_path, "p4", "helper-1")[1:]
         == transcript_lines(_messages(9), "p4")[1:]
     )
 
@@ -153,7 +169,7 @@ def test_a_recorded_transcript_is_never_written_over_and_names_are_checked(tmp_p
     transcripts.write_chunks(tmp_path, "p5", "writer", ["{}"])
     with pytest.raises(OSError):
         transcripts.write_chunks(tmp_path, "p5", "writer", ['{"other": 1}'])
-    assert transcripts.read_transcript(tmp_path, "p5") == ["{}"]
+    assert read_transcript(tmp_path, "p5") == ["{}"]
     for agent in ("../up", "a/b", "", ".hidden"):
         with pytest.raises(ValueError):
             transcripts.write_chunks(tmp_path, "p6", agent, ["{}"])
@@ -200,6 +216,6 @@ def test_the_writer_note_points_to_its_whole_transcript(tmp_path):
 
     (row,) = WriterPass.transcript_note(writer(str(tmp_path)), "p10")
     assert json.loads(row)["transcript"]["lines"] == 501
-    assert transcripts.read_transcript(tmp_path, "p10") == lines
+    assert read_transcript(tmp_path, "p10") == lines
     # no record folder: the note itself carries the whole transcript
     assert WriterPass.transcript_note(writer(None), "p10") == lines

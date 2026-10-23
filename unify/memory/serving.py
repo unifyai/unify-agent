@@ -56,8 +56,6 @@ _FROM_JUDGE = {
     "disagreed": "contrary_signal",
     "negative": "contrary_signal",
 }
-#: The item-record statuses after which a library item is withdrawn.
-WITHDRAWN_STATUSES = ("retired", "superseded")
 
 
 def _contrary_signals(evidence: Any, eid: str, regime: str) -> list[Any]:
@@ -432,5 +430,3 @@ __all__ = [
     "record_capture_uses",
     "withdrawn_items",
 ]
-
-

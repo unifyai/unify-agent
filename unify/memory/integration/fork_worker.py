@@ -76,7 +76,6 @@ REPLY_JSON = "fork-reply.json"
 LOCK_FILE = "fork.lock"
 #: Files in a staging dir that record the fork rather than stage findings; never exported as staged files.
 RECORD_FILES = (FORK_JSON, BLOCKS_JSON, REPLY_JSON, LOCK_FILE)
-FORMS = ("fence", "inner", "split", "line_before", "split_unfenced")
 STATUSES = ("parsed", "refused", "dropped")
 RENAMED = "renamed: not an importable module name"
 
@@ -502,7 +501,7 @@ def write_record(
 def parse_reply(text: str) -> tuple[list[dict], dict]:
     """``(blocks, record)`` for one reply *text* (a reply's message contents joined by ``"\\n"``).
 
-    *blocks* lists every block found, in order, each a dict: ``index``, ``form`` (:data:`FORMS`, or None for a block
+    *blocks* lists every block found, in order, each a dict: ``index``, ``form`` (``fence``, ``inner``, ``split``, ``line_before`` or ``split_unfenced``; None for a block
     naming no file), ``path``, ``kind`` (candidate, case, notes, other), ``status`` (parsed, refused or dropped),
     ``reason`` (None when parsed as named), ``content_sha256`` (sha256 of the content's lines joined by ``"\\n"``,
     without the path line, the fence lines and leading or trailing blank lines), ``lines`` (that content's line

@@ -2,8 +2,8 @@
 
 Each text serves one role and states its role, inputs, outputs, rules and when it is done. None carries another
 role's instructions, any benchmark's vocabulary, or an instruction to check a request's examples:
-``tests/memory/test_prompts_library_mode.py`` pins that, and ``test_prompts_library_contradictions.py`` pins
-:data:`RULES` (each rule stated in its owners' prompts only) and :data:`V2_RETIRED` (no retired rule survives).
+``tests/memory/test_prompts_library_mode.py`` pins that, and ``test_prompts_library_contradictions.py`` pins that
+each rule is stated in its owners' prompts only and that no retired rule survives.
 
 Every number the writer's brief states is read from the constant that enforces it (:func:`write_brief_now`), and what
 it says of the gate from :data:`.gate_policy.GATE`, so the brief cannot drift from its gate. A change to any of these
@@ -994,87 +994,3 @@ def input_pointer_files() -> dict[str, str]:
 #: The most an inlined list may hold, in items: a list that grows with the library, the pool or the batch goes to a
 #: file the prompt points to.
 MAX_INLINE_LIST = 10
-
-
-#: Each rule the prompts state: (rule, topic, owners, the phrase that states it). The phrase must be in every
-#: owner's text and in no other prompt (tests/memory/test_prompts_library_contradictions.py).
-RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
-    (
-        "fits compares structure only",
-        "how an item's applicability check matches",
-        ("guide",),
-        "It compares the structure of what you",
-    ),
-    (
-        "an input refusal means do the step yourself",
-        "input refusals",
-        ("guide",),
-        "Then do that step with your own code",
-    ),
-    (
-        "what to store is the writer's decision",
-        "what to store",
-        ("write",),
-        "What you store is your decision",
-    ),
-    (
-        "start from the actor's code",
-        "where code comes from",
-        ("write",),
-        "Start from the working model's own code",
-    ),
-    (
-        "outcomes are judged from the records",
-        "outcome evidence",
-        ("write",),
-        "Judge outcomes from the records",
-    ),
-    ("failure-only work is a note", "notes", ("write",), "becomes a note"),
-    (
-        "a pass never removes library items",
-        "pass roles",
-        ("write",),
-        "A pass never removes library items",
-    ),
-    ("trust order", "trusted sources", ("write",), "in this order of trust"),
-    (
-        "exact trusted assertion",
-        "test assertions",
-        ("write",),
-        "equals an exact trusted value",
-    ),
-    (
-        "no self-oracle",
-        "test assertions",
-        ("write",),
-        "Never compute an expected value with the function's own expression",
-    ),
-    ("deterministic tests", "qa determinism", ("write",), "never assert on the clock"),
-    ("no credentials", "credentials", ("write",), "Never store credentials"),
-    ("why trailer", "commit trailer", ("write",), '"why"'),
-    ("repair rounds", "repair rounds", ("write",), "you get a repair round"),
-    ("drafts", "drafts", ("write",), "kept as a draft"),
-)
-
-#: Instructions and surfaces of the earlier memory design that are retired: none may appear in any text the actor or
-#: the writer reads in library mode.
-V2_RETIRED = (
-    "do not guess",
-    "Do not write job functions",
-    "Do not write workflow notes",
-    "Tend the library too",
-    "env/<channel>",
-    "memory_channels",
-    "library.json",
-    "previous_gate.json",
-    "unify_memory_testkit",
-    "memlab",
-    "NOTES.md",
-    "workflows/",
-    "catalog()",
-    "check the example first",
-    "candidates, not authority",
-    "recorded for the next consolidation",
-    "proposals/",
-    "memory.diff",
-)

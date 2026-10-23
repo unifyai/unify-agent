@@ -133,7 +133,7 @@ def test_the_expectation_is_recorded_before_the_run_and_a_changed_one_is_a_new_t
     rows = [json.loads(x) for x in ctx.tests_path.read_text().splitlines()]
     assert [r["phase"] for r in rows] == ["stated", "result", "stated", "result"]
     assert [r["stated"]["value"] for r in rows if r["phase"] == "stated"] == [6, 7]
-    assert [r.test_id for r in wt.results(ctx.tests_path)] == [first.test_id, second.test_id]
+    assert [r["test_id"] for r in rows if r["phase"] == "result"] == [first.test_id, second.test_id]
 
 
 # --- value tests and the refusals ---------------------------------------------------------------------------------------------

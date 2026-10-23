@@ -296,8 +296,6 @@ class _PassTemp:
             self._dir._finalizer.detach()  # noqa: SLF001 - kept on purpose; never removed at exit either
 
 
-
-
 def _args_sha256(args: object) -> str:
     """The digest of a call's canonical arguments (sorted keys, compact JSON)."""
     import hashlib
@@ -421,8 +419,6 @@ def _trailers(
 
 
 _OUTPUT_CAP = 8000
-#: parts per read_episode call (one shared page) and reader calls per model turn (stated in the tool descriptions)
-READ_PARTS_PER_CALL = _wt.READ_PARTS_PER_CALL
 READERS_PER_TURN = _wt.READERS_PER_TURN
 
 
@@ -441,10 +437,8 @@ _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _UNKNOWN = "unknown"
 
 # The writer's transcript: kept whole, never cut (:mod:`.transcripts`). On this notes ref of the request's episode
-# commit go its JSON lines while they fit TRANSCRIPT_MAX_BYTES, else one row pointing to its chunk files
+# commit go its JSON lines while they fit transcripts.NOTE_BYTES, else one row pointing to its chunk files
 TRANSCRIPT_REF = "writer-transcripts"
-# the per-string cut of a bounded view (:func:`transcript_lines` with *string_chars*); the stored transcript has none
-TRANSCRIPT_STRING_CHARS = _OUTPUT_CAP
 
 # Structured causes of a pass's end (PassOutcome.codes), set where each cause arises, never read back from
 # reason text. A passed pass is exactly ["ok"]; a refused pass lists the gate checks that refused (G1..G6).
@@ -529,7 +523,6 @@ def call_in_flight(spend: Any) -> Iterator[None]:
         yield
     finally:
         spend.in_flight -= 1
-
 
 
 @dataclass
@@ -2100,7 +2093,6 @@ class WriterPass:
             },
         )
 
-
     def _pool_update(self, req: PassRequest, pass_id: str, out: PassOutcome) -> dict:
         """The candidate pool after this pass: the writer's status changes (merged / superseded when the gate landed
         them, retired and reopened when finish was accepted, every open entry a landed item adopts merged, and each
@@ -2889,7 +2881,7 @@ class WriterPass:
         self.fixtures_made = derive_ledger(box)
         return self.fixtures_made
 
-    async def _library_tool(
+    def _reader_call(
         self,
         name: str,
         args: dict,
@@ -2898,20 +2890,7 @@ class WriterPass:
     ) -> _wt.Reply:
         """The reader tools (read, grep, overview, read_episode, pool) for *agent*. Each agent has its own read log
         and its own record of parts it was shown in full. A bad argument is answered, never raised; the answer names
-        the domain problem, never an exception type. ``grep`` and ``read`` run on a worker thread, the others on the
-        loop."""
-        if name in ("grep", "read"):
-            return await asyncio.to_thread(self._reader_call, name, args, roots, agent)
-        return self._reader_call(name, args, roots, agent)
-
-    def _reader_call(
-        self,
-        name: str,
-        args: dict,
-        roots: dict[str, Path],
-        agent: str = "writer",
-    ) -> _wt.Reply:
-        """:meth:`_library_tool`'s work, synchronous (an in-code call runs it from the worker pool)."""
+        the domain problem, never an exception type. An in-code call runs it from the worker pool."""
         readers = ("read", "grep", "overview", "read_episode", "pool")
         if name not in readers:
             return _wt.general(

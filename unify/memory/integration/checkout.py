@@ -9,7 +9,6 @@ commit's files (:mod:`..library_export`), then drops every write bit; the sandbo
 from __future__ import annotations
 
 import functools
-import logging
 import os
 import shutil
 import stat
@@ -18,7 +17,6 @@ from pathlib import Path
 from ..gitio import GitError, Repo
 from ..snapshot import listing, materialise
 
-logger = logging.getLogger(__name__)
 
 def _writable_retry(func, path, exc, *, root: Path) -> None:
     """``shutil.rmtree``'s error handler: a read-only library-mode export (:func:`make_read_only`) gets its write bits
@@ -148,5 +146,3 @@ def export_actor_library_mode(
 
 def remove_checkout(dest: Path) -> None:
     _clear(Path(dest))
-
-

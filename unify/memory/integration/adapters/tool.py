@@ -17,11 +17,9 @@ never makes the raw-global proxy refuse an access it cannot route. Each call tha
 raises; a failure to record is counted. Calls another observer intercepted are not observed evidence
 and are not recorded. At most ``max_calls`` actions are kept; the rest are counted.
 
-The harness tells the observer which cell is running with :meth:`RecordingObserver.set_cell`. A call is
-attributed to the cell that was current when it started (``before()``). Cells are assumed to run one at
-a time per observer, so create one observer per request.
-
-Nothing here is wired into the actor.
+Every action is recorded with cell 0; the trajectory's recorder (``integration.trajectory.TimedObserver``)
+stamps each call's start and attributes it to the cell whose span holds the stamp. Create one observer per
+request.
 """
 
 from __future__ import annotations
@@ -256,21 +254,10 @@ class RecordingObserver:
         self.max_value_bytes = max_value_bytes
         self.max_error_chars = max_error_chars
         self.max_nodes = max_nodes
-        self._cell = 0
-        self._started_in: dict[int, int] = {}
         self._pending = ToolDrain()
         self._lock = threading.Lock()
 
     # -- harness side -------------------------------------------------------------------------------
-
-    def set_cell(self, index: int) -> None:
-        """The index of the cell now running; calls that start from now on are attributed to it."""
-        with self._lock:
-            self._cell = int(index)
-
-    @property
-    def cell(self) -> int:
-        return self._cell
 
     def drain(self) -> ToolDrain:
         """The actions recorded so far (in call-completion order) and the counts; all are reset."""
@@ -290,11 +277,6 @@ class RecordingObserver:
     # -- EnvObserver --------------------------------------------------------------------------------
 
     def before(self, call: Any) -> None:
-        with self._lock:
-            # Bounded: a call whose after() never comes (another observer's before() raised) leaks one
-            # entry at most until the bound.
-            if len(self._started_in) < 4 * self.max_calls:
-                self._started_in[id(call)] = self._cell
         return None
 
     def after(
@@ -307,8 +289,8 @@ class RecordingObserver:
         started: float,
         elapsed_s: float,
     ) -> None:
+        cell = 0
         with self._lock:
-            cell = self._started_in.pop(id(call), self._cell)
             if intercepted:
                 self._pending.intercepted += 1
                 return

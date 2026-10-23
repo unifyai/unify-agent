@@ -4,10 +4,92 @@ instructions. Each rule lives in its role's prompts only, and no retired rule su
 
 from __future__ import annotations
 
-
-
 from unify.memory import library_prompts as pv
 from tests.memory import prompt_guards as guards
+
+
+#: Each rule the prompts state: (rule, topic, owners, the phrase that states it). The phrase must be in every
+#: owner's text and in no other prompt.
+RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
+    (
+        "fits compares structure only",
+        "how an item's applicability check matches",
+        ("guide",),
+        "It compares the structure of what you",
+    ),
+    (
+        "an input refusal means do the step yourself",
+        "input refusals",
+        ("guide",),
+        "Then do that step with your own code",
+    ),
+    (
+        "what to store is the writer's decision",
+        "what to store",
+        ("write",),
+        "What you store is your decision",
+    ),
+    (
+        "start from the actor's code",
+        "where code comes from",
+        ("write",),
+        "Start from the working model's own code",
+    ),
+    (
+        "outcomes are judged from the records",
+        "outcome evidence",
+        ("write",),
+        "Judge outcomes from the records",
+    ),
+    ("failure-only work is a note", "notes", ("write",), "becomes a note"),
+    (
+        "a pass never removes library items",
+        "pass roles",
+        ("write",),
+        "A pass never removes library items",
+    ),
+    ("trust order", "trusted sources", ("write",), "in this order of trust"),
+    (
+        "exact trusted assertion",
+        "test assertions",
+        ("write",),
+        "equals an exact trusted value",
+    ),
+    (
+        "no self-oracle",
+        "test assertions",
+        ("write",),
+        "Never compute an expected value with the function's own expression",
+    ),
+    ("deterministic tests", "qa determinism", ("write",), "never assert on the clock"),
+    ("no credentials", "credentials", ("write",), "Never store credentials"),
+    ("why trailer", "commit trailer", ("write",), '"why"'),
+    ("repair rounds", "repair rounds", ("write",), "you get a repair round"),
+    ("drafts", "drafts", ("write",), "kept as a draft"),
+)
+
+#: Instructions and surfaces of the earlier memory design that are retired: none may appear in any text the actor or
+#: the writer reads in library mode.
+V2_RETIRED = (
+    "do not guess",
+    "Do not write job functions",
+    "Do not write workflow notes",
+    "Tend the library too",
+    "env/<channel>",
+    "memory_channels",
+    "library.json",
+    "previous_gate.json",
+    "unify_memory_testkit",
+    "memlab",
+    "NOTES.md",
+    "workflows/",
+    "catalog()",
+    "check the example first",
+    "candidates, not authority",
+    "recorded for the next consolidation",
+    "proposals/",
+    "memory.diff",
+)
 
 
 def _prompts():
@@ -42,7 +124,7 @@ def _surfaces(tmp_path):
 def test_no_v2_rule_survives(tmp_path):
     for name, text in _surfaces(tmp_path).items():
         low = text.lower()
-        for retired in pv.V2_RETIRED:
+        for retired in V2_RETIRED:
             # a retired file name is matched in its own case: v2's NOTES.md is not the fork's staged notes.md
             # (lessons), which rev 2's brief names
             if retired.endswith(".md"):
@@ -62,8 +144,8 @@ def test_each_rule_lives_in_its_roles_prompts_only():
 
     texts = _prompts()
     help_text = lx.stub_source(librarian=True).decode() + lx.package_source(librarian=True).decode()
-    assert len({r[0] for r in pv.RULES}) == len(pv.RULES)
-    for rule, _spec, owners, phrase in pv.RULES:
+    assert len({r[0] for r in RULES}) == len(RULES)
+    for rule, _spec, owners, phrase in RULES:
         if rule in IN_LIBRARY_HELP:
             assert phrase in help_text and all(phrase not in text for text in texts.values()), rule
             continue

@@ -44,7 +44,6 @@ def _after(obs, call, *, result=None, error=None, intercepted=False):
 
 def test_ok_call_is_one_tool_action_with_a_deep_copy_of_the_result():
     obs = RecordingObserver()
-    obs.set_cell(3)
     result = {"user": "ada", "friends": [1, 2]}
     call = EnvCall(
         "appworld",
@@ -59,7 +58,7 @@ def test_ok_call_is_one_tool_action_with_a_deep_copy_of_the_result():
     [a] = obs.drain().actions
     assert (a.kind, a.cell, a.channel, a.method) == (
         "tool",
-        3,
+        0,  # the trajectory's recorder attributes the cell from the call's time stamp
         "appworld",
         "show_profile",
     )
@@ -334,20 +333,6 @@ def test_a_multi_line_secret_in_an_error_leaves_no_first_line():
     )
     [a] = obs.drain().actions
     assert a.error == "RuntimeError: bad key <secret:FAKE_PRIVATE_KEY>"
-
-
-def test_a_call_keeps_the_cell_it_started_in():
-    obs = RecordingObserver()
-    obs.set_cell(1)
-    call = EnvCall("ns", "slow", "read", (), {}, "primitives")
-    assert obs.before(call) is None
-    obs.set_cell(2)  # the next cell starts before the slow call finishes
-    _after(obs, call, result=1)
-    _after(obs, EnvCall("ns", "fast", "read", (), {}, "primitives"), result=2)
-    assert [(a.method, a.cell) for a in obs.drain().actions] == [
-        ("slow", 1),
-        ("fast", 2),
-    ]
 
 
 def test_concurrent_calls_from_threads_are_all_counted():

@@ -13,6 +13,7 @@ import os
 from decimal import Decimal
 from types import SimpleNamespace
 
+from tests.memory import service_step
 from tests.memory import test_helpers as th
 from tests.memory.test_helpers import helper_boxes  # noqa: F401 - the helpers' scripted box
 from tests.memory.test_writer_pass import Turns, _call, _run, _writer, needs_bwrap
@@ -260,7 +261,7 @@ def _step(home, runner, monkeypatch, **over):
     from unify.memory.integration import request
 
     monkeypatch.setattr(request, "actor_effort", lambda: "low")
-    return ws.step(home, settings=T._settings(**over), runner=runner)
+    return service_step.step(home, settings=T._settings(**over), runner=runner)
 
 
 def test_the_service_books_the_whole_room_until_the_pass_settles(tmp_path, monkeypatch):
