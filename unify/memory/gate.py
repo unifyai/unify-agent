@@ -18,13 +18,15 @@ finding about an item's quality (G2 and G3) is recorded on its label and refuses
 
 The checks (library layout, :mod:`.library_checks`):
 
-* **G1 provenance and scope** (hard). The manifest is well formed and its ids strict (:mod:`.manifest`); the
+* **G1 provenance and scope** (hard, except the forms below). The manifest is well formed and its ids strict (:mod:`.manifest`); the
   candidate descends from the parent; every file has mode 100644 and sits where the layout admits it; every changed
   file is declared; every added, changed or removed item is listed; every item names source episodes that exist;
   no commit writes a path the harness reserves for its generated files. Every new or changed fixture re-derives from
   the recording's bytes (:func:`.fixtures.verify`); a parsed fixture (re-deriving it runs its reader) and a replay
-  case file (verifying it replays recorded code) are not run and are labelled. The links, ``When to use`` sections
-  and folder README files are checked for presence and form.
+  case file (verifying it replays recorded code) are not run and are labelled. The links, ``When to use`` sections,
+  notes' ``## Rule`` sections and folder README files are checked for presence and form, and an item that lacks one
+  is labelled (:func:`.gate_policy.hard`: only a finding no item owns, about a fixture's provenance, a cited episode or
+  a misplaced file refuses).
 * **G2 evidence** (labels). A function's typed covers name a recorded cell or work-tree diff that defines a function;
   an ``episode`` cover is not re-run. A procedure names a recipe and the cases it is for, each read from its case
   file (a failed source episode is a finding); the recipe is not run, and its record says so (``ran: false``). Each
@@ -35,7 +37,7 @@ The checks (library layout, :mod:`.library_checks`):
   listed tests, each package's suite and every stored function whose module the pass changes (or that imports one)
   are not run, and each is labelled.
 * **G4 size.** Over its soft budget, the index gets a ``note: G4 hygiene due``; growth is never refused.
-* **G5 items** (hard). A pass does not reduce the number of items, and does not drop an alias.
+* **G5 items** (labels). A pass that reduces the number of items, or drops an alias, is noted; it refuses nothing.
 * **G6 safety** (hard). No links, executables, submodules, or git, pytest or interpreter configuration files; no
   bytecode or native code; no key-shaped string in a changed file or the manifest.
 

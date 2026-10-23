@@ -229,5 +229,5 @@ def test_the_writer_is_told_the_shape_the_gate_checks():
 
     notes = " ".join(_WHAT_TO_WRITE_IN_CODE.split())
     assert "and a `## Rule` section" in notes and "without a `## Rule` section with text" in notes
-    example = WHEN_TO_USE_TEXT.split("For example:\n", 1)[1].split("  The gate", 1)[0]
+    example = WHEN_TO_USE_TEXT.split("For example:\n", 1)[1].split("  A new or changed", 1)[0]
     assert when_to_use.function_problems("Summary.\n\n" + textwrap.dedent(example)) == []

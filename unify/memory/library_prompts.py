@@ -80,10 +80,9 @@ USE_LINE_IN_CODE = (
 STATUS_LINES_IN_CODE = (
     "- A function raises `MemoryInputError` on an input it was not built for. Then do that step with your own "
     "code.\n"
-    "- `on-trial` items passed the library's checks and have had little use; `adopted` items have also been "
-    "used without errors. "
+    "- `on-trial` items have had little use; `adopted` items have been used without errors. "
     "Every item's brackets also say what it rests on: its kind (a curated item the library's writer made, a "
-    "recorded procedure that re-runs the work of an earlier request, or a fixed answer to read), how many "
+    "recorded procedure that re-runs the work of an earlier request), how many "
     "episodes it comes from and in how many the work was accepted, and how many later uses had an outcome that "
     "confirmed it.\n"
 )
@@ -91,7 +90,7 @@ STATUS_LINES_IN_CODE = (
 _OPENING_IN_CODE = (
     "### Memory Library\n"
     "\n"
-    "A Python library of tested functions and linked notes, built from earlier work, is already available "
+    "A Python library of functions and linked notes, built from earlier work, is already available "
     "in your cells as `memory`, no import needed. " + MEMORY_HELP_LINE + " Using the library is optional: use an "
     "item when it fits, and otherwise work as usual.\n"
     "\n"
@@ -334,10 +333,10 @@ WHEN_TO_USE_TEXT = (
     "      Recognise: the request gives rows with an amount and a currency and asks for totals.\n"
     "      Not for: rows that must first be converted to one currency, or totals per date.\n"
     "      Example request: Sum these payments per currency.\n"
-    "  The gate refuses a new or changed function or note without the section or one of its four lines. Keep it "
+    "  A new or changed function or note without the section or one of its four lines is labelled so. Keep it "
     "true when you change what the item does.\n"
     "- Every folder, `memory/<package>/` and `notes/<topic>/`, holds a short `README.md` you keep: what the "
-    "folder holds and how its items relate. The gate refuses the items of a folder the pass changes when the "
+    "folder holds and how its items relate. The items of a folder the pass changes are labelled when the "
     "folder has no README.md, or an empty one.\n"
 )
 
@@ -519,15 +518,6 @@ EPISODES_RULE_IN_CODE = (
     "required. A call that refuses or raises counts for nothing"
 )
 
-_REPAIR_IN_CODE = (
-    "# Repair\n"
-    "If the gate refuses anything, its full result (every check, every failing test's output and every note) is "
-    "written to /inputs/gate/result-<round>.md and you get a repair round: fix what it refused, keep the manifest "
-    "current, and call `tools.finish(summary)` again. The limits below say how many repair rounds a pass has. "
-    "The items that pass land, and the rest is kept as a draft for a later pass, with its failure.\n"
-)
-
-
 _LIMITS_IN_CODE = (
     "# Limits\n"
     "These are safety limits, stated as facts; none is a target. A reply that reads a file or a record shows at "
@@ -588,9 +578,8 @@ _WHAT_TO_WRITE_IN_CODE = (
     "too) and \"cases\": its case files, each an input with its known output, made with `tools.fixture(...)` "
     "given expected: the source request with the value its episode handed back (source \"request:0\", expected "
     "\"answer\"), and every input the request or the environment showed with the output it showed for it, a later "
-    "observation included. The gate runs the recipe, confined, on every case and lands the procedure only if it "
-    "gives every expected output; a failing case comes back with the difference. An episode whose recipe does not "
-    "pass, or that failed, lands no procedure (a note of what was tried may still land). "
+    "observation included. The gate runs no recipe: it records the procedure's cases on its label, and the "
+    "procedure lands either way; run the recipe on a case yourself with `tools.test` to see what it gives. "
     "`tools.land_capture(...)` writes the recipe and the source case; add the shown cases.\n"
     "- A function's docstring has a one-line summary; `Args:`, `Returns:` and `Raises:` sections "
     "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
@@ -600,7 +589,7 @@ _WHAT_TO_WRITE_IN_CODE = (
     "with front matter `title`, `description` (one line, shown in the index) and `uses` (the ids of the functions "
     "it uses), and a `## Rule` section. `memory.get` serves a note's front matter and its `## Rule` section, at most "
     "<<note_rule_chars>> characters; the rest of the file (the cases it came from, under `## Evidence`, say) is read "
-    "at its path. The gate refuses a new or changed note without a `## Rule` section with text. A link is written only in a note's `uses` or a function's `Notes:` line, and must name an "
+    "at its path. A new or changed note without a `## Rule` section with text is labelled so. A link is written only in a note's `uses` or a function's `Notes:` line, and must name an "
     "item that exists. A new item starts as `on-trial`; later passes revise or remove it. A function's linked "
     "note says its preconditions and its known failures.\n"
     + WHEN_TO_USE_TEXT
@@ -631,16 +620,12 @@ _WHAT_TO_WRITE_IN_CODE = (
 _WRITE_RULES_IN_CODE = (
     "# Rules\n"
     "1. What you store is your decision, in any domain: readers, calculations, call sequences, and whole-job "
-    "procedures built from smaller tested functions. A procedure is verified by "
-    "replaying its episode: a work-tree procedure must reproduce the recorded file changes, a tool procedure the "
-    "recorded calls, and a dialogue procedure the recorded reply the environment then accepted. A procedure "
-    "of any other kind cannot be verified, so it stays a draft.\n"
+    "procedures built from smaller tested functions. A procedure's label lists its tests and its recipe's cases; "
+    "the gate runs neither. Every item is kept with the evidence it has, stated on its label.\n"
     "2. Start from the working model's own code when it already wrote it (its cells and its work-tree diff). "
     "A function raises "
     '`MemoryInputError("<what was expected>")` on an input it was not built for. '
-    "The gate replaces the fixture values the tests load with unseen values of the same type and "
-    "reruns the tests: the function must not then raise `MemoryInputError` or another exception on a call it "
-    "accepted before. A field with a fixed domain is declared in `field_types`.\n"
+    "A field with a fixed domain is declared in `field_types`.\n"
     "3. Judge outcomes from the records. The harness never reads environment text for a verdict: "
     "`structural_events` lists only cell errors, action errors and retries, and an empty list says nothing about "
     "success. Whether the work succeeded is in the environment's own replies, if anywhere; `end_parts` names "
@@ -650,8 +635,8 @@ _WRITE_RULES_IN_CODE = (
     "checks.\n"
     "4. Prefer extending an existing item to adding a near-duplicate. When you change what an item returns on "
     "its recorded inputs, add a test that fails on the old version and passes on yours, and say why in `why`. "
-    "This pass never removes library items and never deletes or weakens a test: the gate refuses a candidate "
-    "with fewer items or tests. If an existing test must change, name it in `tests_changed` with the reason. "
+    "This pass never removes library items and never deletes or weakens a test: a candidate "
+    "with fewer items or tests is labelled so. If an existing test must change, name it in `tests_changed` with the reason. "
     "A pass may also change only notes, only tests, or the expected values in the tests of a function you did not "
     "change; such tests need only pass. Retiring an item is a decision, not a removal: decide `retire` on its entry "
     "and its file stays. Retire an item whose recorded uses fail and that no change can repair; the usage table "
@@ -722,11 +707,15 @@ LABELS_ONLY_GATE = (
     "its label and the item lands with it; a finding about the whole pass is a note. Only these refuse: safety "
     "(G6), a change outside `memory/` and `notes/` or to the generated files, a manifest that does not parse or "
     "leaves a change undeclared, a fixture that did not come through `tools.fixture` unchanged, a cited episode that "
-    "is not recorded, and code that does not parse or import. The gate runs no code: no item, test or recipe is "
+    "is not recorded, code that does not parse, a listed item, test or case file missing from the candidate, and a "
+    "test that imports the gate's own test kit. The gate runs no code: no item, test or recipe is "
     "run to check or rank it, so each label says what was not run and why. Running code is a test you state first "
-    "and run yourself with `tools.test`, on whatever item you choose. "
+    "and run yourself with `tools.test`, on whatever item you choose; no test result, yours or one recorded on a "
+    "label, sets an item's level, status or rank: those come only from the outcomes of its uses and the episodes "
+    "it comes from. "
     "Its labels name the check: G1, layout and provenance (the paths, the manifest, the links, the fixtures, each "
-    "new or changed function and note's `When to use` section and each changed folder's README.md); G2, evidence "
+    "new or changed function and note's `When to use` section, each note's `## Rule` section and each changed "
+    "folder's README.md); G2, evidence "
     "(each function's listed tests name it; an item's support is the episodes it comes from and the uses whose "
     "outcomes confirmed it, never a run of the gate's); G3, tests (plain pytest, and no test lost or weakened "
     "without a reason; the gate runs none of them: they state what the item claims); G4, the index (a note when it has outgrown the view the working "
@@ -752,67 +741,11 @@ def _swap(text: str, old: str, new: str) -> str:
     return text.replace(old, new)
 
 
-def with_labels_only(body: str, recipe_rule: str) -> str:
-    """The in-code WRITE brief under rev 2's gate (:data:`LABELS_ONLY_GATE`): every sentence that says the gate refuses
-    what it now labels, or runs what it now leaves alone, says what it does instead."""
-    body = _swap(
-        body,
-        "The gate runs the recipe, confined, on every case and records what each case gave on the procedure's "
-        "label; the procedure lands either way. ",
-        "The gate runs no recipe: it records the procedure's cases on its label, and the procedure lands either way; "
-        "run the recipe on a case yourself with `tools.test` to see what it gives. ",
-    )
-    body = _swap(
-        body,
-        "Each quality finding about an item (its recipe's cases, the unseen values, its examples, its tests and "
-        "its behaviour) is recorded on its label and lands with it; safety, paths, syntax and the library's other "
-        "tests still refuse.\n\n",
-        "",
-    )
-    body = _swap(
-        body,
-        "A procedure is verified by replaying its episode: a work-tree procedure must reproduce the recorded file "
-        "changes, a tool procedure the recorded calls, and a dialogue procedure the recorded reply the environment "
-        "then accepted. ",
-        "A procedure is judged by its own tests and its recipe's cases. ",
-    )
-    body = _swap(
-        body,
-        "The gate replaces the fixture values the tests load with unseen values of the same type and reruns the "
-        "tests: the function must not then raise `MemoryInputError` or another exception on a call it accepted "
-        "before. ",
-        "",
-    )
-    body = _swap(
-        body,
-        "the gate refuses a candidate with fewer items or tests.",
-        "a candidate with fewer items or tests is labelled so.",
-    )
-    body = _swap(
-        body,
-        "  The gate refuses a new or changed function or note without the section or one of its four lines.",
-        "  A new or changed function or note without the section or one of its four lines is labelled so.",
-    )
-    body = _swap(
-        body,
-        "The gate refuses the items of a folder the pass changes when the folder has no README.md, or an empty one.",
-        "The items of a folder the pass changes are labelled when the folder has no README.md, or an empty one.",
-    )
-    body = _swap(body, _REPAIR_IN_CODE, LABELS_ONLY_REPAIR)
-    body = _swap(
-        body,
-        "has passed the gate or is kept as a draft with its failure.",
-        "has landed with its label, or is kept as a draft with the check that refused it.",
-    )
-    return body
-
-
 def with_switches(body: str) -> str:
     """The WRITE brief *body* for an attention pass with items of any effect and stated tests: the attention pass's
-    section after the role; items of any effect (the recipe's cases and every other quality finding are labels; rule
-    7's literal rule becomes the stated inputs and constants; rule 8 keeps credentials and tokens, and no longer bars
-    the results of calls with side effects; a procedure of another kind is labelled, never left a draft); rev 2's gate
-    (:func:`with_labels_only`); the stated tests."""
+    section after the role; items of any effect (rule 7's literal rule becomes the stated inputs and constants; rule 8
+    keeps credentials and tokens, and no longer bars the results of calls with side effects); the stated tests. What
+    the gate checks is stated once, in the base text and :data:`LABELS_ONLY_GATE`, as :mod:`.gate_policy` decides it."""
     body = _swap(body, "\n# Inputs\n", "\n" + ATTENTION_TEXT + "\n# Inputs\n")
     body = _swap(
         body,
@@ -820,24 +753,7 @@ def with_switches(body: str) -> str:
         "- /inputs/attention/: your entries (index.json) and, per entry, what the harness holds for it outside the "
         "episodes (use.json, signal.json, note.json). For: what each entry owes a read.\n- /inputs/batch_map.json:",
     )
-    recipe_rule = (
-        "The gate runs the recipe, confined, on every case and lands the procedure only if it gives every expected "
-        "output; a failing case comes back with the difference. An episode whose recipe does not pass, or that "
-        "failed, lands no procedure (a note of what was tried may still land). "
-    )
-    body = _swap(
-        body,
-        recipe_rule,
-        "The gate runs the recipe, confined, on every case and records what each case gave on the procedure's "
-        "label; the procedure lands either way. ",
-    )
     body = _swap(body, "- A function's docstring has a one-line summary;", IMPURE_TEXT + "- A function's docstring has a one-line summary;")
-    body = _swap(
-        body,
-        "A procedure of any other kind cannot be verified, so it stays a draft.",
-        "A procedure of any other kind, or one that acts through the environment's tools, is kept with the "
-        "evidence it has (its tests replay the recorded calls, or it was judged by reading), stated on its label.",
-    )
     body = _swap(
         body,
         "7. Code never holds a literal equal to a value that varies across its recorded inputs (text of "
@@ -851,14 +767,6 @@ def with_switches(body: str) -> str:
         "8. Never store credentials or session tokens; your own code holds no key, opens no network and writes "
         "nothing outside /memory. ",
     )
-    body = _swap(
-        body,
-        "# Repair\n",
-        "Each quality finding about an item (its recipe's cases, the unseen values, its examples, its tests and "
-        "its behaviour) is recorded on its label and lands with it; safety, paths, syntax and the library's other "
-        "tests still refuse.\n\n# Repair\n",
-    )
-    body = with_labels_only(body, recipe_rule)
     body = _swap(body, "\n# What to write\n", "\n" + TESTS_TEXT + "\n\n# What to write\n")
     return body
 
@@ -1052,14 +960,15 @@ def _write_brief_in_code(
         + "\n"
         + LABELS_ONLY_GATE
         + "\n"
-        + _REPAIR_IN_CODE
+        + LABELS_ONLY_REPAIR
         + "\n"
         + _limits_text_in_code(limits, helper_time=helpers)
         + "\n"
         "# Done\n"
         "You are done when you have built the best library items you can from this batch, with the proposals as "
         "material and the episodes as evidence, and every item "
-        "you wrote has passed the gate or is kept as a draft with its failure. Then call `tools.finish(summary)`. "
+        "you wrote has landed with its label, or is kept as a draft with the check that refused it. Then call "
+        "`tools.finish(summary)`. "
         "Writing nothing is a valid decision when your summary says why.\n"
     )
     item_extra += ', "effects": "<none|reads|writes|unknown>", "situation": "...", "inputs": [...], "constants": [...]'
