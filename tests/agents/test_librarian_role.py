@@ -435,3 +435,18 @@ async def test_a_real_message_instance_answers_from_the_library_on_the_record(tm
     assert rec._row(rep["author"])["state"] == "ended" and session.episode is None
     assert "which items add up a table?" in model.calls[0].messages[-1]["content"]
     assert [r["key"] for r in rr.role_answers(home, "librarian")] == list(session.answers)
+
+
+def test_a_request_opens_at_most_its_bound_of_ask_sessions(tmp_path, monkeypatch):
+    """The actor and its teammates each keep their own ``memory.ask`` session; one request opens at most
+    MAX_ASK_SESSIONS of them, so the librarian's spend per request is bounded; a later one is refused, naming where to
+    ask instead."""
+    from tests.memory.test_librarian import _copy
+
+    run = SimpleNamespace(copy_root=_copy(tmp_path), library_mode=True, paths=SimpleNamespace(home=tmp_path / "home"),
+                          episode_id="ep-a", pin="c0ffee", in_episode=None,
+                          librarian_sessions=[SimpleNamespace(mode="ask") for _ in range(L.MAX_ASK_SESSIONS)])  # fmt: skip
+    monkeypatch.setattr(R, "current", lambda: run)
+    with pytest.raises(L.Unavailable, match="its bound; send the question to the actor"):
+        asyncio.run(L.opener()())
+    assert len(run.librarian_sessions) == L.MAX_ASK_SESSIONS

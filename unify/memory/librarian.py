@@ -1236,6 +1236,12 @@ def _role_state(session: LibrarianSession, home: Any) -> None:
         session.messages.append({"role": "user", "content": f"{NOTES_HEAD}\n{notes}"})
 
 
+#: The most ``memory.ask`` sessions of the librarian one request opens: the actor's and its first teammates' (each
+#: agent keeps its own for its follow-ups); a later teammate's ask is refused, so the librarian's spend per request is
+#: bounded.
+MAX_ASK_SESSIONS = 3
+
+
 def opener(
     *,
     on_event: Callable[[dict], None] | None = None,
@@ -1262,6 +1268,14 @@ def opener(
             raise Unavailable("no library is mounted in this request")
         if library_items(Path(copy)) is None:
             raise Unavailable("the library's items cannot be read")
+        sessions = getattr(run, "librarian_sessions", None)
+        if mode == "ask" and isinstance(sessions, list):
+            opened = sum(1 for s in sessions if getattr(s, "mode", "ask") == "ask")
+            if opened >= MAX_ASK_SESSIONS:
+                raise Unavailable(
+                    f"this request has its {MAX_ASK_SESSIONS} librarian sessions open (the actor's and its first "
+                    "teammates'), its bound; send the question to the actor (@actor) on the run record"
+                )
         record, name = _join_run_record(run, mode=mode)
         session = (AskInstance if mode == "ask" else LibrarianSession)(
             copy=Path(copy),
@@ -1277,7 +1291,6 @@ def opener(
         session.episode = (getattr(run, "episode_id", None) or None) if mode == "ask" else None
         if record is not None:
             _role_state(session, getattr(getattr(run, "paths", None), "home", None))
-        sessions = getattr(run, "librarian_sessions", None)
         if isinstance(sessions, list):
             sessions.append(session)
         return session
@@ -1414,7 +1427,8 @@ __all__ = [
 #: The longest the request-start block may be, in characters.
 START_BLOCK_CHARS = 1500
 #: The longest the request start waits for the librarian's answer, in seconds; past it the request starts without it.
-START_ASK_S = 300.0
+#: Half the runners' startup and idle bounds (300 s), so the wait never ends a request on its own.
+START_ASK_S = 150.0
 #: The block's opening line.
 START_HEAD = "What the library holds for this request (its librarian's answer; ask again with memory.ask()):"
 
