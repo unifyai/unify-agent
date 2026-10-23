@@ -269,6 +269,11 @@ class World(NamedTuple):
 @pytest.fixture
 def library_example_world(tmp_path) -> World:
     """An empty memory repo, an evidence store indexing :data:`EPISODES`, a blob store and a gate factory."""
+    return make_world(tmp_path)
+
+
+def make_world(tmp_path) -> World:
+    """:func:`library_example_world` under *tmp_path*, for code that is not a test function."""
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     for n, ep in enumerate(EPISODES.values()):

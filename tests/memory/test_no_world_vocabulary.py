@@ -10,8 +10,8 @@ runs one case-insensitive whole-word grep (:data:`GUARD`) over every text an age
   tests both take it);
 * every string of the modules that hold the tool specs and docstrings (``tool_registry``) and every role's
   prompt (:data:`GUARD_MODULES`): docstrings, prompt texts, tool descriptions, refusal texts;
-* the prompts and tool texts as rendered for each role and switch combination (:func:`_rendered`), so text
-  composed at run time is read too.
+* the prompts, tool texts, refusals, replies and gate lines as rendered for each role and switch combination
+  (:func:`_rendered`, :mod:`tests.memory.agent_texts`), so text composed at run time is read too.
 
 A hit passes only where a line of the reviewed allow-list (:data:`ALLOW_FILE`) covers it: a phrase holding the
 word, for a scope of sources, with the reason it is generic English. Every line must still cover a hit, so the
@@ -21,7 +21,6 @@ list cannot grow stale or wide. A module that gains model-facing text joins :dat
 from __future__ import annotations
 
 import io
-import itertools
 import re
 import tokenize
 from dataclasses import dataclass
@@ -33,7 +32,8 @@ ROOT = Path(__file__).resolve().parents[2]
 #: The guard grep, case-insensitive, whole words.
 GUARD = re.compile(
     r"\b(grid|grids|puzzle|demo|demos|task|tasks|airline|booking|crafter|arc|poker|hand|game|colleague|office|"
-    r"stencil|colour|color)\b",
+    r"stencil|colour|color|payment|payments|currency|currencies|money|tax|taxes|invoice|invoices|demonstration|"
+    r"demonstrations|submit|submits|submitted|submission|submissions)\b",
     re.IGNORECASE,
 )
 #: The reviewed allow-list: ``scope<TAB>phrase<TAB>reason`` per line (``#`` starts a comment).
@@ -75,6 +75,20 @@ GUARD_MODULES = (
     "unify/memory/item_label.py",
     "unify/memory/integration/in_episode.py",
     "unify/memory/segments.py",
+    # the cards and help(memory) of the library helper, the land_capture texts and replies, the manifest's texts, the
+    # gate's label lines, the captures' and the capture groups' texts, the index header, the judge's brief, the ask
+    # call's texts and the when-to-use shapes
+    "unify/memory/library_helper.py",
+    "unify/memory/land_capture.py",
+    "unify/memory/manifest.py",
+    "unify/memory/library_checks.py",
+    "unify/memory/gate.py",
+    "unify/memory/gate_policy.py",
+    "unify/memory/captures.py",
+    "unify/memory/library_index.py",
+    "unify/memory/capture_groups.py",
+    "unify/memory/kinship.py",
+    "unify/memory/when_to_use.py",
 )
 
 
@@ -181,56 +195,15 @@ def _modules() -> dict[str, str]:
     }
 
 
-def _rendered(monkeypatch) -> dict[str, str]:
-    """Every text a memory agent is shown, as composed at run time: each agent's tool JSON, stub, opening and tool
-    help, the refusal codes, the writer's brief under every input it can have, the helper's, the fork's and the
-    librarian's texts, the guides, an attention pass's first message, the run record's lines, a segment's
-    instruction and the re-pin notice."""
-    import json
-    from types import SimpleNamespace
+def _rendered(monkeypatch, tmp: Path) -> dict[str, str]:
+    """Every text a memory agent is shown, as composed at run time (:func:`tests.memory.agent_texts.rendered`)."""
+    from tests.memory.agent_texts import rendered
 
-    from unify.agents import run_record as rr
-    from unify.common import tool_registry as R
-    from unify.memory import attention_tools as at
-    from unify.memory import helpers, librarian
-    from unify.memory import library_prompts as lp
-    from unify.memory.integration import fork, in_episode
-
-    out: dict[str, str] = {}
-    every = frozenset({"pool", "similar", "helper"})
-    for agent in R.AGENTS:
-        out[f"rendered:tools:{agent}"] = json.dumps(R.json_tools(agent)) + "\n" + R.render_stub(
-            R.allow_list(agent, every), agent
-        )
-        out[f"rendered:preamble:{agent}"] = R.preamble(agent, {"environment": "Your box.", "flags": every})
-        for name in R.allow_list(agent, every):
-            out[f"rendered:help:{agent}:{name}"] = R.help_text(name, agent)
-    out["rendered:refusals"] = json.dumps(R.refusal_codes()) + json.dumps(R.GENERAL_REFUSALS)
-    out["rendered:common_section"] = R.COMMON_SECTION
-    names = ("helper", "similar")
-    for values in itertools.product((False, True), repeat=len(names)):
-        out[f"rendered:write:{values}"] = lp.write_brief_now(**dict(zip(names, values)))
-    for similar in (False, True):
-        out[f"rendered:helper:{similar}"] = helpers.helper_brief(similar)
-    out["rendered:fork"] = fork.fork_message("`request`: (a request)") + "\n" + fork.fork_instruction()
-    out["rendered:segment_instruction"] = fork.segment_instruction(2, 5) + "\n" + fork.segment_instruction(None, None)
-    out["rendered:librarian"] = librarian.system_prompt() + "\n" + lp.GUIDE_LIBRARIAN
-    out["rendered:librarian_evidence"] = (
-        librarian.system_prompt(evidence=True) + "\n" + librarian.evidence_question_message("q", "m", 1)
-    )
-    handed = [SimpleNamespace(entry=f"e{i}", kind=k) for i, k in enumerate(
-        ("new_experience", "own_check_failed", "use_went_badly", "late_evidence", "repeated_use", "deferred", "message"))]
-    for n in (1, len(handed)):
-        out[f"rendered:attention_first:{n}"] = at.first_message(
-            SimpleNamespace(pass_id="p1"), SimpleNamespace(attention=handed[:n]), "2700")
-    for role in rr.AGENT_ROLES:
-        out[f"rendered:record_lines:{role}"] = rr.prompt_lines(f"{role}-1", role, spawner="actor-1")
-    out["rendered:repin_notice"] = in_episode.notice("a" * 40, ["notes/a.md"], ["notes/b.md"], [("notes/c.md", "retired")], True)
-    return out
+    return rendered(tmp)
 
 
 def texts(tmp: Path, monkeypatch) -> dict[str, str]:
-    return {**_package(), **_memlab(tmp), **_modules(), **_rendered(monkeypatch)}
+    return {**_package(), **_memlab(tmp), **_modules(), **_rendered(monkeypatch, tmp)}
 
 
 def hits(texts_by_source: dict[str, str]) -> list[Hit]:

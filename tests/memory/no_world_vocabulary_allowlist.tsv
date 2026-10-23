@@ -30,7 +30,6 @@
 *	Task from the writer	the helper's first message: its assignment
 *	every later task. When a task genuinely needs a CLI	the actor prompt: later pieces of work
 *	tasks. Write files there	the actor prompt: the workspace persists across pieces of work
-*	check a task's examples	a docstring naming what the brief guard refuses
 *	made by hand	English idiom (an Item built directly)
 *	hand over the request	to pass (verb)
 *	Hand one cell's drained audit records	to pass (verb)
@@ -59,3 +58,10 @@ module:unify/memory/attention.py	age at hand	how old an entry is when it is hand
 module:unify/memory/attention.py	"hand"	the ledger row op for handing an entry to a pass
 module:unify/memory/attention.py	Hand up to	the ledger's method that hands entries to a pass
 module:unify/memory/attention.py	in hand order	the order entries are handed to a pass
+# the run's spend: money as the harness books it, never a world's
+module:unify/memory/writer_pass.py	Money as a plain decimal string	the run's spend, booked as a decimal string
+module:unify/memory/writer_pass.py	cannot run away. Money is a pure	the run's spend, booked as a decimal string
+module:unify/memory/librarian.py	decimal strings for money	the librarian's spend record
+module:unify/memory/integration/fork.py	bounds the money	the fork lane's spend cap
+module:unify/memory/writer_service.py	may have cost money	a failed model call's possible spend
+module:unify/memory/metering.py	Money is a decimal string	metering's spend record
