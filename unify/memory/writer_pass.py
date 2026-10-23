@@ -133,6 +133,27 @@ def compaction_due(prompt_tokens: object, window: object) -> bool:
 
 
 @dataclass
+
+def _natural_path(vpath: str, roots: Mapping[str, Any]) -> str:
+    """A path as an agent naturally writes it, resolved to one of its *roots*: an absolute path as it is; a relative
+    one under the first root (``/memory``, then ``/inputs``, ``/outputs``) where it exists, with a leading
+    ``memory/`` also read as the library's root (``memory/notes/x.md`` -> ``/memory/notes/x.md``); a relative path
+    found under none is left as written (the read then refuses it with its next step). Nothing outside a root is
+    reached: the result is checked against the roots as any path is."""
+    if not vpath or vpath.startswith("/"):
+        return vpath
+    rel = vpath.strip("/")
+    tries = [f"{r.rstrip('/')}/{rel}" for r in ("/memory", "/inputs", "/outputs") if r in roots]
+    if rel.startswith("memory/") and "/memory" in roots:
+        tries.append("/memory/" + rel[len("memory/") :])
+    for t in tries:
+        prefix = next((r for r in roots if t == r or t.startswith(r.rstrip("/") + "/")), None)
+        if prefix is None or ".." in t.split("/"):
+            continue
+        if os.path.exists(os.path.join(os.fspath(roots[prefix]), t[len(prefix) :].lstrip("/"))):
+            return t
+    return vpath
+
 class Compaction:
     """One compaction's summary call and its outcome: the call's reply and charge (booked like any other call
     of the agent), the request it sent, and the conversation to restart from (None: the reply held no summary,
@@ -2928,7 +2949,7 @@ class WriterPass:
             else 0
         )
         if name in ("read", "grep"):
-            vpath = str(args.get("path") or ("/inputs" if name == "grep" else ""))
+            vpath = _natural_path(str(args.get("path") or ("/inputs" if name == "grep" else "")), roots)
             try:
                 prefix, parts = _safe.split(vpath, list(roots))
             except _safe.Outside:

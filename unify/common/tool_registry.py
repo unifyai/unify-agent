@@ -214,9 +214,10 @@ READ = RegisteredTool(
     parameters=_obj({"path": {"type": "string"}, "offset": _OFFSET}, ["path"]),
     roles=_MEMORY,
     refusals={
-        "outside_roots": "{path} is outside /inputs, /memory and /outputs",
+        "outside_roots": "{path} is outside /inputs, /memory and /outputs; a library item opens with memory.get(<its id>), an entry's material with tools.take(<entry id>)",
         "outside_box": "{path} is outside /inputs, /memory and /work",
-        "not_found": "{path} does not exist",
+        "not_found": "{path} does not exist; /inputs/attention/index.json lists your entries' material, and "
+        "memory.items() the library's items",
         "unreadable": "{error} for {path!r}",
     },
     summary="read a file or list a directory under /inputs, /memory or /outputs, 8000 bytes a page.",
@@ -244,7 +245,7 @@ GREP = RegisteredTool(
     ),
     roles=_MEMORY,
     refusals={
-        "outside_roots": "{path} is outside /inputs, /memory and /outputs",
+        "outside_roots": "{path} is outside /inputs, /memory and /outputs; a library item opens with memory.get(<its id>), an entry's material with tools.take(<entry id>)",
         "outside_box": "{path} is outside /inputs, /memory and /work",
         "bad_pattern": "{reason}",
         "unreadable": "{error} for {path!r}",

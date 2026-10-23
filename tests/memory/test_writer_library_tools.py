@@ -116,7 +116,8 @@ def test_read_and_grep_tools_are_confined_and_bounded(tmp_path, monkeypatch):
     finally:
         del EPS["e3"]
     assert model.outputs["esc"] == (
-        "refused: /inputs/../../etc/passwd is outside /inputs, /memory and /outputs"
+        "refused: /inputs/../../etc/passwd is outside /inputs, /memory and /outputs; a library item opens with "
+        "memory.get(<its id>), an entry's material with tools.take(<entry id>)"
     )
     assert '"episode_id": "e3"' in model.outputs["ok"]
     assert model.outputs["bad"].startswith("refused: invalid pattern:")
