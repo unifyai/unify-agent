@@ -1800,10 +1800,10 @@ COMMON_SECTION = (
     "### The agents' record\n"
     "Every agent of this run shares one record that lasts the whole run: the actor doing each request, the fork "
     "that reviews each episode after it, the librarian when the run has one, the writer that keeps the library, and "
-    "the helpers any of them starts. `tools.who()` lists who is on it now: each agent's name, role, state (running, "
+    "the helpers any of them starts. The librarian answers `memory.ask`; an episode's fork runs after its episode, "
+    "and the writer reaches it as @fork. `tools.who()` lists who is on it now: each agent's name, role, state (running, "
     "waiting, idle or ended), what it can help with, and whom you should mention and when. Address an agent with "
-    "@<name> while it runs, or a role: @writer; @actor (every running actor); @helpers (every running helper). The "
-    "librarian answers `memory.ask`; an episode's fork runs after its episode, and the writer reaches it as @fork. "
+    "@<name> while it runs, or a role: @writer; @actor (every running actor); @helpers (every running helper). "
     "`tools.send(text)` posts a message; `tools.messages()` reads the new ones for you without "
     "waiting, and `tools.messages(all=True)` every entry of the record, page by page; `tools.wait()` waits for the "
     "next one, and returns at once when no one who could answer is running. New messages for you also arrive "
@@ -1816,12 +1816,10 @@ COMMON_SECTION = (
 _COMMON_ROLES_ALL = (
     "the actor doing each request, the fork "
     "that reviews each episode after it, the librarian when the run has one, the writer that keeps the library, and "
-    "the helpers any of them starts."
+    "the helpers any of them starts. The librarian answers `memory.ask`; an episode's fork runs after its episode, "
+    "and the writer reaches it as @fork."
 )
-_COMMON_ADDRESSES_ALL = (
-    "a role: @writer; @actor (every running actor); @helpers (every running helper). The "
-    "librarian answers `memory.ask`; an episode's fork runs after its episode, and the writer reaches it as @fork."
-)
+_COMMON_ADDRESSES_ALL = "a role: @writer; @actor (every running actor); @helpers (every running helper)."
 if COMMON_SECTION.count(_COMMON_ROLES_ALL) != 1 or COMMON_SECTION.count(_COMMON_ADDRESSES_ALL) != 1:
     raise ValueError("COMMON_SECTION's role sentences moved: COMMON_SECTION_NO_MEMORY must follow them")
 #: The common section in a run without memory (``UNIFY_MEMORY=off``): the run has no writer, forks or librarian, so
