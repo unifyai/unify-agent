@@ -217,6 +217,39 @@ def test_the_ledger_hands_other_kinds_first_then_one_due_group_with_its_row(tmp_
 # --- what a group pass is given ----------------------------------------------------------------------------------------
 
 
+def test_a_group_no_pass_finishes_is_given_up_never_unreadable_and_never_holds_others_up(tmp_path):
+    """A group whose members come back unread pass after pass yields to another due group, and at the bound the harness
+    closes its captures (never unreadable): they stay served and are the history of a later related capture."""
+    clock = Clock()
+    led = Ledger(tmp_path / "home", clock=clock)
+    names = ("e1", "e2", "e3", "e4")
+    cids = {n: str(i + 1) * 16 for i, n in enumerate(names)}
+    led.sync(Fake(forks=[_fork(n) for n in names], captures={n: _cap(n, cids[n]) for n in names}))
+    other = ("env.files.read", "env.files.write")
+    seqs = {cids["e1"]: STEP, cids["e2"]: STEP, cids["e3"]: other, cids["e4"]: other}
+
+    def grouping(entries):
+        return cg.groups(entries, lambda e: _p(e.entry, sequence=seqs[e.refs.captures[0]]), now=clock())
+
+    stuck = {e.entry for e in led.entries().values() if e.refs.captures[0] in (cids["e1"], cids["e2"])}
+    first = led.hand("p1", 4, grouping=grouping)
+    assert {e.entry for e in first} == stuck  # the oldest group first
+    led.return_unread("p1")  # nothing read: a miss each
+    second = led.hand("p2", 4, grouping=grouping)
+    assert not {e.entry for e in second} & stuck  # the group that came back yields to the other due group
+    led.return_unread("p2")
+    for n in range(3, 6):
+        handed = led.hand(f"p{n}", 4, grouping=grouping)
+        led.return_unread(f"p{n}")
+    states = {e.entry: e for e in led.entries().values()}
+    assert all(states[i].state == "closed" and states[i].reason_ref == at.GIVEN_UP for i in stuck)
+    assert not any(e.state == "unreadable" for e in states.values())
+    assert at.GIVEN_UP == cg.GIVEN_UP and "group passes" in states[next(iter(stuck))].why
+    # a closed, given-up capture is history: the group document says the harness closed it
+    doc = cg.group_doc(cg.Group(id="x", open=[], context=[states[next(iter(stuck))]]), lambda e: _p(e.entry))
+    assert doc["related_closed"][0]["closed_by"].startswith("the harness")
+
+
 def test_the_group_document_names_members_related_decisions_and_library_items():
     members = [_e("a" * 16), _e("b" * 16)]
     closed = at.AttentionEntry("c" * 16, "new_experience", "closed", "2026-10-19T00:00:00.000Z",

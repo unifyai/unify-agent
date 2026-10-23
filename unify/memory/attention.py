@@ -33,7 +33,9 @@ is contrary (from its signals, never from running it), which reopens the entry (
 :meth:`Ledger.take`) -> ``read`` (verified from the pass's own read evidence, :meth:`Ledger.verify_reads`; never from
 what the writer says) -> ``closed`` (with a decision, :meth:`Ledger.decide`). Handed but not read when the pass ends,
 an entry goes back (``return``); after two such misses it is handed alone; after a third it is ``unreadable``, with
-the evidence. Read but undecided, it goes back without a miss. :meth:`Ledger.mark_not_reached` ends what the run could
+the evidence. A capture entry of a group's pass is never handed alone and never ends unreadable: at that bound the
+harness closes it (:data:`GIVEN_UP`), its capture stays served, and it is history for any later related capture; a
+group whose members came back yields to the other due groups. Read but undecided, it goes back without a miss. :meth:`Ledger.mark_not_reached` ends what the run could
 not reach (``spend_cap``, ``run_ended``, ``service_stopped``, ``lifetime``). The guarantee: at run end every entry is
 ``closed``, ``unreadable`` or ``not_reached``; :meth:`Ledger.report` says so per kind, with the creation-to-read delay.
 The end of one stage of a run that goes on (a ``suspend``) is not the run's end: nothing is marked then, and the next
@@ -119,6 +121,10 @@ STARVATION_PASSES = 10
 #: Misses (handed, pass ended, not read) after which an entry is handed alone, and after which it is unreadable.
 ALONE_AFTER_MISSES = 2
 UNREADABLE_AFTER_MISSES = 3
+#: The reason the harness closes a capture entry of a group the writer could not finish in
+#: :data:`UNREADABLE_AFTER_MISSES` passes (:meth:`Ledger.return_unread`): its capture stays served, and it becomes the
+#: history of later related captures; it never ends unreadable and never holds later groups up.
+GIVEN_UP = "group_given_up"  # the same as :data:`.capture_groups.GIVEN_UP`
 #: Episodes calling an item since the writer last read it that make a ``repeated_use`` entry.
 REPEATED_USE_EPISODES = 2
 
@@ -414,6 +420,7 @@ def fold(rows: Iterable[Mapping[str, Any]]) -> dict[str, AttentionEntry]:
                 reason_ref=row.get("reason_ref") if isinstance(row.get("reason_ref"), str) else None,
                 closed_at=at,
                 pass_id=row.get("pass_id") if isinstance(row.get("pass_id"), str) else e.pass_id,
+                why=row.get("why") if isinstance(row.get("why"), str) else e.why,
             )
         elif op == "reopen":
             if e.state not in ("closed", "unreadable", "not_reached"):
@@ -1245,6 +1252,9 @@ class Ledger:
                     due = [g for g in grouping(now_state) if g.due]
                     if not due:
                         return []
+                    # a group whose members came back from earlier passes yields to the others (stable otherwise), so
+                    # a group the writer cannot finish never holds later groups up
+                    due.sort(key=lambda g: max((e.misses + e.undecided for e in g.open), default=0))
                     g = due[0]
                     # a group's pass reads its members together: a member missed before is not handed alone
                     members = [e for e in g.open if e in pending][:k]
@@ -1516,12 +1526,23 @@ class Ledger:
             state = self.entries()
             rows, out = [], []
             at = self.now()
+            # a group's pass (a ``group`` row): its capture entries are given up at the bound instead of unreadable
+            grouped = any(r.get("op") == "group" and r.get("pass_id") == pass_id for r in self.rows())
             for e in state.values():
                 if not (e.active and e.state != "open" and e.pass_id == pass_id):
                     continue
                 out.append(e.entry)
+                bound = (e.undecided if e.state == "read" else e.misses) + 1 >= UNREADABLE_AFTER_MISSES
                 if stopped:
                     rows.append({"op": "return", "entry": e.entry, "pass_id": pass_id, "why": "suspend", "at": at})
+                elif grouped and bound and e.refs.captures:
+                    # the writer could not finish this group: the harness closes the entry so it holds no queue up; its
+                    # capture stays served as it was, and it is the history of any related capture that comes later
+                    how = "read and not decided" if e.state == "read" else "handed and not read"
+                    n = (e.undecided if e.state == "read" else e.misses) + 1
+                    rows.append({"op": "close", "entry": e.entry, "pass_id": pass_id, "decision": "nothing_to_keep",
+                                 "items": [], "reason_ref": GIVEN_UP, "by": "harness",
+                                 "why": f"{how} in {n} group passes, the last pass:{pass_id}", "at": at})  # fmt: skip
                 elif e.state == "read" and e.undecided + 1 >= UNREADABLE_AFTER_MISSES:
                     rows.append({"op": "unreadable", "entry": e.entry, "pass_id": pass_id,
                                  "evidence": f"read and not decided in {e.undecided + 1} passes, the last pass:{pass_id}",

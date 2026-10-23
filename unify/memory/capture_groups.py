@@ -62,6 +62,8 @@ HISTORY_MAX = 8
 SEQUENCE_MIN = 2
 #: The reason the harness closes an entry whose episode left no capture: nothing to write up, no pass.
 NO_CAPTURE = "no_capture"
+#: The reason the harness closes a capture entry of a group no pass finished (:data:`.attention.GIVEN_UP`).
+GIVEN_UP = "group_given_up"
 #: The entry kinds that wait for their group; every other kind is handed at once.
 GROUPED_KINDS = frozenset({"new_experience"})
 GROUP_FILE = "group.json"
@@ -371,6 +373,8 @@ def group_doc(group: Group, profile_of: Callable[[Any], Profile], *, landed: Map
         }
         if e.state == "closed":
             row.update(decision=e.decision, decided_items=list(e.decided_items))
+            if getattr(e, "reason_ref", None) == GIVEN_UP:
+                row["closed_by"] = "the harness: no pass finished its group"
         return row
 
     # used (an observed call) or linked (landed from a member's capture, decided by an earlier pass); an item that was
