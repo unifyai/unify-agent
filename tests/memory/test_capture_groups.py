@@ -336,7 +336,16 @@ def test_the_first_message_names_the_group():
     es = [_e("a" * 16, state="handed"), _e("b" * 16, state="handed")]
     text = tools.first_message(att, SimpleNamespace(attention=es), "900")
     assert text.startswith("Pass p9: a group of 2 related captures needs your attention")
-    assert "with 1 related capture closed earlier (by a pass, or by the harness)" in text and "2 library items" in text
+    assert "with 1 related capture an earlier pass decided." in text and "2 library items" in text
+    # who closed each earlier capture, as group.json says it: a pass's decision, or the harness giving the group up
+    given_up = {"closed_by": "the harness: no pass finished its group"}
+    att.group["related_closed"] = [{}, given_up, given_up]
+    text = tools.first_message(att, SimpleNamespace(attention=es), "900")
+    assert ("with 1 related capture an earlier pass decided and 2 related captures the harness closed when no pass "
+            "finished its group.") in text
+    att.group["related_closed"] = [given_up]
+    text = tools.first_message(att, SimpleNamespace(attention=es), "900")
+    assert "with 1 related capture the harness closed when" in text and "an earlier pass" not in text
     assert "each related pair with its relations" in text and "from its records only" not in text
     assert "/inputs/attention/group.json" in text and "900 s" in text
 

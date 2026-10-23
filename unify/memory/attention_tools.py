@@ -471,13 +471,19 @@ def first_message(att: AttentionPass, req: Any, wall: str) -> str:
     ids = ", ".join(f"{e.entry} ({e.kind})" for e in handed)
     group = getattr(att, "group", None)
     if group is not None:
-        closed = len(group.get("related_closed") or [])
+        closed = [m for m in group.get("related_closed") or [] if isinstance(m, dict)]
+        # who closed each: an earlier pass's decision, or the harness when no pass finished its group
+        by_harness = sum(1 for m in closed if m.get("closed_by"))
+        by_pass = len(closed) - by_harness
+        history = [f"{n} related {'capture' if n == 1 else 'captures'} {who}" for n, who in (
+            (by_pass, "an earlier pass decided"),
+            (by_harness, "the harness closed when no pass finished its group"),
+        ) if n]  # fmt: skip
         lib = len(group.get("library_items") or [])
         return (
             f"Pass {att.pass_id}: a group of {len(handed)} related "
             f"{'capture' if len(handed) == 1 else 'captures'} needs your attention: {ids}"
-            + (f", with {closed} related {'capture' if closed == 1 else 'captures'} closed earlier (by a pass, or by "
-               "the harness)" if closed else "")
+            + (", with " + " and ".join(history) if history else "")
             + ".\n"
             "/inputs/attention/group.json says why the harness put them together (each related pair with its "
             "relations), what was decided on the earlier ones, "
