@@ -132,8 +132,6 @@ def compaction_due(prompt_tokens: object, window: object) -> bool:
     return context_over_threshold(prompt_tokens, COMPACTION_THRESHOLD, window)
 
 
-@dataclass
-
 def _natural_path(vpath: str, roots: Mapping[str, Any]) -> str:
     """A path as an agent naturally writes it, resolved to one of its *roots*: an absolute path as it is; a relative
     one under the first root (``/memory``, then ``/inputs``, ``/outputs``) where it exists, with a leading
@@ -154,6 +152,8 @@ def _natural_path(vpath: str, roots: Mapping[str, Any]) -> str:
             return t
     return vpath
 
+
+@dataclass
 class Compaction:
     """One compaction's summary call and its outcome: the call's reply and charge (booked like any other call
     of the agent), the request it sent, and the conversation to restart from (None: the reply held no summary,
