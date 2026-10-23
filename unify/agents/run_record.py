@@ -202,7 +202,7 @@ def prompt_lines(name: str, role: str, spawner: Optional[str] = None, *, home: O
     (``UNIFY_MEMORY=off``) reads :data:`COMMON_SECTION_NO_MEMORY` and is never told to mention a writer, fork or
     librarian.
     """
-    memory = _registry.memory_is_on()
+    memory = run_has_memory(home, role, spawner)
     lines = [_registry.common_section(memory), "", f"On the record you are `{name}` ({role})."]
     for m in SHOULD_MENTION.get(role, ()):
         who = (spawner or "") if m["who"] == "<starter>" else m["who"]
@@ -258,6 +258,30 @@ def role_seeded(home: Path | str, role: str) -> bool:
     except (OSError, ValueError):
         return False
     return isinstance(doc, dict) and doc.get("role") == role
+
+
+def _memory_agent_name(name: Optional[str]) -> bool:
+    """Whether *name* is a memory agent's on the record: the writer, a fork or a librarian instance."""
+    n = str(name or "")
+    return n == WRITER or n.startswith(("fork-", "librarian-"))
+
+
+def run_has_memory(home: Optional[Path | str] = None, role: Optional[str] = None, spawner: Optional[str] = None) -> bool:
+    """Whether the run an agent is in has memory, so a writer, forks and a librarian can be on its record: the agent
+    is one of them (or a helper one of them started), the run's ``UNIFY_MEMORY`` is on or in_episode, or the run's
+    record already shows one (a memory agent on its roster, or a seeded librarian). Only a run without memory by all
+    three reads :data:`COMMON_SECTION_NO_MEMORY` and is never told to mention a writer, fork or librarian."""
+    if role in _registry.MEMORY_ROLES or (role == "helper" and _memory_agent_name(spawner)):
+        return True
+    if _registry.memory_is_on():
+        return True
+    if home is None:
+        return False
+    try:
+        rows = _load_roster(agents_dir(home) / ROSTER_FILE)["agents"]
+    except Exception:  # noqa: BLE001 - an unreadable roster shows no memory agent
+        rows = []
+    return any(r.get("role") in _registry.MEMORY_ROLES for r in rows) or role_seeded(home, "librarian")
 
 
 def seed_role(home: Path | str, role: str, *, by: str) -> bool:
@@ -869,7 +893,7 @@ class RunRecord(Record):
         help_text = " ".join(clean_text(help_text).split())
         if len(help_text) > HELP_CHARS:
             help_text = help_text[:HELP_CHARS] + "…"
-        memory = _registry.memory_is_on()
+        memory = run_has_memory(self.home, role, spawner)
         mention = [dict(m) for m in SHOULD_MENTION.get(role, ())
                    if memory or m["who"] not in _registry.MEMORY_ROLES]   # without memory: no writer, fork or librarian
         if role == "helper":
@@ -1759,7 +1783,8 @@ class RunRecordView:
         sender = sender or self.name
         names = [f"@{n}" for n in self.record.live_agents() if n != sender]
         # rev 2: a role that outlives its instances is offered only once the run has seeded it
-        memory = _registry.memory_is_on()
+        memory = run_has_memory(self.record.home, self.role if sender == self.name else None,
+                                self.spawner if sender == self.name else None)
         roles = [f"@{r}" for r in ROLE_ADDRESSES if (r not in INSTANCE_ROLES or role_seeded(self.record.home, r))
                  and (memory or r not in _registry.MEMORY_ROLES)]   # without memory: no writer, fork or librarian
         return ", ".join(dict.fromkeys(names + roles))
@@ -1812,6 +1837,7 @@ __all__ = [
     "seed_role",
     "COMMON_SECTION",
     "COMMON_SECTION_NO_MEMORY",
+    "run_has_memory",
     "MAX_RECORD_BYTES",
     "ROLES",
     "RUN_OPTIONS",

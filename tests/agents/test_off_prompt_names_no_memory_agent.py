@@ -59,8 +59,26 @@ def test_without_memory_no_tool_text_addresses_a_memory_agent(no_memory, agent):
     for name in names:
         for text in (R.help_text(name, agent), R.list_text([name], agent)):
             assert not MEMORY_ADDRESS.search(text), (name, text)
-    record = {topic: text for topic, (_, text) in R.help_topics().items()}["record"]
+    record = {topic: text for topic, (_, text) in R.help_topics(agent).items()}["record"]
     assert record == R.COMMON_SECTION_NO_MEMORY
+
+
+def test_memory_agents_and_their_helpers_always_read_a_memory_runs_texts(no_memory):
+    """A writer, fork or librarian only ever runs with memory, whatever the process's own setting says."""
+    for name, role, spawner in (("writer", "writer", None), ("fork-ab12", "fork", None),
+                                ("librarian-ab12", "librarian", None), ("call-1", "helper", "writer")):
+        assert RR.prompt_lines(name, role, spawner).startswith(R.COMMON_SECTION), (name, role)
+    assert R.help_text("send", "writer") == R.help_text("send", "writer", memory=True)
+    assert {t: x for t, (_, x) in R.help_topics("writer").items()}["record"] == R.COMMON_SECTION
+
+
+def test_a_record_that_shows_a_memory_agent_is_a_memory_run(no_memory, tmp_path):
+    home = tmp_path / "home"
+    rec = RR.join_run_record(home)
+    rec.join("actor-ab12", "actor", episode="ep-1")
+    assert RR.prompt_lines("actor-ab12", "actor", home=home).startswith(R.COMMON_SECTION_NO_MEMORY)
+    rec.join("writer", "writer", state="idle")
+    assert RR.prompt_lines("actor-ab12", "actor", home=home).startswith(R.COMMON_SECTION)
 
 
 def test_with_memory_the_send_texts_are_unchanged(with_memory):

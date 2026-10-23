@@ -71,10 +71,16 @@ def memory_is_on() -> bool:
         return True
 
 
+def _agent_memory(agent: Optional[str]) -> bool:
+    """Whether *agent*'s texts are a memory run's: a memory agent (the writer, a helper, the librarian) only ever runs
+    with memory; the actor and a teammate read the run's setting (:func:`memory_is_on`); no agent: the full texts."""
+    return memory_is_on() if agent in (_A, _T) else True
+
+
 def _own_text(spec: "RegisteredTool", key: str, agent: Optional[str], memory: Optional[bool]) -> tuple[bool, Any]:
     """(given, text): the text of *key* that *agent* reads in a run with or without memory: the run's off text
     first (a run without memory), then the agent's own, else the shared one (given False)."""
-    if not (memory_is_on() if memory is None else memory) and key in spec.off_text:
+    if not (_agent_memory(agent) if memory is None else memory) and key in spec.off_text:
         return True, spec.off_text[key]
     if agent is not None and key in (spec.role_text.get(agent) or {}):
         return True, spec.role_text[agent][key]
@@ -2578,7 +2584,7 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
             out += ["", _function_source(n, agent), f"{n} = _taught({n})", ""]
     helps = {n: help_text(n, agent) for n in allowed}
     # the help topics the agent has besides its tools (topics are never listed or callable)
-    helps.update({t: text for t, (agents, text) in help_topics().items() if agent in agents and t not in helps})
+    helps.update({t: text for t, (agents, text) in help_topics(agent).items() if agent in agents and t not in helps})
     out += [
         "",
         f"_LIST = {json.dumps(list_text(allowed, agent))}",
@@ -2611,10 +2617,11 @@ _END = {
     _H: ("done", "tools.done(summary, claims) hands your summary and claims back and ends your task."),
     _L: ("finish", "tools.finish(answer) hands your answer to the agent that asked."),
 }
-def help_topics() -> dict:
+def help_topics(agent: Optional[str] = None) -> dict:
     """What ``tools.help(name)`` answers besides the agent's tools: topic -> (the agents that have it, its text). The
-    topic ``record`` is the run record's common section, for every agent."""
-    return {"record": (_RUN_ROLES, common_section())}
+    topic ``record`` is the run record's common section, for every agent (*agent*'s run: without memory, the actor
+    and a teammate read :data:`COMMON_SECTION_NO_MEMORY`)."""
+    return {"record": (_RUN_ROLES, common_section(_agent_memory(agent)))}
 
 
 # --- the names bound in every agent's cells, and the paragraph that says so ---
