@@ -386,6 +386,32 @@ def annotation_to_schema(ann: Any) -> Dict[str, Any]:
     return schema
 
 
+def _inline_local_refs(schema: Any) -> Any:
+    """*schema* with every local reference (``{"$ref": "#/$defs/<name>"}`` or ``#/definitions/<name>``) replaced by
+    the definition it names, recursively. A reference's sibling keys are dropped, as a JSON reference replaces the
+    object it sits in. A definition that refers back to itself, directly or through others, cannot be inlined:
+    ValueError names it. Standard library only: the build's lock holds no JSON-reference package."""
+    defs: Dict[str, Any] = {}
+    if isinstance(schema, dict):
+        for key in ("$defs", "definitions"):
+            if isinstance(schema.get(key), dict):
+                defs.update({f"#/{key}/{name}": value for name, value in schema[key].items()})
+
+    def walk(node: Any, seen: tuple) -> Any:
+        if isinstance(node, list):
+            return [walk(item, seen) for item in node]
+        if not isinstance(node, dict):
+            return node
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref in defs:
+            if ref in seen:
+                raise ValueError(f"the schema's {ref} refers back to itself; it cannot be inlined")
+            return walk(defs[ref], seen + (ref,))
+        return {key: walk(value, seen) for key, value in node.items()}
+
+    return walk(schema, ())
+
+
 def _strip_model_schema_noise(schema: Any) -> Any:
     """Drop pydantic's auto-generated ``title`` and ``default`` annotations.
 
@@ -469,13 +495,7 @@ def _annotation_to_schema(ann: Any) -> Dict[str, Any]:
     # whole parameters object as one JSON grammar; nested `#/$defs/...` refs
     # otherwise resolve against the wrong document root).
     if isinstance(ann, type) and issubclass(ann, BaseModel):
-        import copy
-
-        import jsonref
-
-        schema = ann.model_json_schema()
-        dereferenced = jsonref.loads(json.dumps(schema))
-        plain = copy.deepcopy(dereferenced)
+        plain = _inline_local_refs(ann.model_json_schema())
         if isinstance(plain, dict):
             plain.pop("$defs", None)
             plain.pop("definitions", None)

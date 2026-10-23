@@ -631,3 +631,38 @@ def test_optional_list_keeps_its_item_schema() -> None:
 def test_required_scalar_stays_non_nullable() -> None:
     """Widening must apply to Optional only, never to a plain annotation."""
     assert llmh.annotation_to_schema(int) == {"type": "integer"}
+
+
+# --------------------------------------------------------------------------- #
+#  annotation_to_schema – nested models are inlined (no JSON-reference package) #
+# --------------------------------------------------------------------------- #
+class _InlineAddress(BaseModel):
+    city: str
+
+
+class _InlineCustomer(BaseModel):
+    name: str
+    home: _InlineAddress
+    others: list[_InlineAddress]
+
+
+class _InlineNode(BaseModel):
+    value: int
+    children: list[_InlineNode] = []
+
+
+def test_a_nested_model_is_inlined_without_references():
+    """A model's nested models are inlined in place: no ``$ref`` and no ``$defs`` are left (providers compile the
+    parameters object as one document), with the standard library only."""
+    import json
+
+    schema = llmh.annotation_to_schema(_InlineCustomer)
+    text = json.dumps(schema)
+    assert "$ref" not in text and "$defs" not in text
+    assert schema["properties"]["home"]["properties"]["city"]["type"] == "string"
+    assert schema["properties"]["others"]["items"]["properties"]["city"]["type"] == "string"
+
+
+def test_a_model_that_refers_back_to_itself_is_refused_by_name():
+    with pytest.raises(ValueError, match="refers back to itself"):
+        llmh.annotation_to_schema(_InlineNode)
