@@ -109,10 +109,16 @@ def test_a_path_outside_every_root_is_refused_with_the_roots_the_agent_has(role,
         form, text = by_path[key]
         assert form == "refused:outside_roots", (key, form, text)
         assert "/workspace and the library (/memory-library, read-only)" in text and "memory.get(" in text, text
-    for key in (("read", "/workspace/none.txt"), ("read", "/memory-library/notes/none.md"),
-                ("read", "/memory/notes/none.md"), ("grep", "/workspace/none"), ("grep", "/memory-library/none")):
+    for key in (("read", "/workspace/none.txt"), ("grep", "/workspace/none")):
         form, text = by_path[key]
         assert form == "refused:not_found", (key, form, text)
+        assert "/inputs" not in text and "attention" not in text and "memory" not in text, text
+    for key in (("read", "/memory-library/notes/none.md"), ("read", "/memory/notes/none.md"),
+                ("grep", "/memory-library/none")):
+        form, text = by_path[key]
+        # a missing library path names the calls that list the library's entries and open one
+        assert form == "refused:not_in_library", (key, form, text)
+        assert "memory.items()" in text and "memory.get(" in text, text
         # the actor's and a teammate's own text: never a writer's input or another role's root
         assert "/inputs" not in text and "attention" not in text, text
 

@@ -489,14 +489,22 @@ def _summary_paths(names: Iterable[str]) -> tuple[str, ...]:
     return tuple(f"{STAGING_INPUTS}/{n}/summary.md" for n in names)
 
 
-def material(entry: AttentionEntry, *, has_summary: Callable[[str], bool] = lambda _n: True) -> list[Part]:
+def material(
+    entry: AttentionEntry,
+    *,
+    has_summary: Callable[[str], bool] = lambda _n: True,
+    has_procedure: Callable[[str], bool] = lambda _n: True,
+) -> list[Part]:
     """The parts of *entry*'s material, required and optional. *has_summary* says whether a staging dir holds a
-    summary (where it holds none, reading any part of the episode stands for it)."""
+    summary (where it holds none, reading any part of the episode stands for it); *has_procedure* whether it holds a
+    ``procedure.py``. The material names only files the pass's inputs hold: an episode's procedure reaches the writer
+    by one route, its capture's ``procedure.py`` (the staging copy is left out of the inputs when the capture holds
+    it), and a staged ``procedure.py`` is named only for an entry with no capture, where it exists."""
     r = entry.refs
     names = [staging_name(e, r.segment) for e in r.episodes]
     own = f"{ATTENTION_INPUTS}/{entry.entry}"
-    proc_paths = tuple(f"{CAPTURES_INPUTS}/{c}/procedure.py" for c in r.captures) + tuple(
-        f"{STAGING_INPUTS}/{n}/procedure.py" for n in names
+    proc_paths = tuple(f"{CAPTURES_INPUTS}/{c}/procedure.py" for c in r.captures) or tuple(
+        f"{STAGING_INPUTS}/{n}/procedure.py" for n in names if has_procedure(n)
     )
     with_summary = [n for n in names if has_summary(n)]
     summary = Part(
@@ -633,11 +641,12 @@ def verify(
     delivered: Iterable[int] = (),
     *,
     has_summary: Callable[[str], bool] = lambda _n: True,
+    has_procedure: Callable[[str], bool] = lambda _n: True,
 ) -> tuple[bool, list[str], Decimal]:
     """``(read, parts read, share)`` for *entry* under *reads* and the run-record *delivered* seqs: read when every
     required part of its material was opened (:func:`material`); the share counts every part, optional ones too."""
     delivered = list(delivered)
-    parts = material(entry, has_summary=has_summary)
+    parts = material(entry, has_summary=has_summary, has_procedure=has_procedure)
     got = [p for p in parts if satisfied(p, reads, delivered)]
     required = [p for p in parts if p.required]
     ok = bool(required) and all(p in got for p in required)
@@ -886,7 +895,17 @@ class Ledger:
         return [e for e in self.entries().values() if e.active and e.state != "open" and e.pass_id == pass_id]
 
     def _has_summary(self, name: str) -> bool:
-        p = self.state_dir / "memory-staging" / name / "summary.md"
+        return self._staged(name, "summary.md")
+
+    def _has_procedure(self, name: str) -> bool:
+        return self._staged(name, "procedure.py")
+
+    def _staged_files(self) -> dict:
+        """What :func:`material` asks of the staging dirs: whether one holds a summary, and a procedure."""
+        return {"has_summary": self._has_summary, "has_procedure": self._has_procedure}
+
+    def _staged(self, name: str, file: str) -> bool:
+        p = self.state_dir / "memory-staging" / name / file
         try:
             return stat.S_ISREG(os.lstat(p).st_mode)
         except OSError:
@@ -1322,7 +1341,7 @@ class Ledger:
 
     def _material_paths(self, e: AttentionEntry) -> tuple[str, ...]:
         out: list[str] = []
-        for p in material(e, has_summary=self._has_summary):
+        for p in material(e, **self._staged_files()):
             if p.required:
                 out.extend(p.paths[:1] or [f"episode {x}" for x in p.episodes[:1]] or [f"record entry #{s}" for s in p.seqs[:1]])
         return tuple(out)
@@ -1371,7 +1390,7 @@ class Ledger:
             for e in state.values():
                 if not (e.active and e.state != "open" and e.pass_id == pass_id):
                     continue
-                ok, parts, share = verify(e, read_log, delivered, has_summary=self._has_summary)
+                ok, parts, share = verify(e, read_log, delivered, **self._staged_files())
                 if not ok:
                     continue
                 verified.add(e.entry)
@@ -1456,10 +1475,10 @@ class Ledger:
             unread = []
             parts_of: dict[str, tuple[list[str], Decimal]] = {}
             for i in ids:
-                ok, parts, share = verify(state[i], reads, delivered, has_summary=self._has_summary)
+                ok, parts, share = verify(state[i], reads, delivered, **self._staged_files())
                 parts_of[i] = (parts, share)
                 if not ok:
-                    need = [p for p in material(state[i], has_summary=self._has_summary) if p.required and p.name not in parts]
+                    need = [p for p in material(state[i], **self._staged_files()) if p.required and p.name not in parts]
                     unread.append((i, need))
             if unread:
                 i, need = unread[0]
@@ -1782,7 +1801,7 @@ def export_material(
     for e in entries:
         d = dest / e.entry
         d.mkdir(parents=True, exist_ok=True)
-        parts = material(e, has_summary=ledger._has_summary)
+        parts = material(e, **ledger._staged_files())
         doc = {
             "entry": e.entry,
             "kind": e.kind,

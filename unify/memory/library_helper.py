@@ -1708,9 +1708,10 @@ class Item:
         stored work on it.
         """
         if self.id.startswith(CAPTURE_PREFIX) and _capture_form(self.id[len(CAPTURE_PREFIX) :]) == "state_env":
-            # a fact of the harness, not a failure of the procedure: nothing is run and no use is recorded
+            # a fact of the harness, not a failure of the procedure: nothing is run and no use is recorded. The error
+            # names the item, not the call as written: that call cannot work, so the text never shows it as one
             raise WrongCall(
-                call_text(f"memory.get({self.id!r})", args, kwargs),
+                f"a call of {self.id}",
                 "nothing was run: " + BY_HAND.format(cid=self.id) + ".",
             )
         if not args and not kwargs:

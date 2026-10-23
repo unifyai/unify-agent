@@ -759,6 +759,16 @@ def keep_note(ctx: Any, args: dict) -> Any:
 # --- finding items: search, read, grep -------------------------------------------------------------------------------
 
 
+def _refused(tool: str, form: str, paths: tuple = (), **fields: object) -> Any:
+    """A refusal of one of the librarian's own tools, in the librarian's own words (its role texts: its roots, its
+    calls), never another agent's."""
+    from unify.common.tool_registry import role_refusal
+    from unify.memory.writer_tools import Reply
+
+    text = role_refusal(AGENT, tool, form, memory=True, **fields)
+    return Reply(str(text)[:600], "refused", form, tuple(paths))
+
+
 def _offset(args: dict) -> int:
     value = args.get("offset", 0)
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
@@ -777,7 +787,7 @@ def search(ctx: Any, args: dict) -> Any:
     state: LibrarianCalls = ctx.state
     query = args.get("query")
     if not _text(query):
-        return _wt.refused("search", "no_query")
+        return _refused("search", "no_query")
     where = ({"path": f"{LIBRARY_ROOT}/{INDEX_FILE}", "mode": "search"},)
     data = read_index(state.copy) if state.copy is not None else None
     return _wt.Reply(search_text(data, str(query), backend(on_call=book_embedding), _offset(args)), paths=where)
@@ -786,13 +796,12 @@ def search(ctx: Any, args: dict) -> Any:
 def _library_path(tool: str, args: dict, default: str = "") -> tuple[str, str | None, Any]:
     """(the path asked for, its box path, None) inside the library; or a refusal as the third item."""
     from unify.memory import safe_paths as _safe
-    from unify.memory import writer_tools as _wt
 
     vpath = str(args.get("path") or default)
     try:
         prefix, parts = _safe.split(vpath, [LIBRARY_ROOT])
     except _safe.Outside:
-        return vpath, None, _wt.refused(tool, "outside_library", path=vpath[:200])
+        return vpath, None, _refused(tool, "outside_library", path=vpath[:200])
     return vpath, _safe.virtual(prefix, parts), None
 
 
@@ -811,11 +820,11 @@ def read(ctx: Any, args: dict) -> Any:
     try:
         text, mode = _views.read_entry(vpath, {LIBRARY_ROOT: state.copy}, _offset(args))
     except _safe.Outside:
-        return _wt.refused("read", "outside_library", path=vpath[:200])
+        return _refused("read", "outside_library", path=vpath[:200])
     except (_safe.LinkFound, _safe.NotRegular) as exc:
-        return _wt.refused("read", "unreadable", where, error=exc.reason, path=vpath[:200])
+        return _refused("read", "unreadable", where, error=exc.reason, path=vpath[:200])
     except OSError:
-        return _wt.refused("read", "not_found", where, path=vpath[:200])
+        return _refused("read", "not_found", where, path=vpath[:200])
     return _wt.Reply(text, paths=({"path": virtual, "mode": mode},))
 
 
@@ -835,15 +844,15 @@ def grep(ctx: Any, args: dict) -> Any:
     try:
         text = _views.grep_bounded(str(args.get("pattern", "")), vpath, {LIBRARY_ROOT: state.copy}, _offset(args))
     except _views.PatternProblem as exc:
-        return _wt.refused("grep", "bad_pattern", where, reason=str(exc))
+        return _refused("grep", "bad_pattern", where, reason=str(exc))
     except _views.SearchFailed:
-        return _wt.refused("grep", "search_failed", where)
+        return _refused("grep", "search_failed", where)
     except _safe.Outside:
-        return _wt.refused("grep", "outside_library", where, path=vpath[:200])
+        return _refused("grep", "outside_library", where, path=vpath[:200])
     except _safe.LinkFound as exc:
-        return _wt.refused("grep", "unreadable", where, error=exc.reason, path=vpath[:200])
+        return _refused("grep", "unreadable", where, error=exc.reason, path=vpath[:200])
     except OSError as exc:
-        return _wt.refused("grep", "unreadable", where, error=_safe.errno_name(exc), path=vpath[:200])
+        return _refused("grep", "unreadable", where, error=_safe.errno_name(exc), path=vpath[:200])
     return _wt.Reply(text, paths=where)
 
 

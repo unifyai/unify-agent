@@ -54,6 +54,14 @@ COVERAGE: dict[tuple[str, str], str] = {
         "given only by the librarian's grep, for a path outside the library; no pass agent gets it (reached in "
         "test_librarian_navigation.py)"
     ),
+    ("read", "not_in_library"): (
+        "given only by the actor's and a teammate's read of a missing path in their library copy; no pass agent "
+        "gets it (reached in test_memory_paths_one_way.py)"
+    ),
+    ("grep", "not_in_library"): (
+        "given only by the actor's and a teammate's grep of a missing path in their library copy; no pass agent "
+        "gets it (reached in test_memory_paths_one_way.py)"
+    ),
     ("grep", "outside_roots"): R,
     ("grep", "outside_box"): R,
     ("grep", "bad_pattern"): R,

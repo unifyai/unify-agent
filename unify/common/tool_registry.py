@@ -1484,6 +1484,11 @@ _WORKSPACE_READ_TEXT = {
     },
     "examples": ('page = tools.read("/workspace")\nprint(page[:2000])',),
 }
+#: A path under the library (``/memory-library``) that does not exist, as the actor and a teammate are told: the calls
+#: that list the library's entries and open one.
+NOT_IN_LIBRARY = (
+    "{path} does not exist in the library; memory.items() lists its entries, and memory.get(<its id>) opens one"
+)
 #: The actor's and a teammate's read in a run with a library: the workspace, and the library copy their box mounts
 #: read-only at /memory-library (``/memory``, as the librarian and the writer name it, is the same copy).
 _WORKSPACE_LIBRARY_READ_TEXT = {
@@ -1494,6 +1499,7 @@ _WORKSPACE_LIBRARY_READ_TEXT = {
         "outside_roots": "{path} is outside /workspace and the library (/memory-library, read-only); an entry of the "
         "library opens with memory.get(<its id>)",
         "not_found": "{path} does not exist",
+        "not_in_library": NOT_IN_LIBRARY,
         "unreadable": "{error} for {path!r}",
     },
     "examples": ('page = tools.read("/workspace")\nprint(page[:2000])',),
@@ -1503,7 +1509,8 @@ _LIBRARY_READ_TEXT = {
     "description": "Read a file or list a directory of the library, under /memory. " + _READ_PAGE,
     "refusals": {
         "outside_library": "{path} is outside the library, /memory",
-        "not_found": "{path} does not exist",
+        "not_found": "{path} does not exist; tools.read('/memory') lists the library's top folder, and memory.items() "
+        "its entries",
         "unreadable": "{error} for {path!r}",
     },
     "examples": ('page = tools.read("/memory")\nprint(page[:2000])',),
@@ -1557,6 +1564,7 @@ _WORKSPACE_LIBRARY_GREP_TEXT = {
         "outside_roots": "{path} is outside /workspace and the library (/memory-library, read-only); an entry of the "
         "library opens with memory.get(<its id>)",
         "not_found": "{path} does not exist",
+        "not_in_library": NOT_IN_LIBRARY,
         "bad_pattern": "{reason}",
         "unreadable": "{error} for {path!r}",
         "search_failed": SEARCH_FAILED,
@@ -1627,7 +1635,7 @@ _IN_CODE: dict[str, dict] = {
         },
         off_text=_WORKSPACE_READ_TEXT,
         # the librarian's read is inside the library only
-        add_refusals={"outside_library": "{path} is outside the library, /memory"},
+        add_refusals={"outside_library": "{path} is outside the library, /memory", "not_in_library": NOT_IN_LIBRARY},
         returns="the file's text from offset (or the directory's listing), at most 8000 bytes, with `.next`: the "
         "offset of the next page, or None.",
         examples=('page = tools.read("/inputs/batch_map.json")\nprint(page[:2000])',),
@@ -1649,7 +1657,8 @@ _IN_CODE: dict[str, dict] = {
             _H: _HELPER_GREP_TEXT,
         },
         off_text=_WORKSPACE_GREP_TEXT,
-        add_refusals={"not_found": "{path} does not exist", "outside_library": "{path} is outside the library, /memory"},
+        add_refusals={"not_found": "{path} does not exist", "outside_library": "{path} is outside the library, /memory",
+                      "not_in_library": NOT_IN_LIBRARY},
         returns="the hits as `path:line: text` lines, one page at a time, with `.next`: the hit number of the next "
         "page, or None.",
         examples=('hits = tools.grep(r"def \\w+_total", "/memory")',),

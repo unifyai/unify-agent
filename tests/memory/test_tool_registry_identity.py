@@ -369,8 +369,9 @@ BASE = {
 }
 #: Refusal forms added since the base (each under its tool) and the tools that are new.
 ADDED_FORMS = {
-    "read": ["outside_library"],
-    "grep": ["search_failed", "outside_library"],
+    # the library's own missing-path form (the actor's and a teammate's read and grep of the library copy)
+    "read": ["outside_library", "not_in_library"],
+    "grep": ["search_failed", "outside_library", "not_in_library"],
     "finish": ["answered", "bad_answer"],
     "delegate": ["bad_name", "not_main_agent", "record_full", "short_request", "spawn_off", "too_large"],
     # the run record's addresses nobody would read (a role the run does not have, an agent that has ended)

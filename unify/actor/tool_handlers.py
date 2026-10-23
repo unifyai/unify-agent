@@ -324,7 +324,7 @@ def _read_library(ctx: Any, view: LibraryView, place: tuple[str, Path, str], ask
     except (_safe.LinkFound, _safe.NotRegular) as exc:
         return _reply(_refusal(ctx, "read", "unreadable", error=exc.reason, path=asked), "refused", "unreadable", where)
     except OSError:
-        return _reply(_refusal(ctx, "read", "not_found", path=asked), "refused", "not_found", where)
+        return _reply(_refusal(ctx, "read", "not_in_library", path=asked), "refused", "not_in_library", where)
     return _reply(text, paths=({"path": shown, "mode": mode},))
 
 
@@ -408,7 +408,7 @@ def _grep_library(
     if hidden is not None:
         return _reply(_refusal(ctx, "grep", "unreadable", error=hidden, path=asked), "refused", "unreadable", where)
     if not os.path.lexists(host):
-        return _reply(_refusal(ctx, "grep", "not_found", path=asked), "refused", "not_found", where)
+        return _reply(_refusal(ctx, "grep", "not_in_library", path=asked), "refused", "not_in_library", where)
     try:
         text = _views.grep_bounded(
             pattern,
