@@ -72,9 +72,9 @@ NAMES_SENTENCE_END = "already available as variables in every cell; no import ne
 OPENING_HEADING = "## How you work here"
 OPENING_LAST = "You end your work with"
 OPENING_LAST_ACTOR = "Other agents may share a record with you;"
-#: Design B.1: ``tool_registry.prebound_names(agent, facts)``; *facts* as this run's configuration gives them. The
-#: keys it reads: ``tools`` (tools in code), ``memory`` (the library package is in the box) and, for the actor,
-#: ``clarification`` (its session can ask its requester; left off here, so ``request_clarification`` is not required).
+#: Design B.1: every name bound in a role's cells before any cell runs, with *facts* as this run's configuration gives
+#: them: the namespaces (``tool_registry.namespace_names``: ``tools`` for tools in code, ``memory`` for the library
+#: package in the box), ``help`` (the worker's own), and for the actor and a teammate their other globals.
 PREBOUND_FACTS = {
     "actor": {"tools": True, "memory": True, "clarification": False},
     "teammate": {"tools": True, "memory": True},
@@ -83,8 +83,14 @@ PREBOUND_FACTS = {
 }
 
 
+#: The actor's and a teammate's other globals, bound as the worker's own or synced from the host's namespace
+#: (``ModelRequestError`` is what a failed model call raises).
+ACTOR_GLOBALS = ("display", "query_llm", "list_llms", "unillm", "run_coro_sync", "ModelRequestError")
+
+
 def prebound_names(role: str) -> list[str]:
-    return list(R.prebound_names(role, PREBOUND_FACTS[role]))
+    names = [*R.namespace_names(role, PREBOUND_FACTS[role]), "help"]
+    return names + list(ACTOR_GLOBALS) if role in ("actor", "teammate") else names
 
 
 #: The reviewed list of spans that do not parse, one ``<role>\t<span>`` per line (design F.1, step 2).

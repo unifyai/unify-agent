@@ -8,7 +8,8 @@ import pytest
 
 from tests.memory.test_layout import FUNCTIONS, LIB, _tree
 from unify.memory import layout
-from unify.memory.library_index import INDEX_HEAD, build_links, listed, render_index, render_links
+from unify.memory.library_helper import item_count, split_index
+from unify.memory.library_index import INDEX_HEAD, build_links, render_index, render_links
 
 PARSE_DATE = "memory.text.dates:parse_date"
 NOTE_ID = "notes/text/dates.md"
@@ -91,7 +92,7 @@ def test_retired_items_leave_the_index_but_not_the_links(tmp_path):
 def test_an_empty_library_has_an_index_with_no_items(tmp_path):
     lib = layout.discover(tmp_path)
     index = render_index(lib, build_links(lib))
-    assert index == INDEX_HEAD + "\nThe library is empty.\n" and listed(index) == 0
+    assert index == INDEX_HEAD + "\nThe library is empty.\n" and sum(item_count(body) for _, body in split_index(index)[1]) == 0
 
 
 def test_the_index_shows_no_effect_and_no_test_breadth(tmp_path):

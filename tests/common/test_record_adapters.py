@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import time
 from types import SimpleNamespace
+from typing import Any, Optional, Protocol, runtime_checkable
 
 import pytest
 
@@ -14,7 +15,26 @@ from unify.actor import tool_handlers as th
 from unify.agents.pool import Pool
 from tests.agents.records import run_record
 from unify.common.record_adapters import AgentRecordAdapter
-from unify.common.tool_registry import Record, RecordRefused
+from unify.common.tool_registry import RecordRefused
+
+
+@runtime_checkable
+class Record(Protocol):
+    """The record the record tools use, whichever agent calls them: a memory pass's in-memory record
+    (:class:`unify.common.record_adapters.PassRecordAdapter`) or the actor's agent record
+    (:class:`unify.common.record_adapters.AgentRecordAdapter`). A refused operation raises ``RecordRefused``."""
+
+    def post(self, sender: str, text: str, to: Optional[list] = None) -> dict: ...
+
+    def unseen(self, reader: str) -> list: ...
+
+    async def wait(self, reader: str, timeout: float) -> list: ...
+
+    def roster(self) -> list: ...
+
+    async def start(self, spawner: str, task: str, **kw: Any) -> dict: ...
+
+    async def stop(self, by: str, name: str) -> dict: ...
 
 
 def _agent_pool(replies: dict | None = None, **options):
