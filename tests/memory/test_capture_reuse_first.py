@@ -36,10 +36,10 @@ def test_a_fresh_capture_is_served_before_any_writer_pass(tmp_path):
         root,
         f"ex = memory.get({table!r})\n"
         f"print(json.dumps({{'listed': [i.id for i in memory.items()], 'card': str(ex), "
-        f"'run': repr(memory.run({table!r}, {request!r}))}}))\n",
+        f"'run': ex({request!r})}}))\n",
     )
     assert table in got["listed"]
-    assert "run of " + table + ": returned" in got["run"] and "result: 7" in got["run"]
+    assert got["run"] == 7  # the item's call ran it on the request's text and returned its result
     listing = librarian.library_items(root)
     assert listing is not None and table in listing[0] and table not in listing[1]
 
@@ -49,11 +49,13 @@ def test_a_capture_card_and_run_report_carry_no_discouraging_wording(tmp_path):
     table = f"capture:{ids['table']}"
     got = _cell(
         root,
-        f"print(json.dumps({{'card': str(memory.get({table!r})), "
-        f"'run': repr(memory.run({table!r}, 'TABLE\\n[]'))}}))\n",
+        f"print(json.dumps({{'card': str(memory.get({table!r})), 'value': memory.get({table!r})('TABLE\\n[]'), "
+        f"'run': repr(memory._tracked_run({table!r}, ('TABLE\\n[]',), {{}}))}}))\n",
     )
     head = got["card"].split("\n\n", 1)[0]  # the card's lines above the procedure's own source
     assert not [w for w in DISCOURAGING if w in head.lower()], head
+    # the item's call returns its result; the report of the tracked call it is made through says nothing more of it
+    assert got["value"] == 0 and "run of " + table + ": returned" in got["run"] and "result: 0" in got["run"]
     # every run report says a result is unchecked against the request, for any item; nothing else is said of a capture
     assert not [w for w in DISCOURAGING if w != "unchecked" and w in got["run"].lower()], got["run"]
     # the fixture's episode recorded no outcome: the card claims no acceptance

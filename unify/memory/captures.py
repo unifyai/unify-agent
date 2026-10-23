@@ -22,7 +22,7 @@ No recurrence step runs and nothing credits a use here: the writer reads the cap
 
 **Negative knowledge.** A capture whose episode carries a contrary signal (``contrary``; ``failed`` in a record of the
 earlier contract, :func:`negative`) is never offered to run; it reaches the writer as a ``failure`` pool entry with its
-``broke.md`` lines, and the writer may land a note of what broke or a test that records the failure.
+``broke.md`` lines.
 
 **The applicability signature** (:func:`signature`) is computed here, never written by the model, and holds no
 request text: the shapes of the recorded input and the handed-back value (key paths, leaf types, length classes),
@@ -30,16 +30,20 @@ the structural relations between them, whether the stated conditions exist (with
 goal, the ``## Asked`` section of the fork's ``summary.md``, which is shown and never compared. Nothing here strips
 or masks an identifier: a key, a goal or a docstring is kept as written (rev 2.1).
 
-**Trust.** ``record.json`` keeps the capture's cases and uses (:class:`.trust.Use` rows), the status (``on-trial``,
-``adopted``, ``retired``) and the evidence level that :mod:`.trust` gives from them; a capture's own level is
-``unchecked``, and the levels above it are the gate's to give when the capture is landed.
+**Trust.** ``record.json`` keeps what the capture step saw: the capture's episodes and its cases, each with the
+outcome its episode's signals gave. It keeps no use: every call of a capture is recorded where every library item's
+is, in the evidence store (``item_use`` under ``capture:<id>``, from the request's use record), and
+:func:`.serving.item_evidence` gives its later uses, its recorded failures, what it rests on and its status from them
+and from this record, so a capture's card, its catalogue and search rows and the librarian all read one account.
 
 **Where it lives.** ``<state>/memory-captures/`` is written only by the harness. It is outside every box-writable
 root (the fork's box binds only its own staging dir; the writer and helper boxes bind none of the state dir), so no
-agent edits it, and it is not the library: the writer reads it as input (pool entries of kind ``capture`` and
-``failure``, and ``/inputs/captures/``) and promotes from it by landing library items, and stays the only agent that
-edits the library. The actor's copy gets a snapshot under ``.memory/captures/`` at each request start
-(:func:`export_files`); captures never enter ``INDEX.md`` or the prompt.
+agent edits it. Every capture is a library entry served at once: each request's copy gets a snapshot under
+``.memory/captures/`` (:func:`export_files`), where ``memory.items()`` lists it, ``memory.get`` opens and calls it,
+the librarian's search and catalogue hold it and the request-start block can name it, before any writer pass. It is
+not in ``INDEX.md`` and its files are not in the library's repository: the writer reads it as input (pool entries of
+kind ``capture`` and ``failure``, and ``/inputs/captures/``), writes library items beside it, and stays the only agent
+that edits the library.
 
 Evidence: ``captures-events.jsonl`` holds one row per capture step; an episode with a row there is done, and the
 attention ledger reads these rows (:func:`episode_rows`). Nothing here keys on a task id, a stream boundary or a
@@ -76,7 +80,7 @@ BROKE_FILE = "broke.md"
 SIGNATURE_FILE = "signature.json"
 RECORD_FILE = "record.json"
 SUMMARY_FILE = "summary.md"
-#: What a capture was saved against besides its signature (``memory.match`` hands it to its matcher): its
+#: What a capture was saved against besides its signature (its card reads it): its
 #: procedure's docstring and its episode's Asked and Approach sections, as written; the actor's snapshot adds what
 #: broke.
 SAVED_FILE = "saved.json"
@@ -103,6 +107,10 @@ MAX_SOURCE_BYTES = 1024 * 1024
 GOAL_CHARS = 600
 REPRODUCES, DIFFERS, UNKNOWN = "reproduces", "differs", "unknown"
 FAILED = "failed"
+#: What a record of an earlier build kept of the capture's uses and the status they gave it. Nothing writes these any
+#: more (a capture's uses are the evidence store's): :func:`refresh` drops them from a record it rewrites.
+USE_FIELDS = ("uses", "track", "record_line", "status", "status_basis", "status_rule", "status_reason",
+              "status_text", "level")
 #: A trace capture's outcome when a signal contradicted its episode: negative knowledge,
 #: as ``failed`` is for a capture of the earlier contract (:func:`negative`).
 CONTRARY = "contrary"
@@ -459,20 +467,17 @@ def empty_record(cid: str) -> dict:
         "applies": None,
         "holds": None,
         "outcome": "none",
-        "uses": [],
-        "track": trust.empty_track(),
-        "status": trust.ON_TRIAL,
-        "status_basis": None,
-        "status_reason": None,
-        "level": trust.UNCHECKED,
         "same_as": [],
     }
 
 
 def refresh(record: dict) -> dict:
-    """*record* with its derived fields recomputed from its cases and uses: ``reproduces`` (``differs`` when any
-    case differs, ``reproduces`` when every case with a value reproduces, else ``unknown``), ``outcome`` (``failed``
-    when any case failed), the track record, the status and the evidence level (:mod:`.trust`)."""
+    """*record* with its derived fields recomputed from its cases: ``reproduces`` (a record of the earlier contract
+    only: ``differs`` when any case differs, ``reproduces`` when every case with a value reproduces, else
+    ``unknown``), ``deterministic``, ``applies``, ``holds`` and ``outcome`` (``failed`` when any case failed,
+    ``contrary`` when a signal contradicted one, else the last signal's). Nothing here reads or keeps the capture's
+    uses: they are the evidence store's (:func:`.serving.item_evidence`, which gives its status and what it rests on
+    from them)."""
     cases = [c for c in record.get("cases") or [] if isinstance(c, dict)]
     if record.get("v") != TRACE_VERSION:
         # a trace record carries no reproduction: what its own check gave is evidence on each case
@@ -493,24 +498,10 @@ def refresh(record: dict) -> dict:
     else:
         signals = [c.get("outcome") for c in cases if c.get("outcome") not in (None, "none")]
         record["outcome"] = signals[-1] if signals else "none"
-    uses = [u for u in (trust.use_from_row(r) for r in record.get("uses") or []) if u is not None]
-    record["track"] = trust.track(uses)
-    prior = record.get("status") if record.get("status") in trust.STATUSES else None
-    # a capture starts unchecked (I.2.3, I.11): whether its run reproduced its case is recorded beside it, in
-    # ``reproduces``; the levels above unchecked are the gate's to give when it is landed, and outcomes move it
-    # through the one decider
-    base = trust.UNCHECKED
-    out = trust.apply_outcome(base, prior, uses)
-    if negative(record) and out.status == trust.ADOPTED:
-        # a capture that failed is negative knowledge: it is never adopted, whatever later uses show
-        out = trust.Outcome(trust.ON_TRIAL, base, None, None, "its attempt failed", ())
-    record["status"] = out.status
-    record["status_basis"] = out.basis
-    record["status_rule"] = out.rule
-    record["status_reason"] = out.reason
-    record["status_text"] = trust.status_text(out.status, out.basis)
-    record["level"] = out.level
-    record["record_line"] = trust.record_line(record["track"])
+    # fields a record of an earlier build kept from uses that were never written: dropped, so no reader takes them
+    # for the capture's own
+    for key in USE_FIELDS:
+        record.pop(key, None)
     return record
 
 
@@ -549,11 +540,11 @@ def rejudge_episode(
     ep: Any,
     regime: str
 ) -> list[str]:
-    """Every stored capture with a case or a use in episode *eid*, judged again on the episode's signals now (one
-    arrived after the capture, or the episode's regime changed): each case of that
-    episode gets its outcome as the capture step gives it (:func:`judged_outcome`; a case that differs from what was
-    handed back stays failed), each use row of that episode its regime, verdict, end outcome and correction, then the
-    record's derived fields (:func:`refresh`). Returns the ids whose record changed, in id order."""
+    """Every stored capture with a case in episode *eid*, judged again on the episode's signals now (one arrived after
+    the capture, or the episode's regime changed): each case of that episode gets its outcome as the capture step
+    gives it (:func:`judged_outcome`; a case that differs from what was handed back stays failed), then the record's
+    derived fields (:func:`refresh`). A use of a capture is judged where it is recorded, in the evidence store, with
+    every library item's (:func:`.serving.item_evidence`). Returns the ids whose record changed, in id order."""
     root = Path(store)
     out = judged_outcome(signals, ep, regime)
     changed: list[str] = []
@@ -573,20 +564,12 @@ def rejudge_episode(
             # episode's verdict on its final value
             cases = [c for c in rec.get("cases") or []
                      if isinstance(c, dict) and c.get("episode") == eid and c.get("segment") is None]  # fmt: skip
-            uses = [u for u in rec.get("uses") or [] if isinstance(u, dict) and u.get("episode") == eid]
-            if not cases and not uses:
+            if not cases:
                 continue
             before = _json(rec)
             for case in cases:
                 differs = case.get("reproduces") == DIFFERS
                 case["outcome"] = FAILED if (out["contrary"] or differs) else ("positive" if out["positive"] else "none")
-            for use in uses:
-                use.update(
-                    regime=out["regime"],
-                    verdict=out["verdict"],
-                    end_outcome=out["end_outcome"],
-                    corrected=bool(out["corrected"]),
-                )
             refresh(rec)
             if _json(rec) != before:
                 _write(d / RECORD_FILE, _json(rec))
@@ -1101,19 +1084,26 @@ def judge_segments(
 # --- what the actor and the writer read -----------------------------------------------------------------------
 
 
-def listed_record(record: dict, landing: Mapping[str, Any] | None) -> dict:
-    """*record* as a box reads it: with its ``support`` (:func:`.item_records.support`), and with ``listing``
-    (``{"listed": false, "why"}``) when the capture's *landing* tested its procedure and it is not listed
-    (:func:`.recognition.listing`), so a captured procedure, the same code, is not listed either."""
-    from .recognition import listing
+def record_support(record: Mapping[str, Any] | None) -> dict:
+    """What a capture rests on as far as its record shows it: ``{"episodes", "accepted"}``, the distinct episodes it
+    was captured from and those of its cases whose outcome was positive (the work was accepted). Its confirmed uses
+    are the evidence store's (:func:`.serving.capture_support`)."""
+    rec = record if isinstance(record, Mapping) else {}
+    eps = rec.get("episodes") if isinstance(rec.get("episodes"), list) else []
+    cases = rec.get("cases") if isinstance(rec.get("cases"), list) else []
+    accepted = {
+        c.get("episode")
+        for c in cases
+        if isinstance(c, Mapping) and isinstance(c.get("episode"), str) and c.get("outcome") == "positive"
+    }
+    return {"episodes": len({e for e in eps if isinstance(e, str)}), "accepted": len(accepted)}
 
-    from .item_records import support
 
-    rec = landing.get("recognition") if isinstance(landing, Mapping) else None
-    listed, why = listing(rec if isinstance(rec, Mapping) else None)
-    # what the capture rests on (its episodes and confirmed uses), as every card shows it (rev 2.1)
-    out = {**record, "support": support(record)}
-    return out if listed else {**out, "listing": {"listed": False, "why": why}}
+def listed_record(record: dict) -> dict:
+    """*record* as a box reads it: with its ``support`` (:func:`record_support`; its confirmed uses are on every card
+    that has the harness's evidence). Every capture is listed (:func:`.recognition.listing`: nothing runs to unlist
+    one)."""
+    return {**record, "support": record_support(record)}
 
 
 def export_files(
@@ -1121,8 +1111,8 @@ def export_files(
     *,
     withdrawn: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, bytes]:
-    """The actor's snapshot of the store, by path under its library copy (``.memory/captures/<id>/<file>``). The
-    record of a capture whose landed procedure is not listed says so (:func:`listed_record`).
+    """The actor's snapshot of the store, by path under its library copy (``.memory/captures/<id>/<file>``), each
+    record with what it rests on (:func:`listed_record`).
 
     Every capture is exported the same way, whatever its code looks like: nothing judges whether it gives a fixed
     answer, reads its input or acts (none of that can be told reliably), so nothing changes how it is served.
@@ -1133,7 +1123,6 @@ def export_files(
     (its signature and ``saved.json`` texts), so the item that superseded it is offered
     where it would have been."""
     out: dict[str, bytes] = {}
-    landed = landings(store)
     docs = load(store)
     hidden = dict(withdrawn or {})
     for cid, doc in docs.items():
@@ -1145,7 +1134,7 @@ def export_files(
         ):
             if isinstance(doc.get(key), str):
                 out[f"{EXPORT_DIR}/{cid}/{name}"] = doc[key].encode("utf-8", "surrogatepass")
-        record = listed_record(doc["record"], landed.get(cid))
+        record = listed_record(doc["record"])
         out[f"{EXPORT_DIR}/{cid}/{RECORD_FILE}"] = _json(record)
         if isinstance(doc.get("signature"), dict):
             out[f"{EXPORT_DIR}/{cid}/{SIGNATURE_FILE}"] = _json(doc["signature"])
@@ -1181,21 +1170,16 @@ def export_files(
 
 
 def batch_row(store: Path | str, eid: str) -> dict | None:
-    """The batch-map row's ``capture`` for episode *eid*: ``{id, reproduces, outcome, level, status, same_as,
-    path}``, or None when the episode has no capture."""
+    """The batch-map row's ``capture`` for episode *eid*: ``{id, outcome, path}`` from the capture step's row, or None
+    when the episode has no capture. Nothing ran the capture, so the row says nothing of a reproduction; what its uses
+    gave it is on its card, from the evidence store."""
     row = episode_row(store, eid)
     cid = row.get("capture_id") if isinstance(row, dict) else None
     if not isinstance(cid, str) or not _ID.fullmatch(cid):
         return None
-    rec = _read_json(Path(store) / cid / RECORD_FILE)
-    rec = rec if isinstance(rec, dict) else {}
     return {
         "id": cid,
-        "reproduces": row.get("reproduces"),
         "outcome": row.get("outcome"),
-        "level": rec.get("level"),
-        "status": rec.get("status_text") or rec.get("status"),
-        "same_as": list(row.get("same_as") or []),
         "path": f"/inputs/captures/{cid}",
     }
 
@@ -1262,21 +1246,15 @@ def landed_items(store: Path | str | None) -> dict[str, dict]:
 
 
 def export_for_writer(store: Path | str, cids: Iterable[str], dest: Path) -> list[str]:
-    """Copy the captures *cids* (with the captures their ``same_as`` names) to the writer's ``/inputs/captures/``
-    (*dest*); returns the ids copied. The record of a capture whose landed procedure is not listed says why
-    (:func:`listed_record`)."""
+    """Copy the captures *cids* to the writer's ``/inputs/captures/`` (*dest*); returns the ids copied. Each record is
+    copied with what it rests on (:func:`listed_record`)."""
     docs = load(store)
-    landed = landings(store)
-    want = set()
-    for cid in cids:
-        if cid in docs:
-            want.add(cid)
-            want.update(c for c in docs[cid]["record"].get("same_as") or [] if c in docs)
+    want = {cid for cid in cids if cid in docs}
     for cid in sorted(want):
         d = dest / cid
         d.mkdir(parents=True, exist_ok=True)
         doc = docs[cid]
-        (d / RECORD_FILE).write_bytes(_json(listed_record(doc["record"], landed.get(cid))))
+        (d / RECORD_FILE).write_bytes(_json(listed_record(doc["record"])))
         if isinstance(doc.get("signature"), dict):
             (d / SIGNATURE_FILE).write_bytes(_json(doc["signature"]))
         for name, key in ((PROCEDURE_FILE, "procedure"), (BROKE_FILE, "broke")):

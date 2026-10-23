@@ -271,6 +271,17 @@ def _record(store: Path, cid: str) -> dict:
     return json.loads((store / cid / RECORD_FILE).read_text())
 
 
+def _served(home: Path, store: Path, cid: str) -> dict:
+    """The capture's row of the harness's evidence (``serving.item_evidence``) from an evidence store with no use of
+    it: what its uses give its status and level, which its record never holds."""
+    from unify.memory import captures, serving
+    from unify.memory.integration.consolidate import open_stores
+    from unify.memory.integration.paths import Paths
+
+    stores = open_stores(Paths.under(home))
+    return serving.item_evidence(stores, captures=captures.load(store), home=None)["capture:" + cid]
+
+
 def _signature_bytes(store: Path, cid: str) -> str:
     return (store / cid / SIGNATURE_FILE).read_text()
 
@@ -352,9 +363,13 @@ def test_a_completed_attempt_is_captured_with_its_procedure_signature_and_record
     assert rec["applies"] is None and rec["holds"] is None
     assert rec["value"]["present"] is True
     assert rec["outcome"] == "positive"
-    assert rec["level"] in LEVELS[:2]
-    assert rec["status"] == START_STATUS
-    assert isinstance(rec["track"], dict)
+    # its uses, and the status and level they give it, are the evidence store's, never its record's
+    from unify.memory.captures import USE_FIELDS
+
+    assert not set(USE_FIELDS) & set(rec)
+    served = _served(tmp_path / "stores", store, cid)
+    assert (served["status"], served["level"]) == (START_STATUS, LEVELS[0])
+    assert served["support"] == {"episodes": 1, "accepted": 1, "confirmed_uses": 0}
 
     rows = _events(store)
     assert len(rows) == 1
@@ -432,7 +447,10 @@ def test_an_attempt_with_a_contrary_signal_is_captured_as_negative_knowledge(tmp
     store, cid = _captured(tmp_path, label="fail")
     rec = _record(store, cid)
     assert rec["outcome"] == CONTRARY and negative(rec)
-    assert rec["status"] == START_STATUS
+    assert "status" not in rec and "level" not in rec
+    served = _served(tmp_path / "stores", store, cid)
+    assert (served["status"], served["level"]) == (START_STATUS, LEVELS[0])
+    assert served["support"] == {"episodes": 1, "accepted": 0, "confirmed_uses": 0}
 
 
 # --- the store sits outside every root a box can write or read -----------------------------------------------
@@ -563,8 +581,9 @@ def test_the_writer_reads_each_capture_as_a_pool_entry(tmp_path):
         by_kind.setdefault(e.kind, []).append(e)
     (cap,) = by_kind[POOL_CAPTURE_KIND]
     (fail,) = by_kind[POOL_FAILURE_KIND]
-    assert cap.data["id"] == ok and cap.data["reproduces"] == REPRODUCES
-    assert {"id", "reproduces", "outcome", "level", "same_as"} <= set(cap.data)
+    # its data is what the attempt's record and signature say of it; what an earlier build's record kept (its
+    # reproduction, level, status and same_as) stays in its record.json, never in the entry's data
+    assert cap.data == {"id": ok, "capture_id": ok, "goal": "Sort the numbers in ascending order.", "outcome": "none"}
     assert PROCEDURE in cap.files.values()
     assert cap.provenance["episodes"] == ["ep-0001"]
     # a failed capture is negative knowledge: listed as a failure, with what broke, never as a capture

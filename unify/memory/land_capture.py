@@ -147,7 +147,7 @@ def read_capture(store: Path, raw_id: object) -> tuple[str, str, dict]:
         raise _NotLanded("not_landed", reason=f"capture {cid} cannot be read") from None
     if not isinstance(record, dict):
         raise _NotLanded("not_landed", reason=f"capture {cid} cannot be read")
-    if _captures.negative(record) or record.get("status") == "retired":
+    if _captures.negative(record):
         raise _NotLanded("failed_capture", capture_id=cid)
     entry = record.get("entry_point") if isinstance(record.get("entry_point"), dict) else None
     form = entry.get("form") if entry else None

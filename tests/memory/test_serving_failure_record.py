@@ -193,7 +193,8 @@ def test_withdrawn_library_items_leave_every_listing_and_their_id_gives_the_repl
         f"moved = memory.get({WEEK!r})\n"
         f"superseded = memory.get({SUMMARY!r})\n"
         f"print(json.dumps({{'listed': listed, 'moved': moved.id, 'card': str(moved), 'superseded': superseded.id, "
-        f"'retired': err(memory.get, {WORDS!r}), 'run': memory.run({SUMMARY!r}, 'x').detail, "
+        f"'retired': err(memory.get, {WORDS!r}), 'called': superseded('a b'), "
+        f"'run': memory._tracked_run({SUMMARY!r}, ('x',), {{}}).detail, "
         f"'fit': str(memory.get({PARSE_DATE!r}).fits({{'a': 1}}))}}))\n",
     )
     assert (
@@ -214,6 +215,8 @@ def test_withdrawn_library_items_leave_every_listing_and_their_id_gives_the_repl
         got["retired"][0] == "NotFound"
         and "no longer offered: the library's writer retired it" in got["retired"][1]
     )
+    # calling what the old id gives runs its replacement; the tracked call under it never runs the withdrawn item
+    assert got["called"] == ["a", "b"]
     assert "no longer offered" in got["run"] and f"memory.get({TOKENS!r})" in got["run"]
     # the librarian's files never offer a withdrawn item, and the replacement carries what it replaced
     dispatch = json.loads(files[".memory/dispatch.json"])
@@ -335,7 +338,7 @@ ITEM = "memory.reports.totals:sum_rows"
 
 
 def _record(
-    stores, eid, minute, *, errored=0, regime="sparse", main="c0ffee" * 6 + "abcd"
+    stores, eid, minute, *, errored=0, regime="sparse", main="c0ffee" * 6 + "abcd", item=ITEM
 ):
     ep = _ep(
         episode_id=eid,
@@ -345,7 +348,7 @@ def _record(
         memory_main=main,
     )
     ep.memory_use = {
-        "items": {ITEM: {"imported": 1, "called": 2, "refused": 0, "errored": errored}},
+        "items": {item: {"imported": 1, "called": 2, "refused": 0, "errored": errored}},
         "outcomes_known": True,
     }
     sha = EpisodeWriter(stores.episodes, stores.blobs, Redactor()).write(ep)
@@ -498,12 +501,9 @@ def test_the_e4_replay_the_librarian_input_now_carries_the_failure_record(
         E4,
         asked="Investigate the checkout alert of 14 September and file the report.",
     )
-    rec_path = store / cid / captures.RECORD_FILE
-    rec = json.loads(rec_path.read_text())
-    # the first repeat: the call raised; the second: the actor reported on the run record that its answer was wrong
-    rec["uses"] = [trust.Use("e15oct", "none", "error", answered=None).row()]
-    rec_path.write_text(json.dumps(rec))
-    _record(stores, "e15oct", 0)
+    # the first repeat: the call raised (its use record names the capture, as the evidence store indexes it); the
+    # second: the actor reported on the run record that its answer was wrong
+    _record(stores, "e15oct", 0, errored=1, regime="none", item=f"capture:{cid}")
     _record(stores, "e19oct", 1)
     fake = types.ModuleType("unify.agents.run_record")
     fake.read_entries = lambda home, since=0: [

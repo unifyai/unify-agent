@@ -100,9 +100,18 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
+def _exported(caps: dict) -> dict:
+    """*caps* as ``captures.export_files`` exports them: each record with what it rests on (``listed_record``)."""
+    out = dict(caps)
+    for path, data in caps.items():
+        if path.endswith("/" + captures.RECORD_FILE):
+            out[path] = (json.dumps(captures.listed_record(json.loads(data)), sort_keys=True, indent=1) + "\n").encode()
+    return out
+
+
 def _world(tmp_path, captured: bool = True, files=None):
     tree = w.write_tree(tmp_path / "lib", files)
-    caps = w.capture_files() if captured else {}
+    caps = _exported(w.capture_files()) if captured else {}
     return tree, w.generate(tree, records=w.records(), summaries=w.SUMMARIES, captures=caps), caps
 
 
@@ -182,7 +191,8 @@ def test_captured_procedures_come_last_with_their_kind_and_support(tmp_path):
     text = files[CATALOGUE].decode("utf-8")
     for cid in _capture_ids(caps):
         card = _card(text, cid)
-        assert "Evidence: recorded procedure from " in card or "Evidence: fixed answer from " in card, card
+        # what its exported record shows it rests on: the episode it was captured from
+        assert "Evidence: recorded procedure from 1 episode" in card, card
     first_capture = min(n for n, _, i in card_heads(text) if i.startswith("capture:"))
     note_line = next(n for n, _, i in card_heads(text) if i == w.NOTE)
     function_lines = [n for n, _, i in card_heads(text) if i in w.FUNCTIONS]

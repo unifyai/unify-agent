@@ -2,7 +2,8 @@
 entries in the writer's /memory (design I.2.6, I.2.7).
 
 The capture is read from the harness's own store, never from a path the box names, and checked first: its id, its
-files (regular, no link, bounded), its procedure's digest against its id, its outcome and status, the safety checks.
+files (regular, no link, bounded), its procedure's digest against its id, its outcome (a capture record holds no
+status), the safety checks.
 Model-written code runs only confined. The gate admitting a landing at its evidence level, through a whole writer
 pass, is ``tests/memory/test_capture_end_to_end.py::test_a_writer_pass_lands_the_capture_as_a_library_item``.
 Keyless; the landings that run code need bubblewrap and prlimit.
@@ -45,7 +46,6 @@ def _store(root: Path, source: str = PROCEDURE, **record) -> str:
         "capture_id": cid,
         "episodes": ["e7"],
         "outcome": "none",
-        "status": "on-trial",
         "same_as": [],
         **record,
     }
@@ -272,10 +272,18 @@ def test_a_name_or_package_that_is_not_a_plain_identifier_is_refused(tmp_path, a
     assert not (tmp_path / "box" / "memory").exists()
 
 
-@pytest.mark.parametrize("record", [{"outcome": "failed"}, {"status": "retired"}])
-def test_a_failed_or_retired_capture_is_refused(tmp_path, record):
+@pytest.mark.parametrize("record", [{"outcome": "failed"}, {"outcome": "contrary"}])
+def test_a_failed_capture_is_refused(tmp_path, record):
     cid = _store(tmp_path / "store", **record)
     assert _refusal(_land(tmp_path, {"e7": recorded_episode()}, capture_id=cid)) == "failed_capture"
+
+
+def test_only_a_negative_outcome_refuses_a_capture_never_a_status_an_old_record_kept(tmp_path):
+    # a capture record holds no status (its uses and the status they give it are the evidence store's): a record an
+    # earlier build wrote with one is landed on its outcome alone
+    cid = _store(tmp_path / "store", status="retired")
+    reply = _land(tmp_path, {"e7": recorded_episode()}, capture_id=cid)
+    assert reply.status == "ok" and reply.text.startswith(f"Landed capture {cid} from episode e7:"), reply.text
 
 
 def test_a_procedure_that_does_not_match_its_id_is_refused(tmp_path):

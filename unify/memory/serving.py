@@ -10,11 +10,18 @@ that it fits:
   record (``actor_reported``); ``pin`` is the library commit that was served when it was used;
 * what its status **rests on** (:func:`.trust.status_basis`: verdicts, outcomes at episode end, implicit signals, or
   no outcome signal at all) and how its uses were judged, stated as text (:func:`.trust.basis_text`);
+* its **later uses**: the calls made of it after it was stored, by how they ended (:func:`later_uses`);
 * its **stated conditions**: the first line of its ``applies`` (what it says it applies to).
 
+A captured procedure's uses are read from the same place as a library item's: the evidence store's ``item_use`` rows
+under its ``capture:<id>``, which each request's use record gives from the calls its cells made. Its record in the
+capture store holds what the capture step saw (its episodes, its cases and their outcomes), never its uses, so the
+two never disagree; what it rests on, its status and its evidence level are computed here from both
+(:func:`capture_support`).
+
 The export writes these as :data:`EVIDENCE_FILE` beside the library copy; the package reads them for its cards and
-its structural checks, the librarian's catalogue and search rows carry them, and each question to the librarian
-carries them for the procedures its facts name (:mod:`.librarian`). Library items the writer retired or superseded
+its structural checks, and the librarian's catalogue and search rows carry them (:mod:`.librarian` reads the same
+cards in its box). Library items the writer retired or superseded
 are withdrawn as captures are (:func:`withdrawn_items`, :data:`WITHDRAWN_ITEMS_FILE`): they leave every listing,
 and asking for one by its id gives what replaced it.
 
@@ -32,7 +39,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-#: Beside the library copy: each item's evidence (failure record, status basis, conditions).
+#: Beside the library copy: each item's evidence (failure record, status basis, later uses, conditions).
 EVIDENCE_FILE = ".memory/item_evidence.json"
 #: Beside the library copy: the library items the writer retired or superseded, each with what replaces it.
 WITHDRAWN_ITEMS_FILE = ".memory/withdrawn_items.json"
@@ -118,10 +125,6 @@ def served_pin(rows: list[tuple[str, int]] | None, why: str, default: str) -> st
     return rows[-1][0]
 
 
-def _regimes(evidence: Any) -> dict[str, str]:
-    return {str(eid): str(r or "") for eid, r in evidence.db.execute("SELECT episode_id, regime FROM episodes")}
-
-
 def actor_reports(home: Path | str | None) -> list[dict]:
     """Every run-record entry in which an actor reported on a stored item (its ``refs`` name ``item:<id>`` or
     ``capture:<id>``): ``{"item", "episode", "seq"}``, oldest first; [] without a run record. Read through the run
@@ -149,30 +152,89 @@ def actor_reports(home: Path | str | None) -> list[dict]:
     return out
 
 
+def later_uses(item: str, facts: Any) -> dict:
+    """*item*'s later uses over *facts* (:func:`.lifecycle.facts_from_evidence`): ``{"episodes", "returned",
+    "refused", "raised"}``, the episodes in which it was called and its calls by how they ended, from the calls
+    observed at run time (``item_use``'s runtime columns); an episode recorded without them counts one call of each
+    kind its static counts show. An episode that only imported it or named it is no use."""
+    out = {"episodes": 0, "returned": 0, "refused": 0, "raised": 0}
+    for f in facts:
+        u = f.items.get(item)
+        if u is None:
+            continue
+        ok, refused, raised = u.calls if u.calls is not None else (int(u.used), int(u.refused), int(u.errored))
+        if ok + refused + raised == 0:
+            continue
+        out["episodes"] += 1
+        out["returned"] += ok
+        out["refused"] += refused
+        out["raised"] += raised
+    return out
+
+
+def later_uses_text(uses: Mapping[str, Any] | None) -> str:
+    """A card's later-use line: ``none yet``, or how many calls in how many episodes and how they ended."""
+    rows = uses if isinstance(uses, Mapping) else {}
+
+    def n(key: str) -> int:
+        v = rows.get(key)
+        return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else 0
+
+    calls = n("returned") + n("refused") + n("raised")
+    if not calls:
+        return "none yet"
+    eps = n("episodes")
+    parts = [f"{n(k)} {w}" for k, w in (("returned", "returned"), ("refused", "refused its input"),
+                                          ("raised", "raised")) if n(k)]  # fmt: skip
+    return (f"{calls} call{'s' if calls != 1 else ''} in {eps} episode{'s' if eps != 1 else ''}: "
+            + ", ".join(parts))  # fmt: skip
+
+
+def capture_support(record: Mapping[str, Any] | None, uses: list) -> dict:
+    """What a recorded procedure rests on: its episodes and those whose work was accepted (its record's cases, as
+    the capture step wrote them) and its confirmed uses (its later uses whose outcome confirmed it: an accepted
+    verdict or a positive end, :func:`.trust.track`)."""
+    from . import trust
+    from .captures import record_support
+
+    t = trust.track(uses)
+    confirmed = int(t["verdicts"]["accepted"]) + int(t["end_outcomes"]["positive"])
+    return {**record_support(record), "confirmed_uses": confirmed}
+
+
 def item_evidence(
     stores: Any,
     *,
     captures: Mapping[str, dict] | None = None,
     home: Path | str | None = None,
 ) -> dict[str, dict]:
-    """Each stored item's evidence, by id: library items from the evidence store's use index
-    (:func:`.lifecycle.facts_from_evidence`), captured procedures (``capture:<id>``) from their records' uses
-    (*captures*: :func:`.captures.load`). Each is ``{"failure_record": [...], "status_basis", "counts"}``; an item with
-    no use and no report is left out. Uses and reports only: no test result is read."""
+    """Each stored item's evidence, by id, from one source for every kind of item: the evidence store's use index
+    (:func:`.lifecycle.facts_from_evidence`: the ``item_use`` rows each request's use record gave, the calls observed
+    at run time included; a captured procedure's under its ``capture:<id>``, as a library item's under its id) and the
+    actors' reports on the run record. Each is ``{"failure_record", "status_basis", "counts", "later_uses"}``. Every
+    captured procedure of *captures* (:func:`.captures.load`) has a row, used or not, which also holds what it rests
+    on (``support``, :func:`capture_support`) and the ``status`` and ``level`` its uses give it
+    (:func:`.trust.apply_outcome`; a capture whose own episode failed is never adopted). A library item with no use
+    and no report is left out. Uses and reports only: no test result is read."""
     from . import lifecycle, trust
+    from .captures import negative
 
     ev = stores.evidence
-    pins, regimes, use_pins = _pins(ev), _regimes(ev), _use_pins(ev)
+    pins, use_pins = _pins(ev), _use_pins(ev)
     out: dict[str, dict] = {}
     facts = lifecycle.facts_from_evidence(ev)
-    for item in sorted({i for f in facts for i in f.items}):
+    own = {"capture:" + cid: doc for cid, doc in sorted((captures or {}).items())}
+    for item in sorted({i for f in facts for i in f.items} | set(own)):
         rows: list[dict] = []
         seen: set[tuple] = set()
+        uses: list = []
         for f in facts:
             u = f.items.get(item)
             if u is None:
                 continue
-            for x in lifecycle.trust_uses(f, u):
+            mine = lifecycle.trust_uses(f, u)
+            uses += mine
+            for x in mine:
                 kind, why, _ = trust.judge(x)
                 if kind != trust.FAILED or (f.episode_id, why) in seen:
                     continue
@@ -180,26 +242,24 @@ def item_evidence(
                 served = served_pin(use_pins.get((f.episode_id, item)), why or "", f.memory_main)
                 rows.append(_failure_row(ev, f.episode_id, served, f.regime, why or ""))
         basis, counts = lifecycle.evidence_basis(item, facts)
-        out[item] = {"failure_record": rows, "status_basis": basis, "counts": counts}
-    for cid, doc in sorted((captures or {}).items()):
-        rec = doc.get("record") if isinstance(doc, Mapping) else None
-        if not isinstance(rec, Mapping):
-            continue
-        uses = [u for u in (trust.use_from_row(r) for r in rec.get("uses") or []) if u is not None]
-        rows, seen = [], set()
-        for x in uses:
-            kind, why, _ = trust.judge(x)
-            if kind != trust.FAILED or (x.episode, why) in seen:
-                continue
-            seen.add((x.episode, why))
-            rows.append(
-                _failure_row(ev, x.episode, pins.get(x.episode, ""), regimes.get(x.episode, x.regime), why or ""),
-            )
-        out["capture:" + cid] = {
+        out[item] = {
             "failure_record": rows,
-            "status_basis": trust.status_basis(uses),
-            "counts": trust.use_counts(uses),
+            "status_basis": basis,
+            "counts": counts,
+            "later_uses": later_uses(item, facts),
         }
+        if item in own:
+            doc = own[item]
+            rec = doc.get("record") if isinstance(doc, Mapping) else None
+            decided = trust.apply_outcome(trust.UNCHECKED, None, uses)
+            status = decided.status
+            if negative(rec) and status == trust.ADOPTED:
+                status = trust.ON_TRIAL  # a capture whose own episode failed is negative knowledge
+            out[item].update(
+                support=capture_support(rec, uses),
+                status=status,
+                level=decided.level if status == decided.status else trust.UNCHECKED,
+            )
     for r in actor_reports(home):
         item = r["item"]
         pin = served_pin(use_pins.get((r["episode"], item)), "", pins.get(r["episode"], ""))
@@ -207,7 +267,8 @@ def item_evidence(
         entry = out.setdefault(
             item,
             {"failure_record": [], "status_basis": trust.BASIS_NO_OUTCOME_SIGNALS,
-             "counts": {trust.CLEAN: 0, trust.FAILED: 0, trust.NEUTRAL: 0}},
+             "counts": {trust.CLEAN: 0, trust.FAILED: 0, trust.NEUTRAL: 0},
+             "later_uses": later_uses(item, ())},
         )
         if row not in entry["failure_record"]:
             entry["failure_record"].append(row)
@@ -264,8 +325,9 @@ def conditions(tree: Path | str, records: Mapping[str, dict] | None, captures: M
 
 def evidence_doc(evidence: Mapping[str, dict], stated: Mapping[str, str], statuses: Mapping[str, str]) -> dict:
     """:data:`EVIDENCE_FILE`'s content: ``{"v": 1, "items": {id: {"failure_record", "status_basis", "counts",
-    "status_text", "conditions"}}}`` for every item with evidence or stated conditions; *statuses* gives each
-    item's status for its status text (on trial when it has none)."""
+    "status_text", "later_uses", "later_uses_text", "conditions"}}}`` for every item with evidence or stated
+    conditions; *statuses* gives each library item's status for its status text (on trial when it has none). A
+    captured procedure's row also carries its ``support``, ``status`` and ``level`` (:func:`item_evidence`)."""
     from . import trust
 
     items: dict[str, dict] = {}
@@ -273,6 +335,7 @@ def evidence_doc(evidence: Mapping[str, dict], stated: Mapping[str, str], status
         e = evidence.get(item) or {}
         basis = e.get("status_basis") or trust.BASIS_NO_OUTCOME_SIGNALS
         counts = e.get("counts") or {trust.CLEAN: 0, trust.FAILED: 0, trust.NEUTRAL: 0}
+        uses = dict(e.get("later_uses") or {})
         items[item] = {
             "failure_record": list(e.get("failure_record") or []),
             "status_basis": basis,
@@ -283,8 +346,13 @@ def evidence_doc(evidence: Mapping[str, dict], stated: Mapping[str, str], status
                 basis,
                 counts,
             ),
+            "later_uses": uses,
+            "later_uses_text": later_uses_text(uses),
             "conditions": stated.get(item, ""),
         }
+        for key in ("support", "status", "level"):
+            if key in e:
+                items[item][key] = e[key]
     return {"v": 1, "items": items}
 
 
@@ -331,10 +399,13 @@ __all__ = [
     "WITHDRAWN_ITEMS_FILE",
     "actor_reports",
     "applies_line",
+    "capture_support",
     "conditions",
     "evidence_doc",
     "file_bytes",
     "item_evidence",
+    "later_uses",
+    "later_uses_text",
     "withdrawn_items",
 ]
 

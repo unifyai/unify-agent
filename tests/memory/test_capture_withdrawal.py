@@ -138,18 +138,22 @@ def _withdrawn_copy(tmp_path):
 def test_the_package_lists_no_withdrawn_capture_and_gives_its_replacement_by_its_old_id(tmp_path):
     root, ids = _withdrawn_copy(tmp_path)
     grid, retired, table = (f"capture:{ids[k]}" for k in ("grid", "retired", "table"))
+    request = "TABLE\n" + json.dumps(ROWS)
     got = _cell(
         root,
         f"listed = [i.id for i in memory.items()]\n"
         f"moved = memory.get({grid!r})\n"
         f"print(json.dumps({{'listed': listed, 'moved': moved.id, 'card': str(moved), "
-        f"'retired': err(memory.get, {retired!r}), 'run': memory.run({grid!r}, 'x').detail}}))\n",
+        f"'retired': err(memory.get, {retired!r}), 'called': moved({request!r}), "
+        f"'run': memory._tracked_run({grid!r}, ('x',), {{}}).detail}}))\n",
     )
     assert grid not in got["listed"] and retired not in got["listed"] and table in got["listed"]
     assert got["moved"] == table
     assert got["card"].startswith(f"{grid} is no longer offered: the library's writer superseded it")
     assert f"{table} is offered in its place." in got["card"]
     assert got["retired"][0] == "NotFound" and "is no longer offered: the library's writer retired it" in got["retired"][1]
+    # calling what the old id gives runs its replacement; the tracked call under it never runs the withdrawn capture
+    assert got["called"] == 7
     assert "no longer offered" in got["run"] and f"memory.get({table!r})" in got["run"]
 
 

@@ -12,7 +12,7 @@ import pytest
 from tests.memory.arrivals import read_arrivals
 from tests.memory.test_checker_visible import _arc_lines
 from tests.memory.test_episodes import _ep
-from unify.memory import captures, lifecycle, trust
+from unify.memory import captures, lifecycle, serving, trust
 from unify.memory.episodes import Action, EpisodeWriter
 from unify.memory.evidence import EvidenceStore
 from unify.memory.integration import outcomes
@@ -233,7 +233,7 @@ def test_the_store_keeps_its_schema_until_a_regime_is_inferred(tmp_path):
 
 
 def _record(
-    stores, eid, *, regime, minute, used=True, actions=None, ended=None, errored=0
+    stores, eid, *, regime, minute, used=True, actions=None, ended=None, errored=0, also=()
 ):
     ep = _ep(
         episode_id=eid,
@@ -245,7 +245,8 @@ def _record(
     if used:
         ep.memory_use = {
             "items": {
-                ITEM: {"imported": 1, "called": 1, "refused": 0, "errored": errored}
+                item: {"imported": 1, "called": 1, "refused": 0, "errored": errored}
+                for item in (ITEM, *also)
             },
             "outcomes_known": True,
         }
@@ -316,7 +317,8 @@ def test_episodes_with_different_regimes_in_one_run_are_each_judged_in_their_own
 
 
 def _capture(store, eid):
-    """A stored capture judged on episode *eid* with no outcome yet (as the capture step leaves it)."""
+    """A stored capture judged on episode *eid* with no outcome yet (as the capture step leaves it). Its record holds
+    no uses: a use of it is the evidence store's, from an episode's use record naming ``capture:<id>``."""
     source = '"""Sum a column."""\n\ndef run(value):\n    return sum(value)\n'
     cid = captures.capture_id(source)
     d = store / cid
@@ -324,11 +326,7 @@ def _capture(store, eid):
     rec = {
         "episodes": [eid],
         "cases": [{"episode": eid, "reproduces": "reproduces", "outcome": "none"}],
-        "uses": [trust.Use(eid, "none", "returned", answered=True).row()],
         "outcome": "none",
-        "level": "unchecked",
-        "status": "on-trial",
-        "track": {},
     }
     (d / captures.PROCEDURE_FILE).write_text(source)
     (d / captures.RECORD_FILE).write_text(json.dumps(rec))
@@ -340,13 +338,15 @@ def test_a_late_contrary_verdict_changes_the_regime_reopens_and_recomputes_the_u
 ):
     stores = open_stores(Paths.under(tmp_path / "home"))
     state = stores.paths.state_dir
-    sha, ep = _record(stores, "e1", regime="none", minute=0, ended=ENDED)
-    stores.evidence.record_regime("e1", "none", "nothing", ENDED)
     cid = _capture(captures.store_dir(state), "e1")
+    # the episode used the item and called the capture
+    sha, ep = _record(stores, "e1", regime="none", minute=0, ended=ENDED, also=("capture:" + cid,))
+    stores.evidence.record_regime("e1", "none", "nothing", ENDED)
     before = lifecycle.facts_from_evidence(stores.evidence)[0]
-    assert [
-        trust.judge(u)[0] for u in lifecycle.trust_uses(before, before.items[ITEM])
-    ] == [trust.CLEAN]
+    for item in (ITEM, "capture:" + cid):
+        assert [
+            trust.judge(u)[0] for u in lifecycle.trust_uses(before, before.items[item])
+        ] == [trust.CLEAN]
 
     entry, why = outcomes.late_entry(
         "fail",
@@ -417,10 +417,17 @@ def test_a_late_contrary_verdict_changes_the_regime_reopens_and_recomputes_the_u
         rec["cases"][0]["outcome"] == captures.FAILED
         and rec["outcome"] == captures.FAILED
     )
-    assert (
-        rec["uses"][0]["regime"] == "sparse"
-        and rec["uses"][0]["end_outcome"] == "contrary"
-    )
+    assert not set(captures.USE_FIELDS) & set(rec)
+    # and its use in that episode is recomputed from the same evidence: under the new regime, failed on the signal
+    uses = lifecycle.trust_uses(after, after.items["capture:" + cid])
+    assert [(u.regime, *trust.judge(u)[:2]) for u in uses] == [("sparse", trust.FAILED, "negative")]
+    row = serving.item_evidence(stores, captures=captures.load(captures.store_dir(state)), home=None)[
+        "capture:" + cid
+    ]
+    assert row["counts"][trust.FAILED] == 1 and row["counts"][trust.CLEAN] == 0
+    assert [(r["episode"], r["why"], r["ref"]) for r in row["failure_record"]] == [
+        ("e1", "late_contrary", "signal:e1.late.e9.1")
+    ]
 
 
 def test_a_late_verdict_is_attached_by_episode_id_only(tmp_path):

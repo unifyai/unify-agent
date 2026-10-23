@@ -13,7 +13,7 @@ What counts:
   least one ``ok`` call. Only a record without that evidence (an older record, or a run without the hook)
   falls back to the static estimate: more call sites of it than exceptions that left it. Each item's facts
   name the basis they rest on (``runtime`` or ``static``). An import, or a call that only raised, is
-  exposure (*seen*), not use; a lookup through ``memory.show``, ``index`` or ``find`` is neither;
+  exposure (*seen*), not use; a lookup through ``memory.get`` or ``memory.items`` is neither;
 - an *error* is any exception other than a refusal that left it (on the runtime basis, the calls that
   ended in one);
 - a *refusal* (``MemoryInputError`` left it: it declined an input it was not built for) is the input contract
@@ -1099,9 +1099,7 @@ def label_inputs(stores: Any) -> dict[str, Any]:
     ev = stores.evidence
     order = {pid: i for i, (pid,) in enumerate(ev.db.execute("SELECT pass_id FROM passes ORDER BY rowid"))}
     try:
-        found = serving.item_evidence(
-            stores, home=stores.paths.home, labels=lambda _item: None,
-        )
+        found = serving.item_evidence(stores, home=stores.paths.home)
     except Exception:  # noqa: BLE001 - the labels then carry no failure record, never the rest
         found = {}
     return {

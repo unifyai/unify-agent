@@ -53,7 +53,7 @@ MAX_STATUSES = 10_000
 #: The most distinct items a request's runtime call counts keep; calls of more are counted as dropped.
 MAX_RUNTIME_ITEMS = 2000
 RUNTIME_OUTCOMES = ("ok", "refused", "error")
-#: ``memory.match`` results and ``memory.run`` runs a request's evidence lists; past these they are counted only.
+#: ``Item.fits`` results and tracked item calls a request's evidence lists; past these they are counted only.
 MAX_MATCH_RESULTS = 200
 MAX_RUN_ROWS = 1000
 #: Programs that search files: a cell's process start naming one of them and a path in the library copy is a search.
@@ -68,10 +68,10 @@ _ERROR_CHARS = 2000
 #: The most library failures a request's use record lists (``library_failures``); later ones are
 #: counted in ``library_failures_dropped``.
 MAX_LIBRARY_FAILURES = 100
-#: The package's calls whose raised errors are listed: the lookups, the aliases, ``Item.fits`` (``match``), and a
-#: function item's call refused before it ran (``run``: a note called); a tracked call reports its item's own
-#: failure through the item's ``memory.call`` event instead.
-_FAILURE_HELPERS = ("get", "items", "index", "show", "find", "match", "run")
+#: The package's calls whose raised errors are listed: the lookups, a question to the librarian (``ask``),
+#: ``Item.fits`` (``match``), and a function item's call refused before it ran (``run``: a note called); a tracked
+#: call reports its item's own failure through the item's ``memory.call`` event instead.
+_FAILURE_HELPERS = ("get", "items", "ask", "match", "run")
 #: The most characters kept of a failure's message line and of a helper call's arguments' shape.
 LIBRARY_FAILURE_TEXT = 200
 _EXCEPTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
@@ -313,9 +313,9 @@ def runtime_calls_empty() -> dict:
 
 
 #: The library package's own calls the use record counts (``memory.helper_call`` audit events): the lookups
-#: (``get``, ``items``; and ``index``, ``show``, ``find``, the aliases kept for one build), the applicability checks
-#: (``match``: the alias and ``Item.fits``) and the tracked calls (``run``: the alias and a function item's call).
-LIBRARY_HELPERS = ("get", "items", "index", "show", "find", "match", "run")
+#: (``get``, ``items``), the applicability checks (``match``: ``Item.fits``) and the tracked calls (``run``: a
+#: function item's call).
+LIBRARY_HELPERS = ("get", "items", "match", "run")
 #: ``memory.ask``: counted with the helpers.
 ASK_HELPER = "ask"
 #: ``memory.ask`` results a request's evidence lists; past this they are counted only.
@@ -324,8 +324,8 @@ MAX_ASK_ROWS = 200
 
 def library_helper_calls(runtime: Any) -> dict:
     """The use record's ``library_helper_calls``: for each of the package's calls (:data:`LIBRARY_HELPERS`:
-    ``memory.get``, ``memory.items``, the aliases ``memory.index``, ``memory.show``, ``memory.find``, ``memory.match``
-    with ``Item.fits``, and ``memory.run`` with a function item's call; and ``memory.ask``), the calls the audit hook
+    ``memory.get``, ``memory.items``, ``Item.fits`` as ``match`` and a function item's call as ``run``; and
+    ``memory.ask``), the calls the audit hook
     saw, by outcome ({ok, refused, error}). Counts only; zeros when none was seen."""
     seen = runtime.get("helpers") if isinstance(runtime, dict) else None
     seen = seen if isinstance(seen, dict) else {}
@@ -562,7 +562,7 @@ def _labelled_rows(rows: Any) -> list[dict]:
 
 
 def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
-    """Add one cell's ``memory.match`` results and ``memory.run`` runs to *acc*, and mark which listed ids were
+    """Add one cell's ``Item.fits`` results and tracked item calls to *acc*, and mark which listed ids were
     called afterwards: by a library call or a run in a later cell, or later in the same cell (the hook's
     ``calls_before``/``runs_before`` positions)."""
     records = calls.get("records") if isinstance(calls.get("records"), list) else []
@@ -581,7 +581,7 @@ def _add_matches_and_runs(acc: dict, calls: dict, cell: int) -> None:
 
     new: list[dict] = []
     for m in matches:
-        _log_no_outcome("memory.match", m.get("no_outcome"))
+        _log_no_outcome("Item.fits", m.get("no_outcome"))
         listed = _labelled_rows(m.get("listed"))
         after = set(called[position(m.get("calls_before")) :]) | {
             r["target"] for r in runs[position(m.get("runs_before")) :]
@@ -680,7 +680,7 @@ def _add_asks(acc: dict, calls: dict, cell: int) -> None:
 def add_runtime_calls(acc: dict, drained: Any, library_roots: Any = ()) -> None:
     """Add one cell's drained audit records (the worker's ``done`` message ``audit``) to *acc*: the cell is
     counted as observed, and its ``calls`` block (``adapters.audit``), when present, adds its per-item counts, its
-    ``memory.match`` results and its ``memory.run`` runs (:func:`_add_matches_and_runs`). Its path and process records
+    ``Item.fits`` results and its tracked item calls (:func:`_add_matches_and_runs`). Its path and process records
     add to ``file_lookups`` (:func:`library_file_lookups`) for the sandbox's library mount and *library_roots* (the
     copy's other paths as the cell sees them). Malformed parts are skipped; calls of items beyond :data:`MAX_RUNTIME_ITEMS`
     count as dropped.
@@ -715,7 +715,7 @@ def add_runtime_calls(acc: dict, drained: Any, library_roots: Any = ()) -> None:
                 + _count(row.get("refused"))
                 + _count(row.get("error"))
             )
-            # per helper, by outcome: "memory:index" counts as "index"; any other id is not a helper
+            # per helper, by outcome: "memory:get" counts as "get"; any other id is not a helper
             name = (
                 helper_id.split(":", 1)[1]
                 if isinstance(helper_id, str) and helper_id.startswith("memory:")
@@ -809,7 +809,7 @@ class _Undrained:
 
 def with_pins(record: Any, pin_counts: Mapping[str, Mapping[str, Mapping[str, int]]], cell_pins: list[str]) -> Any:
     """*record* (a use record) with the pin each use was served under (``UNIFY_MEMORY=in_episode``): each item row gains
-    ``pins`` (pin -> its observed calls, {ok, refused, error}), each ``memory.run``, ``memory.match`` and
+    ``pins`` (pin -> its observed calls, {ok, refused, error}), each tracked call, ``Item.fits`` and
     ``memory.ask`` row (``run_rows``, ``match_rows``, ``ask_rows``) its cell's ``pin``, and the record the pins it
     served (``pins_served``). Unchanged when it is not a use record."""
     if not isinstance(record, dict) or "error" in record:
@@ -1250,7 +1250,7 @@ class RequestRun:
         from ..gitio import Repo
         from ..item_records import records_at, status_of
 
-        # the item records at the pin: statuses for the index and find, and what memory.show prints
+        # the item records at the pin: statuses for the index and find, and what memory.get prints
         records, _ = records_at(Repo(paths.memory), sha)
         # the capture store as this request starts (captures.py; empty unless the episode-end fork captured
         # attempts): read only through memory helpers, never in the index or the prompt
@@ -1321,11 +1321,8 @@ class RequestRun:
             except Exception as exc:  # noqa: BLE001 - served without evidence; logged
                 logger.warning("memory: item evidence not read (%s)", type(exc).__name__)
                 found = {}
+            # a captured procedure's status is its uses' (serving.item_evidence), never its record's
             statuses = {i: status_of(i) for i in records}
-            for cid, doc in caps.items():
-                rec = doc.get("record") if isinstance(doc, dict) else None
-                if isinstance(rec, dict) and isinstance(rec.get("status"), str):
-                    statuses["capture:" + cid] = rec["status"]
             return {
                 "evidence": sv.evidence_doc(found, sv.conditions(tree, records, caps), statuses),
                 "withdrawn_items": sv.withdrawn_items(records),

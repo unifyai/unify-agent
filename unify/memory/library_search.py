@@ -98,6 +98,7 @@ def rows(
     from .library_export import (
         CAPTURE_PREFIX,
         _capture_docs,
+        capture_support,
         _docstring_of,
         _docstrings,
         _status,
@@ -139,7 +140,7 @@ def rows(
         run_doc = _first_paragraph(_docstring_of(doc["procedure"])) if isinstance(doc["procedure"], str) else ""
         negative = rec.get("outcome") in ("failed", "contrary")
         card = (run_doc or goal) + (" | tried and failed: never offered to run" if negative else "")
-        card += " | " + support_text("recorded procedure", support(rec))
+        card += " | " + support_text("recorded procedure", capture_support(serving, cid, rec))
         out.append(
             {
                 "id": CAPTURE_PREFIX + cid,
@@ -164,6 +165,7 @@ def rows(
             if ev.get("status_text"):
                 row["card"] = f"{row['card']} | status by evidence: {ev['status_text']}"
             row["card"] = f"{row['card']} | recorded failures: {failure_line(ev)}"
+            row["card"] = f"{row['card']} | later uses: {ev.get('later_uses_text') or 'none yet'}"
             for old, _gone in replaced_items.get(row["id"], []):
                 extra = _first_paragraph(docs.get(old, ""))
                 if extra:

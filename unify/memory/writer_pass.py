@@ -364,7 +364,7 @@ def _staged_candidates(entry: dict) -> list[dict]:
 
 def _capture_lands(store: Path, cid: str) -> bool:
     """Whether capture *cid* of the store can be landed: its record (a regular file, never through a link) says its
-    attempt did not fail and it is not retired, the test :func:`.land_capture.read_capture` applies."""
+    attempt did not fail, the test :func:`.land_capture.read_capture` applies."""
     from .captures import MAX_RESULT_BYTES, RECORD_FILE, negative
 
     p = Path(store) / cid / RECORD_FILE
@@ -375,7 +375,7 @@ def _capture_lands(store: Path, cid: str) -> bool:
         rec = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    if not isinstance(rec, dict) or negative(rec) or rec.get("status") == "retired":
+    if not isinstance(rec, dict) or negative(rec):
         return False
     # a trace capture lands by this route only in the value form (a procedure of the request's value); the others are
     # landed by writing them (land_capture refuses them, naming that route)
@@ -1937,7 +1937,7 @@ class WriterPass:
 
     def _stage_library_library_mode(self, box: Path, parent: str) -> dict[str, bytes]:
         """Library mode: write the generated helper, INDEX.md, links.json and ``.memory/`` into the writer's box
-        (its root goes on the cells' path, so ``import memory`` gives ``index``, ``show`` and ``find``).
+        (its root goes on the cells' path, so ``import memory`` gives ``get`` and ``items``).
         Returns them; :func:`_drop_unchanged` keeps unchanged copies out of the candidate.
         """
         from .catalogue import write_files
@@ -1948,7 +1948,7 @@ class WriterPass:
         records, _ = records_at(
             self.mem,
             parent,
-        )  # the writer reads the records through memory.show
+        )  # the writer reads the records through memory.get
         files = generated_library_mode(
             box,
             history=item_history(self.mem, parent),

@@ -41,7 +41,7 @@ POOL_REF = "pool"
 # and a captured attempt that failed (negative knowledge), with what broke
 KINDS = ("candidate", "lesson", "cluster", "draft", "deferred", "unread", "capture", "failure")
 # the order the writer sees: proposals first (candidates, captures, lessons, failures, deferrals), then everything
-# else; a capture whose record is adopted comes before all of them (information only: the writer decides)
+# else (information only: the writer decides)
 ORDER = ("candidate", "capture", "lesson", "failure", "deferred", "draft", "unread", "cluster")
 STATUSES = ("open", "merged", "superseded", "retired")
 BLOCK_KEYS = ("merged", "superseded", "retired", "reopened")
@@ -267,8 +267,6 @@ def _canon(obj) -> str:
 
 
 def _order(e: Entry) -> tuple:
-    if e.kind == "capture" and e.data.get("status") == "adopted":
-        return (-1, e.opened_in, e.id)
     return (ORDER.index(e.kind) if e.kind in ORDER else 99, e.opened_in, e.id)
 
 
@@ -1015,8 +1013,8 @@ def from_staging(eid: str, view) -> list[Entry]:
 #: Payload files and data keys an entry of a kind takes from its newest version (the capture store's record).
 _REFRESHED = {"capture": ("record.json", "broke.md"), "failure": ("record.json", "broke.md")}
 _REFRESHED_DATA = {
-    "capture": ("status", "level", "outcome", "reproduces", "same_as"),
-    "failure": ("status", "level", "outcome", "reproduces", "same_as"),
+    "capture": ("outcome",),
+    "failure": ("outcome",),
 }
 
 
@@ -1052,11 +1050,7 @@ def from_capture(cid: str, doc: dict) -> Entry:
             "id": cid,
             "capture_id": cid,
             "goal": sig.get("goal") or "",
-            "status": record.get("status"),
-            "level": record.get("level"),
             "outcome": record.get("outcome"),
-            "reproduces": record.get("reproduces"),
-            "same_as": list(record.get("same_as") or []),
         },
         files=files,
     )

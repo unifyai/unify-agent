@@ -13,11 +13,13 @@ from pathlib import Path
 import pytest
 
 from unify.memory import captures as cp
-from unify.memory import pool
+from unify.memory import pool, serving
 from unify.memory import trust as tr
 from unify.memory.episodes import Action, Episode
 from unify.memory.integration import fork as fork_mod
 from unify.memory.integration import fork_worker as fw
+from unify.memory.integration.consolidate import open_stores
+from unify.memory.integration.paths import Paths
 from unify.memory.signals import Signal
 
 needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
@@ -115,9 +117,14 @@ def test_a_completed_attempt_is_captured_with_its_signature_keys_as_written(tmp_
     assert sig["input"]["kind"] == "value"
     assert sig["constraints"]["holds"]["stated"] and not sig["constraints"]["applies"]["stated"]
     rec = json.loads((d / "record.json").read_text())
-    assert rec["episodes"] == ["e1"] and rec["level"] == tr.UNCHECKED  # a capture starts unchecked (I.2.3)
-    # nothing credits a use at capture time (the writer reads and groups)
-    assert rec["status"] == tr.ON_TRIAL and rec["uses"] == [] and rec["track"]["verdicts"]["accepted"] == 0
+    # the record keeps what the capture step saw, never uses or a status from them (those are the evidence store's)
+    assert rec["episodes"] == ["e1"] and not set(cp.USE_FIELDS) & set(rec)
+    # a capture starts on trial and unchecked, and nothing credits a use at capture time (the writer reads and groups)
+    stores = open_stores(Paths.under(tmp_path / "home"))
+    served = serving.item_evidence(stores, captures=cp.load(store), home=None)[f"capture:{cid}"]
+    assert (served["status"], served["level"]) == (tr.ON_TRIAL, tr.UNCHECKED)
+    assert served["later_uses"] == {"episodes": 0, "returned": 0, "refused": 0, "raised": 0}
+    assert served["support"] == {"episodes": 1, "accepted": 1, "confirmed_uses": 0}
     events = [json.loads(x) for x in (store / cp.EVENTS_FILE).read_text().splitlines()]
     assert [e["capture_id"] for e in events] == [cid]
     assert cp.episode_row(store, "e1")["capture_id"] == cid
@@ -154,7 +161,7 @@ def test_a_failure_is_captured_as_negative_knowledge(tmp_path):
     row = cp.capture_trace_step(staging, _ep("e1"), store, signals=[_checker("e1", "fail")])
     assert (row["run"], row["outcome"]) == ("not run", cp.CONTRARY)
     doc = cp.load(store)[row["capture_id"]]
-    assert doc["record"]["outcome"] == cp.CONTRARY and doc["record"]["level"] == tr.UNCHECKED
+    assert doc["record"]["outcome"] == cp.CONTRARY and not set(cp.USE_FIELDS) & set(doc["record"])
     assert cp.negative(doc["record"])
     assert "invalid literal" in doc["broke"]
     entry = pool.from_capture(row["capture_id"], doc)

@@ -7,7 +7,8 @@ The episode handed back a result: a text request whose rows of numbers it summed
    ``summary.md``, ``procedure.py``, ``broke.md`` and ``notes.md`` in the episode's staging dir;
 2. the harness's capture step (``captures.capture``) checks it, runs it confined on the recorded request and
    writes the capture: ``procedure.py``, ``signature.json`` (an applicability signature with no identifier) and
-   ``record.json`` (the capture's own evidence level and status);
+   ``record.json`` (what the capture step saw: its episodes, its cases and their outcome; its uses, and the status
+   and evidence level they give it, are the evidence store's);
 3. a writer pass, tools called from code, in real boxes, sees the capture in the episode's batch-map row and as a
    ``capture`` pool entry, lands it with ``tools.land_capture``, and the gate admits the procedure into the
    library at the evidence level the gate gives it, with a new item's status.
@@ -57,8 +58,10 @@ CAPTURE_STORE = "memory-captures"
 CAPTURE_FILES = ("procedure.py", "signature.json", "record.json", "saved.json", "occurrences.jsonl")
 CAPTURE_EVENTS = "captures-events.jsonl"
 SIGNATURE_KEYS = {"input", "output", "relations", "constraints", "goal"}
-#: rev 2's trace record (nothing is run): no ``reproduces``; ``own_check`` says the capture was not run
-RECORD_KEYS = {"episodes", "own_check", "deterministic", "applies", "holds", "outcome", "level", "status", "track"}
+#: the trace record (nothing is run): no ``reproduces``; ``own_check`` says the capture was not run; no uses, and no
+#: status or level from them (those are the evidence store's)
+RECORD_KEYS = {"episodes", "own_check", "deterministic", "applies", "holds", "outcome"}
+NOT_RECORD_KEYS = {"uses", "track", "status", "level"}
 #: Design I.11 decision 3: evidence levels (lowest first) and a new item's status.
 LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
 LEVEL_CAPTURE = LEVELS[0]
@@ -227,14 +230,22 @@ def test_the_fork_stages_a_procedure_and_the_capture_step_records_it(tmp_path):
     assert sorted(p.name for p in folder.iterdir() if p.is_file()) == sorted(CAPTURE_FILES)
     assert (folder / "procedure.py").read_text() == PROCEDURE
     record = _read_json(folder / "record.json")
-    assert RECORD_KEYS <= set(record), record
+    assert RECORD_KEYS <= set(record) and not NOT_RECORD_KEYS & set(record), record
     assert record["episodes"] == [ep.episode_id]
     # rev 2: never run to classify it, so nothing is judged of its run; its outcome comes from the signals only
     assert record["own_check"] == {"ran": False, "why": "a capture is never run to classify it"}, record
     assert "reproduces" not in record, record
     assert record["deterministic"] is None and record["applies"] is None and record["holds"] is None, record
     assert record["outcome"] != "failed", record
-    assert (record["level"], record["status"]) == (LEVEL_CAPTURE, STATUS_NEW), record
+    # its status and level come from its uses (none yet) in the evidence store: a new capture is on trial, unchecked
+    from types import SimpleNamespace
+
+    from unify.memory import captures, serving
+
+    served = serving.item_evidence(
+        SimpleNamespace(evidence=EvidenceStore(tmp_path / "e.sqlite")), captures=captures.load(store), home=None
+    )["capture:" + cid]
+    assert (served["status"], served["level"]) == (STATUS_NEW, LEVEL_CAPTURE), served
     # the applicability signature: computed by the harness, with no identifier and no request text
     signature = _read_json(folder / "signature.json")
     assert SIGNATURE_KEYS <= set(signature), signature
@@ -399,9 +410,10 @@ def test_a_writer_pass_lands_the_capture_as_a_library_item(tmp_path, monkeypatch
     shown = model.outputs.get("c1", "")
     row = json.loads(_line(shown, "CAPTURE ") or "null")
     assert row is not None, shown[:3000]
-    assert row["id"] == cid and row["level"] == LEVEL_CAPTURE, row
-    # rev 2's pool row: the trace record has no reproduction (its value is None) and no recurrence (same_as empty)
-    assert row["reproduces"] is None and row["same_as"] == [] and "outcome" in row, row
+    # the batch-map row names the capture, its outcome and where it is; nothing ran it, so it says nothing of a
+    # reproduction, and its status and level are its card's, from its uses
+    assert set(row) == {"id", "outcome", "path"} and row["id"] == cid, row
+    assert row["path"] == f"/inputs/captures/{cid}", row
     assert cid in _line(shown, "POOL ") or POOL_KIND in _line(shown, "POOL "), shown[:3000]
     # one route: the episode's staging holds no second copy of the procedure, and names the capture and its call
     route = json.loads(_line(shown, "ROUTE ") or "null")
