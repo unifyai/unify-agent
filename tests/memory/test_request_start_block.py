@@ -92,3 +92,38 @@ def test_an_answer_is_bounded_in_all_including_its_reasons_and_nearest():
     got, _ = L.check_answer({"fits": fits}, ids)
     assert [f["id"] for f in got["fits"]] == ids[:2] and len(json.dumps(got)) <= L.ANSWER_CHARS
     assert all(f["call"] == f"memory.get({f['id']!r})()" for f in got["fits"])  # calls are never cut
+
+
+def test_actor_memory_section(tmp_path, monkeypatch):
+    """The actor's system prompt keeps its bytes whatever the library holds and whatever its librarian answers (the
+    memory section is the constant guide and the copy's location); the request's first user message holds the
+    request-start block from the librarian's answer: the primary with its call and at most one fallback labelled for
+    when the first fails, within its bound, any kind of entry as the primary; nothing fitting gives no list."""
+    from unify.memory import library_prompts as LP
+    from unify.memory.integration.prompt import render_memory_section
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    items = {"memory.rows.sort:by_id": {"kind": "function"}, "notes/rows/ids.md": {"kind": "note"}}
+    full = _copy(tmp_path / "full", items)
+    section = render_memory_section(empty)[0]
+    assert section == render_memory_section(full)[0]
+    assert section.startswith(LP.GUIDE_LIBRARIAN) and L.START_HEAD not in section
+
+    capture = "capture:" + "c" * 16
+    for primary, fallback in ((capture, "notes/rows/ids.md"), ("notes/rows/ids.md", None),
+                              ("memory.rows.sort:by_id", capture)):  # fmt: skip
+        fits = [{"id": primary, "call": f"memory.get({primary!r})()", "why": "it sorts rows by id"}]
+        if fallback:
+            fits.append({"id": fallback, "call": f"memory.get({fallback!r})()", "why": "w" * 2000})
+        block, asked = _run(tmp_path / primary.replace("/", "_").replace(":", "_"), monkeypatch, items, {"fits": fits})
+        lines = block.splitlines()
+        assert asked and lines[0] == L.START_HEAD
+        assert lines[1].startswith(f"- {L.BEST_FIT_LABEL}: {primary}: ") and lines[2].startswith("  call: memory.get(")
+        assert len([x for x in lines if x.startswith("- ")]) == (2 if fallback else 1)
+        if fallback:
+            assert lines[3].startswith(f"- {L.FALLBACK_LABEL}: {fallback}: ")
+            assert "only if the first fails" in lines[3]
+        assert len(block) <= L.START_BLOCK_CHARS == 1500
+    block, _ = _run(tmp_path / "none", monkeypatch, items, {"fits": [], "nearest": [{"id": capture, "differs": "x"}]})
+    assert block.splitlines() == [L.START_HEAD, "- nothing in the library fits this request."]
