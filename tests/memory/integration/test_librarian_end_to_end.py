@@ -150,6 +150,14 @@ def librarian(core_world, monkeypatch):  # noqa: F811
     records production writes for it (``librarian_world``), its episodes' summaries staged and two captured procedures
     in the store; every in-code session kept."""
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    # these tests are about memory.ask's contract: the harness's own ask at the request's start (whose block is
+    # tested in test_request_start_block) is left out, so every librarian call here is one the actor made
+    from unify.memory import librarian as _librarian_module
+
+    async def no_start_block(state):
+        return ""
+
+    monkeypatch.setattr(_librarian_module, "request_start_block", no_start_block)
     collect = _Collect()
     monkeypatch.setattr(in_code_tools, "SESSIONS", collect)
     paths = Paths.under(core_world["state"])

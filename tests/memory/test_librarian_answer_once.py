@@ -269,7 +269,7 @@ async def test_memory_ask_twice_in_a_cell_makes_one_librarian_call_and_marks_the
         "b.already_given]))\n"
         "print(str(b))\n"
     )
-    model = T.HeaderModel(actor=[reply(calls=[T.code(T.LIBRARIAN_SECOND)])])
+    model = T.HeaderModel(librarian=[reply(calls=[T.code(T.LIBRARIAN_SECOND)])])  # the librarian's own kind
     try:
         with scripted(model):
             result = await actor.cell(cell, 0)

@@ -252,6 +252,12 @@ class CodeActActor:
                 cell_limit_s=self._timeout,
                 request=request,
             )
+            # With memory on, the library's answer for this request (its librarian
+            # asked once, before the first turn) ends the first user message.
+            if _memory.enabled() and agents.name == agents.pool.record.root:
+                from unify.memory import librarian as _librarian
+
+                first_message_parts.append(await _librarian.request_start_block(in_code.state))
             # The shared opening comes first, then the actor's own prompt; both
             # are constant for the run.
             opening = in_code.opening()

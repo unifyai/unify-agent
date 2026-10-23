@@ -96,7 +96,7 @@ BRIEF = (
     "## Your role\n"
     "You are the librarian of a library of stored procedures and notes that an agent built from its earlier work. "
     "The agent is working on a request, and it asks you which stored items apply to a question: its request's "
-    "text, or a question of its own. Your job is to find every item that applies and say why. You do not do the "
+    "text, or a question of its own. Your job is to find the item that fits it best, and say why. You do not do the "
     "agent's work, and you change nothing.\n"
     "\n"
     "## The library\n"
@@ -138,8 +138,9 @@ BRIEF = (
     "## How you answer\n"
     "- Rank by fit to the question: an item's kind (a curated item, a note or a recorded procedure) is never a "
     "reason to prefer it or to pass it over.\n"
-    "- Name every item that applies, not only one, each with why it applies: the When to use line, the fact or the "
-    "record you relied on.\n"
+    "- Name the one item that fits best (the primary), with why it applies: the When to use line, the fact or the "
+    "record you relied on. Name a second item only as a fallback for when the first fails, and only when it could "
+    "do the job then: `fits` holds at most two, the primary first. Never a list of everything that might apply.\n"
     "- For each item that applies, give a call the agent can run as written: for a procedure whose card shows the "
     "call that applies its recipe to the current request, that call; for another function, the item called on the "
     "question's input. The agent reaches the library only through its `memory` package (`memory.get` with an "
@@ -423,6 +424,8 @@ def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+#: The most items an answer names: the primary, and one fallback for when it fails (never a menu).
+MAX_FITS = 2
 #: Builtins a suggested call may wrap a memory call in; nothing that reads files or runs code.
 _PLAIN_BUILTINS = frozenset({"print", "len", "list", "dict", "str", "repr", "sorted", "tuple", "set", "int", "float"})
 
@@ -508,6 +511,11 @@ def check_answer(
                 f"fit {i}: {f['id']!r} has a recipe, the one call that applies it to the current request; give "
                 f"that call as written: {entry}"
             )
+    if len(fits) > MAX_FITS:
+        return None, (
+            f"`fits` holds at most {MAX_FITS}: the primary, then one fallback for when it fails; never a list of "
+            "everything that might apply"
+        )
     if len({f["id"] for f in fits}) != len(fits):
         return None, "an id is listed twice among the fits"
     if fits:
@@ -1374,3 +1382,65 @@ __all__ = [
     "system_prompt",
     "usage_fields",
 ]
+
+
+# --- the request's start: the library's answer, before the actor's first turn ---------------------------------------
+
+#: The longest the request-start block may be, in characters.
+START_BLOCK_CHARS = 1500
+#: The longest the request start waits for the librarian's answer, in seconds; past it the request starts without it.
+START_ASK_S = 300.0
+#: The block's opening line.
+START_HEAD = "What the library holds for this request (its librarian's answer; ask again with memory.ask()):"
+
+
+def start_block(answer: Mapping[str, Any]) -> str:
+    """The request-start block from the librarian's checked *answer*: the primary entry with its call, then at most one
+    fallback, labelled for when the first fails; or that nothing in the library fits. At most
+    :data:`START_BLOCK_CHARS` characters; nothing else of the library is pushed into the request."""
+    fits = [f for f in answer.get("fits") or [] if isinstance(f, Mapping)][:MAX_FITS]
+
+    def short(text: Any, n: int) -> str:
+        text = " ".join(str(text or "").split())
+        return text if len(text) <= n else text[: n - 1] + "…"
+
+    if not fits:
+        return f"{START_HEAD}\n- nothing in the library fits this request."
+    lines = [START_HEAD, f"- {fits[0].get('id')}: {short(fits[0].get('why'), 400)}", f"  call: {short(fits[0].get('call'), 300)}"]
+    if len(fits) > 1:
+        lines += [
+            f"- only if the first fails: {fits[1].get('id')}: {short(fits[1].get('why'), 250)}",
+            f"  call: {short(fits[1].get('call'), 300)}",
+        ]
+    text = "\n".join(lines)
+    return text if len(text) <= START_BLOCK_CHARS else text[: START_BLOCK_CHARS - 1] + "…"
+
+
+async def request_start_block(state: Any) -> str:
+    """Ask the request's librarian about the request itself, once, before the actor's first turn (the same ask as
+    ``memory.ask()`` with no question, so the actor's own later ``memory.ask()`` gets this answer again with no model
+    call), and return :func:`start_block` of the answer. '' when the run has no librarian, the library holds nothing,
+    or no answer came in :data:`START_ASK_S`."""
+    import asyncio
+
+    from unify.actor import tool_handlers as _handlers
+
+    request = getattr(state, "request_text", None)
+    if getattr(state, "open_librarian", None) is None or not isinstance(request, str) or not request.strip():
+        return ""
+    try:
+        from .integration import request as _request
+
+        run = _request.current()
+        copy = getattr(run, "copy_root", None) or getattr(getattr(run, "paths", None), "checkout", None)
+        listed = library_items(Path(copy)) if copy is not None else None
+        if not listed or not listed[0]:
+            return ""  # an empty library has nothing to name: no call is made
+        ctx = type("Ctx", (), {"state": state, "agent": "actor"})()
+        reply = await asyncio.wait_for(_handlers.ask_library(ctx, {"question": request}), START_ASK_S)
+        if getattr(reply, "status", "ok") != "ok":
+            return ""
+        got = json.loads(getattr(reply, "text", "") or "{}")
+    except Exception:  # noqa: BLE001 - no answer: the request starts without the block; memory.ask still works
+        return ""
+    return start_block(got) if isinstance(got, Mapping) else ""

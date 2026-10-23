@@ -424,7 +424,7 @@ async def test_a_real_message_instance_answers_from_the_library_on_the_record(tm
     monkeypatch.setattr(R, "current", lambda: run)
     open_session = L.opener(turn_factory=lambda: unillm_turn("openai/gpt-5.6-sol@openrouter", "low", origin=L.ORIGIN))
     asked = rr.RunRecordView(rec, "actor-aaaa", "actor").post("actor-aaaa", "@librarian which items add up a table?")
-    model = ScriptedModel(actor=[reply(calls=[code(LIBRARIAN_SECOND)])])
+    model = ScriptedModel(librarian=[reply(calls=[code(LIBRARIAN_SECOND)])])  # the librarian's own kind
     with scripted(model):
         assert await R._role_round(_record(home), home, open_session) == 1
     (rep,) = [e for e in rr.read_entries(home) if e.get("reply_to") == asked["seq"]]

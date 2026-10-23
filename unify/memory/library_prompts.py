@@ -56,8 +56,10 @@ LOOK_LINE_IN_CODE = (
     "index at the end of this prompt or with `memory.items`; the index lists every function and note.\n"
 )
 ASK_LINE_IN_CODE = (
-    "- At the start of a request, and before you work a step out yourself, ask the library what applies with "
-    "`memory.ask`. What it names can still be wrong for your case.\n"
+    "- At the start of each request, the stored procedure or note of the library that fits it best ends your first "
+    "message, with its call, and a fallback only for when the first fails. Ask again with `memory.ask` "
+    "after a new message arrives (it reads the latest message too), or with a question of your own. What it names "
+    "can still be wrong for your case.\n"
 )
 #: The in-code paragraph on structured answers (rev 2.1, PLAN-REV2 item 7): ``memory.ask(..., schema=...)``, with one
 #: general instance of a schema (a plain dataclass) and no world vocabulary.

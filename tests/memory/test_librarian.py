@@ -450,7 +450,7 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
     for part in ("## Your role", "## The library", "## Your tools", "## What each question brings",
                  "## How you answer", "`tools.search`", "`tools.read`", "`tools.grep`", "`memory.get`",
                  "tools.finish(answer)", "README.md", "When to use", "recipe", "Search first",
-                 "Name every item that applies", "nothing fits", "evidence only"):
+                 "Name the one item that fits best", "nothing fits", "evidence only"):
         assert part in brief, part
     assert guards.benchmark_words(brief) == [] and guards.example_checks(brief) == []
     # the library's calls are named without arguments: their help holds those
@@ -699,8 +699,9 @@ async def test_ask_end_to_end_facts_in_the_box_one_session_per_request_and_the_c
             cwd="/library", sys_path=("/library",), audit_roots=("/library",), open_areas=("/library",),
         ),
     )
-    model = HeaderModel(actor=[reply(calls=[code(LIBRARIAN_FIRST)]), reply(calls=[code(LIBRARIAN_SECOND)]),
-                               reply(calls=[code(LIBRARIAN_THIRD)])])
+    # the librarian's calls are a kind of their own (its brief is their system message)
+    model = HeaderModel(librarian=[reply(calls=[code(LIBRARIAN_FIRST)]), reply(calls=[code(LIBRARIAN_SECOND)]),
+                                   reply(calls=[code(LIBRARIAN_THIRD)])])
     try:
         with scripted(model):
             first = await actor.cell(ACTOR_FIRST, 0)

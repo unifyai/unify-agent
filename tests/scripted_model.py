@@ -63,9 +63,12 @@ KINDS = (
     "compression_fork",
     "compactor",
     "helper",
+    "librarian",
     "query_llm",
     "actor",
 )
+#: The opening of the librarian's brief: a request's librarian calls the actor's model with it as its system message.
+LIBRARIAN_FRAGMENT = "You are the librarian of a library"
 
 
 # ── replies ──────────────────────────────────────────────────────────────────
@@ -182,6 +185,8 @@ def kind_of(request: dict) -> str:
         return "compactor"
     if users and HELPER_FRAGMENT in users[0]:
         return "helper"
+    if LIBRARIAN_FRAGMENT in system:
+        return "librarian"
     if not names:
         return "query_llm"
     return "actor"
