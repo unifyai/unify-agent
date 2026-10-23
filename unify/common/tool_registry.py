@@ -1502,6 +1502,7 @@ _WORKSPACE_LIBRARY_GREP_TEXT = {
         "not_found": "{path} does not exist",
         "bad_pattern": "{reason}",
         "unreadable": "{error} for {path!r}",
+        "search_failed": SEARCH_FAILED,
     },
     "examples": ('hits = tools.grep(r"def \\w+_total", "/workspace")',),
 }
@@ -1516,6 +1517,41 @@ _LIBRARY_GREP_TEXT = {
         "search_failed": SEARCH_FAILED,
     },
     "examples": ('hits = tools.grep(r"def \\w+_total", "/memory")',),
+}
+
+
+#: The actor's and a teammate's delegate: it starts a helper like themselves, in the same workspace
+#: (``unify.agents.binding``), whose reply arrives on the run's record.
+_REQUEST_DELEGATE_TEXT = {
+    "summary": "Start a helper on a part of the work; it returns at once and the helper messages you on the record.",
+    "description": (
+        "Start a helper: an agent like you, in the same workspace, with a fresh context and the work "
+        "you give it. It returns at once with the helper's name; the helper works while you go on, messages you on "
+        "the record as it goes (`tools.messages()` reads them, `tools.wait()` waits for the next) and ends with its "
+        "reply. The run's record bounds how many helpers run at once and in all; a refusal says which bound was met."
+    ),
+    "refusals": {
+        "no_task": "task must be a non-empty string; no helper started",
+        **_SPAWN_FORMS,
+        "helper_limit": "no helper started: {why}",
+        "bad_request": "no helper started: {why}",
+    },
+    "examples": ('name = tools.delegate("Read /workspace/notes.txt and list every date it names.")',),
+    "when": (
+        "Use it for a part of the work that is independent of the rest; the helper's reply arrives on the record."
+    ),
+}
+#: The actor's and a teammate's stop: it ends a helper it started (``AgentRecordAdapter.stop``).
+_REQUEST_STOP_TEXT = {
+    "description": (
+        "Stop a helper you started, at once. A model call it has in flight is cancelled and may be lost; what it "
+        "wrote in the workspace stays, and the record says it was stopped. Stopping a helper that already ended "
+        "changes nothing."
+    ),
+    "refusals": {
+        "unknown_helper": "there is no helper named {name!r}; helpers: {valid}",
+        "not_allowed": "{why}; nothing was stopped",
+    },
 }
 
 
@@ -1639,6 +1675,8 @@ _IN_CODE: dict[str, dict] = {
         # any agent on the agent record may start agents, under the record's limits
         roles=(_A, _T, _W),
         role_args={_A: _TASK_ONLY, _T: _TASK_ONLY},
+        # the actor and a teammate start a helper like themselves (unify.agents.binding), never the writer's helper
+        role_text={r: _REQUEST_DELEGATE_TEXT for r in (_A, _T)},
         add_refusals=_SPAWN_FORMS,
         returns="the name of the agent started; it works while you go on.",
         examples=('name = tools.delegate("Read e3 and e4 and draft the shared parser.", ["e3", "e4"])',),
@@ -1678,6 +1716,7 @@ _IN_CODE: dict[str, dict] = {
     ),
     "stop": dict(
         roles=(_A, _T, _W),
+        role_text={r: _REQUEST_STOP_TEXT for r in (_A, _T)},
         add_refusals={"not_allowed": "{why}; nothing was stopped"},
         returns="a line saying the agent stopped and where what it left is.",
         examples=('tools.stop("h2")',),
@@ -1686,6 +1725,16 @@ _IN_CODE: dict[str, dict] = {
     ),
     "ask": dict(
         roles=(_T, _H),
+        # a teammate's question goes on the run's record, to whoever started it unless it names someone
+        role_text={
+            _T: {
+                "description": (
+                    "Ask a question on the run's record and wait for the answer: `send`, then `wait`. A question "
+                    "that names no one goes to the agent that started you. It returns the messages that arrive for "
+                    "you, or says that no reply came yet."
+                ),
+            },
+        },
         add_refusals=_RECORD_POST_FORMS,
         returns="the answer that arrived, or a line saying none came yet.",
         examples=('answer = tools.ask("@writer should totals include tax?")',),
@@ -2156,6 +2205,27 @@ def refusal(tool: str, form: str, **fields: object) -> Refusal:
         template = GENERAL_REFUSALS.get(form)
     if template is None:
         raise KeyError(f"{tool}: no refusal form {form!r}")
+    text = template.format(**fields)
+    if not text.startswith(KEPT_STARTS):
+        text = REFUSED + text
+    return Refusal(text, tool, form)
+
+
+def role_refusal(agent: Optional[str], tool: str, form: str, *, memory: Optional[bool] = None, **fields: object) -> Refusal:
+    """The refusal text *form* of *tool* as *agent* reads it in this run (*memory*: whether the run has memory, default
+    its setting): the agent's own refusal texts where it has them (:attr:`RegisteredTool.off_text` in a run without
+    memory, else :attr:`RegisteredTool.role_text`), which then hold every form it can be refused with besides the
+    general ones; else the shared texts (:func:`refusal`). So a refusal names only the roots and calls that agent has,
+    as its ``tools.help`` does."""
+    spec = registry().get(tool)
+    own, texts = _own_text(spec, "refusals", agent, memory) if spec is not None else (False, None)
+    if not own:
+        return refusal(tool, form, **fields)
+    template = texts.get(form) if isinstance(texts, dict) else None
+    if template is None:
+        template = GENERAL_REFUSALS.get(form)
+    if template is None:
+        raise KeyError(f"{tool}: no refusal form {form!r} for {agent}")
     text = template.format(**fields)
     if not text.startswith(KEPT_STARTS):
         text = REFUSED + text

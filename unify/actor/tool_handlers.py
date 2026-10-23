@@ -20,14 +20,16 @@ its worker pool); one that waits on the record or the request is a coroutine fun
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from unify.common import tool_registry as _registry
-from unify.common.tool_registry import REFUSED, Refusal, RecordRefused, form_of, refusal
+from unify.common.tool_registry import REFUSED, Refusal, RecordRefused, form_of
 
 #: The box path of the request's workspace (the root the actor's read and grep are given).
 WORKSPACE = "/workspace"
@@ -45,13 +47,20 @@ def _refused(text: Refusal) -> Any:
     return _reply(text, "refused", form_of(text))
 
 
-def _from_record(tool: str, exc: RecordRefused) -> Any:
+def _refusal(ctx: Any, tool: str, form: str, **fields: object) -> Refusal:
+    """The refusal *form* of *tool* as the calling agent reads it in this run (``tool_registry.role_refusal``): the
+    actor's and a teammate's own texts, which name only the roots and calls they have (none of memory's in a run
+    without it)."""
+    return _registry.role_refusal(getattr(ctx, "agent", None), tool, form, **fields)
+
+
+def _from_record(ctx: Any, tool: str, exc: RecordRefused) -> Any:
     """A record's refusal as *tool*'s reply: a finished refusal as it is, else the reason in the tool's template
     for the form (or plainly, keeping the form, when that template takes other fields)."""
     if form_of(exc.text) is not None:
         return _refused(exc.text)
     try:
-        return _refused(refusal(tool, exc.form, why=exc.text))
+        return _refused(_refusal(ctx, tool, exc.form, why=exc.text))
     except (KeyError, IndexError):
         return _refused(Refusal(REFUSED + str(exc.text), tool, exc.form))
 
@@ -190,100 +199,138 @@ def _box_path(path: Any) -> str:
 
 
 #: The box path of the run's library copy (read-only), as the actor's memory guide names it (``unify.sandbox``'s
-#: library mount); ``/memory`` is the same library as the librarian and the writer name it. Either names it here.
+#: library mount); ``/memory`` is the same library as the librarian and the writer name it. Either names the request's
+#: copy, in every memory mode.
 LIBRARY = "/memory-library"
-_LIBRARY_NAMES = (LIBRARY, "/memory")
+MEMORY_ALIAS = "/memory"
 
 
-def _library_view(policy: Any) -> Optional[tuple[str, str]]:
-    """``(box root, host directory)`` of the library copy as the workspace sandbox mounts it for this request's cells:
-    the host directory bound at :data:`LIBRARY` (``unify.sandbox``'s own mapping, so the read sees exactly what a cell
-    sees), and the box path of the copy the request reads (under ``UNIFY_MEMORY=in_episode``, its link to the current
-    pin inside that mount). None when the sandbox mounts no library."""
+@dataclass(frozen=True)
+class LibraryView:
+    """The library copy as the workspace sandbox mounts it for this request's cells.
+
+    *mount* is the host directory the sandbox binds read-only at :data:`LIBRARY` (``unify.sandbox.late_readonly_mounts``
+    of the worker's own late mounts, so a read sees exactly what a cell sees), *mounts* those mounts, and *copy* the host
+    directory of the request's copy: the mount itself, or under ``UNIFY_MEMORY=in_episode`` the pin its link *link*
+    (inside the mount) points to now. A box path under :data:`LIBRARY` or ``/memory`` names the copy; under
+    in_episode a path through the link names the copy too, and one under another entry of the mount (the pins) names
+    that entry as a cell sees it."""
+
+    mount: Path
+    copy: Path
+    link: str
+    mounts: tuple
+
+
+def library_view(policy: Any) -> Optional[LibraryView]:
+    """The request's :class:`LibraryView`; None when the workspace sandbox mounts no library."""
+    from unify import sandbox
+    from unify.memory.integration import hooks
+
+    try:
+        late = hooks.worker_readonly_mounts()
+        mounts = tuple(sandbox.late_readonly_mounts(policy, late)) if late else ()
+    except Exception:  # noqa: BLE001 - no library mounted for these cells
+        return None
+    mount = next((Path(host) for host, at in mounts if at == LIBRARY), None)
+    if mount is None or not mount.is_dir():
+        return None
+    copy, link = mount, ""
+    root = getattr(hooks._run(), "copy_root", None)
+    if root is not None:
+        # the copy's link inside the mount, named as the box names it (its own name, never followed here)
+        named = Path(os.path.realpath(os.path.dirname(os.fspath(root)))) / os.path.basename(os.fspath(root))
+        real = Path(os.path.realpath(root))
+        rel = os.path.relpath(named, mount)
+        if (
+            named != mount
+            and "/" not in rel
+            and rel not in (".", "..")
+            and real.is_dir()
+            and real != mount
+            and real.is_relative_to(mount)
+        ):
+            copy, link = real, rel
+    return LibraryView(mount, copy, link, mounts)
+
+
+def _library_place(view: LibraryView, vpath: str) -> Optional[tuple[str, Path, str]]:
+    """Where a box path names the library: ``(box path as shown, host root, box path under that root)``, the box path
+    shown being under :data:`LIBRARY`; None when *vpath* names no library path. Raises ``safe_paths.Outside`` for a
+    path that leaves its root."""
+    from unify.memory import safe_paths as _safe
+
+    if not (vpath in (LIBRARY, MEMORY_ALIAS) or vpath.startswith((LIBRARY + "/", MEMORY_ALIAS + "/"))):
+        return None
+    prefix, parts = _safe.split(vpath, [LIBRARY, MEMORY_ALIAS])
+    if prefix == LIBRARY and view.link and parts:
+        if parts[0] == view.link:
+            parts = parts[1:]
+        elif parts[0] in _mount_entries(view):
+            # an entry of the mount besides the copy's link (in_episode: the pins), as a cell sees it
+            shown = _safe.virtual(LIBRARY, parts)
+            return shown, view.mount, shown
+    shown = _safe.virtual(LIBRARY, parts)
+    return shown, view.copy, shown
+
+
+def _mount_entries(view: LibraryView) -> frozenset:
+    """The names directly in the mount other than the copy's link (empty when the copy is the mount)."""
+    if not view.link:
+        return frozenset()
+    try:
+        return frozenset(n for n in os.listdir(view.mount) if n != view.link)
+    except OSError:
+        return frozenset()
+
+
+def _host_of(root: Path, shown: str) -> Path:
+    """The host path of *shown* (a box path under :data:`LIBRARY`) under the host *root*, lexically."""
+    rel = shown[len(LIBRARY) :].lstrip("/")
+    return root / rel if rel else root
+
+
+def _outside(tool: str, path: str, ctx: Any) -> Any:
+    """A path outside the agent's roots, refused in its own words: with memory, the workspace and the library (and the
+    call that opens an entry); without, the workspace alone."""
+    return _refused(_refusal(ctx, tool, "outside_roots", path=path[:200]))
+
+
+def _library_hidden(view: LibraryView, host: Path, policy: Any) -> Optional[str]:
+    """The sandbox's rule that keeps *host* (under the library mount) from a cell or from the harness's file tools,
+    as text naming no host path; None when it may be read."""
     from unify import sandbox
 
-    try:
-        host = sandbox.host_path(LIBRARY, policy)
-    except Exception:  # noqa: BLE001 - no policy view: no library
-        return None
-    if host == LIBRARY or not os.path.isdir(host):
-        return None
-    box_root = LIBRARY
-    try:
-        from unify.memory.integration import request as _request
-
-        run = _request.current()
-        copy = getattr(run, "copy_root", None)
-        checkout = getattr(getattr(run, "paths", None), "checkout", None)
-        if copy is not None and checkout is not None:
-            rel = os.path.relpath(os.fspath(copy), os.fspath(checkout))
-            if rel not in (".", "") and not rel.startswith(".."):
-                box_root = f"{LIBRARY}/{rel}"
-    except Exception:  # noqa: BLE001 - no memory run: the mount's root
-        pass
-    return box_root, host
+    found = sandbox.late_readable_violation(host, policy, view.mounts)
+    return None if found is None else f"hidden by the workspace sandbox rule `{found[0]}`"
 
 
-def _in_library(vpath: str, box_root: str) -> Optional[str]:
-    """*vpath* as a box path under :data:`LIBRARY` when it names the library: as the box names it, or by the name the
-    librarian and the writer use (``/memory``), which is the request's copy (*box_root*)."""
-    if vpath == LIBRARY or vpath.startswith(LIBRARY + "/"):
-        return vpath
-    if vpath == "/memory" or vpath.startswith("/memory/"):
-        return box_root + vpath[len("/memory") :]
-    return None
-
-
-def _outside(tool: str, path: str, ctx: Any = None) -> Any:
-    if ctx is not None and _library_view(_policy(ctx)) is not None:
-        # a run with a library: the refusal names both roots and the call that opens an entry
-        return _refused(
-            Refusal(
-                f"{REFUSED}{path[:200]} is outside {WORKSPACE} and the library ({LIBRARY}, read-only); an entry of "
-                "the library opens with memory.get(<its id>)",
-                tool,
-                "outside_roots",
-            ),
-        )
-    return _refused(Refusal(f"{REFUSED}{path[:200]} is outside {WORKSPACE}", tool, "outside_roots"))
-
-
-def _read_library(ctx: Any, vpath: str, offset: int) -> Any:
-    """``read`` of a path in the library copy, read-only, as a cell would read it: the sandbox's own mount of the copy
-    and its own masks (credential files, ``.env`` files and the rest of :func:`_hidden`'s rules), opened from the
-    mount's root one component at a time."""
+def _read_library(ctx: Any, view: LibraryView, place: tuple[str, Path, str], asked: str, offset: int) -> Any:
+    """``read`` of a path in the library copy, read-only, as a cell would read it: from the sandbox's own mount of the
+    copy (:class:`LibraryView`), under its rules (:func:`_library_hidden`), opened from the root one component at a
+    time, never through a link. A refusal names the path as the agent wrote it (*asked*)."""
     from unify.memory import safe_paths as _safe
     from unify.memory import views as _views
 
-    policy = _policy(ctx)
-    view = _library_view(policy)
-    if view is None:
-        return _outside("read", vpath, ctx)
-    try:
-        prefix, parts = _safe.split(vpath, [LIBRARY])
-    except _safe.Outside:
-        return _outside("read", vpath, ctx)
-    virtual = _safe.virtual(prefix, parts)
-    where = ({"path": virtual, "mode": "read"},)
-    hidden = _hidden(virtual, policy)
+    shown, root, _ = place
+    where = ({"path": shown, "mode": "read"},)
+    hidden = _library_hidden(view, _host_of(root, shown), _policy(ctx))
     if hidden is not None:
-        return _reply(refusal("read", "unreadable", error=hidden, path=virtual), "refused", "unreadable", where)
+        return _reply(_refusal(ctx, "read", "unreadable", error=hidden, path=asked), "refused", "unreadable", where)
     try:
-        text, mode = _views.read_entry(virtual, {LIBRARY: view[1]}, offset)
+        text, mode = _views.read_entry(shown, {LIBRARY: str(root)}, offset)
     except _safe.Outside:
-        return _outside("read", vpath, ctx)
+        return _outside("read", asked, ctx)
     except (_safe.LinkFound, _safe.NotRegular) as exc:
-        return _reply(refusal("read", "unreadable", error=exc.reason, path=virtual), "refused", "unreadable", where)
+        return _reply(_refusal(ctx, "read", "unreadable", error=exc.reason, path=asked), "refused", "unreadable", where)
     except OSError:
-        return _reply(refusal("read", "not_found", path=virtual), "refused", "not_found", where)
-    return _reply(text, paths=({"path": virtual, "mode": mode},))
+        return _reply(_refusal(ctx, "read", "not_found", path=asked), "refused", "not_found", where)
+    return _reply(text, paths=({"path": shown, "mode": mode},))
 
 
 def _hidden(virtual: str, policy: Any) -> Optional[str]:
     """The workspace sandbox's rule that hides *virtual* from a cell, as text naming box paths only; None when a
     cell may read it."""
-    from pathlib import Path
-
     from unify import sandbox
 
     found = policy.readable_violation(Path(sandbox.host_path(virtual, policy)))
@@ -293,18 +340,32 @@ def _hidden(virtual: str, policy: Any) -> Optional[str]:
     return sandbox.neutral_text(f"hidden by the workspace sandbox rule `{rule}` ({detail})", policy)
 
 
+def _library_place_of(ctx: Any, vpath: str) -> tuple[Optional[LibraryView], Optional[tuple[str, Path, str]]]:
+    """``(view, place)`` when *vpath* names the library of a request that mounts one (:func:`_library_place`), else
+    ``(view or None, None)``."""
+    if not (vpath in (LIBRARY, MEMORY_ALIAS) or vpath.startswith((LIBRARY + "/", MEMORY_ALIAS + "/"))):
+        return None, None
+    view = library_view(_policy(ctx))
+    if view is None:
+        return None, None
+    return view, _library_place(view, vpath)
+
+
 def read(ctx: Any, args: dict) -> Any:
-    """A page of a file under ``/workspace`` (8000 bytes from ``offset``), or a directory's listing."""
+    """A page of a file under ``/workspace`` or of the library copy (8000 bytes from ``offset``), or a directory's
+    listing."""
     from unify.memory import safe_paths as _safe
     from unify.memory import views as _views
 
     vpath = _box_path(args.get("path"))
     offset = args.get("offset", 0)
     offset = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
-    view = _library_view(_policy(ctx)) if vpath == "/memory" or vpath.startswith(("/memory/", LIBRARY)) else None
-    library = _in_library(vpath, view[0]) if view is not None else None
-    if library is not None:
-        return _read_library(ctx, library, offset)
+    try:
+        view, place = _library_place_of(ctx, vpath)
+    except _safe.Outside:
+        return _outside("read", vpath, ctx)
+    if place is not None:
+        return _read_library(ctx, view, place, vpath, offset)
     root = (ctx.roots or {}).get(WORKSPACE)
     try:
         prefix, parts = _safe.split(vpath, [WORKSPACE])
@@ -313,25 +374,63 @@ def read(ctx: Any, args: dict) -> Any:
     virtual = _safe.virtual(prefix, parts)
     where = ({"path": virtual, "mode": "read"},)
     if root is None:
-        return _refused(refusal("read", "not_found", path=virtual))
+        return _refused(_refusal(ctx, "read", "not_found", path=virtual))
     policy = _policy(ctx)
     hidden = _hidden(virtual, policy)
     if hidden is not None:
-        return _reply(refusal("read", "unreadable", error=hidden, path=virtual), "refused", "unreadable", where)
+        return _reply(_refusal(ctx, "read", "unreadable", error=hidden, path=virtual), "refused", "unreadable", where)
     try:
         text, mode = _views.read_entry(virtual, {WORKSPACE: root}, offset)
     except _safe.Outside:
         return _outside("read", vpath, ctx)
     except (_safe.LinkFound, _safe.NotRegular) as exc:
-        return _reply(refusal("read", "unreadable", error=exc.reason, path=virtual), "refused", "unreadable", where)
+        return _reply(_refusal(ctx, "read", "unreadable", error=exc.reason, path=virtual), "refused", "unreadable", where)
     except OSError:
-        return _reply(refusal("read", "not_found", path=virtual), "refused", "not_found", where)
+        return _reply(_refusal(ctx, "read", "not_found", path=virtual), "refused", "not_found", where)
     return _reply(text, paths=({"path": virtual, "mode": mode},))
 
 
+def _grep_library(
+    ctx: Any, view: LibraryView, place: tuple[str, Path, str], asked: str, pattern: str, offset: int
+) -> Any:
+    """``grep`` in the library copy: the files are opened from the sandbox's own mount of the copy, one component at
+    a time and never through a link, those its rules keep from a cell left out (:func:`_library_hidden`); the pattern
+    runs in a bounded child process that is handed their bytes and box paths only (``views.grep_bounded``). A refusal
+    names the path as the agent wrote it (*asked*)."""
+    from unify.memory import safe_paths as _safe
+    from unify.memory import views as _views
+
+    shown, root, _ = place
+    where = ({"path": shown, "mode": "search"},)
+    policy = _policy(ctx)
+    host = _host_of(root, shown)
+    hidden = _library_hidden(view, host, policy)
+    if hidden is not None:
+        return _reply(_refusal(ctx, "grep", "unreadable", error=hidden, path=asked), "refused", "unreadable", where)
+    if not os.path.lexists(host):
+        return _reply(_refusal(ctx, "grep", "not_found", path=asked), "refused", "not_found", where)
+    try:
+        text = _views.grep_bounded(
+            pattern,
+            shown,
+            {LIBRARY: str(root)},
+            offset,
+            want=lambda box: _library_hidden(view, _host_of(root, box), policy) is None,
+        )
+    except _safe.Outside:
+        return _outside("grep", asked, ctx)
+    except _safe.LinkFound as exc:
+        return _reply(_refusal(ctx, "grep", "unreadable", error=exc.reason, path=asked), "refused", "unreadable", where)
+    except _views.PatternProblem as exc:
+        return _reply(_refusal(ctx, "grep", "bad_pattern", reason=str(exc)[:300]), "refused", "bad_pattern", where)
+    except _views.SearchFailed:
+        return _reply(_refusal(ctx, "grep", "search_failed"), "refused", "search_failed", where)
+    return _reply(text, paths=where)
+
+
 async def grep(ctx: Any, args: dict) -> Any:
-    """Hits of a regular expression under a ``/workspace`` path (default the whole workspace), one page from hit
-    ``offset``; the search runs in the workspace sandbox, as the actor's ``grep`` does."""
+    """Hits of a regular expression under a ``/workspace`` path (default the whole workspace) or a library path, one
+    page from hit ``offset``; a workspace search runs in the workspace sandbox, as the actor's ``grep`` does."""
     from unify import sandbox
     from unify.actor.execution import file_tools
     from unify.common.tool_errors import ToolInputError
@@ -339,18 +438,18 @@ async def grep(ctx: Any, args: dict) -> Any:
 
     pattern = args.get("pattern")
     if not isinstance(pattern, str) or not pattern:
-        return _refused(refusal("grep", "bad_pattern", reason="pattern must be a non-empty string"))
+        return _refused(_refusal(ctx, "grep", "bad_pattern", reason="pattern must be a non-empty string"))
     vpath = _box_path(args.get("path") or WORKSPACE)
     offset = args.get("offset", 0)
     offset = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
-    view = _library_view(_policy(ctx))
-    library = _in_library(vpath, view[0]) if view is not None else None
-    if library is not None:
-        # the library copy is mounted read-only in the workspace sandbox at LIBRARY: the search runs there, under the
-        # sandbox's own masks
-        vpath = library
     try:
-        prefix, parts = _safe.split(vpath, [WORKSPACE, LIBRARY] if library is not None else [WORKSPACE])
+        view, place = _library_place_of(ctx, vpath)
+    except _safe.Outside:
+        return _outside("grep", vpath, ctx)
+    if place is not None:
+        return await asyncio.to_thread(_grep_library, ctx, view, place, vpath, pattern, offset)
+    try:
+        prefix, parts = _safe.split(vpath, [WORKSPACE])
     except _safe.Outside:
         return _outside("grep", vpath, ctx)
     virtual = _safe.virtual(prefix, parts)
@@ -360,12 +459,12 @@ async def grep(ctx: Any, args: dict) -> Any:
         found = await file_tools.grep(pattern, virtual, min(GREP_MAX_HITS, offset + GREP_PAGE), policy=policy)
     except sandbox.SandboxRefusal as exc:
         error = sandbox.neutral_text(str(exc), policy)
-        return _reply(refusal("grep", "unreadable", error=error, path=virtual), "refused", "unreadable", where)
+        return _reply(_refusal(ctx, "grep", "unreadable", error=error, path=virtual), "refused", "unreadable", where)
     except ToolInputError as exc:
         text = str(exc)
         if text.startswith("No such file or directory"):
-            return _reply(refusal("grep", "not_found", path=virtual), "refused", "not_found", where)
-        return _reply(refusal("grep", "bad_pattern", reason=text[:300]), "refused", "bad_pattern", where)
+            return _reply(_refusal(ctx, "grep", "not_found", path=virtual), "refused", "not_found", where)
+        return _reply(_refusal(ctx, "grep", "bad_pattern", reason=text[:300]), "refused", "bad_pattern", where)
     hits = list(found.get("hits") or [])
     page = hits[offset : offset + GREP_PAGE]
     text = "\n".join(page) or "(no hits)"
@@ -388,7 +487,7 @@ def install(ctx: Any, args: dict) -> Any:
     packages = args.get("packages")
     specs = [packages] if isinstance(packages, str) else packages
     if not isinstance(specs, list) or not specs or not all(isinstance(p, str) and p.strip() for p in specs):
-        return _refused(refusal("install", "bad_packages"))
+        return _refused(_refusal(ctx, "install", "bad_packages"))
     from unify import environment, sandbox
 
     root = getattr(ctx.state, "workspace_root", None)
@@ -424,7 +523,7 @@ def _left(ctx: Any) -> float:
 
 def _post(ctx: Any, tool: str, text: Any, to: Optional[list] = None) -> tuple[Any, dict]:
     if not isinstance(text, str) or not text.strip():
-        return _refused(refusal(tool, "no_text")), {}
+        return _refused(_refusal(ctx, tool, "no_text")), {}
     rec = _rec(ctx)
     try:
         if hasattr(rec, "last_from"):
@@ -436,7 +535,7 @@ def _post(ctx: Any, tool: str, text: Any, to: Optional[list] = None) -> tuple[An
         else:
             out = rec.post(ctx.name, text, to=to)
     except RecordRefused as exc:
-        return _from_record(tool, exc), {}
+        return _from_record(ctx, tool, exc), {}
     sent = f"sent to {', '.join(out.get('to') or []) or 'no one by name'} (#{out.get('seq')})"
     if out.get("unresolved"):
         sent += f"; these names match no agent: {', '.join('@' + n for n in out['unresolved'])}"
@@ -470,7 +569,7 @@ async def wait(ctx: Any, args: dict) -> Any:
     no default)."""
     timeout = args.get("timeout")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= MAX_WAIT_S:
-        return _refused(refusal("wait", "bad_timeout"))
+        return _refused(_refusal(ctx, "wait", "bad_timeout"))
     return _reply(await _wait(ctx, timeout))
 
 
@@ -484,11 +583,11 @@ async def who(ctx: Any, args: dict) -> Any:
 def reply(ctx: Any, args: dict) -> Any:
     target, text = args.get("agent"), args.get("text")
     if not isinstance(text, str) or not text.strip():
-        return _refused(refusal("reply", "no_text"))
+        return _refused(_refusal(ctx, "reply", "no_text"))
     running = _running(ctx)
     if not isinstance(target, str) or target.lower() not in running or target.lower() == ctx.name:
         valid = ", ".join(f"@{n}" for n in running if n != ctx.name) or "(none)"
-        return _refused(refusal("reply", "unknown_name", names=repr(str(target)[:80]), valid=valid))
+        return _refused(_refusal(ctx, "reply", "unknown_name", names=repr(str(target)[:80]), valid=valid))
     return _post(ctx, "reply", text, to=[target.lower()])[0]
 
 
@@ -497,7 +596,7 @@ async def stop(ctx: Any, args: dict) -> Any:
     try:
         out = await _rec(ctx).stop(ctx.name, str(name))
     except RecordRefused as exc:
-        return _from_record("stop", exc)
+        return _from_record(ctx, "stop", exc)
     return _reply(f"{out['name']} stopped (running now: {', '.join(_running(ctx))})")
 
 
@@ -515,11 +614,11 @@ async def ask(ctx: Any, args: dict) -> Any:
 async def delegate(ctx: Any, args: dict) -> Any:
     task = args.get("task")
     if not isinstance(task, str) or not task.strip():
-        return _refused(refusal("delegate", "no_task"))
+        return _refused(_refusal(ctx, "delegate", "no_task"))
     try:
         out = await _rec(ctx).start(ctx.name, task)
     except RecordRefused as exc:
-        return _from_record("delegate", exc)
+        return _from_record(ctx, "delegate", exc)
     return _reply(
         f"started {out['name']}; it works while you go on and answers you on the record "
         "(tools.messages() reads it, tools.wait() waits for it)",
@@ -538,20 +637,20 @@ async def answer(ctx: Any, args: dict) -> Any:
     # the slot holds this request's answer until the loop takes it, and is empty again when the session's next
     # request starts, so each request of a persistent session can answer once
     if slot is not None and getattr(slot, "replied", False):
-        return _refused(refusal("answer", "answered"))
+        return _refused(_refusal(ctx, "answer", "answered"))
     if "answer" not in args:
-        return _refused(refusal("answer", "bad_answer", reason="Missing 'answer' in tool arguments."))
+        return _refused(_refusal(ctx, "answer", "bad_answer", reason="Missing 'answer' in tool arguments."))
     given = args.get("answer")
     validate = getattr(state, "validate", None)
     if validate is not None:
         try:
             text = validate(given)
         except Exception as exc:  # the validation's reason goes back to the cell
-            return _refused(refusal("answer", "bad_answer", reason=str(exc)[:2000]))
+            return _refused(_refusal(ctx, "answer", "bad_answer", reason=str(exc)[:2000]))
     else:
         text = given if isinstance(given, str) else json.dumps(given, default=str)
     if slot is None:
-        return _refused(refusal("answer", "bad_answer", reason="this request takes no answer from a cell"))
+        return _refused(_refusal(ctx, "answer", "bad_answer", reason="this request takes no answer from a cell"))
     slot.text = text
     return _reply("answered: the answer is recorded; the request ends when this cell returns")
 
@@ -567,7 +666,7 @@ async def ask_library(ctx: Any, args: dict) -> Any:
     (``LibrarianSession.ask``)."""
     question = args.get("question")
     if not isinstance(question, str) or not question.strip():
-        return _refused(refusal("ask_library", "no_question"))
+        return _refused(_refusal(ctx, "ask_library", "no_question"))
     schema = args.get("schema")
     if schema is not None:
         from unify.memory.librarian import check_schema
@@ -575,19 +674,19 @@ async def ask_library(ctx: Any, args: dict) -> Any:
         try:
             check_schema(schema)
         except ValueError as exc:
-            return _refused(refusal("ask_library", "bad_schema", why=str(exc)[:300]))
+            return _refused(_refusal(ctx, "ask_library", "bad_schema", why=str(exc)[:300]))
     state = ctx.state
     session = getattr(state, "librarian", None)
     if session is None:
         start = getattr(state, "open_librarian", None)
         if start is None:
-            return _refused(refusal("ask_library", "unavailable", why="this request has no librarian"))
+            return _refused(_refusal(ctx, "ask_library", "unavailable", why="this request has no librarian"))
         from unify.memory import librarian as _librarian
 
         try:
             session = await start()
         except _librarian.Unavailable as exc:
-            return _refused(refusal("ask_library", "unavailable", why=str(exc)[:300]))
+            return _refused(_refusal(ctx, "ask_library", "unavailable", why=str(exc)[:300]))
         state.librarian = session
     from unify.memory import librarian as _librarian
 
@@ -607,7 +706,7 @@ async def ask_library(ctx: Any, args: dict) -> Any:
         else:
             text = await session.ask(question, request=request, **({"schema": schema} if schema is not None else {}))
     except _librarian.NoAnswer as exc:
-        return _refused(refusal("ask_library", "no_answer", why=str(exc)[:300]))
+        return _refused(_refusal(ctx, "ask_library", "no_answer", why=str(exc)[:300]))
     return _reply(text)
 
 
@@ -672,10 +771,10 @@ def current_request(ctx: Any, args: dict) -> Any:
     if not isinstance(text, str) or not text:
         text = None
     if text is None:
-        return _refused(refusal("current_request", "unavailable", why="no current request is known"))
+        return _refused(_refusal(ctx, "current_request", "unavailable", why="no current request is known"))
     reply = json.dumps({"text": text, "data": data})
     if len(reply.encode("utf-8")) > REQUEST_REPLY_BYTES:
-        return _refused(refusal("current_request", "unavailable", why="the request is larger than a reply carries"))
+        return _refused(_refusal(ctx, "current_request", "unavailable", why="the request is larger than a reply carries"))
     return _reply(reply)
 
 
@@ -688,9 +787,9 @@ def request(ctx: Any, args: dict) -> Any:
     if not isinstance(text, str) or not text:
         text = _memory_run_request()
     if not isinstance(text, str) or not text:
-        return _refused(refusal("request", "unavailable", why="no current request is known"))
+        return _refused(_refusal(ctx, "request", "unavailable", why="no current request is known"))
     if len(text.encode("utf-8")) > REQUEST_REPLY_BYTES:
-        return _refused(refusal("request", "unavailable", why="the request is larger than a reply carries"))
+        return _refused(_refusal(ctx, "request", "unavailable", why="the request is larger than a reply carries"))
     return _reply(text)
 
 

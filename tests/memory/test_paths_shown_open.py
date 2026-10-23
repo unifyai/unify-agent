@@ -16,14 +16,15 @@ def _tail_path(text: str) -> str:
     return re.search(r"tools\.read\('([^']+)'\)", text).group(1)
 
 
-def test_a_notes_rest_path_opens_where_it_is_printed(monkeypatch):
+def test_a_notes_rest_path_names_the_library_as_the_boxs_texts_do(monkeypatch):
+    """The pointer names the library by the root the box's texts give it: ``/memory-library`` in the actor's and a
+    teammate's box, whichever pin of the copy the package was imported from (under in_episode, a pin inside the
+    mount); ``/memory`` in the writer's and the librarian's. That each opens with the agent's own ``tools.read`` is
+    tested in real boxes (``test_memory_paths_one_way.test_every_printed_path_opens``)."""
     long = "## Rule\n" + "x" * 5000
-    # the actor's box: the library mount (and, under in_episode, the current pin inside it)
-    for root in ("/memory-library", "/memory-library/current"):
+    for root in (H.LIBRARY, f"{H.LIBRARY}/.pins/0-0123456789ab"):
         monkeypatch.setattr(lh, "_ROOT", root)
-        path = _tail_path(lh._note_rule(long, "notes/a/b.md"))
-        assert H._in_library(path, root) == path and path == f"{root}/notes/a/b.md"
-    # the writer's and the librarian's box: the library at /memory, one of their roots
+        assert _tail_path(lh._note_rule(long, "notes/a/b.md")) == f"{H.LIBRARY}/notes/a/b.md"
     monkeypatch.setattr(lh, "_ROOT", "/memory")
     assert _tail_path(lh._note_rule(long, "notes/a/b.md")) == "/memory/notes/a/b.md"
 

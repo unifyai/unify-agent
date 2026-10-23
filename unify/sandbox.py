@@ -2183,6 +2183,44 @@ def host_path(path: str | os.PathLike, policy: SandboxPolicy) -> str:
     return norm
 
 
+def late_readonly_mounts(
+    policy: SandboxPolicy,
+    late_readonly: Sequence[str | os.PathLike],
+) -> list[tuple[Path, str]]:
+    """(host directory, in-sandbox path) of each *late_readonly* path as a neutral :func:`wrap_argv` binds it:
+    admitted as wrap_argv admits it (:func:`_late_readonly_path` refuses anything else) and shown where wrap_argv
+    shows it (:func:`neutral_mounts`). A host tool that reads a box path under one of these from its host directory
+    reads what a cell of that sandbox sees there; it adds no access."""
+    late = [_late_readonly_path(Path(p), policy) for p in late_readonly]
+    return [(host, at) for host, at in neutral_mounts(policy, late) if host in late]
+
+
+def late_readable_violation(
+    path: str | os.PathLike,
+    policy: SandboxPolicy,
+    mounts: Sequence[tuple[Path, str]],
+) -> Optional[tuple[str, str]]:
+    """``(rule, detail)`` when the host *path* (resolved) is not shown to a cell through one of the late read-only
+    *mounts* (:func:`late_readonly_mounts`), or the harness's file tools refuse it there; None when they may read
+    it. :func:`wrap_argv` binds a late mount after every mask and hides afterwards only a harness-only directory
+    inside it; the file tools also refuse a credential's name and a private key there, as in the workspace."""
+    resolved = Path(os.path.realpath(path))
+    holder = next((Path(host) for host, _at in mounts if _within(resolved, Path(host))), None)
+    if holder is None:
+        return "late-readonly-state-only", f"{resolved} is under no read-only mount of this sandbox"
+    for hidden, rule in policy.hidden:
+        if _within(resolved, hidden) and _within(hidden, holder) and hidden != holder:
+            return rule, f"{resolved} is inside the harness's {hidden}"
+    parts = resolved.relative_to(holder).parts
+    for i, part in enumerate(parts):
+        rule = _secret_rule(part)
+        if rule is not None and (i == len(parts) - 1 or not _is_env_file(part)):
+            return rule, f"{resolved} has a credential's name"
+    if _holds_private_key(resolved):
+        return "mask-credentials", f"{resolved} holds a private key"
+    return None
+
+
 def neutral_text(text: str, policy: SandboxPolicy) -> str:
     """*text* with every host path a neutral sandbox shows elsewhere replaced
     by its fixed path, and the state directory by a name, so a host tool's

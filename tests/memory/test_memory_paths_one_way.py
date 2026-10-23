@@ -1,78 +1,148 @@
 """One way to reach the library, the same for every agent allowed it, with the harness resolving where things are.
 
-* The actor's ``tools.read`` opens a library file by either name agents are shown for the library (``/memory-library``,
-  the actor's mount, and ``/memory``, as the librarian and the writer name it), read-only; a path outside every root
-  is refused with the call that opens a library entry; a run with no library refuses exactly as before.
-* A call the librarian suggests must go through ``memory`` (never a path read or another tool).
-* The actor's teammates ask the librarian the same way the actor does (``memory.ask``).
-* The actor is never told to mention ``@librarian`` (it asks with ``memory.ask``) and is never offered ``@fork`` as an
-  address while its episode runs (the fork starts after it).
-* In a writer pass, ``memory.get('capture:<id>')`` opens a capture handed to the pass as it opens an exported one.
+In real boxes (the actor, and a teammate it starts; ``UNIFY_MEMORY=on`` and ``in_episode``; ``real_request_box``):
+
+* ``tools.read`` and ``tools.grep`` open the library copy the box mounts, by either name the texts give it
+  (``/memory-library``, and ``/memory`` as the librarian and the writer name it), and read what a cell's own
+  ``open()`` reads there; ``memory.get`` takes the same paths. Under in_episode both names are the copy served now,
+  and a cell's own file calls find it behind the link the guide's location line names.
+* Every path and handle the agent is shown (its memory section, first message, cards, ``memory.ask``'s answer, the
+  refusals of read and grep) opens with its own ``tools.read`` or ``memory.get``.
+* A teammate's ``tools.request()`` and ``memory.request()`` are the actor's request, never its own task.
+* A path outside every root is refused with the roots the agent has, and nothing outside them is read.
+
+Also here (no box needed): a call the librarian suggests goes through ``memory``; teammates ask the librarian as the
+actor does; a writer pass opens a capture handed to it. What the record tells an agent inside a request is in
+``tests/agents/test_record_texts_inside_a_request.py``.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
+from tests.actor.code_act.core_world import core_world  # noqa: F401 (fixture)
+from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401 (fixture)
+from tests.memory import real_request_box as B
+from tests.memory.test_tool_channel_box import needs_box
 from unify.actor import tool_handlers as H
 from unify.common import tool_registry as R
 from unify.memory import librarian
 
-
-def _ctx():
-    return SimpleNamespace(roots={}, state=SimpleNamespace(policy=object()))
-
-
-def _mount(tmp_path, monkeypatch, *, in_episode: bool = False):
-    """A library copy where the sandbox mounts it (``sandbox.host_path`` of the library mount), the request's copy
-    inside it (under in_episode, its ``current`` link), and a sandbox mask that hides ``.env`` files."""
-    from unify import sandbox
-    from unify.memory.integration import request as R
-
-    mount = tmp_path / "memory-checkout"
-    copy = mount / "current" if in_episode else mount
-    (copy / "notes" / "files").mkdir(parents=True)
-    (copy / "notes" / "files" / "sort-rows.md").write_text("Sort by the integer id.\n")
-    (copy / ".env").write_text("SECRET=1\n")
-    def host_path(path, policy):
-        text = str(path)
-        if text == H.LIBRARY or text.startswith(H.LIBRARY + "/"):
-            return str(mount) + text[len(H.LIBRARY) :]
-        return text
-
-    monkeypatch.setattr(sandbox, "host_path", host_path)
-    monkeypatch.setattr(R, "current", lambda: SimpleNamespace(copy_root=copy, paths=SimpleNamespace(checkout=mount)))
-    monkeypatch.setattr(
-        H, "_hidden", lambda virtual, policy: "hidden by the workspace sandbox rule `env`" if virtual.endswith(".env") else None,
-    )
-    return copy
+#: Each real session runs once per file run, by (role, mode): several tests read one session.
+_SESSIONS: dict = {}
 
 
-@pytest.mark.parametrize("in_episode", [False, True])
-def test_the_actor_reads_the_copy_the_sandbox_mounts_under_its_masks(tmp_path, monkeypatch, in_episode):
-    _mount(tmp_path, monkeypatch, in_episode=in_episode)
-    root = H.LIBRARY + ("/current" if in_episode else "")
-    for path in ("/memory/notes/files/sort-rows.md", f"{root}/notes/files/sort-rows.md"):
-        got = H.read(_ctx(), {"path": path})
-        assert got.status == "ok" and "Sort by the integer id." in got.text, (path, got.text)
-    masked = H.read(_ctx(), {"path": "/memory/.env"})
-    assert masked.status == "refused" and masked.form == "unreadable" and "SECRET" not in masked.text
-    missing = H.read(_ctx(), {"path": "/memory/notes/none.md"})
-    assert missing.status == "refused" and missing.form == "not_found"
-    outside = H.read(_ctx(), {"path": "/etc/hostname"})
-    assert outside.status == "refused" and outside.form == "outside_roots"
-    assert "memory.get(<its id>)" in outside.text and H.LIBRARY in outside.text
-    escape = H.read(_ctx(), {"path": "/memory/../etc/hostname"})
-    assert escape.status == "refused"
+def _session(core_world, monkeypatch, role: str, mode: str) -> dict:  # noqa: F811
+    key = (role, mode)
+    if key not in _SESSIONS:
+        _SESSIONS[key] = B.run_session(core_world, monkeypatch, role, mode)
+    state = _SESSIONS[key]
+    assert state.get("probe"), (state.get("error"), state.get("kinds"), state.get("probe output"))
+    return state
 
 
-def test_without_a_library_mount_the_refusal_is_as_before(monkeypatch):
-    monkeypatch.setattr(H, "_library_view", lambda policy: None)
-    got = H.read(_ctx(), {"path": "/memory/notes/x.md"})
-    assert got.status == "refused" and got.form == "outside_roots"
-    assert "memory.get" not in got.text and got.text.endswith("is outside /workspace")
+ROLES_MODES = [(r, m) for r in ("actor", "teammate") for m in ("on", "in_episode")]
+
+
+@needs_box
+@needs_bwrap
+@pytest.mark.timeout(1500)
+@pytest.mark.parametrize("role, mode", ROLES_MODES)
+def test_read_and_grep_open_the_copy_the_box_mounts_by_every_name(role, mode, core_world, monkeypatch):  # noqa: F811
+    probe = _session(core_world, monkeypatch, role, mode)["probe"]
+    for path, (status, text) in probe["reads"].items():
+        assert status == "ok", (path, status, text)
+    note = probe["reads"][f"/memory-library/{B.NOTE_ID}"][1]
+    assert "Dates are YYYY-MM-DD." in note
+    assert probe["reads"][f"/memory/{B.NOTE_ID}"][1] == note
+    # the same bytes a cell's own open() reads where the guide says the copy is
+    assert probe["own_open"][0] == "ok" and "Dates are YYYY-MM-DD." in probe["own_open"][1], probe["own_open"]
+    # the library's root lists the copy itself (INDEX.md, memory/, notes/), in either mode
+    listing = probe["reads"]["/memory-library"][1]
+    assert "INDEX.md" in listing and "notes/" in listing and "memory/" in listing, listing
+    assert probe["reads"]["/memory"][1] == listing
+    if mode == "in_episode":
+        assert probe["reads"][f"/memory-library/current/{B.NOTE_ID}"][1] == note
+        # the package's own files are in the episode's pin, inside the mount: that path opens too
+        assert probe["package root"].startswith("/memory-library/.pins/"), probe["package root"]
+    else:
+        assert probe["package root"] == "/memory-library", probe["package root"]
+    for path, (status, text) in probe["greps"].items():
+        assert status == "ok" and f"/memory-library/{B.LONG_NOTE_ID}:" in text, (path, status, text)
+    for path, (status, got) in probe["gets"].items():
+        assert status == "ok" and got == B.NOTE_ID, (path, status, got)
+
+
+@needs_box
+@needs_bwrap
+@pytest.mark.timeout(1500)
+@pytest.mark.parametrize("role, mode", ROLES_MODES)
+def test_every_printed_path_opens(role, mode, core_world, monkeypatch):  # noqa: F811
+    state = _session(core_world, monkeypatch, role, mode)
+    printed = state["printed"]
+    shown = state["shown texts"]
+    # the texts print what the agent is told to open: the location line, the note's rest, the roots a refusal names,
+    # the items the cards and the answer name
+    guide_paths = printed["memory section"][0]
+    assert "/memory-library" in guide_paths, shown["memory section"][-600:]
+    assert f"/memory-library/{B.LONG_NOTE_ID}" in printed["long note card"][0], shown["long note card"]
+    assert B.FUNCTION_ID in printed["ask answer"][1], shown["ask answer"]
+    assert {"/workspace", "/memory-library"} <= set(printed["refusal of read /etc/hostname"][0])
+    if role == "actor":
+        assert B.FUNCTION_ID in printed["first message"][1], shown["first message"][-1500:]
+    if mode == "in_episode":
+        assert "/memory-library/current" in guide_paths, shown["memory section"][-600:]
+    opened = state["opened"]
+    assert opened, state.get("open output")
+    failed = {k: v for k, v in opened.items() if v != "ok"}
+    assert not failed, failed
+
+
+@needs_box
+@needs_bwrap
+@pytest.mark.timeout(1500)
+@pytest.mark.parametrize("role, mode", ROLES_MODES)
+def test_a_path_outside_every_root_is_refused_with_the_roots_the_agent_has(role, mode, core_world, monkeypatch):  # noqa: F811
+    probe = _session(core_world, monkeypatch, role, mode)["probe"]
+    by_path = {(tool, asked): result for tool, asked, result in probe["refusals"]}
+    for key in (("read", "/etc/hostname"), ("read", "/memory-library/../etc/hostname"), ("grep", "/etc")):
+        form, text = by_path[key]
+        assert form == "refused:outside_roots", (key, form, text)
+        assert "/workspace and the library (/memory-library, read-only)" in text and "memory.get(" in text, text
+    for key in (("read", "/workspace/none.txt"), ("read", "/memory-library/notes/none.md"),
+                ("read", "/memory/notes/none.md"), ("grep", "/workspace/none"), ("grep", "/memory-library/none")):
+        form, text = by_path[key]
+        assert form == "refused:not_found", (key, form, text)
+        # the actor's and a teammate's own text: never a writer's input or another role's root
+        assert "/inputs" not in text and "attention" not in text, text
+
+
+@needs_box
+@needs_bwrap
+@pytest.mark.timeout(1500)
+@pytest.mark.parametrize("mode", ["on", "in_episode"])
+def test_a_teammate_works_on_the_actors_request_not_its_own_task(mode, core_world, monkeypatch):  # noqa: F811
+    state = _session(core_world, monkeypatch, "teammate", mode)
+    probe = state["probe"]
+    assert probe["request"] == ["ok", B.REQUEST_TEXT], probe["request"]
+    assert probe["memory_request"] == ["ok", B.REQUEST_TEXT], probe["memory_request"]
+    # its task stays its own first message
+    assert B.TASK_TEXT in state["first"]["first message"]
+
+
+@needs_box
+@needs_bwrap
+@pytest.mark.timeout(1500)
+@pytest.mark.parametrize("role, mode", ROLES_MODES)
+def test_help_memory_as_the_first_cell_shows_the_package(role, mode, core_world, monkeypatch):  # noqa: F811
+    """The agent's first cell, and the request's librarian's first cell, run ``help(memory)`` before any other use of
+    ``memory`` (the writer's and a helper's: ``test_help_memory_first_cell``)."""
+    state = _session(core_world, monkeypatch, role, mode)
+    B.assert_package_help(state["help"])
+    B.assert_package_help(state.get("librarian help", ""))
+
+
+# ── without a box ───────────────────────────────────────────────────────────────────────────────────────────────
 
 
 def test_a_suggested_call_goes_through_memory():
@@ -93,18 +163,6 @@ def test_teammates_ask_the_librarian_the_same_way_as_the_actor():
         allow = R.allow_list(agent, H.actor_flags(agent, librarian=True))
         assert "ask_library" in allow, agent
     assert "ask_library" not in R.allow_list("teammate", H.actor_flags("teammate", librarian=False))
-
-
-def test_the_actor_is_not_told_to_mention_the_librarian_or_offered_its_fork(tmp_path, monkeypatch):
-    from unify.agents import run_record as rr
-
-    assert all(m["who"] != "librarian" for m in rr.SHOULD_MENTION["actor"])
-    monkeypatch.setattr(rr, "run_has_memory", lambda *a, **k: True)
-    rec = rr.join_run_record(tmp_path)
-    rec.join("actor-1a2b", "actor")
-    rec.join("writer", "writer", state="idle")
-    addresses = rr.RunRecordView(rec, "actor-1a2b", "actor").addresses()
-    assert "@fork" not in addresses and "@writer" in addresses
 
 
 def test_a_writer_pass_opens_a_capture_handed_to_it(tmp_path, monkeypatch):

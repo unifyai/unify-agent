@@ -186,12 +186,13 @@ def _search(rx: "re.Pattern[str]", files, offset: int = 0, max_hits: int = 50) -
     return out
 
 
-def _files(roots, vpath: str, deadline: float | None = None) -> list[tuple[str, bytes]]:
-    """The regular files at or under *vpath*, opened from the root descriptors and never through a link."""
+def _files(roots, vpath: str, deadline: float | None = None, want=None) -> list[tuple[str, bytes]]:
+    """The regular files at or under *vpath*, opened from the root descriptors and never through a link; *want*: a
+    box path filter applied before a file is read (``safe_paths.iter_files``)."""
     from . import safe_paths
 
     with _roots(roots) as r:
-        return list(safe_paths.iter_files(r, vpath, deadline=deadline))
+        return list(safe_paths.iter_files(r, vpath, want=want, deadline=deadline))
 
 
 def grep(
@@ -232,11 +233,13 @@ def grep_bounded(
     roots,
     offset: int = 0,
     timeout_s: float | None = None,
+    want=None,
 ) -> str:
     """:func:`grep` with the pattern run in a child Python process (``-I``; this file alone, standard library
     only), killed after *timeout_s* (default :data:`GREP_TIMEOUT_S`, which also bounds the walk). The writer's
     pattern never runs in the pass's own process. The host opens and reads the files from the root descriptors
-    (:mod:`.safe_paths`); the child is handed their bytes and box paths, never a host path.
+    (:mod:`.safe_paths`); the child is handed their bytes and box paths, never a host path. *want*: a box path filter
+    applied before a file is read (a file it refuses is never read or searched).
     """
     import time
 
@@ -246,7 +249,7 @@ def grep_bounded(
     timed_out = f"[grep timed out after {limit:g} s: narrow the pattern or the path]"
     deadline = time.monotonic() + limit
     try:
-        files = _files(roots, vpath, deadline)
+        files = _files(roots, vpath, deadline, want)
     except TimeoutError:
         return timed_out
     try:

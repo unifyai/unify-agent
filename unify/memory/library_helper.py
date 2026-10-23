@@ -1543,6 +1543,9 @@ PAGE_ROWS = 40
 CAPTURES_TOPIC = "captures"
 #: Where the library is under every agent's cells besides the copy's own root: a path under it names an item.
 LIBRARY_ROOT = "/memory"
+#: Where the actor's and a teammate's box mounts the library copy (``unify.sandbox.LIBRARY_MOUNT``): the name their
+#: texts give the library, which names the request's copy in every memory mode; a path under it names an item too.
+SANDBOX_LIBRARY = "/memory-library"
 _SUMMARY_CHARS = 100
 _ID_COLUMN = 60
 _GET_EXPECTED = "an item id, a function name, or a note slug"
@@ -1651,9 +1654,41 @@ def _topic_of(iid: str) -> str:
     return ".".join(iid.split(":", 1)[0].split(".")[:2])
 
 
+def _shown_root() -> str:
+    """The library's root as this box's texts name it: :data:`SANDBOX_LIBRARY` in a box that mounts the copy there
+    (whichever pin of it this package was imported from), else the copy's own root."""
+    root = _ROOT.rstrip("/")
+    if root == SANDBOX_LIBRARY or root.startswith(SANDBOX_LIBRARY + "/"):
+        return SANDBOX_LIBRARY
+    return root
+
+
+def _copy_links() -> tuple[str, ...]:
+    """The links in the box's library mount that point to this copy (one copy behind a link that is swapped between
+    pins), as box paths; none when the copy is the mount itself."""
+    root = _ROOT.rstrip("/")
+    if not root.startswith(SANDBOX_LIBRARY + "/"):
+        return ()
+    try:
+        names = sorted(os.listdir(SANDBOX_LIBRARY))
+    except OSError:
+        return ()
+    out = []
+    for name in names:
+        path = f"{SANDBOX_LIBRARY}/{name}"
+        try:
+            if os.path.islink(path) and os.path.realpath(path) == os.path.realpath(root):
+                out.append(path)
+        except OSError:
+            continue
+    return tuple(out)
+
+
 def _relative(text: str) -> str | None:
-    """*text* as a path inside the copy, when it is a path under the copy's root or under ``/memory``."""
-    for root in dict.fromkeys((_ROOT.rstrip("/") + "/", LIBRARY_ROOT + "/")):
+    """*text* as a path inside the copy, when it is a path under the copy's root, under a link to it in the box's
+    library mount, under :data:`SANDBOX_LIBRARY` or under ``/memory`` (each names the copy)."""
+    roots = (_ROOT.rstrip("/"), *_copy_links(), SANDBOX_LIBRARY, LIBRARY_ROOT)
+    for root in dict.fromkeys(r + "/" for r in roots):
         if text.startswith(root):
             return text[len(root) :]
     return None
@@ -1683,8 +1718,8 @@ def _note_rule(text: str, iid: str) -> str:
     if len(served) > NOTE_RULE_CHARS:
         served, rest = served[:NOTE_RULE_CHARS].rstrip(), True
     if rest:
-        # the library's root as this box names it, so the path opens with this agent's own tools.read
-        served += f"\n… (the rest of the note, its evidence included: tools.read('{_ROOT.rstrip('/')}/{iid}'))"
+        # the library's root as this box's texts name it, so the path opens with this agent's own tools.read
+        served += f"\n… (the rest of the note, its evidence included: tools.read('{_shown_root()}/{iid}'))"
     return served + "\n"
 
 
@@ -2112,6 +2147,11 @@ class _Catalog:
             self._links = data if isinstance(data, dict) else {}
         return self._links
 
+    def _named(self, ids: list[str]) -> list[str]:
+        """*ids* as a card names them: one that names no item of the library (a link to an item that is gone) says so,
+        so every id a card prints as an item opens with ``memory.get``."""
+        return [i if i in self.rows or i in self.captures else f"{i} (not in the library)" for i in ids]
+
     def linked(self, iid: str, key: str) -> list[str]:
         row = self.links().get(iid)
         got = row.get(key) if isinstance(row, dict) else None
@@ -2444,8 +2484,8 @@ class _Catalog:
         out.append(f"(its {'source' if function else 'text'} cannot be read: {missing})" if missing else body)
         out += [
             "",
-            "Links to: " + (", ".join(self.linked(wanted, "links_to")) or "none"),
-            "Linked from: " + (", ".join(self.linked(wanted, "linked_from")) or "none"),
+            "Links to: " + (", ".join(self._named(self.linked(wanted, "links_to"))) or "none"),
+            "Linked from: " + (", ".join(self._named(self.linked(wanted, "linked_from"))) or "none"),
             "Generalises: " + (", ".join(self.generalises(wanted)) or "no recorded procedure"),
             "Use: " + _summary(row.get("use")),
         ]
