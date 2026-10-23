@@ -676,6 +676,89 @@ def _holds_private_key(path: str | os.PathLike) -> bool:
     return _PRIVATE_ARMOUR.search(head) is not None
 
 
+# A file of a late read-only mount (the memory library copy) is also masked
+# when it holds a key-shaped value (:data:`_KEY_VALUE`) anywhere in it: the
+# library's export and its writer's gate keep such files out, and this mask
+# keeps any that still reach the copy from a cell and from the harness's file
+# tools. The file is read in chunks that overlap, so a value across two chunks
+# is found.
+_KEY_VALUE_BYTES = re.compile(_KEY_VALUE.pattern.encode("ascii"))
+_KEY_SCAN_CHUNK = 1 << 20
+_KEY_SCAN_OVERLAP = 4096
+
+
+def _holds_key_value(path: str | os.PathLike) -> bool:
+    """Whether *path* is a regular file that holds a key-shaped value.
+
+    Opened as :func:`_holds_private_key` opens a file (never through a link,
+    never blocking, a regular file by ``lstat`` and on the descriptor). A file
+    that cannot be opened or read is not masked by content.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0)
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return False
+        fd = os.open(path, flags)
+    except OSError:
+        return False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return False
+        tail = b""
+        while True:
+            chunk = os.read(fd, _KEY_SCAN_CHUNK)
+            if not chunk:
+                return False
+            buf = tail + chunk
+            if _KEY_VALUE_BYTES.search(buf) is not None:
+                return True
+            tail = buf[-_KEY_SCAN_OVERLAP:]
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def _late_masks(root: Path) -> list[tuple[Path, str, bool]]:
+    """``(path, rule, is_dir)`` of what :func:`wrap_argv` hides inside the
+    late read-only mount *root*: a directory or file with a credential's name
+    (:func:`_secret_rule`; the files of a ``.env`` directory are judged by
+    their own names), and a file holding a private key or a key-shaped value.
+    The rules :func:`late_readable_violation` applies to the harness's file
+    tools there. Links are never followed; nothing inside a hidden directory
+    is listed."""
+    out: list[tuple[Path, str, bool]] = []
+    stack = [Path(root)]
+    while stack:
+        here = stack.pop()
+        try:
+            with os.scandir(here) as it:
+                entries = sorted(it, key=lambda e: e.name)
+        except OSError:
+            continue
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                if entry.is_symlink():
+                    continue
+                is_dir = entry.is_dir(follow_symlinks=False)
+                is_file = entry.is_file(follow_symlinks=False)
+            except OSError:
+                continue
+            rule = _secret_rule(entry.name)
+            if is_dir:
+                if rule is not None and not _is_env_file(entry.name):
+                    out.append((path, rule, True))
+                else:
+                    stack.append(path)
+            elif is_file:
+                if rule is not None:
+                    out.append((path, rule, False))
+                elif _holds_private_key(path) or _holds_key_value(path):
+                    out.append((path, "mask-credentials", False))
+    return out
+
+
 # The interpreter roots' scan (_find_secret_files with ``cached``): about 60k
 # entries, a second or so, the same in every harness process until a package
 # is installed. It is kept in this process (_SECRET_SCAN_CACHE) and on disk
@@ -2202,8 +2285,9 @@ def late_readable_violation(
 ) -> Optional[tuple[str, str]]:
     """``(rule, detail)`` when the host *path* (resolved) is not shown to a cell through one of the late read-only
     *mounts* (:func:`late_readonly_mounts`), or the harness's file tools refuse it there; None when they may read
-    it. :func:`wrap_argv` binds a late mount after every mask and hides afterwards only a harness-only directory
-    inside it; the file tools also refuse a credential's name and a private key there, as in the workspace."""
+    it. :func:`wrap_argv` binds a late mount after every mask, then hides inside it a harness-only directory and what
+    :func:`_late_masks` finds there (a credential's name, a private key, a key-shaped value); the file tools refuse
+    the same."""
     resolved = Path(os.path.realpath(path))
     holder = next((Path(host) for host, _at in mounts if _within(resolved, Path(host))), None)
     if holder is None:
@@ -2218,6 +2302,8 @@ def late_readable_violation(
             return rule, f"{resolved} has a credential's name"
     if _holds_private_key(resolved):
         return "mask-credentials", f"{resolved} holds a private key"
+    if _holds_key_value(resolved):
+        return "mask-credentials", f"{resolved} holds a key-shaped value"
     return None
 
 
@@ -2587,6 +2673,16 @@ def wrap_argv(
         args += ["--bind", str(path), inside(path)]
     for path in late:
         args += ["--ro-bind", str(path), inside(path)]
+    # Then the masks inside each late mount, as they stand when the sandbox
+    # starts (the mount is read-only, so each mount point exists): what has a
+    # credential's name or holds a private key or a key-shaped value.
+    for path in late:
+        for found, rule, is_dir in _late_masks(path):
+            at = inside(found)
+            if is_dir:
+                args += ["--tmpfs", at, "--ro-bind", str(notices / rule), _notice(Path(at))]
+            else:
+                args += ["--ro-bind", str(notices / rule), at]
     # A harness-only directory inside a mount above is hidden last of all,
     # unless it holds a mount itself (a log directory that holds the
     # workspace): the harness's own file tools still refuse it then. One
