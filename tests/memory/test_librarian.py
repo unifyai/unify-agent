@@ -457,7 +457,7 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
     lowered = brief.lower()
     for word in ("task id", "identifier", "example", "store the answer", "expected"):
         assert word not in lowered, word
-    # rev 2: every agent is on the run record, the librarian too, so it has the record's comms tools
+    # every agent is on the run record, the librarian too, so it has the record's comms tools
     assert set(R.allow_list("librarian", frozenset({"helper", "store", "edit", "pool", "similar"}))) == {
         "read", "grep", "finish", "search", "keep_note", "send", "messages", "wait", "who",
     }
@@ -470,20 +470,27 @@ def test_the_brief_is_complete_general_and_says_nothing_of_ids_answers_or_exampl
 
 
 def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_library(tmp_path, monkeypatch):
-    """The actor's first user message of a request opens with how many functions and notes its library copy holds
-    (as ``memory.items()`` lists them: the retired are left out), with the library bound in its cells and the
-    librarian on; never for an empty library, a teammate, or with memory off."""
+    """The actor's first user message of a request opens with how many functions, notes and recorded procedures its
+    library copy holds (as ``memory.items()`` lists them: the retired and the captured attempts that failed are left
+    out), and says memory.ask() names one best fit and at most one fallback; with the library bound in its cells and
+    the librarian on; never for an empty library, a teammate, or with memory off. A library of recorded procedures
+    alone still gets the line."""
     from types import SimpleNamespace
 
     from unify.memory.integration import hooks
     from unify.memory.integration import request as request_mod
 
-    def copy_with(name: str, items: dict) -> Path:
+    def copy_with(name: str, items: dict, captures: dict | None = None) -> Path:
         root = tmp_path / name
         (root / "memory").mkdir(parents=True)
         (root / "memory" / "__init__.py").write_text("")
         (root / ".memory").mkdir()
         (root / ".memory" / "items.json").write_text(json.dumps({"items": items}))
+        for cid, outcome in (captures or {}).items():
+            d = root / ".memory" / "captures" / cid
+            d.mkdir(parents=True)
+            (d / "procedure.py").write_text("def run(value):\n    return value\n")
+            (d / "record.json").write_text(json.dumps({"capture_id": cid, "cases": [], "outcome": outcome}))
         return root
 
     def line_for(copy: Path, **kw) -> str | None:
@@ -492,18 +499,25 @@ def test_the_first_user_message_line_counts_the_copy_and_is_absent_for_an_empty_
         return hooks.library_line(**kw)
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
-    tail = "; memory.ask() shows the ones that apply, memory.items() lists them all."
+    tail = (
+        "; memory.ask() names the one that fits best (and at most one fallback for when it fails), memory.items() "
+        "lists them all."
+    )
     # the world's catalogue: COUNT, TOTAL, its recipe and READ_ROWS, and NOTE
-    assert line_for(_copy(tmp_path)) == "Your memory library holds 4 functions and 1 note" + tail
+    # and its one recorded procedure (the captured attempt that failed is not listed)
+    assert line_for(_copy(tmp_path)) == "Your memory library holds 4 functions, 1 note and 1 recorded procedure" + tail
     one = copy_with("one", {
         "memory.a.b:c": {"kind": "function"},
         "memory.a.b:d": {"kind": "function", "status": "retired"},
         "notes/a/x.md": {"kind": "note"},
         "notes/a/y.md": {"kind": "note", "status": "deprecated"},
     })
-    assert line_for(one) == "Your memory library holds 1 function and 1 note" + tail
+    assert line_for(one) == "Your memory library holds 1 function, 1 note and 0 recorded procedures" + tail
     assert line_for(one, actor=False) is None
     assert line_for(copy_with("empty", {})) is None
+    only = copy_with("captures", {}, {"a" * 16: "none", "b" * 16: "positive", "c" * 16: "contrary"})
+    assert line_for(only) == "Your memory library holds 0 functions, 0 notes and 2 recorded procedures" + tail
+    assert "shows the ones that apply" not in line_for(only)
     assert line_for(copy_with("retired", {"memory.a.b:c": {"kind": "function", "status": "retired"}})) is None
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     assert line_for(one) is None
@@ -630,7 +644,7 @@ LIBRARIAN_FIRST = (
     "    print('NETWORK REFUSED', type(exc).__name__)\n"
     "print('ENV', sorted(os.environ))\n"
     "print('WORKSPACE', os.path.exists('/workspace'))\n"
-    f"print(memory.show({TOTAL!r}))\n"
+    f"print(memory.get({TOTAL!r}))\n"
     "tools.finish({'fits': [{'id': 'memory.nope:x', 'call': 'x', 'why': 'y'}]})\n"
 )
 #: The procedure's fit carries the call that applies its recipe to the current request.

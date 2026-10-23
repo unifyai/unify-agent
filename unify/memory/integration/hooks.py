@@ -110,10 +110,12 @@ def worker_globals() -> dict[str, list]:
     return {"memory": ["lazy_module", "memory"]}
 
 
-#: The actor's first user message's line on the library in its cells (with the librarian on), filled from the copy.
+#: The actor's first user message's line on the library in its cells (the librarian runs whenever memory does), filled
+#: from the copy: its items as ``memory.items()`` lists them, and what ``memory.ask()`` answers (one best fit and at
+#: most one fallback, never a menu).
 LIBRARY_LINE = (
-    "Your memory library holds {functions} and {notes}; memory.ask() shows the ones that apply, memory.items() "
-    "lists them all."
+    "Your memory library holds {functions}, {notes} and {procedures}; memory.ask() names the one that fits best "
+    "(and at most one fallback for when it fails), memory.items() lists them all."
 )
 
 
@@ -121,29 +123,45 @@ def _counted(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
-def library_counts(copy: Path) -> tuple[int, int]:
-    """How many functions and notes the library copy at *copy* holds, as ``memory.items()`` lists them (every one
-    but the retired), from its ``.memory/items.json``; ``(0, 0)`` when that cannot be read."""
-    from unify.memory.library_helper import _HIDDEN_STATUSES, ITEMS_FILE, _status_of
+def library_counts(copy: Path) -> tuple[int, int, int]:
+    """How many functions, notes and recorded procedures the library copy at *copy* holds, as ``memory.items()``
+    lists them: the functions and notes of its ``.memory/items.json`` but the retired, and the recorded procedures
+    exported under ``.memory/captures/`` but those whose own episode failed (``0`` for what cannot be read)."""
+    from unify.memory.library_helper import _CAPTURE_ID, _HIDDEN_STATUSES, _NEGATIVE, CAPTURES_DIR, ITEMS_FILE, _status_of
 
     try:
         rows = json.loads((Path(copy) / ITEMS_FILE).read_text(encoding="utf-8")).get("items")
     except (OSError, ValueError, UnicodeDecodeError, AttributeError):
-        return 0, 0
+        rows = None
     kinds = [
         v.get("kind")
         for v in (rows.values() if isinstance(rows, dict) else ())
         if isinstance(v, dict) and _status_of(v) not in _HIDDEN_STATUSES
     ]
-    return kinds.count("function"), kinds.count("note")
+    procedures = 0
+    base = Path(copy) / CAPTURES_DIR
+    try:
+        names = sorted(p.name for p in base.iterdir())
+    except OSError:
+        names = []
+    for name in names:
+        if _CAPTURE_ID.fullmatch(name) is None or not (base / name / "procedure.py").is_file():
+            continue
+        try:
+            rec = json.loads((base / name / "record.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            rec = None
+        if not (isinstance(rec, dict) and rec.get("outcome") in _NEGATIVE):
+            procedures += 1
+    return kinds.count("function"), kinds.count("note"), procedures
 
 
 def library_line(actor: bool = True) -> str | None:
     """The line on the library that opens the actor's first user message of a request (never the system prompt,
-    whose cached prefix stays the same for every request): how many functions and notes the run's copy holds when
-    the request starts (:func:`library_counts`), generated from the copy. Only for the actor (*actor*), with the
-    library bound in its cells and the librarian on (it names ``memory.ask``); None otherwise, and when the copy
-    holds no function and no note."""
+    whose cached prefix stays the same for every request): how many functions, notes and recorded procedures the
+    run's copy holds when the request starts (:func:`library_counts`), generated from the copy. Only for the actor
+    (*actor*), with the library bound in its cells and the librarian on (it names ``memory.ask``); None otherwise, and
+    when the copy holds no item at all."""
     if not actor or "memory" not in worker_globals():
         return None
     from unify.memory import librarian
@@ -151,10 +169,14 @@ def library_line(actor: bool = True) -> str | None:
     path = _copy()
     if path is None or not librarian.enabled():
         return None
-    functions, notes = library_counts(path)
-    if functions + notes == 0:
+    functions, notes, procedures = library_counts(path)
+    if functions + notes + procedures == 0:
         return None
-    return LIBRARY_LINE.format(functions=_counted(functions, "function"), notes=_counted(notes, "note"))
+    return LIBRARY_LINE.format(
+        functions=_counted(functions, "function"),
+        notes=_counted(notes, "note"),
+        procedures=_counted(procedures, "recorded procedure"),
+    )
 
 
 def worker_mounts() -> list[Path]:

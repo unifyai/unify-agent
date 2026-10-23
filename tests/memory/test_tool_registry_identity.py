@@ -117,7 +117,11 @@ def test_an_agent_reads_its_own_arguments_in_place_or_after_the_marker(stand_ins
     assert text.startswith("delegate(task)\n") and R.ROLE_MARKER not in text and "episodes" not in text, text
     assert R.ROLE_MARKER not in R.help_text("delegate", "writer")
     assert R.ROLE_MARKER not in R.help_text("finish", "writer")
-    assert "you call finish(answer)" in R.help_text("finish", "librarian")
+    # the librarian's finish hands its answer to the agent that asked: its own texts, its own argument in place
+    own = R.help_text("finish", "librarian")
+    assert own.startswith("finish(answer)\n") and R.ROLE_MARKER not in own, own
+    assert "gate" not in own and "manifest" not in own and "curator" not in own and "every item" not in own, own
+    assert "at most one fallback" in own and "the agent that asked" in own
     writer = _load(R.render_stub(_allowed("writer"), "writer"))
     assert writer.finish("done") == "finish answered ['summary']"
 

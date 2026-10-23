@@ -885,8 +885,8 @@ ASK_LIBRARY = RegisteredTool(
         "question. It judges from the harness's structural catalogue of the stored procedures and the items' text; "
         "nothing is run. `memory.ask()` calls this for you with your current request (`memory.ask(question)` asks a "
         "question of your own). The answer is JSON: "
-        '{"fits": [{"id", "call", "why"}, ...]} with every item that fits, or {"fits": [], "nearest": '
-        '[{"id", "differs"}, ...]} when nothing fits. Follow-up questions in the same request go to the same '
+        '{"fits": [{"id", "call", "why"}, ...]} with the best fit first and at most one fallback for when it fails, '
+        'or {"fits": [], "nearest": [{"id", "differs"}, ...]} when nothing fits. Follow-up questions in the same request go to the same '
         "librarian; a question it already answered in this request gets that answer again, "
         f'with "already_given": true. A request opens at most {MAX_ASK_SESSIONS} librarian sessions (the actor\'s and '
         "its first teammates'); a later teammate's question is then refused, and the teammate sends it to the actor "
@@ -988,7 +988,7 @@ KEEP_NOTE = RegisteredTool(
     blocking=True,
 )
 
-#: The current request for the ``memory`` package (``memory.ask()`` and ``memory.match()`` read it): on the channel
+#: The current request for the ``memory`` package (``memory.ask()`` and ``memory.request()`` read it): on the channel
 #: of the actor and a teammate, never in their ``tools`` (:data:`CHANNEL_ONLY`).
 CURRENT_REQUEST = RegisteredTool(
     name="current_request",
@@ -996,15 +996,15 @@ CURRENT_REQUEST = RegisteredTool(
     description=(
         "The request this agent is working on (for a teammate, the request the actor works on, which its work "
         "serves): its text, and the JSON objects and arrays the text contains, in order of appearance, as data (the "
-        "bound `request.data`). The `memory` package calls it so that `memory.ask()` and `memory.match()` ask about "
-        "the current request."
+        "bound `request.data`). The `memory` package calls it so that `memory.ask()` asks about the current request "
+        "and `memory.request()` gives it."
     ),
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     refusals={"unavailable": "the current request is not available here ({why})"},
     roles=(_A, _T),
     returns='JSON text: {"text": the request\'s text, "data": the list of JSON objects and arrays it contains}.',
     examples=('tools._call("current_request", {})',),
-    when="Never from a cell: memory.ask() and memory.match() call it.",
+    when="Never from a cell: memory.ask() and memory.request() call it.",
     kind="reader",
     handler="unify.actor.tool_handlers:current_request",
 )
@@ -1378,8 +1378,9 @@ _LIBRARIAN_ANSWER = {
         # no type here: the channel's strict check would refuse the answer's own keys; the handler checks it
         "answer": {
             "description": (
-                'Your answer: {"fits": [{"id": ..., "call": ..., "why": ...}, ...]} listing every item that fits, '
-                'or {"fits": [], "nearest": [{"id": ..., "differs": ...}, ...]} when nothing fits.'
+                'Your answer: {"fits": [{"id": ..., "call": ..., "why": ...}, ...]}, the best fit first and at most '
+                'one fallback for when it fails, or {"fits": [], "nearest": [{"id": ..., "differs": ...}, ...]} when '
+                'nothing fits.'
             ),
         },
     },
@@ -1651,6 +1652,29 @@ _IN_CODE: dict[str, dict] = {
     "finish": dict(
         roles=(_W, _L),
         role_args={_L: _LIBRARIAN_ANSWER},
+        # the librarian's finish hands its answer to the agent that asked; no gate judges it
+        role_text={
+            _L: {
+                "summary": "give your answer; it goes to the agent that asked.",
+                "description": (
+                    "Give your answer to the question in progress. Its form, its ids and its calls are checked, and "
+                    "it goes to the agent that asked as you gave it (the longest texts shortened to its bound); a "
+                    "malformed answer is refused with the reason, and the question goes on."
+                ),
+                "when": (
+                    "Call it once per question, when you have the best fit (and at most one fallback for when it "
+                    "fails), or the nearest items when nothing fits."
+                ),
+                "refusals": {
+                    "bad_answer": "not finished: the answer does not match the required response format: {reason}",
+                    "answered": "not finished: this request already has its answer",
+                },
+                "examples": (
+                    'tools.finish({"fits": [], "nearest": [{"id": "notes/text/dates.md", "differs": "it reads one '
+                    'date format"}]})',
+                ),
+            },
+        },
         # the librarian's answer is refused with these
         add_refusals={
             "bad_answer": "not finished: the answer does not match the required response format: {reason}",

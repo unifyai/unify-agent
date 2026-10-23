@@ -1,17 +1,16 @@
 """The librarian: an agent the actor asks which stored items fit (design J(b)).
 
-``memory.ask()`` in an actor cell computes the recognisers' outcomes on the current request in the actor's own box
-(:mod:`.library_helper`'s ``_facts``, used by the ``memory.ask`` section of the generated package, :mod:`.library_ask`)
-and sends the question (the request's text when none is given) and those outcomes to the host through
-the in-code tool ``ask_library`` (:func:`unify.actor.tool_handlers.ask_library`). The handler opens the request's
+``memory.ask()`` in an actor or teammate cell (the ``memory.ask`` section of the generated package, :mod:`.library_ask`)
+runs nothing: it sends the question (the current request's text when none is given) to the host through the in-code
+tool ``ask_library`` (:func:`unify.actor.tool_handlers.ask_library`). The handler opens the request's
 :class:`LibrarianSession` on the first question and keeps it for the request's follow-ups; the session ends with the
-request (``InCodeTools.close``).
+request (``InCodeTools.close``). At the request's start the harness asks the same question itself, once, and puts the
+answer at the top of the actor's first message (:func:`request_start_block`).
 
 The session keeps the first answer the librarian gives for each distinct ask (:func:`answer_key`: the digest of exactly
-what the ask sends it, :func:`sent_to_librarian`: the question with its checked facts, and the library copy's commit and
+what the ask sends it, :func:`sent_to_librarian`: the question with its situation, and the library copy's commit and
 dispatch file as the ask read them). Asked the same again, it returns
-that answer, marked as already given (:data:`ALREADY_GIVEN`), with no model call; a question with other facts is
-asked anew. Every ask is answered and none is refused for repeating; the use record counts the asks, the answers
+that answer, marked as already given (:data:`ALREADY_GIVEN`), with no model call; another question is asked anew. Every ask is answered and none is refused for repeating; the use record counts the asks, the answers
 given again and the model calls apart (:func:`usage_fields`).
 
 The session runs on the memory agents' runtime, as a helper does: the shared opening
@@ -41,12 +40,14 @@ ways (:data:`MODES`): ``memory.ask``'s (:class:`AskInstance`: one per request, k
 asks also go on the record) or one per message to ``@librarian`` (:func:`answer_message`, started by the request's role
 dispatcher, ``integration.request.role_dispatcher``), which posts one reply and ends.
 
-It answers with ``tools.finish(answer)`` (:func:`finish`): ``{"fits": [{"id", "call", "why"}, ...]}`` or
-``{"fits": [], "nearest": [{"id", "differs"}, ...]}``. The handler checks the form and every id against the items of
-the library copy (:func:`library_items`: what ``memory.items`` lists, and the captured procedures); a malformed
-answer or an unknown id goes back as a refusal for the librarian to correct, within the loop's existing limits (no
-cap of its own). The answer reaches the actor as the librarian gave it: the harness ranks, scores and reorders
-nothing.
+It answers with ``tools.finish(answer)`` (:func:`finish`): ``{"fits": [{"id", "call", "why"}, ...]}`` (the best fit,
+then at most one fallback, :data:`MAX_FITS`) or ``{"fits": [], "nearest": [{"id", "differs"}, ...]}``. The handler
+checks the form, every id against the items of the library copy (:func:`library_items`: what ``memory.items`` lists,
+and the captured procedures) and every call against what the asking agent can run (:func:`check_answer`); a
+malformed answer goes back as a refusal for the librarian to correct, within the loop's existing limits (no cap of its
+own). The harness ranks, scores and reorders nothing: the answer reaches the asker in the librarian's order, kept
+within :data:`ANSWER_CHARS` (:func:`bounded_answer` shortens the longest ``why`` and ``differs`` texts and keeps the
+first :data:`MAX_NEAREST` nearest items; ids and calls are never cut).
 """
 
 from __future__ import annotations
@@ -122,7 +123,8 @@ BRIEF = (
     "folder and the item's When to use section.\n"
     "- `tools.grep` finds where a name or a call occurs in the library's files: which functions call a function, "
     "which notes mention it.\n"
-    "- `memory.get` in a cell gives an item's record: its status, its evidence level and how it has been used.\n"
+    "- `memory.get` in a cell gives an item's card: its status and what it rests on, its recorded failures, its "
+    "later uses and its use record.\n"
     "- `tools.keep_note` keeps one short note for the later librarians of this run: something about the library "
     "that would save them time, never a request's details.\n"
     "- `tools.finish` gives your answer.\n"
@@ -142,7 +144,10 @@ BRIEF = (
     "record you relied on. Name a second item only as a fallback for when the first fails, and only when it could "
     "do the job then: `fits` holds at most two, the primary first. Never a list of everything that might apply.\n"
     "- For each item that applies, give a call the agent can run as written: for a procedure whose card shows the "
-    "call that applies its recipe to the current request, that call; for another function, the item called on the "
+    "call that applies its recipe to the current request, that call; for a recorded procedure whose card says a "
+    "call with no arguments runs it on the current request, the item called with no arguments; for a recorded "
+    "procedure whose card says no call runs it (it acts through its episode's tools), the call its card gives that "
+    "prints its code, whose tool calls the agent then makes itself; for another function, the item called on the "
     "question's input. The agent reaches the library only through its `memory` package (`memory.get` with an "
     "item's id, `memory.request` for its current request): the /memory paths are yours, so a call never reads a "
     "path or uses another tool.\n"
@@ -152,8 +157,8 @@ BRIEF = (
     'or `{"fits": [], "nearest": [{"id": ..., "differs": ...}, ...]}` when nothing fits. Every id is the id of an '
     "item of the library, as search shows it. An answer in another form, or with an id the library does not hold, "
     "is refused with the reason; correct it and call `tools.finish` again.\n"
-    "- The agent may ask follow-up questions in the same request. Each arrives as a new message with its own "
-    "facts, and you answer each one with `tools.finish`.\n"
+    "- When the agent asks again in the same request, the new question arrives as a new message, and you answer "
+    "each one with `tools.finish`.\n"
 )
 
 
@@ -179,9 +184,9 @@ _BRINGS_EVIDENCE = (
     "relevance from these rows and the items' text: open any item with your read tools. Nothing has run on the "
     "agent's request: a row is evidence only of what an item's code does, never that the item fits the request. "
     "Every card in a search result and in the "
-    "catalogue states what its status rests on and its recorded failures (a use that raised, whose stated result "
-    "condition was false, that a contrary signal followed, or that an agent reported): weigh them before you name an "
-    "item, and say how in why.\n"
+    "catalogue states what its status rests on, its recorded failures (a use that raised, whose stated result "
+    "condition was false, that a contrary signal followed, or that an agent reported) and its later uses: weigh them "
+    "before you name an item, and say how in why.\n"
 )
 if BRIEF.count(_BRINGS) != 1:
     raise RuntimeError("the librarian brief no longer holds the paragraph its evidence form replaces")
@@ -279,6 +284,29 @@ def library_items(copy: Path) -> tuple[list[str], set[str], dict[str, str]] | No
         if isinstance(rec, dict) and rec.get("outcome") in ("failed", "contrary"):
             failed.add(CAPTURE_PREFIX + name)
     return ids, failed, recipes
+
+
+def acting_captures(copy: Path) -> set[str]:
+    """The recorded procedures of the copy at *copy* that act through their episode's tools (their record's entry
+    form is ``state_env``: ``run(state, env)``), which no call of the asking agent runs; read from the records the
+    capture step wrote, nothing run."""
+    out: set[str] = set()
+    base = Path(copy) / _CAPTURES_DIR
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for name in names:
+        if _CAPTURE_DIR.fullmatch(name) is None:
+            continue
+        try:
+            rec = json.loads((base / name / "record.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        entry = rec.get("entry_point") if isinstance(rec, dict) else None
+        if isinstance(entry, dict) and entry.get("form") == "state_env":
+            out.add(CAPTURE_PREFIX + name)
+    return out
 
 
 # --- the facts ------------------------------------------------------------------------------------------------------
@@ -406,6 +434,8 @@ class LibrarianCalls:
     copy: Path | None = None
     #: item id -> the call that applies its recipe to the current request (:func:`library_items`)
     recipes: dict[str, str] = field(default_factory=dict)
+    #: the recorded procedures that act through their episode's tools, which no call runs (:func:`acting_captures`)
+    acting: set[str] = field(default_factory=set)
     answer: dict | None = None
     finish_text: str | None = None
     finished: bool = False
@@ -424,6 +454,12 @@ def _text(value: Any) -> bool:
 
 #: The most items an answer names: the primary, and one fallback for when it fails (never a menu).
 MAX_FITS = 2
+#: The calls a fit may give, by what the item is, as a refused answer names them.
+_CALL_FORMS = (
+    "memory.get('<id>')() for a recorded procedure that takes the request (it runs on the current request), "
+    "print(memory.get('<id>').text) for one that acts through its episode's tools (no call runs it), "
+    "memory.get('<id>')(<input>) for a function"
+)
 #: Builtins a suggested call may wrap a memory call in; nothing that reads files or runs code.
 _PLAIN_BUILTINS = frozenset({"print", "len", "list", "dict", "str", "repr", "sorted", "tuple", "set", "int", "float"})
 
@@ -438,10 +474,10 @@ def _call_problem(call: str) -> str:
     try:
         tree = ast.parse(call.strip(), mode="exec")
     except SyntaxError:
-        return "is not Python the agent can run; give the memory call, e.g. memory.get('<id>')() for a recorded procedure (it runs on the current request), memory.get('<id>')(<input>) for a function"
+        return "is not Python the agent can run; give the memory call, e.g. " + _CALL_FORMS
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
     if not calls:
-        return "makes no call; give the memory call, e.g. memory.get('<id>')() for a recorded procedure (it runs on the current request), memory.get('<id>')(<input>) for a function"
+        return "makes no call; give the memory call, e.g. " + _CALL_FORMS
     for node in calls:
         root = node.func
         while isinstance(root, (ast.Attribute, ast.Call, ast.Subscript)):
@@ -451,7 +487,7 @@ def _call_problem(call: str) -> str:
         if not (isinstance(root, ast.Name) and root.id == "memory") and not _returned_by_memory(node, tree):
             return (
                 "is not through memory: the agent reaches the library only with memory.get(<id>) and "
-                "memory.request(), e.g. memory.get('<id>')() for a recorded procedure (it runs on the current request), memory.get('<id>')(<input>) for a function"
+                "memory.request(), e.g. " + _CALL_FORMS
             )
     return ""
 
@@ -496,17 +532,54 @@ def bounded_answer(answer: dict) -> dict:
     return out
 
 
+def _calls_item(call: str, iid: str) -> bool:
+    """Whether *call* calls item *iid* itself (``memory.get('<id>')(...)``, directly or through a name bound to
+    ``memory.get('<id>')``), with or without arguments: a parse of the call, no word of it matched."""
+    import ast
+
+    try:
+        tree = ast.parse(call.strip(), mode="exec")
+    except SyntaxError:
+        return False
+
+    def gets(node: Any) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "memory"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == iid
+        )
+
+    bound = {
+        t.id
+        for stmt in ast.walk(tree)
+        if isinstance(stmt, ast.Assign) and gets(stmt.value)
+        for t in stmt.targets
+        if isinstance(t, ast.Name)
+    }
+    return any(
+        isinstance(n, ast.Call) and (gets(n.func) or (isinstance(n.func, ast.Name) and n.func.id in bound))
+        for n in ast.walk(tree)
+    )
+
+
 def check_answer(
     answer: Any,
     ids: list[str],
     failed: set[str] = frozenset(),
     recipes: Mapping[str, str] | None = None,
+    acting: set[str] = frozenset(),
 ) -> tuple[dict | None, str]:
     """The answer as the librarian gave it, or None with the reason it is refused: the form of design J(b).4, every
-    id an item of the library (*ids*), no captured attempt that failed among the fits, and each fit that names a
+    id an item of the library (*ids*), no captured attempt that failed among the fits, each fit that names a
     procedure with a recipe (or the recipe) carrying the call that applies it to the current request (*recipes*:
-    id -> that call), so the agent has the one call. The harness adds and reorders nothing; it only keeps the answer
-    within its bound (:func:`bounded_answer`)."""
+    id -> that call), so the agent has the one call, and no fit calling a recorded procedure that acts through its
+    episode's tools (*acting*, :func:`acting_captures`), which no call runs. The harness adds and reorders nothing; it
+    only keeps the answer within its bound (:func:`bounded_answer`)."""
     recipes = recipes or {}
     known = set(ids)
     if not isinstance(answer, dict):
@@ -527,6 +600,11 @@ def check_answer(
         why_not = _call_problem(f["call"])
         if why_not:
             return None, f"fit {i}: its call {f['call'][:200]!r} {why_not}"
+        if f["id"] in acting and _calls_item(f["call"], f["id"]):
+            return None, (
+                f"fit {i}: {f['id']!r} acts through its episode's tools, so no call runs it; give the call that shows "
+                f"its code, print(memory.get({f['id']!r}).text), and say in why which tool calls do its work"
+            )
         entry = recipes.get(f["id"])
         if entry and entry not in f["call"]:
             return None, (
@@ -619,7 +697,7 @@ async def finish(ctx: Any, args: dict) -> Any:
         return Reply(str(text), "refused", text.form)
     if state.schema is not None:
         return _finish_schema(state, args.get("answer"))
-    got, why = check_answer(args.get("answer"), state.ids, state.failed, state.recipes)
+    got, why = check_answer(args.get("answer"), state.ids, state.failed, state.recipes, state.acting)
     if got is None:
         text = refusal("finish", "bad_answer", reason=why[:2000])
         state.finish_text = str(text)
@@ -863,7 +941,8 @@ class LibrarianSession:
         #: the copy's item evidence (the harness's evidence serving on), read again at each ask; None: as built
         self.evidence = read_evidence(self.copy)
         ids, failed, recipes = library_items(self.copy) or ([], set(), {})
-        self.state = LibrarianCalls(ids=ids, failed=failed, copy=self.copy, recipes=recipes)
+        self.state = LibrarianCalls(ids=ids, failed=failed, copy=self.copy, recipes=recipes,
+                                    acting=acting_captures(self.copy))
         self.turn = turn
         self.cell_limit_s = float(cell_limit_s)
         self.step_guard = STEP_GUARD if step_guard is None else int(step_guard)
@@ -955,6 +1034,7 @@ class LibrarianSession:
             self.dispatch = read_dispatch(self.copy)
             ids, failed, recipes = library_items(self.copy) or ([], set(), {})
             self.state.ids, self.state.failed, self.state.recipes = ids, failed, recipes
+            self.state.acting = acting_captures(self.copy)
             self.questions += 1
             library = {"commit": self.library, "dispatch": _digest_of(self.dispatch)}
             if self.evidence is not None:
@@ -1398,6 +1478,7 @@ __all__ = [
     "LibrarianCalls",
     "LibrarianSession",
     "NoAnswer",
+    "acting_captures",
     "ORIGIN",
     "Unavailable",
     "Usage",
@@ -1428,6 +1509,11 @@ START_BLOCK_CHARS = 1500
 START_ASK_S = 150.0
 #: The block's opening line.
 START_HEAD = "What the library holds for this request (its librarian's answer; ask again with memory.ask()):"
+#: How an answer labels the item it names first and the one it names for when that one fails (one primary and at most
+#: one fallback: never a menu), in the request-start block and as ``memory.ask()`` prints it (the package's
+#: ``memory.ask`` section holds the same words).
+BEST_FIT_LABEL = "Best fit"
+FALLBACK_LABEL = "Only if the first fails"
 
 
 def start_block(answer: Mapping[str, Any]) -> str:
@@ -1442,10 +1528,14 @@ def start_block(answer: Mapping[str, Any]) -> str:
 
     if not fits:
         return f"{START_HEAD}\n- nothing in the library fits this request."
-    lines = [START_HEAD, f"- {fits[0].get('id')}: {short(fits[0].get('why'), 400)}", f"  call: {short(fits[0].get('call'), 300)}"]
+    lines = [
+        START_HEAD,
+        f"- {BEST_FIT_LABEL}: {fits[0].get('id')}: {short(fits[0].get('why'), 400)}",
+        f"  call: {short(fits[0].get('call'), 300)}",
+    ]
     if len(fits) > 1:
         lines += [
-            f"- only if the first fails: {fits[1].get('id')}: {short(fits[1].get('why'), 250)}",
+            f"- {FALLBACK_LABEL}: {fits[1].get('id')}: {short(fits[1].get('why'), 250)}",
             f"  call: {short(fits[1].get('call'), 300)}",
         ]
     text = "\n".join(lines)

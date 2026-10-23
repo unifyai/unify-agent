@@ -7,8 +7,9 @@
 # recognise anything). The question (the given one, else the current request's text, from the host tool
 # ``current_request``) goes to the librarian through ``tools.ask_library``; the librarian judges relevance from the
 # harness's structural catalogue (``.memory/dispatch.json``) and the items' text. Its answer comes back as JSON text,
-# which this section reads into a list of :class:`Item`, each with the librarian's reason (marked ``already_given``
-# when the host returned the answer the librarian already gave in this request to the same question). The call raises
+# which this section reads into a list of :class:`Item`: the best fit, and at most one fallback for when it fails
+# (never a menu), each with the librarian's reason (marked ``already_given`` when the host returned the answer the
+# librarian already gave in this request to the same question). The call raises
 # ``memory.helper_call`` with the id ``memory:ask`` (asking is never a use) and ``memory.ask_result`` with the ids the
 # answer lists, whether it said nothing fits, and how many catalogue rows the copy holds (never text or values).
 
@@ -49,6 +50,10 @@ if "wrap_call" not in globals():  # imported as a harness module of its own, not
     )
 
 ASK_EVENT = "memory.ask_result"
+#: How an answer labels the item it names first and the one it names for when that one fails, as the request-start
+#: block shows them (the harness's ``librarian.BEST_FIT_LABEL`` and ``FALLBACK_LABEL``, the same words).
+BEST_FIT_LABEL = "Best fit"
+FALLBACK_LABEL = "Only if the first fails"
 #: The tool the question goes through (the host's librarian session for this request).
 ASK_TOOL = "ask_library"
 #: The field of a reply that is an answer the librarian already gave in this request (the host's
@@ -211,9 +216,9 @@ def _schema_of(schema: Any, call: str) -> tuple[dict, Any]:
 
 
 class Answer(list):
-    """What ``memory.ask`` returns: a list of :class:`Item`, every item the librarian judged applicable, each with
-    its ``reason``. When nothing applies the list is empty and ``nearest`` holds the items the librarian named as
-    nearest, each with what differs as its ``reason``. ``note`` says what the answer could not use (the current
+    """What ``memory.ask`` returns: a list of :class:`Item`, the best fit the librarian named first and at most one
+    fallback for when it fails, each with its ``reason``. When nothing applies the list is empty and ``nearest`` holds
+    the items the librarian named as nearest, each with what differs as its ``reason``. ``note`` says what the answer could not use (the current
     request, a reader that gave no outcome); ``asked`` is False when nothing could be asked; ``already_given`` is True
     when this is the answer the librarian already gave in this request (the same question and outcomes); ``calls``
     holds, by item id, the call the librarian gave for each item that applies (for a procedure with a recipe, the
@@ -242,9 +247,8 @@ class Answer(list):
         if not self.asked:
             out.append(self.note)
         elif self:
-            out.append(f"{len(self)} item(s) apply:")
-            for i in self:
-                out.append(f"- {i.id} ({i.kind}): {i.reason}")
+            for label, i in zip((BEST_FIT_LABEL, FALLBACK_LABEL), self):
+                out.append(f"{label}: {i.id} ({i.kind}): {i.reason}")
                 if self.calls.get(i.id):
                     out.append(f"  call: {self.calls[i.id]}")
             out.append("Each is an Item: print(item) shows its card; item(...) calls a function item. Nothing has run.")
@@ -300,9 +304,9 @@ def _named(rows: Any, key: str) -> list:
 
 @checked(name="memory.ask")
 def ask(question: Annotated[str, MinLen(1)] | None = None, schema: Any = None) -> Any:
-    """Ask the librarian which stored items apply to your current request, or to a question of your own. The
+    """Ask the librarian which stored item fits your current request best, or a question of your own. The
     librarian searches the library by what each item was saved for, reads the harness's structural catalogue of the
-    stored procedures and what else it needs. You may ask again, with the same question or another; asked the same
+    stored procedures and what else it needs, and names the best fit and at most one fallback for when it fails. You may ask again, with the same question or another; asked the same
     question again, it returns the answer the librarian already gave in this request, marked as such. Nothing is run,
     here or on your behalf, and nothing is ranked.
 
@@ -317,8 +321,9 @@ def ask(question: Annotated[str, MinLen(1)] | None = None, schema: Any = None) -
             Literal[...] and nested dataclasses.
 
     Returns:
-        Without a schema, every item the librarian judged applicable, each an Item with ``.reason``; [] when
-        nothing applies (the list's ``.nearest`` then holds the nearest items, each with what differs as its
+        Without a schema, the best fit the librarian named and at most one fallback for when it fails, in that
+        order, each an Item with ``.reason`` (printed as "Best fit: ..." and "Only if the first fails: ..."); []
+        when nothing applies (the list's ``.nearest`` then holds the nearest items, each with what differs as its
         ``.reason``); ``.already_given`` is True when it is the answer already given in this request. With a
         schema, the answer in its shape.
 

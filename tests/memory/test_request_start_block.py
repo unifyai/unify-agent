@@ -57,8 +57,8 @@ def test_the_block_names_the_primary_with_its_call_and_one_fallback_for_when_it_
     assert asked == ["Sort the rows by id."]  # the request itself, as memory.ask() asks it
     lines = block.splitlines()
     assert lines[0] == L.START_HEAD
-    assert lines[1].startswith("- capture:") and "call: memory.get(" in lines[2]
-    assert lines[3].startswith("- only if the first fails: memory.rows.sort:by_id")
+    assert lines[1].startswith("- Best fit: capture:") and "call: memory.get(" in lines[2]
+    assert lines[3].startswith("- Only if the first fails: memory.rows.sort:by_id")
     assert len(block) <= L.START_BLOCK_CHARS
 
 

@@ -288,7 +288,7 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
         "import json\n"
         f"_a = memory.ask({Q1!r})\n"
         f"_b = memory.ask({Q2!r})\n"
-        f"_r = memory.run({w.TOTAL!r}, {w.ROWS!r})\n"
+        f"_r = memory.get({w.TOTAL!r})({w.ROWS!r})\n"
         f"tools.answer(json.dumps({{'a': {plain('_a')}, 'b': {plain('_b')}}}))\n"
     )
     script = Script([actor_cell], [librarian_answer(ANSWER_ONE), librarian_answer(ANSWER_TWO)])
@@ -433,7 +433,7 @@ attempt("write_workspace", lambda: open("/workspace/librarian-wrote.txt", "w").w
 attempt("connect", lambda: socket.create_connection(("1.1.1.1", 53), timeout=3).close())
 attempt("resolve", lambda: socket.getaddrinfo("example.com", 80))
 attempt("tool_write", lambda: tools.write("/workspace/librarian-wrote.txt", "x"))
-out["show"] = memory.show({w.TOTAL!r})[:400]
+out["card"] = str(memory.get({w.TOTAL!r}))[:400]
 out["env"] = sorted(os.environ)
 out["env_secret"] = any(s in v for v in os.environ.values() for s in ({ENV_SECRET!r}, {TOKEN_VALUE!r}))
 print("PROBE " + json.dumps(out))
@@ -461,7 +461,7 @@ async def test_the_librarians_box_is_read_only_on_the_library_offline_and_has_no
     probe = json.loads(line[len("PROBE ") :])
     for name in ("write_library", "write_library_root", "write_workspace", "connect", "resolve", "tool_write"):
         assert probe[name] != "ok", (name, probe)
-    assert "total_amount" in probe["show"]  # it reads items with memory.show
+    assert "total_amount" in probe["card"]  # it reads items' cards with memory.get
     assert probe["env_secret"] is False
     # nothing was written on the host
     assert sorted(p.relative_to(checkout).as_posix() for p in checkout.rglob("*")) == files_before
@@ -520,16 +520,16 @@ async def test_the_first_user_message_says_how_large_the_library_is_and_the_syst
 
     env = librarian
     _open_request(env["paths"], env["sha"], env["monkeypatch"])
-    functions, notes = hooks.library_counts(env["paths"].checkout)
+    functions, notes, procedures = hooks.library_counts(env["paths"].checkout)
     assert (functions, notes) == (len(w.FUNCTIONS), 1)  # the library world's functions and its note
     script = Script(["tools.answer('done')\n"], [])
     result, _, _ = await _ask_act(env, script)
     assert result == "done"
     first = script.actor_calls[0]
-    line = (
-        f"Your memory library holds {functions} functions and 1 note; memory.ask() shows the ones that apply, "
-        "memory.items() lists them all."
-    )
+    line = hooks.LIBRARY_LINE.format(
+        functions=f"{functions} functions", notes="1 note",
+        procedures=f"{procedures} recorded procedure" + ("" if procedures == 1 else "s"),
+    )  # fmt: skip
     assert line in _first_user(first) and "Your memory library holds" not in _system(first)
     _assert_ended(env["opened"])
 
