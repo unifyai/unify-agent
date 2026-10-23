@@ -66,7 +66,6 @@ def card(profile: Any, capture_dir: Path, *, code_chars: int) -> str:
     if len(code) > code_chars:
         code = code[:code_chars] + "\n# ... (the rest of the code is not shown)"
     lines = [
-        f"form: {getattr(profile, 'form', None) or 'unknown'}",
         "calls in order: " + (" > ".join(getattr(profile, "sequence", ()) or ()) or "none"),
         "input key paths: " + (", ".join(sorted(getattr(profile, "input", ()) or ())[:20]) or "none recorded"),
         f"outcome of its work: {getattr(profile, 'outcome', None) or 'not shown'}",

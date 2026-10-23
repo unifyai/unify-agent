@@ -48,14 +48,14 @@ def test_captures_are_related_by_a_shared_call_sequence_items_or_input_shape_and
     c = _p("c", items={"memory.mail.reply:draft"})
     d = _p("d", form="value", shape={"[].amount:int"})
     e = _p("e", form="value", shape={"[].amount:int"})
-    f = _p("f", form="state", shape={"[].amount:int"})  # the same shape in another form: not the same input
+    f = _p("f", form="state", shape={"[].amount:int"})  # the same shape in another form: the entry form is no relation
     s1, s2 = _p("s1", form="state", shape={"[].amount:int"}), _p("s2", form="state", shape={"[].amount:int"})
     assert cg.related(a, b) == ["sequence: env.mail.read > env.mail.send"]
     assert cg.related(a, b2) == [] and cg.related(b, b2) == []
     assert cg.related(a, c) == ["items: memory.mail.reply:draft"]
     assert cg.related(d, e) == ["input"] and cg.related(s1, s2) == ["input"]  # a state's structured data too
-    assert cg.related(d, f) == [] and cg.related(b, c) == []
-    # one shared call is no relation: in a world with one action channel every acting capture makes it
+    assert cg.related(d, f) == ["input"] and cg.related(b, c) == []
+    # one shared call is no relation: in a world with one action channel every capture that calls it makes it
     one = _p("o1", sequence=("env.game.step",)), _p("o2", sequence=("env.game.step",))
     assert cg.related(*one) == []
     # the same outcome alone, or nothing at all in common, never relates two captures
@@ -123,8 +123,9 @@ def test_the_history_is_the_most_related_closed_captures_at_most_history_max():
 
 
 def test_a_call_feature_most_captures_make_relates_nothing_and_a_rarer_run_of_calls_does():
-    """A world's own envelope of calls (made by at least half of the acting captures) distinguishes none of them; a
-    shared run of two calls that few make relates two captures."""
+    """A world's own envelope of calls (made by more than half of the home's captures) distinguishes none of them; a
+    shared run of two calls that few make relates two captures. Every capture counts, whether or not it makes calls:
+    no subset is picked by what its code looks like."""
     env = ("env.chat.ask", "env.chat.reply")
     ps = [_p(f"{i:x}" * 16, sequence=env) for i in range(4)]
     rare_a = _p("a" * 16, sequence=("env.files.read", "env.files.write", *env))
@@ -134,6 +135,9 @@ def test_a_call_feature_most_captures_make_relates_nothing_and_a_rarer_run_of_ca
     assert cg.related(ps[0], ps[1], common) == []
     assert cg.related(rare_a, rare_b, common) == ["subsequence: env.files.read > env.files.write"]
     assert cg.related(ps[0], ps[1]) == ["sequence: env.chat.ask > env.chat.reply"]  # with no envelope known
+    # captures with no calls count too: with as many of them, the same four make no envelope (not more than half)
+    quiet = [_p(f"q{i}" * 8, sequence=()) for i in range(4)]
+    assert env not in cg.common_features([*ps, *quiet])
 
 
 def test_a_judges_kin_row_relates_two_captures_and_unknown_ids_are_left_out(tmp_path):

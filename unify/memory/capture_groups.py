@@ -17,16 +17,19 @@ nothing is run. Two captures are related when their records show at least one of
 * ``items``: their episodes used a shared library item: called it, or it refused or errored when called (the
   evidence store's use rows with an observed call); an episode that used the other capture itself counts the same. An item that was only at the episode's pin, shown or served
   relates nothing: the same few general items are served to nearly every episode;
-* ``input``: they have the same entry form and the same non-empty input shape below the shared envelope: the key
+* ``input``: they have the same non-empty input shape below the shared envelope: the key
   paths, named or not, and leaf types of the recorded data the capture's signature describes, less the key paths
   every capture of the home has (:data:`ENVELOPE_MIN` or more captures with a shape; fewer show no envelope);
 * ``judged``: a judge that read the two captures' behaviour (their code, input shape, calls and outcome) named one as
   doing the same kind of work as the other (the ledger's ``kin`` rows).
 
-A call feature (a whole sequence or a run of calls) that more than half of the home's acting captures make, and at
-least :data:`ENVELOPE_MIN` of them, is the world's own envelope, like a request envelope every capture reads: it
+A call feature (a whole sequence or a run of calls) that more than half of the home's captures make, and at least
+:data:`ENVELOPE_MIN` of them, is the world's own envelope, like a request envelope every capture reads: it
 distinguishes none of them, so it relates nothing. One shared call alone never relates two captures either: in a world
-with one action channel every acting capture makes it.
+with one action channel every capture that calls it makes it.
+
+No relation reads a judgement of the code (pure or not, acting or not, a fixed answer or not, its entry form): only
+the calls the recorded procedure makes, the items its episode used, its input's shape and a judge's reading.
 
 The outcome each member's signals gave is carried to the writer as a fact of the member, not used to join.
 
@@ -114,14 +117,15 @@ def call_features(p: Profile) -> frozenset:
 
 
 def common_features(profiles: Iterable[Profile]) -> frozenset:
-    """The call features more than half of the acting captures make, and at least :data:`ENVELOPE_MIN` of them: the
-    world's own envelope of calls, which distinguishes none of them."""
-    acting = [p for p in profiles if p.sequence]
+    """The call features more than half of the home's captures make, and at least :data:`ENVELOPE_MIN` of them: the
+    world's own envelope of calls, which distinguishes none of them. Every capture counts: no subset is picked by what
+    its code looks like."""
+    every = list(profiles)
     counts: dict[tuple, int] = {}
-    for p in acting:
+    for p in every:
         for f in call_features(p):
             counts[f] = counts.get(f, 0) + 1
-    return frozenset(f for f, n in counts.items() if n >= ENVELOPE_MIN and 2 * n > len(acting))
+    return frozenset(f for f, n in counts.items() if n >= ENVELOPE_MIN and 2 * n > len(every))
 
 
 def related(a: Profile, b: Profile, common: frozenset = frozenset()) -> list[str]:
@@ -142,7 +146,7 @@ def related(a: Profile, b: Profile, common: frozenset = frozenset()) -> list[str
     items = sorted((a.items & b.items) | called)
     if items:
         out.append("items: " + ", ".join(items[:5]))
-    if a.form is not None and a.form == b.form and a.input and a.input == b.input:
+    if a.input and a.input == b.input:
         out.append("input")
     if b.entry in a.kin or a.entry in b.kin:
         out.append("judged")
