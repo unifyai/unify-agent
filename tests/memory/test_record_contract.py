@@ -2,8 +2,9 @@
 captured procedure's uses take from a cell's call to every place the capture is shown.
 
 A field a reader reads must be written by its writer (or the reader removed). The registry below names, for the
-capture store's ``record.json``, the evidence store's ``item_use`` rows, the signals, the attention ledger's rows and
-a writer pass's ``group.json``, each field with its writer and its readers. The tests drive the real writers, then
+capture store's ``record.json``, a request's use record (``memory_use.json``), the evidence store's ``item_use`` rows,
+the signals, the attention ledger's rows and a writer pass's ``group.json``, each field with its writer and its
+readers. The tests drive the real writers, then
 run the real readers over what they wrote and record every field each reader asked for: a reader that asks for a
 field nothing writes fails here.
 
@@ -23,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from tests.memory.test_capture_examples import _cell
+from tests.memory.test_use_library_mode import library_root  # noqa: F401 - a fixture
 from tests.memory.test_capture_trace import ENV_PROC, VALUE_PROC, _staging
 from tests.memory.test_capture_trace import _ep as _capture_ep
 from tests.memory.test_capture_trace import _write_action
@@ -110,6 +112,14 @@ REGISTRY: dict[str, dict] = {
     "item_use": {
         "writer": "unify.memory.evidence:EvidenceStore.index_episode (_use_rows)",
         "readers": ["unify.memory.lifecycle:facts_from_evidence"],
+    },
+    "memory_use.json": {
+        "writer": "unify.memory.analysis.use:request_use, unify.memory.integration.request:with_runtime_calls",
+        "readers": [
+            "unify.memory.evidence:EvidenceStore.index_episode",
+            "unify.memory.integration.outcomes:implicit_evidence",
+            "unify.memory.usage:writer_usage_record",
+        ],
     },
     "signal": {
         "writer": "unify.memory.signals:post_signal (EvidenceStore.add_signal), read back by EvidenceStore.signals_for",
@@ -387,6 +397,62 @@ def test_the_item_use_columns_a_reader_selects_are_written(tmp_path):
     stores.evidence.index_episode(ep, sha)
     (f,) = [f for f in lifecycle.facts_from_evidence(stores.evidence) if f.episode_id == "e5"]
     assert f.items["capture:" + "a" * 16].calls == (1, 0, 1)
+
+
+# --- memory_use.json: what its readers ask of the record and of each item's row is what its writers wrote -------------
+
+
+class _Asking(dict):
+    """A use record (or an item's row of it) that records each field asked of it under its *level*."""
+
+    def __init__(self, data: dict, level: str, asked: dict) -> None:
+        super().__init__(data)
+        self.level, self.asked = level, asked
+
+    def _note(self, key) -> None:
+        self.asked.setdefault(self.level, set()).add(key)
+
+    def get(self, key, default=None):
+        self._note(key)
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self._note(key)
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        self._note(key)
+        return super().__contains__(key)
+
+
+def test_every_field_a_use_record_reader_asks_for_is_written(tmp_path, library_root):
+    from tests.memory.test_use_library_mode import ITEMS_LIBRARY, _use_library
+    from unify.memory.integration import outcomes
+    from unify.memory.usage import writer_usage_record
+
+    item = ITEMS_LIBRARY[0]
+    record = _use_library(library_root, ["from memory.text.dates import parse_date\nparse_date('2026-10-09')\n"])
+    acc = runtime_calls_empty()
+    add_runtime_calls(acc, {"calls": {"counts": {item: {"ok": 1, "refused": 0, "error": 1}}}})
+    record = with_runtime_calls(record, acc)
+    rows = record["items"]
+    assert item in rows and "runtime" in rows[item]
+    written = {"record": set(record), "item": {k for row in rows.values() for k in row}}
+    asked: dict = {}
+    wrapped = _Asking({**record, "items": {k: _Asking(v, "item", asked) for k, v in rows.items()}}, "record", asked)
+
+    stores = open_stores(Paths.under(tmp_path / "home"))
+    ep = _ep(episode_id="e3", regime="none", memory_main="c0ffee" * 6 + "abcd")
+    ep.memory_use = dict(record)
+    sha = EpisodeWriter(stores.episodes, stores.blobs, Redactor()).write(ep)
+    ep.memory_use = wrapped
+    stores.evidence.index_episode(ep, sha)
+    outcomes.implicit_evidence(wrapped)
+    writer_usage_record(wrapped)
+    assert asked.get("record") and asked.get("item"), asked
+    for level, keys in asked.items():
+        unwritten = keys - written[level]
+        assert not unwritten, f"{level} fields read that no writer writes: {sorted(unwritten)}"
 
 
 # --- signals: the fields their readers use round-trip through the store ------------------------------------------------
