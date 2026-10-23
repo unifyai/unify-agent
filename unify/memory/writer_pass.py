@@ -1902,6 +1902,12 @@ class WriterPass:
 
         for name, text in input_pointer_files().items():
             (inputs / name).write_text(text)
+        if self.helper_turn is not None:
+            # the brief names /inputs/helpers/ whenever helpers can be launched: it opens from the start, empty
+            # until a helper's output is exported there
+            from .helpers import EXPORT_DIR as _HELPERS_DIR
+
+            (inputs / _HELPERS_DIR).mkdir(exist_ok=True)
         self._drafts = []
         from .drafts import stage_drafts
 
