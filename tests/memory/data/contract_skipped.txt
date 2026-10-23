@@ -2,7 +2,6 @@
 # One <role><TAB><span> per line; other lines are ignored. Regenerate from the test's own listing when a prompt changes.
 actor	/memory-library
 actor	/workspace
-actor	<episode>/<part>
 actor	await
 actor	risky: bool
 actor	schema=
@@ -12,14 +11,12 @@ helper	candidates/<name>.py
 helper	cases/<name>.json
 teammate	/memory-library
 teammate	/workspace
-teammate	<episode>/<part>
 teammate	await
 teammate	risky: bool
 teammate	schema=
 teammate	steps: list[str]
 writer	"form": "checklist"
 writer	"reopened": {"<id>": "<reason>"}
-writer	<episode>/<part>
 writer	Args:
 writer	Example request:
 writer	Example:

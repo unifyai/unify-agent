@@ -183,7 +183,7 @@ def who_text(view: RunRecordView, *, info: Optional[dict] = None) -> str:
         lines.append(f"({ended} agents of this run have ended)")
     me = next((r for r in rows if r["name"] == view.name), None)
     lines.append(f"You are {view.name} ({view.role}).")
-    from unify.agents.run_record import INSTANCE_ROLES, role_seeded, run_has_memory
+    from unify.agents.run_record import INSTANCE_ROLES, mention_line, role_seeded, run_has_memory, works_in_request
     from unify.common.tool_registry import MEMORY_ROLES
 
     home = getattr(view.record, "home", None)
@@ -195,11 +195,12 @@ def who_text(view: RunRecordView, *, info: Optional[dict] = None) -> str:
             continue  # a role this run does not have is never offered
         if m.get("who") in MEMORY_ROLES and not memory:
             continue
-        lines.append(f"Mention @{m.get('who')} when {m.get('when')}.")
+        lines.append(mention_line(str(m.get("who")), str(m.get("when") or "")))
     if not memory:
         roles = "@actor, @helpers"
-    elif view.role == "actor":
-        # the actor asks the librarian with memory.ask, and its episode's fork starts after the episode ends
+    elif works_in_request(doc["agents"], view.name):
+        # the actor and its teammates ask the librarian with memory.ask, and their episode's fork starts only after
+        # the episode has ended
         roles = "@writer, @actor, @helpers"
     else:
         roles = "@writer, @actor, " + ("@librarian, " if "librarian" in has else "") + "@fork (of your own episode), @helpers"

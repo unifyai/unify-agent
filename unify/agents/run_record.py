@@ -208,12 +208,31 @@ def prompt_lines(name: str, role: str, spawner: Optional[str] = None, *, home: O
         if who in _registry.MEMORY_ROLES and not memory:   # a run without memory has no writer, fork or librarian
             continue
         if who:
-            lines.append(
-                f"Mention @{who} {m['when']}."
-                if m["when"].startswith("to ")
-                else f"Mention @{who} when {m['when']}."
-            )
+            lines.append(mention_line(who, m["when"]))
     return "\n".join(lines)
+
+
+def mention_line(who: str, when: str) -> str:
+    """One "whom to mention, and when" line, as every text of the record writes it (:func:`prompt_lines` and
+    ``tools.who()``): *when* is a purpose (``to report findings``) or a condition (``a served item was wrong``)."""
+    return f"Mention @{who} {when}." if when.startswith("to ") else f"Mention @{who} when {when}."
+
+
+def _address_hint(lead: str, addresses: str) -> str:
+    """The end of a refusal that names the addresses that reach someone now (``RunRecordView.addresses``)."""
+    return f"{lead} {addresses}" if addresses else "no other agent is on the record now"
+
+
+def works_in_request(rows: list, name: str) -> bool:
+    """Whether the agent *name* on the roster *rows* works inside a request: an actor, or a helper started by one,
+    directly or through other helpers (a teammate). Such an agent never reaches an episode's fork, which starts only
+    after the episode has ended."""
+    by_name = {r.get("name"): r for r in rows if isinstance(r, dict)}
+    row, seen = by_name.get(name), set()
+    while row is not None and row.get("role") == "helper" and row.get("name") not in seen:
+        seen.add(row.get("name"))
+        row = by_name.get(row.get("spawner"))
+    return row is not None and row.get("role") == "actor"
 
 
 #: ``wait``'s end when no one who could answer is running.
@@ -1682,11 +1701,17 @@ class RunRecordView:
         resolved, unresolved, ended = rec.resolve_for(sender, text)
         missing = [r for r in INSTANCE_ROLES if r in unresolved]
         if missing:
-            raise RecordRefused(
-                "no_role",
-                f"there is no {missing[0]} in this run, so nobody would read @{missing[0]}; "
-                f"address one of {self.addresses(sender)}",
+            role = missing[0]
+            running = [r["name"] for r in rec.roster_doc()["agents"]
+                       if r.get("role") == role and r.get("state") in ("running", "waiting")]  # fmt: skip
+            # worded from the record as it is now: the role is not kept on it, though an instance may be running
+            why = (
+                f"@{role} reaches no one: this run's record keeps no {role} role, and a running {role} is "
+                "addressed by its name"
+                if running
+                else f"there is no {role} in this run, so nobody would read @{role}"
             )
+            raise RecordRefused("no_role", f"{why}; " + _address_hint("address one of", self.addresses(sender)))
         stale = [n for n in ended if n != WRITER]
         if stale:
             raise RecordRefused("ended", "ended: " + "; ".join(self._ended_pointer(n) for n in stale))
@@ -1703,7 +1728,7 @@ class RunRecordView:
                         if unresolved
                         else ""
                     )
-                    + f"; address it with {names}",
+                    + "; " + _address_hint("address it with", names),
                 )
         try:
             rec.check_rate(sender)
@@ -1774,17 +1799,22 @@ class RunRecordView:
         return f"@{name} ended at {at}"
 
     def addresses(self, sender: Optional[str] = None) -> str:
-        """The addresses that reach someone now, for a refusal's text."""
+        """The addresses that reach someone now, for a refusal's text: the running agents by name, and each role that
+        resolves to an agent now (the record's own resolution), never one that would match no one. Without memory no
+        writer, fork or librarian is offered; an agent inside a request (the actor, a teammate) is never offered its
+        episode's fork, which starts after the episode."""
         sender = sender or self.name
         names = [f"@{n}" for n in self.record.live_agents() if n != sender]
-        # rev 2: a role that outlives its instances is offered only once the run has seeded it
         memory = run_has_memory(self.record.home, self.role if sender == self.name else None,
                                 self.spawner if sender == self.name else None)
-        roles = [f"@{r}" for r in ROLE_ADDRESSES if (r not in INSTANCE_ROLES or role_seeded(self.record.home, r))
-                 and (memory or r not in _registry.MEMORY_ROLES)]   # without memory: no writer, fork or librarian
-        if self.role == "actor" and sender == self.name:
-            # an episode's fork starts only when the episode has ended: the actor never reaches one
-            roles = [r for r in roles if r != "@fork"]
+        inside = works_in_request(self.record.roster_doc()["agents"], sender)
+        roles = []
+        for r in ROLE_ADDRESSES:
+            if (r in _registry.MEMORY_ROLES and not memory) or (r == "fork" and inside):
+                continue
+            reached, unmatched, _ended = self.record.resolve_for(sender, f"@{r}")
+            if reached and not unmatched:
+                roles.append(f"@{r}")
         return ", ".join(dict.fromkeys(names + roles))
 
     def messages_all(self, limit: int = 50) -> tuple[list[dict], int]:
@@ -1855,4 +1885,6 @@ __all__ = [
     "record_path",
     "refs_in",
     "row_of",
+    "mention_line",
+    "works_in_request",
 ]

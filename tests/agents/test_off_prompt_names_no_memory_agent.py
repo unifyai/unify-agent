@@ -81,6 +81,9 @@ def test_a_record_that_shows_a_memory_agent_is_a_memory_run(no_memory, tmp_path)
     assert RR.prompt_lines("actor-ab12", "actor", home=home).startswith(R.COMMON_SECTION)
 
 
-def test_with_memory_the_send_texts_are_unchanged(with_memory):
-    assert "@writer" in R.help_text("send", "actor")
-    assert R.help_text("send", "actor", memory=True) == R.help_text("send", "writer", memory=True)
+def test_with_memory_the_send_texts_name_the_writer_and_a_fork_only_for_who_can_reach_one(with_memory):
+    # the actor and its teammates work inside a request, whose fork starts only after it: never offered @fork
+    for agent in ("actor", "teammate"):
+        text = R.help_text("send", agent)
+        assert "@writer" in text and "@fork" not in text, (agent, text)
+    assert "@fork" in R.help_text("send", "writer", memory=True)
