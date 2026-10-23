@@ -36,7 +36,6 @@ from .item_states import (
     level_of_record,
     status_from_stored,
 )
-from .library_index import EFFECTS
 
 NOTES_REF = "items"
 RECORD_VERSION = 1
@@ -226,17 +225,6 @@ def status_of(records: Mapping[str, dict]) -> Callable[[str], str]:
     return get
 
 
-def effect_of(records: Mapping[str, dict]) -> Callable[[str], str | None]:
-    """An item's recorded effect (``read``, ``write`` or ``unknown``), None when none was derived."""
-
-    def get(item: str) -> str | None:
-        rec = records.get(item)
-        e = rec.get("effect") if isinstance(rec, dict) else None
-        return e if e in EFFECTS else None
-
-    return get
-
-
 def level_of(records: Mapping[str, dict]) -> Callable[[str], str | None]:
     """A function's recorded evidence level (an old name mapped), None for a note, an item with no record, or a
     record whose level is None. A function record written before levels existed (no ``level`` key) fails closed:
@@ -254,79 +242,17 @@ def level_of(records: Mapping[str, dict]) -> Callable[[str], str | None]:
     return get
 
 
-def level_reasons_of(record: Mapping | None) -> list[str]:
-    """The findings that set an item's evidence level, as ``memory.show`` prints them (strings only)."""
-    reasons = record.get("level_reasons") if isinstance(record, Mapping) else None
-    return [str(r) for r in reasons] if isinstance(reasons, list) else []
-
-
-def episodes_of(records: Mapping[str, dict]) -> Callable[[str], int | None]:
-    """How many recorded episodes a function's returning example calls ran on (its verification record's
-    ``examples.episodes``), None when none was recorded: evidence shown beside the function, never a gate.
-    """
-
-    def get(item: str) -> int | None:
-        rec = records.get(item)
-        v = rec.get("verification") if isinstance(rec, dict) else None
-        ex = v.get("examples") if isinstance(v, dict) else None
-        eps = ex.get("episodes") if isinstance(ex, dict) else None
-        return len(eps) if isinstance(eps, list) else None
-
-    return get
-
-
-def verification_summary(record: Mapping | None) -> dict | None:
-    """What ``memory.show`` prints of the verification record: flat, one value per key."""
-    v = record.get("verification") if isinstance(record, Mapping) else None
-    if not isinstance(v, dict):
-        return None
-    out: dict = {}
-    if "tests" in v:
-        out["tests"] = len(v["tests"]) if isinstance(v["tests"], list) else v["tests"]
-    for key in ("drawn_inputs_read", "exact_assertions"):
-        if key in v:
-            out[key] = v[key]
-    ce = v.get("cross_episode")  # records written before examples replaced it
-    if isinstance(ce, dict):
-        out["cross_episode"] = f"{ce.get('ok', 0)}/{ce.get('ran', 0)} ok"
-    ex = v.get("examples")
-    if isinstance(ex, dict):
-        episodes = ex.get("episodes") if isinstance(ex.get("episodes"), list) else []
-        out["examples"] = (
-            f"{ex.get('calls', 0)} calls, {ex.get('grounded_calls', 0)} on recorded values from "
-            f"{len(episodes)} episodes"
-        )
-        pert = ex.get("perturbation")
-        if isinstance(pert, dict):
-            out["unseen_values"] = (
-                f"{pert.get('judged', 0)} calls judged on {pert.get('fields', 0)} fields"
-            )
-    m = v.get("mutation")
-    out["mutation"] = (
-        f"{m.get('killed', 0)}/{m.get('total', 0)} killed"
-        if isinstance(m, dict)
-        else "not run"
-    )
-    recipe = recipe_text(record)
-    if recipe is not None:
-        out["recipe"] = recipe
-    return out
-
-
 def recipe_text(record: Mapping | None) -> str | None:
     """A procedure's recipe and its cases at the gate, from its verification record (``recipe``: ``{"item", "cases",
-    "ran": false, "why"}``, since the gate runs no recipe; or ``{"item", "cases", "passed", "kinds"}`` in a record a
-    gate before rev 2.1 wrote), as one line; None for an item without one."""
+    "ran": false, "why"}``, since the gate runs no recipe; an older record's ``passed`` counts are not shown), as one
+    line; None for an item without one."""
     v = record.get("verification") if isinstance(record, Mapping) else None
     r = v.get("recipe") if isinstance(v, dict) else None
     if not isinstance(r, dict) or not isinstance(r.get("item"), str):
         return None
-    if r.get("ran") is False:
-        n = r.get("cases", 0)
-        return f"{r['item']}; not run at the gate ({n} case{'' if n == 1 else 's'} listed)"
-    kinds = r.get("kinds") if isinstance(r.get("kinds"), dict) else {}
-    shown = ", ".join(f"{kinds[k]} {k}" for k in sorted(kinds) if isinstance(kinds[k], int) and kinds[k])
-    return f"{r['item']}; {r.get('passed', 0)} of {r.get('cases', 0)} cases passed" + (f" ({shown})" if shown else "")
+    # an older record's pass counts are a test result: never shown, since no test result is evidence for an item
+    n = r.get("cases", 0) if isinstance(r.get("cases"), int) else 0
+    return f"{r['item']}; not run at the gate ({n} case{'' if n == 1 else 's'} listed)"
 
 
 def recipe_of(record: Mapping | None) -> str | None:
@@ -391,7 +317,7 @@ def support(record: Mapping | None) -> dict | None:
 
 
 def support_text(kind: str, facts: Mapping | None) -> str:
-    """A card's support, in words: its kind (``curated item``, ``recorded procedure`` or ``fixed answer``), the
+    """A card's support, in words: its kind (``curated item`` or ``recorded procedure``), the
     episodes it comes from, in how many of them the work was accepted (a recorded procedure re-runs accepted work),
     and its confirmed uses when it has any; the kind alone, with ``no record``, when *facts* is None."""
     if not isinstance(facts, Mapping):

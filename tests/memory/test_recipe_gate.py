@@ -230,7 +230,7 @@ def test_a_text_request_with_one_worked_example_lands_with_both_cases_listed_and
     recipe = built.result.verification[proc]["recipe"]
     assert recipe["cases"] == 2 and recipe["ran"] is False
     card = built.records[proc]
-    from unify.memory.item_records import verification_summary
+    from unify.memory.item_records import recipe_text
 
     want = "memory.names.procedures:apply_initials; not run at the gate (2 cases listed)"
-    assert verification_summary(card)["recipe"] == want
+    assert recipe_text(card) == want

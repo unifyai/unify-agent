@@ -86,20 +86,20 @@ def test_every_capture_form_gets_a_structural_row():
     rows = _rows()
     assert {r["form"] for r in rows.values()} == {"value", "state", "state_env"}
     for r in rows.values():
-        assert set(r) == {"id", "kind", "form", "signature", "applies_text", "effects", "reads_input", "constant",
-                          "occurrences", "outcomes", "provenance"}  # fmt: skip
+        assert set(r) == {"id", "kind", "form", "signature", "applies_text", "calls", "occurrences", "outcomes",
+                          "provenance"}  # fmt: skip
         assert r["kind"] == "capture-shape" and r["occurrences"] == 2
         assert r["outcomes"] == {"positive": 1, "contrary": 0, "none": 1}
         assert r["provenance"] == {"episodes": 2, "segments": 1}  # counts, never an id
     env = rows["capture:" + "c" * 16]
-    assert env["effects"] == ["env.files.list", "env.files.write"]
+    assert env["calls"] == ["env.files.list", "env.files.write"]
     assert rows["capture:" + "a" * 16]["applies_text"].startswith("def applies(value):")
 
 
-def test_a_constant_is_marked_and_reads_no_input():
-    const = _rows()["capture:" + "d" * 16]
-    assert const["constant"] is True and const["reads_input"] is False
-    assert _rows()["capture:" + "b" * 16]["constant"] is False
+def test_a_capture_that_returns_a_constant_gets_the_same_row_as_any_other():
+    """Nothing judges whether code gives a fixed answer or reads its input: no row says so."""
+    const, other = _rows()["capture:" + "d" * 16], _rows()["capture:" + "b" * 16]
+    assert set(const) == set(other) and "constant" not in const and "reads_input" not in const
 
 
 def test_an_identifier_keyed_applies_keeps_its_identifier():
@@ -144,7 +144,7 @@ def test_a_function_row_reads_its_code_and_its_named_applies():
     records = {fn.item_id: {"applies": check.item_id}, check.item_id: {}}
     data = le.dispatch_data(Library(functions=[fn, check]), records=records, bodies=bodies)
     row = {r["id"]: r for r in data["procedures"]}[fn.item_id]
-    assert row["kind"] == "function" and row["form"] == "function" and row["effects"] == ["env.store.put"]
+    assert row["kind"] == "function" and row["form"] == "function" and row["calls"] == ["env.store.put"]
     # rev 2.1: the named applies as written, the identifier it tests included (never masked)
     assert row["applies_text"] == bodies[check.item_id]
 

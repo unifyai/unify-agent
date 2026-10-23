@@ -617,7 +617,6 @@ def test_quit_without_consolidation_records_the_episode_and_starts_no_pass(mv2):
         "withdrawn": 0,
         "withdrawn_replaced": 0,
         "offered_in_place": [],
-        "worked_examples": 0,
     }
     assert held[1:] == emitted
     assert any("no consolidation pass started" in p for p in progress)

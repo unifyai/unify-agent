@@ -48,17 +48,13 @@ from .layout import (
 from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
 from .example_view import ReadFile, example_text, examples_of, tree_reader
 from .item_records import (
-    effect_of,
-    episodes_of,
     level_of,
-    level_reasons_of,
     recipe_ids,
     recipe_of,
     recipe_text,
     support,
     support_text,
     use_totals,
-    verification_summary,
 )
 from .item_states import ON_TRIAL
 from .library_index import HIDDEN, build_links, render_index, render_links
@@ -197,6 +193,15 @@ def _status(status_of: Callable[[str], str] | None, item: str) -> str:
     return status_of(item) if status_of is not None else ON_TRIAL
 
 
+#: The parts of an item's evidence label that are never served: what its tests gave and the gate's findings.
+UNSERVED_LABEL_KEYS = frozenset({"tests", "findings"})
+
+
+def served_label(label: Mapping[str, Any]) -> dict:
+    """An item's evidence label as the actor and the librarian may read it: without :data:`UNSERVED_LABEL_KEYS`."""
+    return {k: v for k, v in label.items() if k not in UNSERVED_LABEL_KEYS}
+
+
 def items_data(
     lib: Library,
     status_of: Callable[[str], str] | None,
@@ -225,7 +230,6 @@ def items_data(
             "status_reason": (
                 rec.get("status_reason") if rec else None
             ),  # why it is out of the index (item record)
-            "verification": verification_summary(rec) if rec else None,
             "use": use_totals(rec) if rec else None,
             # what it rests on: the episodes it comes from and its confirmed uses (rev 2.1, every card shows it)
             "support": support(rec),
@@ -233,8 +237,9 @@ def items_data(
             "episodes": _provenance_episodes(rec),
             "history": h[:HISTORY_SHOW],
             "history_more": max(0, len(h) - HISTORY_SHOW),
-            # its evidence label (what its effects, tests and uses show; only when recorded)
-            **({"label": rec["label"]} if rec and isinstance(rec.get("label"), dict) else {}),
+            # its evidence label as served (only when recorded): what the writer stated and what its uses show; the
+            # results of its tests and the gate's findings are the writer's, never served
+            **({"label": served_label(rec["label"])} if rec and isinstance(rec.get("label"), dict) else {}),
         }
 
     for f in lib.functions:
@@ -245,11 +250,8 @@ def items_data(
             "path": f.path,
             "signature": f"{f.module}:{f.signature}",
             "summary": f.summary,
-            # the effect the gate derived from its covers (None: not derived)
-            "effect": effect_of(records)(f.item_id) if records else None,
-            # its evidence level (None: none recorded) and the findings that set it
+            # its evidence level (None: none recorded): unchecked, or confirmed by its uses' outcomes
             "level": level_of(records)(f.item_id) if records else None,
-            "level_reasons": level_reasons_of(records.get(f.item_id)) if records else [],
             # {"test", "line", "call"}: a call quoted from its tests, re-checked against them (None: none shown)
             "example": examples(f.item_id) if examples is not None else None,
             # whether memory.match and the librarian list it, and why (only for a procedure tested when it landed)
@@ -580,15 +582,6 @@ def in_place_of(captures: Mapping[str, bytes] | None) -> dict[str, list[tuple[st
     return out
 
 
-def worked_example(rec: Mapping | None) -> dict | None:
-    """The exported record's worked-example mark (:data:`.captures.EXAMPLE_KEY`, under
-    as worked examples), or None: such a capture is read, never called."""
-    from .captures import EXAMPLE_KEY
-
-    mark = rec.get(EXAMPLE_KEY) if isinstance(rec, Mapping) else None
-    return mark if isinstance(mark, dict) else None
-
-
 def _function_docs(tree: Path, lib: Library) -> dict[str, str]:
     return _docstrings(tree, lib, {f.item_id for f in lib.functions})
 
@@ -617,8 +610,8 @@ def failure_line(row: Mapping[str, Any] | None) -> str:
 
 
 def _serving_lines(serving: Mapping[str, Any] | None, iid: str) -> list[str]:
-    """A card's evidence lines : what its status rests on, its recorded
-    failures, its contradictions and its stated conditions; [] with the switch off."""
+    """A card's evidence lines: what its status rests on, its recorded failures and its stated conditions; [] with
+    the switch off."""
     if not serving:
         return []
     row = _evidence_row(serving, iid) or {}
@@ -626,8 +619,6 @@ def _serving_lines(serving: Mapping[str, Any] | None, iid: str) -> list[str]:
 
     status = row.get("status_text") or basis_text("on-trial", "no_outcome_signals", {})
     out = [f"Status by evidence: {status}\n", f"Recorded failures: {failure_line(row)}\n"]
-    for c in row.get("contradictions") or []:
-        out.append(f"Contradicted: {c}\n")
     if row.get("conditions"):
         out.append(f"States that it applies when: {row['conditions']}\n")
     return out
@@ -705,7 +696,7 @@ def catalogue_text(
         "# The library's catalogue\n",
         "\nOne card per stored function in module-path order, then the notes, then the captured procedures. "
         "Saved against: what the work each item was built from asked and how it went about it. Evidence: its kind "
-        "(curated item, recorded procedure or fixed answer), the episodes it comes from and the uses whose outcome "
+        "(curated item or recorded procedure), the episodes it comes from and the uses whose outcome "
         "confirmed it, its status, and how it has been used.\n",
         "\n## Functions\n",
     ]
@@ -789,14 +780,11 @@ def catalogue_text(
         lines.append(f"Saved against:\n- Asked: {goal or 'not recorded'}\n")
         lines += _in_place_lines(replaced.get(CAPTURE_PREFIX + cid))
         input_line = signature_text(sig)
-        example = worked_example(rec)
-        kind = "fixed answer" if example else "recorded procedure"
         lines.append(
-            f"Evidence: {support_text(kind, support(rec))}; "
-            + ("reader none (a worked example)" if example else _capture_reader(rec, doc.get("procedure")))
-            + f"; applies: {'yes' if _applies_stated(sig) and not example else 'no'}"
+            f"Evidence: {support_text('recorded procedure', support(rec))}; "
+            + _capture_reader(rec, doc.get("procedure"))
+            + f"; applies: {'yes' if _applies_stated(sig) else 'no'}"
             + ("; tried and failed: never offered to run" if failed else "")
-            + (f"; a worked example, never called: {example.get('why')}" if example else "")
             + "\n",
         )
         lines += _serving_lines(serving, CAPTURE_PREFIX + cid)
@@ -847,19 +835,15 @@ def _capture_reader(rec: Mapping, source: Any) -> str:
 
 
 def _code_facts(source: str | None, applies_source: str | None) -> dict:
-    """What a procedure's code says of itself, from its syntax alone (nothing run): the ``env.<channel>.<method>``
-    chains its tool namespace names in its entry function and in every helper it hands the namespace to
-    (``effects``, :func:`.capture_shape.entry_env_chains`, as its shape address reads them), whether its entry reads its input
-    (``reads_input``) and whether it gives a fixed answer (``constant``, :func:`.fixed_answer.fixed_answer`), and its
-    ``applies`` source as written (``applies_text``)."""
+    """What a procedure's code names, from its syntax alone (nothing run, nothing judged): the
+    ``env.<channel>.<method>`` chains its tool namespace names in its entry function and in every helper it passes the
+    namespace to (``calls``, :func:`.capture_shape.entry_env_chains`, as its shape address reads them), and its
+    ``applies`` source as written (``applies_text``). No judgement of the code (pure or not, a fixed answer or not,
+    whether it reads its input) is made: none can be told reliably, and the librarian ranks from these rows."""
     from .capture_shape import entry_env_chains
-    from .fixed_answer import fixed_answer, reads_input
 
-    fixed = fixed_answer(source) if isinstance(source, str) else None
     return {
-        "effects": entry_env_chains(source) if isinstance(source, str) else [],
-        "reads_input": reads_input(source) is not False,
-        "constant": fixed is not None,
+        "calls": entry_env_chains(source) if isinstance(source, str) else [],
         "applies_text": applies_source if isinstance(applies_source, str) and applies_source else "",
     }
 
@@ -918,12 +902,11 @@ def dispatch_data(
     """``.memory/dispatch.json`` (rev 2): the structural catalogue, one row per stored procedure, from the code's
     syntax and the harness's records only (nothing is run to make it, and nothing reads it to run anything):
 
-    ``{id, kind, form, signature, applies_text, effects, reads_input, constant, occurrences, outcomes, provenance}``:
+    ``{id, kind, form, signature, applies_text, calls, occurrences, outcomes, provenance}``:
     ``kind`` is ``function`` or ``capture-shape``; ``form`` a capture's entry form (``value``, ``state``,
     ``state_env``) or ``function``; ``signature`` the input line (:func:`.library_index.signature_text`) and
-    ``applies_text`` the ``applies`` source, both as written; ``effects``, ``reads_input`` and
-    ``constant`` from the syntax (:func:`_code_facts`); for a capture, ``occurrences`` (its folded occurrences),
-    ``outcomes`` (their counts by signal outcome) and ``provenance`` (how many episodes and segments it came from;
+    ``applies_text`` the ``applies`` source, both as written; ``calls`` from the syntax (:func:`_code_facts`); for a
+    capture, ``occurrences`` (its folded occurrences), ``outcomes`` (their counts by signal outcome) and ``provenance`` (how many episodes and segments it came from;
     never an id).
 
     Module-path order, then the captures in id order. A function its record does not list, a hidden one and a
@@ -1138,9 +1121,7 @@ def generated_library_mode(
             lib,
             links,
             status_of,
-            effect_of(records) if records is not None else None,
             example_of if records is not None else None,
-            episodes_of(records) if records is not None else None,
             signature_of if saved_against is not None else None,
             (lambda item: support(records.get(item))) if records is not None else None,
         ).encode("utf-8"),

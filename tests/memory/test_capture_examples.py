@@ -1,11 +1,9 @@
-"""Captures that give a fixed answer, offered as worked examples (``UNIFY_MEMORY_LIBRARY_FIXED_ANSWERS_AS_EXAMPLES``).
-
-Off (the default) the actor's snapshot is exactly as built. On, a captured procedure whose ``run`` never reads its input
-or only returns literals (a rule on its code's syntax alone: no task, position or word) is offered as a worked example
-to read: its record carries the mark, the dispatch file gives it no reader, the catalogue and the search index say what
-it is, and the package lists it as a note-kind item whose text is the example, refusing to call it or check its fit. A
-failed attempt is never offered anyway. The package tests run the generated package in a fresh isolated interpreter, as
-a cell imports it. No model is called.
+"""A captured procedure whose code looks like a stored answer (its ``run`` never reads its input, or returns only
+literals) is served exactly as every other captured procedure: nothing judges whether code gives a fixed answer,
+reads its input or acts, since none of that can be told reliably. Its record carries no mark, the dispatch file no
+``constant`` or ``reads_input`` field, the catalogue and the search index name it a recorded procedure, and the
+package calls it like any other. The package tests run the generated package in a fresh isolated interpreter, as a
+cell imports it. No model is called.
 """
 
 from __future__ import annotations
@@ -22,7 +20,6 @@ from tests.memory.test_layout import _tree
 from unify.memory import captures, library_search, memory_helper
 from unify.memory import library_export as lx
 from unify.memory.catalogue import write_files
-from unify.memory.fixed_answer import NEVER_READS, ONLY_LITERALS, fixed_answer
 from unify.memory.integration.request import RequestRun
 from unify.memory.layout import discover
 
@@ -117,139 +114,60 @@ def _store(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return store, ids
 
 
-# --- the fixed-answer rule ---------------------------------------------------------------------------------------------
+# --- no judgement of the code ------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "source, why, returns",
-    [
-        (FIXED, NEVER_READS, ["[[1, 4], [2, 5], [3, 6]]"]),
-        (RETIRED, ONLY_LITERALS, ["'fold'"]),
-        ("import json\ndef run(value):\n    return [a * 2 for a in json.loads('[1]')]\n", NEVER_READS, []),
-        ("def run():\n    return compute()\n", NEVER_READS, []),
-        ("def main(v):\n    return {'a': -1}\n", NEVER_READS, ["{'a': -1}"]),
-        ('def run(v):\n    """Doc."""\n    return f"fixed"\n', NEVER_READS, ["f'fixed'"]),
-    ],
-)
-def test_a_run_that_never_reads_its_input_or_returns_only_literals_gives_a_fixed_answer(source, why, returns):
-    assert fixed_answer(source) == {"why": why, "returns": returns}
+def test_no_fixed_answer_classifier_exists():
+    from unify.memory import fixed_answer
+
+    for name in ("fixed_answer", "reads_input", "NEVER_READS", "ONLY_LITERALS"):
+        assert not hasattr(fixed_answer, name), name
+    assert not hasattr(captures, "EXAMPLE_KEY")
+    assert "examples" not in inspect.signature(captures.export_files).parameters
 
 
-@pytest.mark.parametrize(
-    "source",
-    [
-        TABLE,
-        TRANSPOSE,
-        "def run(value):\n    if value:\n        return 1\n    return len(value)\n",
-        "def run(v):\n    def inner():\n        return v\n    return inner()\n",
-        "def run(*, v):\n    return v\n",
-        "def solve(grid):\n    return [row[::-1] for row in grid]\n",
-        "def run(v:\n",  # does not parse: not classified
-        "x = 1\n",  # no function
-        None,
-    ],
-)
-def test_a_procedure_that_reads_its_input_is_no_fixed_answer(source):
-    assert fixed_answer(source) is None
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        # no value handed back: the outcome is what it did (return None, a bare return, no return)
-        "def run(value):\n    return None\n",
-        "def run(value):\n    print('done')\n    return\n",
-        "def run(value):\n    print('done')\n",
-        "def run():\n    return None\n",
-        "def run(v):\n    if v:\n        return 1\n    return None\n",
-        # it acts: the state and the environment, the work being the calls
-        "def run(state, env):\n    env.board.move(1)\n    env.board.move(2)\n    return None\n",
-        "def run(state, env):\n    env.mail.send('a@b.c', 'hello')\n    return 'sent'\n",
-        "def run(state, env):\n    return 42\n",
-        "def run(value):\n    tools.install(['x'])\n    return 'ok'\n",
-        "def run():\n    primitives.files.write('a', 'b')\n    return True\n",
-    ],
-)
-def test_a_procedure_that_gives_no_value_or_acts_is_never_a_fixed_answer(source):
-    """Rev 2.1, fix 3: in tool, action and conversation worlds the work is the calls and ``run`` returns None; such a
-    procedure is never served as a worked example."""
-    assert fixed_answer(source) is None
-
-
-def test_whether_the_entry_reads_its_input_is_its_own_fact():
-    from unify.memory.fixed_answer import reads_input
-
-    assert reads_input("def run(state, env):\n    env.a.b()\n") is True
-    assert reads_input("def run(value):\n    return None\n") is False
-    assert reads_input("def run(v:\n") is None and reads_input("x = 1\n") is None
-
-
-def test_a_state_env_procedure_is_a_procedure_in_the_dispatch_file():
+def test_the_dispatch_file_names_the_calls_a_procedure_makes_and_judges_nothing():
     from unify.memory.library_export import _code_facts
 
     acting = "def run(state, env):\n    env.mail.send(state['to'], 'hi')\n    return None\n"
-    facts = _code_facts(acting, None)
-    assert facts["constant"] is False and facts["reads_input"] is True and facts["effects"] == ["env.mail.send"]
-    quiet = "def run(state, env):\n    env.board.step('left')\n    return None\n"
-    assert _code_facts(quiet, None)["constant"] is False
+    assert _code_facts(acting, None) == {"calls": ["env.mail.send"], "applies_text": ""}
+    assert _code_facts(FIXED, None) == {"calls": [], "applies_text": ""}
 
 
 # --- the actor's snapshot ---------------------------------------------------------------------------------------------
 
 
-def test_off_the_snapshot_is_exactly_as_built(tmp_path):
+def test_every_capture_is_exported_alike_whatever_its_code_looks_like(tmp_path):
     store, ids = _store(tmp_path)
     snap = captures.export_files(store)
-    assert snap == captures.export_files(store, examples=False)
-    assert all(captures.EXAMPLE_KEY not in json.loads(v) for p, v in snap.items() if p.endswith("/record.json"))
     assert {p.split("/")[2] for p in snap} == set(ids.values())
-
-
-def test_a_fixed_answer_is_marked_a_worked_example_and_a_failed_one_is_not(tmp_path):
-    store, ids = _store(tmp_path)
-    failed = _put(store, "def run(v):\n    return 'no action'\n", outcome="failed", signature=_signature("x", "y"))
-    snap = captures.export_files(store, examples=True)
-
-    def rec(cid):
-        return json.loads(snap[f"{captures.EXPORT_DIR}/{cid}/{captures.RECORD_FILE}"])
-
-    assert rec(ids["fixed"])[captures.EXAMPLE_KEY] == {"why": NEVER_READS, "returns": ["[[1, 4], [2, 5], [3, 6]]"]}
-    assert rec(ids["retired"])[captures.EXAMPLE_KEY]["why"] == ONLY_LITERALS
-    assert captures.EXAMPLE_KEY not in rec(ids["table"]) and captures.EXAMPLE_KEY not in rec(ids["grid"])
-    assert captures.EXAMPLE_KEY not in rec(failed)  # a failed attempt is never offered anyway
-    assert f"{captures.EXPORT_DIR}/{ids['fixed']}/{captures.PROCEDURE_FILE}" in snap  # its source stays to read
+    for cid in ids.values():
+        rec = json.loads(snap[f"{captures.EXPORT_DIR}/{cid}/{captures.RECORD_FILE}"])
+        assert "worked_example" not in rec and "constant" not in rec
+        assert f"{captures.EXPORT_DIR}/{cid}/{captures.PROCEDURE_FILE}" in snap
 
 
 # --- the librarian's files ---------------------------------------------------------------------------------------------
 
 
-def _snapshot(tmp_path, **export):
-    """The fixture store's snapshot, exported with *export*, beside a fixture library tree."""
+def _snapshot(tmp_path):
+    """The fixture store's snapshot beside a fixture library tree."""
     store, ids = _store(tmp_path)
-    return _tree(tmp_path / "lib"), captures.export_files(store, **export), ids
+    return _tree(tmp_path / "lib"), captures.export_files(store), ids
 
 
-def test_the_catalogue_marks_a_worked_example_constant(tmp_path):
-    """Rev 2: the structural catalogue has a row for a worked example too, marked ``constant`` (to read, never to
-    call); no reader is named anywhere."""
-    tree, snap, ids = _snapshot(tmp_path, examples=True)
+def test_the_catalogue_and_the_search_index_name_every_capture_a_recorded_procedure(tmp_path):
+    tree, snap, ids = _snapshot(tmp_path)
     rows = {r["id"]: r for r in lx.dispatch_data(discover(tree), captures=snap)["procedures"]}
-    assert {k for k in ("table", "grid", "fixed") if f"capture:{ids[k]}" in rows} == {"table", "grid", "fixed"}
-    assert rows[f"capture:{ids['fixed']}"]["constant"] is True
-    assert all("reader" not in r for r in rows.values())
-
-
-def test_the_catalogue_and_the_search_index_say_a_worked_example_is_one(tmp_path):
-    tree, snap, ids = _snapshot(tmp_path, examples=True)
+    for key in ("table", "grid", "fixed", "retired"):
+        row = rows[f"capture:{ids[key]}"]
+        assert "constant" not in row and "reads_input" not in row and "effects" not in row and "calls" in row
     text = lx.catalogue_text(tree, captures=snap)
+    assert "worked example" not in text and "fixed answer" not in text
     card = text.split(f"### capture:{ids['fixed']}\n", 1)[1].split("###", 1)[0]
-    assert "reader none (a worked example)" in card and "a worked example, never called: " + NEVER_READS in card
-    assert "applies: no" in card
-    plain = text.split(f"### capture:{ids['table']}\n", 1)[1].split("###", 1)[0]
-    assert "reader read_input" in plain and "worked example" not in plain
+    assert "Evidence: recorded procedure" in card
     rows = {r["id"]: r for r in library_search.rows(tree, captures=snap)}
-    assert rows[f"capture:{ids['fixed']}"]["kind"] == "worked example"
-    assert rows[f"capture:{ids['table']}"]["kind"] == "captured procedure"
+    assert {rows[f"capture:{ids[k]}"]["kind"] for k in ids} == {"captured procedure"}
 
 
 # --- the package, as a cell runs it -----------------------------------------------------------------------------------
@@ -268,9 +186,9 @@ def err(fn, *a, **k):
 '''
 
 
-def _copy(tmp_path: Path, **export) -> tuple[Path, dict[str, str]]:
-    """A library copy as the request's export writes it, with the capture snapshot exported with *export*."""
-    tree, snap, ids = _snapshot(tmp_path, **export)
+def _copy(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    """A library copy as the request's export writes it, with the capture snapshot."""
+    tree, snap, ids = _snapshot(tmp_path)
     write_files(tree, lx.generated_library_mode(tree))
     for rel, data in snap.items():
         (tree / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -289,34 +207,24 @@ def _cell(root: Path, code: str) -> object:
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def test_a_worked_example_is_read_never_called_or_matched(tmp_path):
-    root, ids = _copy(tmp_path, examples=True)
+def test_a_capture_that_looks_like_a_stored_answer_is_called_like_any_other(tmp_path):
+    root, ids = _copy(tmp_path)
     fixed = f"capture:{ids['fixed']}"
     got = _cell(
         root,
         f"ex = memory.get({fixed!r})\n"
-        f"print(json.dumps({{'kind': ex.kind, 'card': str(ex), 'call': err(ex, 'x'), 'fits': err(ex.fits, [[1]]), "
-        f"'run': memory.run({fixed!r}, 'x').detail, 'notes': [i.id for i in memory.items(kind='note')], "
-        f"'functions': [i.id for i in memory.items(kind='function')]}}))\n",
+        f"print(json.dumps({{'kind': ex.kind, 'card': str(ex), 'call': ex('x'), "
+        f"'notes': [i.id for i in memory.items(kind='note')]}}))\n",
     )
-    assert got["kind"] == "note"
-    assert "A worked example, not a procedure: " + NEVER_READS in got["card"]
-    assert "It handed back: [[1, 4], [2, 5], [3, 6]]" in got["card"] and "def run(value):" in got["card"]
-    assert got["call"][0] == "WrongCall" and "a worked example cannot be called" in got["call"][1]
-    assert got["fits"][0] == "WrongCall" and "a worked example has no inputs to check" in got["fits"][1]
-    assert "worked example" in got["run"]
-    assert fixed in got["notes"] and fixed not in got["functions"]
+    assert got["kind"] != "note" and fixed not in got["notes"]
+    assert got["call"] == [[1, 4], [2, 5], [3, 6]]
+    assert "worked example" not in got["card"] and "fixed answer" not in got["card"]
 
 
 # --- the request ------------------------------------------------------------------------------------------------------
 
 
-def test_the_request_always_marks_worked_examples_and_counts_them():
-    # the copy is written by _export_copy (at the request's open, and at each re-pin under UNIFY_MEMORY=in_episode)
+def test_the_request_exports_every_capture_alike():
     opening = inspect.getsource(RequestRun._export_copy)
-    # rev 2: constants are always offered as worked examples (the switch is gone)
-    assert "withdrawn=withdrawn, examples=True)" in opening
-    assert '"worked_examples": examples' in opening
-    assert '{"type": "capture_serving", "episode_id": self.episode_id, **self.capture_serving}' in inspect.getsource(
-        RequestRun._open,
-    )
+    assert "export_files(store_dir(paths.state_dir), withdrawn=withdrawn)" in opening
+    assert "worked_examples" not in opening and "EXAMPLE_KEY" not in opening

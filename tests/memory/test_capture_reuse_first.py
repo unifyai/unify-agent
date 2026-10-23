@@ -29,7 +29,7 @@ DISCOURAGING = (
 def test_a_fresh_capture_is_served_before_any_writer_pass(tmp_path):
     """Straight from the capture store's export, with no pass ever run: listed, in the librarian's library, and its
     call runs it on a request's text."""
-    root, ids = _copy(tmp_path, examples=True)
+    root, ids = _copy(tmp_path)
     table = f"capture:{ids['table']}"
     request = "TABLE\n" + json.dumps(ROWS)
     got = _cell(
@@ -45,7 +45,7 @@ def test_a_fresh_capture_is_served_before_any_writer_pass(tmp_path):
 
 
 def test_a_capture_card_and_run_report_carry_no_discouraging_wording(tmp_path):
-    root, ids = _copy(tmp_path, examples=True)
+    root, ids = _copy(tmp_path)
     table = f"capture:{ids['table']}"
     got = _cell(
         root,

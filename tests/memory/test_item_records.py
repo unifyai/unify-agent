@@ -140,12 +140,8 @@ def test_summaries_for_show():
             },
         },
     )
-    assert ir.verification_summary(rec) == {
-        "tests": 1,
-        "drawn_inputs_read": 8,
-        "cross_episode": "3/3 ok",
-        "mutation": "4/5 killed",
-    }
+    # no summary of a verification record (its tests, examples, mutation) is served: no test result is evidence
+    assert not hasattr(ir, "verification_summary") and not hasattr(ir, "effect_of")
     assert ir.use_totals(rec) == {
         "commits": 2,
         "episodes": 3,
@@ -156,33 +152,8 @@ def test_summaries_for_show():
         "negative_signals": 0,
         "positive_signals": 1,
     }
-    assert ir.verification_summary(_rec()) is None and ir.use_totals(_rec()) == ZERO
+    assert ir.use_totals(_rec()) == ZERO
 
 
-def test_the_effect_is_a_record_field_read_through_effect_of():
+def test_the_effect_stays_a_record_field_for_the_writer():
     assert ir.empty_record(ITEM, "function")["effect"] is None
-    recs = {
-        ITEM: _rec(effect="write"),
-        "memory.text.dates:day": _rec("memory.text.dates:day", effect="nonsense"),
-    }
-    get = ir.effect_of(recs)
-    assert get(ITEM) == "write"
-    assert get("memory.text.dates:day") is None and get("memory.x.y:z") is None
-
-
-def test_show_summarises_the_examples_record():
-    from unify.memory.item_records import verification_summary
-
-    rec = {
-        "verification": {
-            "examples": {
-                "calls": 5,
-                "grounded_calls": 4,
-                "episodes": ["e1", "e2"],
-                "perturbation": {"judged": 4, "fields": 3},
-            },
-        },
-    }
-    out = verification_summary(rec)
-    assert out["examples"] == "5 calls, 4 on recorded values from 2 episodes"
-    assert out["unseen_values"] == "4 calls judged on 3 fields"

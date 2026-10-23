@@ -807,13 +807,6 @@ class _Undrained:
         return getattr(self._run, name)
 
 
-def label_of(records: Mapping[str, dict] | None, item: str) -> dict | None:
-    """*item*'s evidence label in *records* (its item record's ``label``), or None."""
-    rec = (records or {}).get(item)
-    label = rec.get("label") if isinstance(rec, dict) else None
-    return label if isinstance(label, dict) else None
-
-
 def with_pins(record: Any, pin_counts: Mapping[str, Mapping[str, Mapping[str, int]]], cell_pins: list[str]) -> Any:
     """*record* (a use record) with the pin each use was served under (``UNIFY_MEMORY=in_episode``): each item row gains
     ``pins`` (pin -> its observed calls, {ok, refused, error}), each ``memory.run``, ``memory.match`` and
@@ -984,7 +977,7 @@ class RequestRun:
         self.model = ""
         self.effort = ""
         self.build = ""
-        #: what serving changed in this request's copy (withdrawn captures, fixed answers as worked examples)
+        #: what serving changed in this request's copy (withdrawn captures)
         self.capture_serving: dict | None = None
         self.stores: Any = None
         self.state: Any = None
@@ -1237,7 +1230,7 @@ class RequestRun:
     def _export_copy(self, sha: str, dest: Path, at_open: bool = False) -> None:
         """Write the actor's read-only copy of memory commit *sha* into *dest*: the commit's library, its generated
         files with the item records at that commit, the capture store's snapshot as it is now (withdrawn captures left
-        out, and captures that give a fixed answer offered as worked examples) and the librarian's files. At the
+        out; every other capture served the same way, whatever its code looks like) and the librarian's files. At the
         request's open (*at_open*) it also records what serving changed in the copy, and the generated files."""
         from ..shape_rows import lookup_from
         from .checkout import export_actor_library_mode
@@ -1271,7 +1264,7 @@ class RequestRun:
             logger.warning("memory: the pool's closed captures not read (%s)", type(exc).__name__)
             withdrawn = {}
         try:
-            captured = export_files(store_dir(paths.state_dir), withdrawn=withdrawn, examples=True)
+            captured = export_files(store_dir(paths.state_dir), withdrawn=withdrawn)
         except OSError as exc:
             logger.warning(
                 "memory library mode: captures not exported (%s)",
@@ -1279,23 +1272,12 @@ class RequestRun:
             )
             captured = {}
         if at_open:
-            from ..captures import EXAMPLE_KEY, EXPORT_DIR, RECORD_FILE
-
-            examples = 0
-            for path, data in captured.items():
-                if path.startswith(EXPORT_DIR + "/") and path.endswith("/" + RECORD_FILE):
-                    try:
-                        rec = json.loads(data)
-                    except ValueError:
-                        continue
-                    examples += isinstance(rec, dict) and EXAMPLE_KEY in rec
             gone = withdrawn or {}
             # counts, and the items offered in a withdrawn capture's place (the pool holds which capture each replaced)
             self.capture_serving = {
                 "withdrawn": len(gone),
                 "withdrawn_replaced": sum(1 for row in gone.values() if row.get("by")),
                 "offered_in_place": sorted({row["by"] for row in gone.values() if row.get("by")}),
-                "worked_examples": examples,
             }
         from ..library_export import staging_summaries
         from ..library_search import backend
@@ -1335,9 +1317,6 @@ class RequestRun:
                     self.stores,
                     captures=caps,
                     home=self.paths.home,
-                    # the writer's evidence label of each item (its item record's ``label``, :mod:`..item_label`),
-                    # for its contradictions; none without one
-                    labels=lambda item: label_of(records, item),
                 )
             except Exception as exc:  # noqa: BLE001 - served without evidence; logged
                 logger.warning("memory: item evidence not read (%s)", type(exc).__name__)

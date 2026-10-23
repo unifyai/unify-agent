@@ -113,27 +113,13 @@ def test_sections_are_found_by_package_or_notes_topic(tmp_path):
         find_section(index, "nope")
 
 
-def test_a_functions_derived_effect_shows_beside_its_status(tmp_path):
+def test_the_index_shows_no_effect_and_no_test_breadth(tmp_path):
+    """Nothing a test or a judgement of an item's code gave is served: the index's brackets hold its status and its
+    support only."""
     lib = _lib(tmp_path)
-    links = build_links(lib)
-    effects = {"memory.text.dates:week": "write", "memory.text.parse:tokens": "read"}
-    index = render_index(lib, links, None, effects.get)
-    assert (
-        "- `memory.text.dates:week(s)` — The ISO week of a date. [on-trial, effect: write]\n"
-        in index
-    )
-    assert "Split text on whitespace. [on-trial, effect: read]\n" in index
-    assert (
-        "Count the words of a text. [on-trial]\n" in index
-    )  # none derived: status only
-    assert "effect: write" in INDEX_HEAD  # the head says what the bracket means
-    # no effect function: the index is byte for byte the one without effects
-    assert render_index(lib, links) == render_index(lib, links, None, lambda i: None)
-    # a value outside the known effects is never rendered
-    assert (
-        "effect"
-        not in render_index(lib, links, None, lambda i: "bogus").split("\n## ", 1)[1]
-    )
+    index = render_index(lib, build_links(lib))
+    assert "effect" not in index and "examples from one episode" not in index
+    assert "effect" not in INDEX_HEAD
 
 
 EXAMPLE_TEST = "memory/text/tests/test_dates.py::test_parse_date"
@@ -155,7 +141,7 @@ def test_the_index_grows_by_the_example_lines_only(tmp_path):
     lib = _lib(tmp_path)
     links = build_links(lib)
     plain = render_index(lib, links)
-    shown = render_index(lib, links, None, None, _example_of(tmp_path))
+    shown = render_index(lib, links, None, _example_of(tmp_path))
     assert shown.replace(EXAMPLE_LINE, "") == plain
     assert len(shown) - len(plain) == len(EXAMPLE_LINE)
     grown = estimate_tokens(shown) - estimate_tokens(plain)
@@ -167,7 +153,7 @@ def test_a_stale_example_is_never_quoted_in_the_index(tmp_path):
     links = build_links(lib)
     test_file = tmp_path / "memory/text/tests/test_dates.py"
     test_file.write_text("# edited\n" + test_file.read_text())
-    assert render_index(lib, links, None, None, _example_of(tmp_path)) == EXPECTED_INDEX
+    assert render_index(lib, links, None, _example_of(tmp_path)) == EXPECTED_INDEX
 
 
 def test_an_items_support_shows_beside_its_status(tmp_path):
@@ -188,11 +174,8 @@ def test_an_items_support_shows_beside_its_status(tmp_path):
     def support_of(item):
         return support(records.get(item)) if item in records else None
 
-    index = render_index(lib, links, None, {week: "write"}.get, support_of=support_of)
-    assert (
-        "- `memory.text.dates:week(s)` — The ISO week of a date. "
-        "[on-trial, curated item from 1 episode, effect: write]\n" in index
-    )
+    index = render_index(lib, links, None, support_of=support_of)
+    assert "- `memory.text.dates:week(s)` — The ISO week of a date. [on-trial, curated item from 1 episode]\n" in index
     assert "Split text on whitespace. [on-trial, curated item from 2 episodes, 3 confirmed uses]\n" in index
     # an item with no record shows nothing it does not know; a note with one shows its support too
     assert "Count the words of a text. [on-trial]\n" in index

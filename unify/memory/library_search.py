@@ -88,9 +88,8 @@ def rows(
     """One row per listed item of the copy at *tree*, in module-path order, then the notes, then the captured
     procedures (*captures*: the snapshot's files): ``{id, kind, path, card, text}``. Retired items have none, nor
     has a procedure's recipe. An item offered in the place of withdrawn captures (the snapshot's ``withdrawn.json``)
-    also carries what each was asked in its text, so it is found where they were; a captured procedure the snapshot
-    offers as a worked example is a row of kind ``worked example``. With *serving*
-   , each card also ends with what its status rests on and its recorded
+    also carries what each was asked in its text, so it is found where they were; a captured procedure is a row of
+    kind ``captured procedure``. With *serving*, each card also ends with what its status rests on and its recorded
     failures, and an item offered in the place of withdrawn library items carries their docstrings in its text. Cards
     and texts are as written, identifiers included (rev 2.1)."""
     from . import when_to_use as wtu
@@ -103,7 +102,6 @@ def rows(
         _docstrings,
         _status,
         in_place_of,
-        worked_example,
     )
     from .item_records import support, support_text
     from .library_index import HIDDEN
@@ -141,14 +139,11 @@ def rows(
         run_doc = _first_paragraph(_docstring_of(doc["procedure"])) if isinstance(doc["procedure"], str) else ""
         negative = rec.get("outcome") in ("failed", "contrary")
         card = (run_doc or goal) + (" | tried and failed: never offered to run" if negative else "")
-        example = worked_example(rec)
-        if example:
-            card += f" | a worked example to read, never called: {example.get('why')}"
-        card += " | " + support_text("fixed answer" if example else "recorded procedure", support(rec))
+        card += " | " + support_text("recorded procedure", support(rec))
         out.append(
             {
                 "id": CAPTURE_PREFIX + cid,
-                "kind": "worked example" if example else "captured procedure",
+                "kind": "captured procedure",
                 "path": f".memory/captures/{cid}/procedure.py",
                 "card": card,
                 "text": " ".join(t for t in (goal, run_doc) if t),

@@ -104,7 +104,7 @@ def test_index_and_show_from_the_generated_helper(tmp_path):
     )
     assert "def parse_date(s: str) -> str:" in fn and "Notes: notes/text/dates.md" in fn
     assert "Links to: notes/text/dates.md\nLinked from: notes/text/dates.md\n" in fn
-    assert "Verification: no record yet\nUse: no record yet\n" in fn
+    assert "Use: no record yet\n" in fn and "Verification:" not in fn
     assert "History (newest first):\n  abc123def456 add dates\n" in fn
     assert (
         week.splitlines()[0] == "memory.text.dates:week(s)  [on-trial]"
@@ -244,7 +244,7 @@ def test_history_subjects_reach_the_actor_redacted(tmp_path):
     assert not any(key.encode() in data for data in out.values())
 
 
-def test_the_derived_effect_shows_beside_the_status_in_the_index_and_show(tmp_path):
+def test_a_derived_effect_is_shown_nowhere_the_actor_or_the_librarian_reads(tmp_path):
     from unify.memory.item_records import empty_record
 
     week = "memory.text.dates:week"
@@ -259,26 +259,23 @@ def test_the_derived_effect_shows_beside_the_status_in_the_index_and_show(tmp_pa
     }
     root = _library(tmp_path, records=records)
     index = (root / "INDEX.md").read_text()
-    assert (
-        "`memory.text.dates:week(s)` — The ISO week of a date. [on-trial, curated item from 0 episodes, effect: write]"
-        in index
-    )
-    assert "[on-trial, curated item from 0 episodes, effect: read]" in index
+    assert "`memory.text.dates:week(s)` — The ISO week of a date. [on-trial, curated item from 0 episodes]" in index
+    assert "effect:" not in index
     # an item without a record keeps the plain status: no effect and no support it does not have
     assert "Split text on whitespace. [on-trial]\n" in index
     out = json.loads(
         _py(root, f"import json, memory\nprint(json.dumps(memory.show({week!r})))"),
     )
     assert out.splitlines()[:2] == [
-        "memory.text.dates:week(s)  [on-trial, curated item from 0 episodes, effect: write]",
+        "memory.text.dates:week(s)  [on-trial, curated item from 0 episodes]",
         "Status: it refused inputs it was not built for in 2 episodes and no call to it has returned yet; "
         "a refusal is not a failure.",
     ]
 
 
-def test_show_gives_the_support_and_the_gates_findings(tmp_path):
-    """Rev 2.1: show gives what an item rests on (its kind, episodes and confirmed uses) and the gate's findings, in
-    place of an evidence level."""
+def test_show_gives_the_support_and_never_the_gates_findings(tmp_path):
+    """Show gives what an item rests on (its kind, episodes and confirmed uses), never an evidence level a test gave or
+    the gate's findings (the writer's, for its own work)."""
     from unify.memory.item_records import empty_record
 
     week = "memory.text.dates:week"
@@ -297,12 +294,8 @@ def test_show_gives_the_support_and_the_gates_findings(tmp_path):
     out = json.loads(
         _py(root, f"import json, memory\nprint(json.dumps(memory.show({week!r})))"),
     )
-    assert out.splitlines()[:4] == [
-        "memory.text.dates:week(s)  [on-trial, curated item from 0 episodes]",
-        "Gate findings:",
-        "  " + reasons[0],
-        "  " + reasons[1],
-    ]
+    assert out.splitlines()[0] == "memory.text.dates:week(s)  [on-trial, curated item from 0 episodes]"
+    assert "Gate findings:" not in out and reasons[0] not in out and reasons[1] not in out
     date = json.loads(
         _py(root, f"import json, memory\nprint(json.dumps(memory.show({DATE!r})))"),
     )

@@ -204,7 +204,8 @@ def test_show_gives_the_status_the_support_and_the_gates_finding(tmp_path):
     first = out.splitlines()[0]
     assert first.startswith("memory.text.dates:parse_date(")
     assert ON_TRIAL in first and SHOWN_SUPPORT in first and "evidence:" not in first
-    assert "Gate findings:" in out and "[examples:special-cased]" in out
+    # the gate's findings are the writer's: never on a card the actor or the librarian reads
+    assert "Gate findings:" not in out and "[examples:special-cased]" not in out
     assert "experimental" not in out
 
 

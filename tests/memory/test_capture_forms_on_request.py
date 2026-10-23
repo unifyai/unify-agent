@@ -76,7 +76,7 @@ def _copy(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     }
     tree = _tree(tmp_path / "lib")
     write_files(tree, lx.generated_library_mode(tree))
-    for rel, data in captures.export_files(store, examples=True).items():
+    for rel, data in captures.export_files(store).items():
         (tree / rel).parent.mkdir(parents=True, exist_ok=True)
         (tree / rel).write_bytes(data)
     return tree, ids
@@ -117,7 +117,7 @@ def test_a_failed_attempts_card_never_says_accepted(tmp_path):
     cid = _put(store, STATE_PROC, "state", "contrary")
     tree = _tree(tmp_path / "lib")
     write_files(tree, lx.generated_library_mode(tree))
-    for rel, data in captures.export_files(store, examples=True).items():
+    for rel, data in captures.export_files(store).items():
         (tree / rel).parent.mkdir(parents=True, exist_ok=True)
         (tree / rel).write_bytes(data)
     card = _cell(tree, f"print(json.dumps(str(memory.get('capture:{cid}'))))\n")
@@ -127,7 +127,7 @@ def test_a_failed_attempts_card_never_says_accepted(tmp_path):
 def test_the_catalogue_states_each_forms_real_reader(tmp_path):
     root, ids = _copy(tmp_path)
     store = captures.store_dir(tmp_path / "state")
-    text = lx.catalogue_text(root, captures=captures.export_files(store, examples=True))
+    text = lx.catalogue_text(root, captures=captures.export_files(store))
 
     def card(k):
         return text.split(f"### capture:{ids[k]}\n", 1)[1].split("###", 1)[0]

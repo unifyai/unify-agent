@@ -13,6 +13,7 @@ from unify.memory.gitio import Repo
 from unify.memory.item_records import empty_record
 from unify.memory.item_states import (
     ADOPTED,
+    CONFIRMED_BY_OUTCOMES,
     CURATE_RULE,
     ON_TRIAL,
     REPRODUCES_ITS_CASE,
@@ -41,9 +42,11 @@ def test_stored_statuses_read_in_todays_names():
 
 
 def test_stored_levels_read_in_todays_names():
-    assert level_from_stored("verified") == REPRODUCES_ITS_CASE
+    # a level a run of tests or examples gave is no evidence: it reads as unchecked
+    assert level_from_stored("verified") == UNCHECKED
     assert level_from_stored("unverified") == UNCHECKED and level_from_stored("experimental") == UNCHECKED
-    assert level_from_stored(REPRODUCES_ITS_CASE) == REPRODUCES_ITS_CASE
+    assert level_from_stored(REPRODUCES_ITS_CASE) == UNCHECKED
+    assert level_from_stored(CONFIRMED_BY_OUTCOMES) == CONFIRMED_BY_OUTCOMES
     assert level_from_stored(None) == UNCHECKED  # a missing level fails closed
     assert level_from_stored(None, default=None) is None
 
@@ -52,12 +55,12 @@ def test_the_level_of_a_verification_record():
     # no level and no examples, or no record at all: unchecked
     assert level_of_record({"tests": ["t.py"]}) == UNCHECKED
     assert level_of_record(None) == UNCHECKED
-    # an older record whose example calls ran on recorded values
-    assert level_of_record({"examples": {"calls": 3, "grounded_calls": 2}}) == REPRODUCES_ITS_CASE
+    # an older record whose example calls ran on recorded values: still unchecked (no test result is evidence)
+    assert level_of_record({"examples": {"calls": 3, "grounded_calls": 2}}) == UNCHECKED
     assert level_of_record({"examples": {"calls": 3, "grounded_calls": 0}}) == UNCHECKED
     # a stored level wins, old names mapped
     assert level_of_record({"level": UNCHECKED, "examples": {"grounded_calls": 2}}) == UNCHECKED
-    assert level_of_record({"level": "verified"}) == REPRODUCES_ITS_CASE
+    assert level_of_record({"level": "verified"}) == UNCHECKED
 
 
 def _old(item: str, kind: str, status: str, rule: str | None, **kw) -> dict:
@@ -171,11 +174,11 @@ def test_a_record_missing_its_level_shows_its_support_in_the_index_and_show(tmp_
     assert "Evidence level" not in out
 
 
-def test_the_index_and_show_give_the_support_and_the_gates_findings(tmp_path):
+def test_the_index_and_show_give_the_support_and_never_the_gates_findings(tmp_path):
     reasons = ["examples: one call returns on a recorded value", "exact assertion: none"]
     rec = {**empty_record(DATE, "function"), "level": UNCHECKED, "level_reasons": reasons,
            "provenance": {"episodes": ["e1", "e2"]}}  # fmt: skip
     root = _library(tmp_path, records={DATE: rec})
     assert "YYYY-MM-DD. [on-trial, curated item from 2 episodes]; " in (root / "INDEX.md").read_text()
     out = json.loads(_py(root, f"import json, memory\nprint(json.dumps(memory.show({DATE!r})))"))
-    assert out.splitlines()[1:4] == ["Gate findings:", "  " + reasons[0], "  " + reasons[1]]
+    assert "Gate findings:" not in out and reasons[0] not in out and reasons[1] not in out

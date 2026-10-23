@@ -250,8 +250,7 @@ def test_the_dispatch_file_is_the_structural_catalogue(tmp_path):
     rows = {r["id"]: r for r in data["procedures"]}
     assert data["version"] == 2 and TOTAL in rows and "capture:" + CAPTURE in rows
     assert "capture:" + FAILED not in rows
-    keys = {"id", "kind", "form", "signature", "applies_text", "effects", "reads_input", "constant", "occurrences",
-            "outcomes", "provenance"}  # fmt: skip
+    keys = {"id", "kind", "form", "signature", "applies_text", "calls", "occurrences", "outcomes", "provenance"}
     assert all(set(r) == keys for r in rows.values())
     sig = _records()[TOTAL]["signature"]
     # rev 2: a capture is never run, so its signature describes only the structured data its request held; this

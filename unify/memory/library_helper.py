@@ -445,9 +445,6 @@ WITHDRAWN_FILE = ".memory/captures/withdrawn.json"
 #: items the writer retired or superseded with what replaces each. Without the first file every call is as before.
 EVIDENCE_FILE = ".memory/item_evidence.json"
 WITHDRAWN_ITEMS_FILE = ".memory/withdrawn_items.json"
-#: The key of an exported capture record that offers the capture as a worked example (its ``run`` gives a fixed
-#: answer): ``{"why", "returns"}``. The harness's ``captures.EXAMPLE_KEY``.
-EXAMPLE_KEY = "worked_example"
 #: The audit events of a ``match`` result (each listed row's id, level, status and how it matched; the failed
 #: attempts apart) and of a ``run`` (its target, outcome, level and conditions).
 #: Ids and short labels only: never a value, a result or a request's text.
@@ -656,7 +653,6 @@ def _evidence_lines(evidence: dict | None, iid: str) -> list[str]:
         + _str(row.get("status_text"), "no outcome signal has arrived for any use of this item"),
         "Recorded failures: " + _failure_text(_failures(evidence, iid)),
     ]
-    out += ["Contradicted: " + str(c) for c in row.get("contradictions") or [] if isinstance(c, str)]
     if _str(row.get("conditions")):
         out.append("States that it applies when: " + _str(row.get("conditions")))
     return out
@@ -700,11 +696,6 @@ def _label_lines(label: Any, served_evidence: bool) -> list[str]:
     ]
     if inputs or constants:
         out.append(f"Inputs: {', '.join(inputs) or 'none stated'}; constants: {', '.join(constants) or 'none stated'}")
-    tests = label.get("tests") if isinstance(label.get("tests"), dict) else {}
-    out.append(
-        "Stated tests of this version: "
-        + _count_text(tests, ("as_stated", "not_as_stated", "error", "timeout", "not_run")),
-    )
     uses = label.get("uses") if isinstance(label.get("uses"), dict) else {}
     out.append("Uses of this version: " + _count_text(uses, ("clean", "failed", "neutral")))
     if not served_evidence:
@@ -712,16 +703,6 @@ def _label_lines(label: Any, served_evidence: bool) -> list[str]:
         out.append("Recorded failures: " + _failure_text(rows))
         out.append("Status rests on: " + _str(label.get("status_basis"), "no_outcome_signals").replace("_", " "))
     return out
-
-
-def _example_of(capture_id: str) -> dict | None:
-    """A capture's worked-example mark (:data:`EXAMPLE_KEY` in its exported record), or None: such a capture is
-    read, never called or matched."""
-    if _CAPTURE_ID.fullmatch(capture_id) is None:
-        return None
-    rec = _read_json(os.path.join(_ROOT, CAPTURES_DIR, capture_id, "record.json"))
-    mark = rec.get(EXAMPLE_KEY) if isinstance(rec, dict) else None
-    return mark if isinstance(mark, dict) else None
 
 
 def _label(value: Any, default: str = "other") -> str:
@@ -793,8 +774,6 @@ def _capture_candidates() -> tuple[list[Candidate], int]:
         rec = rec if isinstance(rec, dict) else {}
         if isinstance(rec.get("listing"), dict) and rec["listing"].get("listed") is False:
             continue
-        if isinstance(rec.get(EXAMPLE_KEY), dict):
-            continue  # a worked example: read, never matched as a procedure that applies
         saved = _read_json(os.path.join(d, "saved.json"))
         saved = saved if isinstance(saved, dict) else {}
         failed = rec.get("outcome") in _NEGATIVE
@@ -1498,10 +1477,6 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
     rec = _read_json(os.path.join(_capture_dir(capture_id), "record.json"))
     rec = rec if isinstance(rec, dict) else {}
     base = {"level": _str(rec.get("level"), "unchecked"), "status": _str(rec.get("status"), "on-trial")}
-    if isinstance(rec.get(EXAMPLE_KEY), dict):
-        return RunReport(target, outcome="error", error="LookupError",
-                         detail="this captured procedure is a worked example: it gives the same answer whatever it "
-                         "is given, so it is read, never run; print(memory.get(id)) shows it", **base)
     if rec.get("outcome") in _NEGATIVE:
         return RunReport(target, outcome="error", error="LookupError",
                          detail="this captured attempt failed; it is listed to show what broke, not to run", **base)
@@ -1615,7 +1590,7 @@ def _status_of(row: dict) -> str:
 
 def _support_line(kind: str, facts: Any) -> str:
     """What an item rests on, in words (rev 2.1, every card shows it in place of the evidence ladder): its kind
-    (``curated item``, ``recorded procedure`` or ``fixed answer``), the episodes it comes from and, when it has any,
+    (``curated item`` or ``recorded procedure``), the episodes it comes from and, when it has any,
     the uses whose outcome confirmed it. *facts* is the export's ``support`` (``{"episodes", "confirmed_uses"}``)."""
     if not isinstance(facts, dict):
         return ""  # no record of what it rests on: the card says nothing rather than a count it does not have
@@ -1827,7 +1802,7 @@ class Item:
         links: the ids of the items it links to and of those that link to it.
         history: the library commits that changed it, newest first.
         reason: why ``memory.ask`` judged it applicable ('' from ``memory.get`` and ``memory.items``).
-        support: what it rests on, in words: its kind (curated item, recorded procedure or fixed answer), the
+        support: what it rests on, in words: its kind (curated item or recorded procedure), the
             episodes it comes from and its confirmed uses, for example ``'curated item from 3 episodes, 1 confirmed
             use'``.
 
@@ -2445,14 +2420,8 @@ class _Catalog:
         status = _status_of(row)
         function = row["kind"] == "function"
         if function:
-            effect = row.get("effect")
             rests = _support_line("curated item", row.get("support"))
-            out = [
-                f"{row.get('signature') or wanted}  [{status}"
-                + (f", {rests}" if rests else "")
-                + (f", effect: {effect}" if effect else "")
-                + "]",
-            ]
+            out = [f"{row.get('signature') or wanted}  [{status}" + (f", {rests}" if rests else "") + "]"]
             example = row.get("example")
             if isinstance(example, dict) and example.get("call"):
                 out.append(f"Example (from {example.get('test')}): {example['call']}")
@@ -2467,10 +2436,6 @@ class _Catalog:
             out.append(f"Not in the index: {row.get('status_reason') or 'its status is ' + status}.")
         elif row.get("status_reason"):
             out.append(f"Status: {row['status_reason']}.")
-        reasons = [str(r) for r in (row.get("level_reasons") or []) if not str(r).startswith("not run:")]
-        if reasons:
-            out.append("Gate findings:")
-            out += [f"  {r}" for r in reasons]
         out += _evidence_lines(_evidence(), wanted)
         out += _label_lines(row.get("label"), _evidence() is not None)
         out.append("")
@@ -2480,7 +2445,6 @@ class _Catalog:
             "Links to: " + (", ".join(self.linked(wanted, "links_to")) or "none"),
             "Linked from: " + (", ".join(self.linked(wanted, "linked_from")) or "none"),
             "Generalises: " + (", ".join(self.generalises(wanted)) or "no recorded procedure"),
-            "Verification: " + _summary(row.get("verification")),
             "Use: " + _summary(row.get("use")),
         ]
         history = _history(row)
@@ -2518,9 +2482,6 @@ class _Catalog:
             history=(),
             support=_support_line("recorded procedure", rec.get("support")),
         )
-        example = rec.get(EXAMPLE_KEY) if isinstance(rec.get(EXAMPLE_KEY), dict) else None
-        if example is not None:
-            return self._example(iid, built, example, rec, asked, text)
         out = [f"{iid}  [{built.support or 'recorded procedure'}]", *_capture_lines(iid, rec)]
         by = self.generalised_by(iid, rec)
         if by:
@@ -2534,36 +2495,6 @@ class _Catalog:
             out.append(f"Asked: {' '.join(asked.split())}")
         out += ["", (text or "(its procedure cannot be read)").rstrip("\n")]
         return built, "\n".join(out) + "\n"
-
-    def _example(self, iid: str, built: Item, example: dict, rec: dict, asked: str, source: str) -> tuple[Item, str]:
-        """A captured procedure offered as a worked example: a note-kind item whose text is the example."""
-        text = _example_text(example, rec, asked, source)
-        support = _support_line("fixed answer", rec.get("support"))
-        item = dataclasses.replace(built, kind="note", evidence="unchecked", text=text, support=support)
-        return item, f"{iid}  [{support or 'fixed answer'}]\n" + text
-
-
-def _example_text(example: dict, rec: dict, asked: str, source: str | None) -> str:
-    """A worked example's text: why it is one, what it handed back, its evidence, and its source to read."""
-    cases = rec.get("cases") if isinstance(rec.get("cases"), list) else []
-    rows = [c for c in cases if isinstance(c, dict)]
-    same = sum(1 for c in rows if c.get("reproduces") == "reproduces")
-    failed = sum(1 for c in rows if c.get("outcome") in _NEGATIVE)
-    returns = [r for r in example.get("returns") or [] if isinstance(r, str)]
-    out = [
-        f"A worked example, not a procedure: {_str(example.get('why'), 'its answer is fixed')}, so it gives the "
-        "same answer whatever it is given. Read it to see how an earlier attempt went; it is never called.",
-    ]
-    if asked:
-        out.append(f"Asked: {' '.join(asked.split())}")
-    if returns:
-        out.append("It handed back: " + " | ".join(returns))
-    out.append(
-        f"Evidence: level {_str(rec.get('level'), 'unchecked')}; {len(rows)} recorded case(s), {same} reproducing "
-        f"the value its attempt handed back, {failed} failed.",
-    )
-    out += ["", (source or "(its procedure cannot be read)").rstrip("\n")]
-    return "\n".join(out) + "\n"
 
 
 @checked(name="memory.get")
@@ -2639,9 +2570,7 @@ def _items(topic: str | None, kind: str | None, call: str) -> Items:
 
 
 def _reads_as_note(iid: str) -> bool:
-    """Whether item *iid* is read rather than called: a note, or a captured procedure offered as a worked example."""
-    if iid.startswith(CAPTURE_PREFIX):
-        return _example_of(iid[len(CAPTURE_PREFIX) :]) is not None
+    """Whether item *iid* is read rather than called: a note. Every captured procedure is called the same way."""
     return iid.startswith("notes/")
 
 
@@ -2676,12 +2605,6 @@ def _fit_check(target: str, inputs: Any, call: str) -> Fit:
         raise WrongCall(
             call,
             "a note has no inputs to check; it is text to read.",
-            hint=f"Read it with print(memory.get({target!r})).",
-        )
-    if _reads_as_note(target):
-        raise WrongCall(
-            call,
-            "a worked example has no inputs to check; it is text to read.",
             hint=f"Read it with print(memory.get({target!r})).",
         )
     candidates, _ = _candidates_all()
@@ -2751,12 +2674,6 @@ def _run_target(target: str, /, *args: Any, **kwargs: Any) -> RunReport:
         raise WrongCall(
             call_text(f"memory.get({target!r})", args, kwargs),
             "a note cannot be called; it is text to read.",
-            hint=f"Read it with print(memory.get({target!r})).",
-        )
-    if _reads_as_note(target):
-        raise WrongCall(
-            call_text(f"memory.get({target!r})", args, kwargs),
-            "a worked example cannot be called: it gives the same answer whatever it is given; it is text to read.",
             hint=f"Read it with print(memory.get({target!r})).",
         )
     return _tracked_run(target, args, kwargs)

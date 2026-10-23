@@ -5,8 +5,8 @@
 - ``unchecked``: the item passed every integrity and safety check, and at least one example call of it returns on a
   value from a recorded episode (in any recorded form), but some evidence check did not hold; the findings that set
   the level are kept with the item (``level_reasons``). A capture or a pool draft is also ``unchecked``.
-- ``reproduces-its-case``: its example calls reproduced their recorded cases under every evidence check of the gate.
-  Only records written before rev 2.1 hold it: the gate now runs no code, so it gives ``unchecked``.
+- ``reproduces-its-case``: a level a run of an item's examples or tests once gave. Nothing gives it now, and a stored
+  record that holds it reads as ``unchecked``: no test result is evidence for an item.
 - ``confirmed-by-outcomes``: outcomes after use confirm it. The gate never gives this level; outcome tracking does,
   and outcome tracking alone raises an item to it, lowers it again (to ``unchecked``) and changes statuses.
 
@@ -17,9 +17,7 @@ through ``memory.show``.
 
 Records written before these names existed carry the old status names; :func:`status_from_stored` maps them on
 read (``experimental`` to ``on-trial``, ``stable`` to ``adopted``, ``suspect`` and ``deprecated`` to ``retired``). A
-record without a level reads as ``unchecked`` (it fails closed); :func:`level_of_record` gives an item admitted before
-levels existed ``reproduces-its-case`` only where its verification record shows its example calls ran on recorded
-values.
+record without a level reads as ``unchecked`` (it fails closed), as does one whose level a test run gave.
 """
 
 from __future__ import annotations
@@ -33,14 +31,15 @@ REPRODUCES_ITS_CASE = "reproduces-its-case"
 CONFIRMED_BY_OUTCOMES = "confirmed-by-outcomes"
 #: lowest first
 LEVELS = (UNCHECKED, REPRODUCES_ITS_CASE, CONFIRMED_BY_OUTCOMES)
-#: the level of a stored record that has none: the lowest, so a missing level fails closed (:func:`level_of_record`
-#: gives an older record ``reproduces-its-case`` only where its verification shows its examples ran)
+#: the level of a stored record that has none: the lowest, so a missing level fails closed
 STORED_DEFAULT_LEVEL = UNCHECKED
-#: level names of the design draft that a record may still hold
+#: level names a stored record may still hold, read as today's: a level a run of tests or examples gave (``verified``,
+#: ``reproduces-its-case``) reads as ``unchecked``, since no test result is ever evidence for an item
 OLD_LEVELS = {
     "unverified": UNCHECKED,
     "experimental": UNCHECKED,
-    "verified": REPRODUCES_ITS_CASE,
+    "verified": UNCHECKED,
+    REPRODUCES_ITS_CASE: UNCHECKED,
 }
 
 # --- statuses -----------------------------------------------------------------------------------------------------
@@ -78,10 +77,10 @@ def status_from_stored(value: Any, default: str = ON_TRIAL) -> str:
 
 def level_from_stored(value: Any, default: str | None = STORED_DEFAULT_LEVEL) -> str | None:
     """A stored evidence level in today's names; a record without one (None) gets *default*."""
-    if value in LEVELS:
-        return value
     if isinstance(value, str) and value in OLD_LEVELS:
         return OLD_LEVELS[value]
+    if value in LEVELS:
+        return value
     return default
 
 
@@ -98,17 +97,10 @@ def lowest(*levels: str) -> str:
 def level_of_record(verification: Any) -> str:
     """The evidence level of an item from its verification record (the gate's, as the item record keeps it).
 
-    Its ``level`` when it has one (old names mapped). A record from before levels existed has none: it reads as
-    ``reproduces-its-case`` only when it shows the gate ran its example calls on recorded values (``examples`` with at
-    least one grounded call), else ``unchecked``. No record at all is ``unchecked``.
+    Its ``level`` when it has one (old names mapped, a test-given level read as ``unchecked``); otherwise
+    ``unchecked``, whatever examples or tests its record shows ran: no test result is evidence for an item.
     """
     if not isinstance(verification, dict):
         return UNCHECKED
     stored = level_from_stored(verification.get("level"), default=None)
-    if stored is not None:
-        return stored
-    examples = verification.get("examples")
-    grounded = examples.get("grounded_calls") if isinstance(examples, dict) else None
-    if isinstance(grounded, int) and not isinstance(grounded, bool) and grounded > 0:
-        return REPRODUCES_ITS_CASE
-    return UNCHECKED
+    return stored if stored is not None else UNCHECKED

@@ -98,9 +98,6 @@ SHAPES_FILE = "shapes.jsonl"
 #: occurrence that folded into it (``occurrences/<n>/procedure.py``), kept as evidence.
 OCCURRENCES_FILE = "occurrences.jsonl"
 OCCURRENCES_DIR = "occurrences"
-#: The key of an exported record that offers its capture as a worked example
-#:: ``{"why", "returns"}`` (:mod:`.fixed_answer`).
-EXAMPLE_KEY = "worked_example"
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_BYTES = 1024 * 1024
 GOAL_CHARS = 600
@@ -730,14 +727,12 @@ def capture_trace_step(
        capture of that shape, this occurrence folds into it (no new capture; the occurrence and its raw bytes kept
        there, :data:`OCCURRENCES_FILE`), else it is a new capture under its own id;
     6. the capture's files and its record (``v`` 2: ``trace``, ``value``, ``entry_point``, ``own_check``,
-       ``effects_seen``, ``outcome``, ``shape``, ``occurrences``, and ``constant`` when its ``run`` gives a fixed
-       answer).
+       ``effects_seen``, ``outcome``, ``shape``, ``occurrences``).
 
     No recurrence step runs and nothing credits a use: the writer reads and groups. Returns the step's row, also
     appended to ``captures-events.jsonl``; never raises for what the staging holds."""
     from . import capture_trace as ct
     from .capture_shape import shape_of
-    from .fixed_answer import fixed_answer
 
     t0 = clock()
     staging, store = Path(staging), Path(store)
@@ -802,7 +797,6 @@ def capture_trace_step(
         digests=function_digests(source),
         goal=asked(summary),
     )
-    constant = fixed_answer(source)
     raw_cid = capture_id(source)
     address = shape_of(source)
     shape_id = address["shape"] if address else None
@@ -842,7 +836,6 @@ def capture_trace_step(
             value=value_doc,
             own_check=check,
             effects_seen=effects,
-            constant=constant,
             shape=shape_id,
             occurrences=len(rec["episodes"]),
         )
@@ -869,7 +862,6 @@ def capture_trace_step(
         own_check=check,
         effects_seen=effects,
         outcome=outcome,
-        constant=constant is not None,
         run=run["outcome"],
         published_at=clock(),
     )
@@ -1127,24 +1119,19 @@ def listed_record(record: dict, landing: Mapping[str, Any] | None) -> dict:
 def export_files(
     store: Path | str,
     *,
-    examples: bool = False,
     withdrawn: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, bytes]:
     """The actor's snapshot of the store, by path under its library copy (``.memory/captures/<id>/<file>``). The
     record of a capture whose landed procedure is not listed says so (:func:`listed_record`).
 
-    With *examples* the record of a capture whose ``run``
-    gives a fixed answer (:func:`.fixed_answer.fixed_answer`; a failed attempt is never offered anyway) carries
-    :data:`EXAMPLE_KEY`, and the package, the catalogue, the search index and the dispatch file then offer it as a
-    worked example to read, never as a procedure to call.
+    Every capture is exported the same way, whatever its code looks like: nothing judges whether it gives a fixed
+    answer, reads its input or acts (none of that can be told reliably), so nothing changes how it is served.
 
     With *withdrawn* (:func:`.pool.withdrawn_captures`, capture
     id -> ``{"status", "by", "reason"}``) those captures are left out of the snapshot, so nothing offers them, and
     ``.memory/captures/withdrawn.json`` names each with what is offered in its place and what it was saved against
     (its signature and ``saved.json`` texts), so the item that superseded it is offered
     where it would have been."""
-    from .fixed_answer import fixed_answer
-
     out: dict[str, bytes] = {}
     landed = landings(store)
     docs = load(store)
@@ -1159,9 +1146,6 @@ def export_files(
             if isinstance(doc.get(key), str):
                 out[f"{EXPORT_DIR}/{cid}/{name}"] = doc[key].encode("utf-8", "surrogatepass")
         record = listed_record(doc["record"], landed.get(cid))
-        fixed = fixed_answer(doc.get("procedure")) if examples and not negative(record) else None
-        if fixed is not None:
-            record = {**record, EXAMPLE_KEY: fixed}
         out[f"{EXPORT_DIR}/{cid}/{RECORD_FILE}"] = _json(record)
         if isinstance(doc.get("signature"), dict):
             out[f"{EXPORT_DIR}/{cid}/{SIGNATURE_FILE}"] = _json(doc["signature"])

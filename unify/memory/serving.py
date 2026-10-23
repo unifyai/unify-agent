@@ -8,8 +8,6 @@ that it fits:
   (``holds_false``), a contrary signal its episode's regime observes followed it (``contrary_signal``; when every such
   signal arrived after the episode ended, ``late_contrary``), or the actor reported a problem with it on the run
   record (``actor_reported``); ``pin`` is the library commit that was served when it was used;
-* its **contradictions**: what the writer's stated tests found not as stated, from the item's evidence label when
-  the label exists (:func:`contradictions`);
 * what its status **rests on** (:func:`.trust.status_basis`: verdicts, outcomes at episode end, implicit signals, or
   no outcome signal at all) and how its uses were judged, stated as text (:func:`.trust.basis_text`);
 * its **stated conditions**: the first line of its ``applies`` (what it says it applies to).
@@ -21,7 +19,9 @@ are withdrawn as captures are (:func:`withdrawn_items`, :data:`WITHDRAWN_ITEMS_F
 and asking for one by its id gives what replaced it.
 
 Ids, labels, counts and the items' own stated text only: nothing here reads a world, a request's text or a stream
-position.
+position. No test result (the writer's stated tests, the gate's findings) and no judgement of an item's code (pure or
+not, acting or not, a fixed answer or not) is read: an item is served on its uses' outcomes and its source episodes
+only.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-#: Beside the library copy: each item's evidence (failure record, contradictions, status basis, conditions).
+#: Beside the library copy: each item's evidence (failure record, status basis, conditions).
 EVIDENCE_FILE = ".memory/item_evidence.json"
 #: Beside the library copy: the library items the writer retired or superseded, each with what replaces it.
 WITHDRAWN_ITEMS_FILE = ".memory/withdrawn_items.json"
@@ -149,40 +149,16 @@ def actor_reports(home: Path | str | None) -> list[dict]:
     return out
 
 
-def contradictions(label: Mapping[str, Any] | None) -> list[str]:
-    """What an item's evidence label (the writer's stated tests) contradicts, as short lines: tests not as stated.
-    [] without a label."""
-    if not isinstance(label, Mapping):
-        return []
-    out: list[str] = []
-    tests = label.get("tests") if isinstance(label.get("tests"), Mapping) else {}
-    n = tests.get("not_as_stated")
-    if isinstance(n, int) and not isinstance(n, bool) and n > 0:
-        out.append(f"{n} of its stated tests did not go as stated")
-    return out
-
-
-def _labels() -> Any:
-    """The writer's evidence labels by item (``writer_tests.label_of``), or None while that module has none."""
-    try:
-        from . import writer_tests
-    except ImportError:
-        return None
-    return getattr(writer_tests, "label_of", None)
-
-
 def item_evidence(
     stores: Any,
     *,
     captures: Mapping[str, dict] | None = None,
     home: Path | str | None = None,
-    labels: Any = None,
 ) -> dict[str, dict]:
     """Each stored item's evidence, by id: library items from the evidence store's use index
     (:func:`.lifecycle.facts_from_evidence`), captured procedures (``capture:<id>``) from their records' uses
-    (*captures*: :func:`.captures.load`). Each is ``{"failure_record": [...], "status_basis", "counts",
-    "contradictions": [...]}``; an item with no use and no report is left out. *labels* (an item id -> its evidence
-    label, or None) gives the contradictions; by default the writer's labels where they exist."""
+    (*captures*: :func:`.captures.load`). Each is ``{"failure_record": [...], "status_basis", "counts"}``; an item with
+    no use and no report is left out. Uses and reports only: no test result is read."""
     from . import lifecycle, trust
 
     ev = stores.evidence
@@ -235,10 +211,6 @@ def item_evidence(
         )
         if row not in entry["failure_record"]:
             entry["failure_record"].append(row)
-    label_of = labels if labels is not None else _labels()
-    for item, entry in out.items():
-        label = label_of(item) if label_of is not None else None
-        entry["contradictions"] = contradictions(label)
     return out
 
 
@@ -291,8 +263,8 @@ def conditions(tree: Path | str, records: Mapping[str, dict] | None, captures: M
 
 
 def evidence_doc(evidence: Mapping[str, dict], stated: Mapping[str, str], statuses: Mapping[str, str]) -> dict:
-    """:data:`EVIDENCE_FILE`'s content: ``{"v": 1, "items": {id: {"failure_record", "contradictions", "status_basis",
-    "counts", "status_text", "conditions"}}}`` for every item with evidence or stated conditions; *statuses* gives each
+    """:data:`EVIDENCE_FILE`'s content: ``{"v": 1, "items": {id: {"failure_record", "status_basis", "counts",
+    "status_text", "conditions"}}}`` for every item with evidence or stated conditions; *statuses* gives each
     item's status for its status text (on trial when it has none)."""
     from . import trust
 
@@ -303,7 +275,6 @@ def evidence_doc(evidence: Mapping[str, dict], stated: Mapping[str, str], status
         counts = e.get("counts") or {trust.CLEAN: 0, trust.FAILED: 0, trust.NEUTRAL: 0}
         items[item] = {
             "failure_record": list(e.get("failure_record") or []),
-            "contradictions": list(e.get("contradictions") or []),
             "status_basis": basis,
             "counts": dict(counts),
             # a recorded procedure is named by what it is, never by a trial status that reads as second-class
@@ -361,7 +332,6 @@ __all__ = [
     "actor_reports",
     "applies_line",
     "conditions",
-    "contradictions",
     "evidence_doc",
     "file_bytes",
     "item_evidence",

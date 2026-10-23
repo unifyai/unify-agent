@@ -44,8 +44,7 @@ SAVED_AGAINST_LABEL = "saved against"
 EVIDENCE_LABEL = "evidence"
 #: The keys of one dispatch row (J(b).3) and where the rows sit in the file (a list, or a list under this key).
 #: Rev 2: the structural catalogue's row (``library_export.dispatch_data``).
-DISPATCH_KEYS = {"id", "kind", "form", "signature", "applies_text", "effects", "reads_input", "constant", "occurrences",
-                 "outcomes", "provenance"}  # fmt: skip
+DISPATCH_KEYS = {"id", "kind", "form", "signature", "applies_text", "calls", "occurrences", "outcomes", "provenance"}
 DISPATCH_ROWS_KEY = "procedures"
 
 
@@ -247,7 +246,7 @@ def test_the_dispatch_file_is_one_structural_row_per_listed_procedure(tmp_path):
     for row in rows:
         assert set(row) == DISPATCH_KEYS, row
         assert row["kind"] in ("function", "capture-shape") and isinstance(row["applies_text"], str)
-        assert isinstance(row["effects"], list) and isinstance(row["constant"], bool)
+        assert isinstance(row["calls"], list)
     by_id = {r["id"]: r for r in rows}
     total = by_id[w.TOTAL]
     assert total["signature"] == signature_text(w.records()[w.TOTAL]["signature"])

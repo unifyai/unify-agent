@@ -83,7 +83,6 @@ def _serving(
                 "failure_record": TWO_FAILURES,
                 "status_basis": trust.BASIS_END_OUTCOMES,
                 "counts": {"clean": 3, "failed": 2, "neutral": 0},
-                "contradictions": ["1 of its stated tests did not go as stated"],
             },
         }
     )
@@ -132,7 +131,7 @@ def test_an_item_with_two_failures_shows_them_on_its_card_and_in_the_librarians_
         "Status by evidence: on-trial: 3 clean uses, 2 failed, all judged at episode end"
         in got
     )
-    assert "Contradicted: 1 of its stated tests did not go as stated" in got
+    assert "Contradicted" not in got and "stated tests" not in got  # no test result is served
     assert "States that it applies when: the text is a date" in got
     catalogue = files[".memory/catalogue.md"].decode()
     card = catalogue.split(f"### {PARSE_DATE}\n", 1)[1].split("###", 1)[0]
@@ -387,9 +386,7 @@ def test_the_failure_record_comes_from_the_evidence_with_its_pins_and_late_contr
         timing="after_episode",
     )
     post_signal(late, stores.episodes, sha3, stores.evidence)
-    found = serving.item_evidence(
-        stores, captures={}, home=None, labels=lambda _i: None
-    )
+    found = serving.item_evidence(stores, captures={}, home=None)
     rows = {(r["episode"], r["why"]): r for r in found[ITEM]["failure_record"]}
     assert set(rows) == {
         ("e1", "error"),
@@ -404,7 +401,7 @@ def test_the_failure_record_comes_from_the_evidence_with_its_pins_and_late_contr
     assert rows[("e3", "late_contrary")]["ref"] == "signal:e3.late.e4.1"
     assert found[ITEM]["status_basis"] == trust.BASIS_END_OUTCOMES
     assert (
-        found[ITEM]["counts"][trust.FAILED] >= 3 and found[ITEM]["contradictions"] == []
+        found[ITEM]["counts"][trust.FAILED] >= 3 and "contradictions" not in found[ITEM]
     )
     # the item a hidden grader judged has no failure from it
     assert not [r for r in found[ITEM]["failure_record"] if r["episode"] == "e4"]
@@ -439,9 +436,7 @@ def test_an_actors_report_on_the_run_record_is_a_failure(tmp_path, monkeypatch):
         monkeypatch.setattr(
             sys.modules["unify.agents"], "run_record", fake, raising=False
         )
-    found = serving.item_evidence(
-        stores, captures={}, home=tmp_path, labels=lambda _i: None
-    )
+    found = serving.item_evidence(stores, captures={}, home=tmp_path)
     assert {
         "episode": "e1",
         "pin": "c0ffee" * 6 + "abcd",
@@ -455,20 +450,12 @@ def test_an_actors_report_on_the_run_record_is_a_failure(tmp_path, monkeypatch):
     assert serving.actor_reports(None) == []
 
 
-def test_contradictions_come_from_the_evidence_label():
-    assert serving.contradictions(None) == []
-    label = {
-        "tests": {"as_stated": 3, "not_as_stated": 2},
-        "effects": {"declares": "none", "seen_in_tests": {"read": 1, "write": 2}},
-    }
-    # rev 2: the writer's tests run an item on a recorded input only (no replay mode), so no effect is seen in its
-    # tests and only the tests not as stated are a contradiction; an effects entry adds none
-    assert serving.contradictions(label) == [
-        "2 of its stated tests did not go as stated",
-    ]
-    assert serving.contradictions(
-        {"effects": {"declares": "reads", "seen_in_tests": {"write": 1}}}
-    ) == []
+def test_serving_reads_no_test_result():
+    """Trust and serving come only from real uses and source episodes: no test result reaches an item's evidence."""
+    import inspect
+
+    assert not hasattr(serving, "contradictions")
+    assert "labels" not in inspect.signature(serving.item_evidence).parameters
 
 
 # --- 5. the NW E4 replay: an instance capture served as fitting now reaches the librarian with its failures --------
@@ -532,7 +519,6 @@ def test_the_e4_replay_the_librarian_input_now_carries_the_failure_record(
         stores,
         captures=caps,
         home=tmp_path,
-        labels=lambda _i: None,
     )
     doc = serving.evidence_doc(
         found, serving.conditions(tmp_path, {}, caps), {f"capture:{cid}": "on-trial"}
