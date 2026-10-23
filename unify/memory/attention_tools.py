@@ -148,6 +148,14 @@ def decide(ctx: Any, args: dict) -> "_wt.Reply":
     writer, att = _state(ctx)
     if att is None:
         return _no_ledger("decide")
+    absent = _not_held(writer, att, str(args.get("decision") or ""), args.get("items") or [])
+    if absent:
+        return _refused(
+            "decide",
+            f"retire names {', '.join(absent)}, which the library does not hold (no function, note or capture has "
+            "that id), so the decision could not take effect; nothing was decided. tools.find(query) lists the "
+            "library's items with their ids, and an entry's refs name the items it is about",
+        )
     reads = reads_of(writer)
     delivered = _att.delivered_seqs(att.home, att.pass_id)
     try:
@@ -168,6 +176,37 @@ def decide(ctx: Any, args: dict) -> "_wt.Reply":
         return _refused("decide", text)
     return _wt.Reply(_json({"closed": list(res.entries), "decision": res.decision, "items": list(res.items),
                             "reason_ref": res.reason_ref, "deferred": res.deferred}))  # fmt: skip
+
+
+def _not_held(writer: Any, att: AttentionPass, decision: str, items: Any) -> list[str]:
+    """The items a ``retire`` names that it could not take effect on: a ``capture:<id>`` the capture store does not
+    hold, or another id that is no function or note of the pass's library copy. [] for any other decision, and when
+    the library copy cannot be read (nothing is refused then that could have been held)."""
+    if decision != "retire" or not isinstance(items, (list, tuple)):
+        return []
+    names = [i.strip() for i in items if isinstance(i, str) and i.strip()]
+    if not names:
+        return []
+    from .captures import load, store_dir
+    from .layout import discover
+
+    held: set[str] = set()
+    if any(n.startswith(_att.CAPTURE_PREFIX) for n in names):
+        try:
+            held.update(_att.CAPTURE_PREFIX + cid for cid in load(store_dir(att.ledger.state_dir)))
+        except OSError:
+            return []
+    if any(not n.startswith(_att.CAPTURE_PREFIX) for n in names):
+        box = _box_of(writer)
+        if box is None:
+            return []
+        try:
+            lib = discover(box)
+        except Exception:  # noqa: BLE001 - an unreadable copy refuses nothing
+            return []
+        held.update(f.item_id for f in lib.functions)
+        held.update(n.item_id for n in lib.notes)
+    return [n for n in names if n not in held]
 
 
 # --- find ----------------------------------------------------------------------------------------------------------------

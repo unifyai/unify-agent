@@ -1263,6 +1263,13 @@ class RequestRun:
         except Exception as exc:  # noqa: BLE001 - an unreadable pool withdraws nothing; the request goes on
             logger.warning("memory: the pool's closed captures not read (%s)", type(exc).__name__)
             withdrawn = {}
+        # and the captures a writer's decision retired (the attention ledger's close rows), with the writer's reason
+        from ..attention import retired_captures
+
+        try:
+            withdrawn = {**retired_captures(paths.state_dir), **withdrawn}
+        except Exception as exc:  # noqa: BLE001 - an unreadable ledger retires nothing; the request goes on
+            logger.warning("memory: the writer's retired captures not read (%s)", type(exc).__name__)
         try:
             captured = export_files(store_dir(paths.state_dir), withdrawn=withdrawn)
         except OSError as exc:

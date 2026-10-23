@@ -1898,6 +1898,42 @@ def item_decisions(home: Path | str, state_dir: Path | str | None = None) -> dic
     return out
 
 
+_CAPTURE_ITEM = re.compile(r"capture:([0-9a-f]{16})\Z")
+
+
+def decision_reason(state_dir: Path | str, reason_ref: Any) -> str:
+    """The reason text a ``pass:<id>/decisions.jsonl#<n>`` reference names (the writer's own words), or ""."""
+    m = re.fullmatch(r"pass:([\w.-]+)/" + re.escape(DECISIONS_FILE) + r"#(\d+)", str(reason_ref or ""))
+    if m is None or m.group(1) in (".", ".."):
+        return ""
+    for row in _read_rows(Path(state_dir) / "passes" / m.group(1) / DECISIONS_FILE):
+        if row.get("n") == int(m.group(2)):
+            return str(row.get("reason") or "")
+    return ""
+
+
+def retired_captures(state_dir: Path | str) -> dict[str, dict]:
+    """Capture id -> ``{"status": "retired", "by": None, "reason"}`` for each capture a writer's ``retire`` decision
+    named (``capture:<id>`` among its items), the latest decision naming it winning: a later ``new_item``,
+    ``changed_item`` or ``note`` naming it puts it back. *reason* is the writer's reason as it wrote it. The capture
+    stays on record either way; a retired one is no longer served (:func:`.captures.export_files` leaves it out). From
+    the ledger's own close rows, in the order they were written."""
+    out: dict[str, dict] = {}
+    for row in Ledger.at_state(state_dir).rows():
+        if row.get("op") != "close" or row.get("decision") not in DECISIONS:
+            continue
+        for item in row.get("items") or []:
+            m = _CAPTURE_ITEM.match(item) if isinstance(item, str) else None
+            if m is None:
+                continue
+            if row["decision"] == "retire":
+                reason = decision_reason(state_dir, row.get("reason_ref")) or "retired"
+                out[m.group(1)] = {"status": "retired", "by": None, "reason": reason}
+            elif row["decision"] in _KEEPS:
+                out.pop(m.group(1), None)
+    return out
+
+
 def _delivery_rows(home: Path | str) -> list:
     try:
         from unify.agents import run_record  # the mesh's reader, where it is built
