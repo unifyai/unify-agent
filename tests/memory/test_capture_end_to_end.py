@@ -58,10 +58,11 @@ CAPTURE_STORE = "memory-captures"
 CAPTURE_FILES = ("procedure.py", "signature.json", "record.json", "saved.json", "occurrences.jsonl")
 CAPTURE_EVENTS = "captures-events.jsonl"
 SIGNATURE_KEYS = {"input", "output", "relations", "constraints", "goal"}
-#: the trace record (nothing is run): no ``reproduces``; ``own_check`` says the capture was not run; no uses, and no
-#: status or level from them (those are the evidence store's)
-RECORD_KEYS = {"episodes", "own_check", "deterministic", "applies", "holds", "outcome"}
-NOT_RECORD_KEYS = {"uses", "track", "status", "level"}
+#: the trace record (nothing is run): no ``reproduces``; ``own_check`` says the capture was not run; its uses (none at
+#: capture time: a request that calls it writes them from the evidence store) and the status and level they give it
+RECORD_KEYS = {"episodes", "own_check", "deterministic", "applies", "holds", "outcome", "uses", "track", "status",
+               "level"}
+NOT_RECORD_KEYS = {"reproduces"}
 #: Design I.11 decision 3: evidence levels (lowest first) and a new item's status.
 LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
 LEVEL_CAPTURE = LEVELS[0]
@@ -231,7 +232,7 @@ def test_the_fork_stages_a_procedure_and_the_capture_step_records_it(tmp_path):
     assert (folder / "procedure.py").read_text() == PROCEDURE
     record = _read_json(folder / "record.json")
     assert RECORD_KEYS <= set(record) and not NOT_RECORD_KEYS & set(record), record
-    assert record["episodes"] == [ep.episode_id]
+    assert record["episodes"] == [ep.episode_id] and record["uses"] == []
     # rev 2: never run to classify it, so nothing is judged of its run; its outcome comes from the signals only
     assert record["own_check"] == {"ran": False, "why": "a capture is never run to classify it"}, record
     assert "reproduces" not in record, record

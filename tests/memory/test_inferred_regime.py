@@ -417,13 +417,15 @@ def test_a_late_contrary_verdict_changes_the_regime_reopens_and_recomputes_the_u
         rec["cases"][0]["outcome"] == captures.FAILED
         and rec["outcome"] == captures.FAILED
     )
-    assert not set(captures.USE_FIELDS) & set(rec)
     # and its use in that episode is recomputed from the same evidence: under the new regime, failed on the signal
     uses = lifecycle.trust_uses(after, after.items["capture:" + cid])
     assert [(u.regime, *trust.judge(u)[:2]) for u in uses] == [("sparse", trust.FAILED, "negative")]
     row = serving.item_evidence(stores, captures=captures.load(captures.store_dir(state)), home=None)[
         "capture:" + cid
     ]
+    # the capture's record keeps the same uses, judged again, with the status they give it (one derivation)
+    assert rec["uses"] == [u.row() for u in uses]
+    assert (rec["status"], rec["level"]) == (row["status"], row["level"])
     assert row["counts"][trust.FAILED] == 1 and row["counts"][trust.CLEAN] == 0
     assert [(r["episode"], r["why"], r["ref"]) for r in row["failure_record"]] == [
         ("e1", "late_contrary", "signal:e1.late.e9.1")

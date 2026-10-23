@@ -1831,11 +1831,25 @@ class RequestRun:
         # the episode and the redactor it was stored with, for the similar index (:meth:`_index_similar`)
         self._recorded = (ep, redactor)
         self._post_inferred(ep, sha, ended_at, basis, visible)
+        self._record_capture_uses(ep)
         bumped = self.state.generations.observe(ep.fingerprints or {})
         self.state.drift |= bumped
         self.state.suspect |= bumped
         self.state.save()
         return ep.episode_id, sha
+
+    def _record_capture_uses(self, ep: Any) -> None:
+        """Each captured procedure this episode called gets its uses written into its capture record from the evidence
+        store's rows just indexed (:func:`..serving.record_capture_uses`), so the record and the evidence store agree
+        from this request on; a failure is logged and never stops the request."""
+        from .. import captures, serving
+
+        use = ep.memory_use if isinstance(ep.memory_use, dict) else {}
+        items = use.get("items") if isinstance(use.get("items"), dict) else {}
+        try:
+            serving.record_capture_uses(self.stores, captures.store_dir(self.paths.state_dir), list(items))
+        except Exception as exc:  # noqa: BLE001 - logged, value-free; the request goes on
+            logger.warning("memory: capture uses not recorded (%s)", type(exc).__name__)
 
     def _infer_regime(self, ep: Any, lines: list[dict]) -> tuple[str, list]:
         """Set *ep*'s regime from the verdicts the actor saw in this episode (each

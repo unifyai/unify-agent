@@ -190,6 +190,11 @@ def post_late(
         ep,
         regime,
     )
+    # the captures that episode called: their records keep their uses as the evidence store now judges them
+    from .. import lifecycle, serving
+
+    used = [i for f in lifecycle.facts_from_evidence(stores.evidence, eids=[eid]) for i in f.items]
+    serving.record_capture_uses(stores, captures.store_dir(state_dir), used)
     return {
         "signal_id": sig.signal_id,
         "episode_id": eid,

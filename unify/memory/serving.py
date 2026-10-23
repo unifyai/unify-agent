@@ -15,9 +15,10 @@ that it fits:
 
 A captured procedure's uses are read from the same place as a library item's: the evidence store's ``item_use`` rows
 under its ``capture:<id>``, which each request's use record gives from the calls its cells made. Its record in the
-capture store holds what the capture step saw (its episodes, its cases and their outcomes), never its uses, so the
-two never disagree; what it rests on, its status and its evidence level are computed here from both
-(:func:`capture_support`).
+capture store holds what the capture step saw (its episodes, its cases and their outcomes) and the same uses, written
+from those rows when a request that called it ends (:func:`record_capture_uses`); what it rests on is computed here
+(:func:`capture_support`), and its status and evidence level by the one derivation its record keeps too
+(:func:`.captures.use_fields`), so the two never disagree.
 
 The export writes these as :data:`EVIDENCE_FILE` beside the library copy; the package reads them for its cards and
 its structural checks, and the librarian's catalogue and search rows carry them (:mod:`.librarian` reads the same
@@ -202,6 +203,36 @@ def capture_support(record: Mapping[str, Any] | None, uses: list) -> dict:
     return {**record_support(record), "confirmed_uses": confirmed}
 
 
+def _uses_in(f: Any, item: str) -> list:
+    """*item*'s uses in episode facts *f* as :class:`.trust.Use` values (:func:`.lifecycle.trust_uses`); [] when it
+    was not used there."""
+    from . import lifecycle
+
+    u = f.items.get(item)
+    return [] if u is None else lifecycle.trust_uses(f, u)
+
+
+def capture_uses(facts: Any, item: str) -> list:
+    """Every use of *item* on record over *facts* (:func:`.lifecycle.facts_from_evidence`), in recording order: what
+    :func:`item_evidence` judges it on and what its capture record keeps (:func:`record_capture_uses`)."""
+    return [x for f in facts for x in _uses_in(f, item)]
+
+
+def record_capture_uses(stores: Any, store: Path | str, items: Any) -> list[str]:
+    """Write into the capture record of each captured procedure of *items* (``capture:<id>``; other ids are skipped)
+    every use of it the evidence store holds (:func:`capture_uses`, :func:`.captures.record_uses`), so its record and
+    the evidence store agree. Called when a request that called it ends, and when a late signal judges such a request
+    again. Returns the ids whose record changed."""
+    from . import lifecycle
+    from .captures import record_uses
+
+    want = sorted({i for i in items or () if isinstance(i, str) and i.startswith("capture:")})
+    if not want:
+        return []
+    facts = lifecycle.facts_from_evidence(stores.evidence)
+    return [i for i in want if record_uses(store, i[len("capture:") :], capture_uses(facts, i))]
+
+
 def item_evidence(
     stores: Any,
     *,
@@ -217,7 +248,7 @@ def item_evidence(
     (:func:`.trust.apply_outcome`; a capture whose own episode failed is never adopted). A library item with no use
     and no report is left out. Uses and reports only: no test result is read."""
     from . import lifecycle, trust
-    from .captures import negative
+    from .captures import use_fields
 
     ev = stores.evidence
     pins, use_pins = _pins(ev), _use_pins(ev)
@@ -229,10 +260,7 @@ def item_evidence(
         seen: set[tuple] = set()
         uses: list = []
         for f in facts:
-            u = f.items.get(item)
-            if u is None:
-                continue
-            mine = lifecycle.trust_uses(f, u)
+            mine = _uses_in(f, item)
             uses += mine
             for x in mine:
                 kind, why, _ = trust.judge(x)
@@ -251,15 +279,9 @@ def item_evidence(
         if item in own:
             doc = own[item]
             rec = doc.get("record") if isinstance(doc, Mapping) else None
-            decided = trust.apply_outcome(trust.UNCHECKED, None, uses)
-            status = decided.status
-            if negative(rec) and status == trust.ADOPTED:
-                status = trust.ON_TRIAL  # a capture whose own episode failed is negative knowledge
-            out[item].update(
-                support=capture_support(rec, uses),
-                status=status,
-                level=decided.level if status == decided.status else trust.UNCHECKED,
-            )
+            # the one derivation the capture's record also keeps (captures.use_fields): the two cannot disagree
+            fields = use_fields(rec, uses)
+            out[item].update(support=capture_support(rec, uses), status=fields["status"], level=fields["level"])
     for r in actor_reports(home):
         item = r["item"]
         pin = served_pin(use_pins.get((r["episode"], item)), "", pins.get(r["episode"], ""))
@@ -400,12 +422,14 @@ __all__ = [
     "actor_reports",
     "applies_line",
     "capture_support",
+    "capture_uses",
     "conditions",
     "evidence_doc",
     "file_bytes",
     "item_evidence",
     "later_uses",
     "later_uses_text",
+    "record_capture_uses",
     "withdrawn_items",
 ]
 

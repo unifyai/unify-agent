@@ -117,8 +117,10 @@ def test_a_completed_attempt_is_captured_with_its_signature_keys_as_written(tmp_
     assert sig["input"]["kind"] == "value"
     assert sig["constraints"]["holds"]["stated"] and not sig["constraints"]["applies"]["stated"]
     rec = json.loads((d / "record.json").read_text())
-    # the record keeps what the capture step saw, never uses or a status from them (those are the evidence store's)
-    assert rec["episodes"] == ["e1"] and not set(cp.USE_FIELDS) & set(rec)
+    # the record keeps what the capture step saw, and no use yet: a request that calls it writes its uses here from
+    # the evidence store's rows (record_uses), with the status they give it
+    assert rec["episodes"] == ["e1"] and rec["uses"] == []
+    assert (rec["status"], rec["level"]) == (tr.ON_TRIAL, tr.UNCHECKED)
     # a capture starts on trial and unchecked, and nothing credits a use at capture time (the writer reads and groups)
     stores = open_stores(Paths.under(tmp_path / "home"))
     served = serving.item_evidence(stores, captures=cp.load(store), home=None)[f"capture:{cid}"]
@@ -161,7 +163,7 @@ def test_a_failure_is_captured_as_negative_knowledge(tmp_path):
     row = cp.capture_trace_step(staging, _ep("e1"), store, signals=[_checker("e1", "fail")])
     assert (row["run"], row["outcome"]) == ("not run", cp.CONTRARY)
     doc = cp.load(store)[row["capture_id"]]
-    assert doc["record"]["outcome"] == cp.CONTRARY and not set(cp.USE_FIELDS) & set(doc["record"])
+    assert doc["record"]["outcome"] == cp.CONTRARY and doc["record"]["uses"] == []
     assert cp.negative(doc["record"])
     assert "invalid literal" in doc["broke"]
     entry = pool.from_capture(row["capture_id"], doc)

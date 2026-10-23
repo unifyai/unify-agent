@@ -53,7 +53,8 @@ from unify.memory.signals import Signal, post_signal
 #: fields are written only in the case their note names.
 REGISTRY: dict[str, dict] = {
     "capture record.json": {
-        "writer": "unify.memory.captures:capture_trace_step (stored), unify.memory.captures:listed_record (exported)",
+        "writer": "unify.memory.captures:capture_trace_step (stored), unify.memory.captures:record_uses (its uses, "
+        "at the end of a request that called it), unify.memory.captures:listed_record (exported)",
         "fields": {
             "v": ["unify.memory.captures:capture_trace_step"],
             "capture_id": [],
@@ -92,6 +93,17 @@ REGISTRY: dict[str, dict] = {
             "occurrences": ["unify.memory.library_export:dispatch_data"],
             # exported only (captures.listed_record): what it rests on as far as its record shows it
             "support": ["unify.memory.library_helper:_capture_support", "unify.memory.library_export:capture_support"],
+            # its uses, from the evidence store's item_use rows (serving.record_capture_uses), and what they give it
+            # (captures.use_fields, the derivation the served evidence uses too)
+            "uses": ["unify.memory.captures:refresh"],
+            "track": [],
+            "record_line": [],
+            "status": [],
+            "status_basis": [],
+            "status_rule": [],
+            "status_reason": [],
+            "status_text": [],
+            "level": [],
         },
         "conditional": {},
     },
@@ -269,6 +281,13 @@ def test_a_captures_uses_reach_its_card_the_catalogue_the_search_rows_the_librar
     assert row["counts"] == {trust.CLEAN: 1, trust.FAILED: 1, trust.NEUTRAL: 0}
     assert row["status"] == trust.ON_TRIAL and row["support"] == {"episodes": 1, "accepted": 0, "confirmed_uses": 0}
     assert found[f"capture:{acting}"]["later_uses"]["episodes"] == 0  # every capture has a row, used or not
+    # the request's end writes the same uses into the capture's record: the record and the evidence agree
+    assert serving.record_capture_uses(stores, store, [f"capture:{cid}", f"capture:{acting}"]) == [f"capture:{cid}"]
+    rec = json.loads((store / cid / cp.RECORD_FILE).read_text())
+    facts = lifecycle.facts_from_evidence(stores.evidence)
+    assert rec["uses"] == [u.row() for u in serving.capture_uses(facts, f"capture:{cid}")]
+    assert [u["episode"] for u in rec["uses"]] == ["e2", "e2"]
+    assert (rec["status"], rec["level"]) == (row["status"], row["level"])
 
     root, files = _export(tmp_path / "second", store, _served(stores, store, tmp_path / "second"))
     later = "2 calls in 1 episode: 1 returned, 1 raised"
@@ -465,11 +484,12 @@ def test_the_group_document_holds_the_fields_the_registry_names():
     assert sorted(doc["related_closed"][0]) == sorted(spec["member_fields"] + spec["closed_member_fields"])
 
 
-@pytest.mark.parametrize("name", ["uses", "track", "record_line", "status", "level"])
-def test_no_capture_record_keeps_its_uses_or_a_status_from_them(tmp_path, name):
+@pytest.mark.parametrize("name", cp.USE_FIELDS)
+def test_a_capture_record_keeps_its_uses_and_what_they_give_it(tmp_path, name):
     _, store, cid, _ = _store_two_captures(tmp_path / "home")
     rec = json.loads((store / cid / cp.RECORD_FILE).read_text())
-    assert name not in rec and name in cp.USE_FIELDS
-    # a record an earlier build wrote with them loses them when it is rewritten
+    # stored with no use yet, and the fields that none gives it
+    assert name in rec and rec["uses"] == []
+    # a record rewritten keeps them as its uses give them (one derivation), never a value written over them
     old = {**rec, name: "x"}
-    assert name not in cp.refresh(old)
+    assert cp.refresh(old)[name] == cp.use_fields(rec, [])[name]

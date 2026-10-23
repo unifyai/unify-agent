@@ -31,10 +31,13 @@ goal, the ``## Asked`` section of the fork's ``summary.md``, which is shown and 
 or masks an identifier: a key, a goal or a docstring is kept as written (rev 2.1).
 
 **Trust.** ``record.json`` keeps what the capture step saw: the capture's episodes and its cases, each with the
-outcome its episode's signals gave. It keeps no use: every call of a capture is recorded where every library item's
-is, in the evidence store (``item_use`` under ``capture:<id>``, from the request's use record), and
-:func:`.serving.item_evidence` gives its later uses, its recorded failures, what it rests on and its status from them
-and from this record, so a capture's card, its catalogue and search rows and the librarian all read one account.
+outcome its episode's signals gave. Every call of a capture is recorded where every library item's is, in the
+evidence store (``item_use`` under ``capture:<id>``, from the request's use record); at the end of each request that
+called it, and when a late signal judges such a request again, the same uses are written into its record
+(:func:`record_uses`: ``uses``, its track record and the status and level they give it, :func:`use_fields`), so the
+record and the evidence store agree. :func:`.serving.item_evidence` gives its later uses, its recorded failures, what
+it rests on and its status through the same derivation, so a capture's card, its catalogue and search rows, the
+librarian and its record all read one account.
 
 **Where it lives.** ``<state>/memory-captures/`` is written only by the harness. It is outside every box-writable
 root (the fork's box binds only its own staging dir; the writer and helper boxes bind none of the state dir), so no
@@ -106,8 +109,9 @@ MAX_RESULT_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_BYTES = 1024 * 1024
 GOAL_CHARS = 600
 FAILED = "failed"
-#: What a record of an earlier build kept of the capture's uses and the status they gave it. Nothing writes these any
-#: more (a capture's uses are the evidence store's): :func:`refresh` drops them from a record it rewrites.
+#: What a capture's record keeps of its uses and the status they give it (:func:`use_fields`, the one derivation):
+#: its later uses (:class:`.trust.Use` rows, written at the end of each request that called it from the evidence
+#: store's ``item_use`` rows, :func:`record_uses`), its track record and the status, basis and level they give it.
 USE_FIELDS = ("uses", "track", "record_line", "status", "status_basis", "status_rule", "status_reason",
               "status_text", "level")
 #: A trace capture's outcome when a signal contradicted its episode: negative knowledge,
@@ -464,15 +468,40 @@ def empty_record(cid: str) -> dict:
         "applies": None,
         "holds": None,
         "outcome": "none",
+        "uses": [],
+    }
+
+
+def use_fields(record: Mapping[str, Any] | None, uses: Iterable[Any]) -> dict:
+    """The fields a capture's *uses* (:class:`.trust.Use` values) give it, the one derivation of them: its record's
+    (:func:`refresh`) and the served evidence's (:func:`.serving.item_evidence`), so the two cannot disagree. ``uses``
+    (their rows), ``track`` and ``record_line``, and the status, its basis, rule, reason and text and the evidence
+    level that :func:`.trust.apply_outcome` gives from them; a capture whose own episode failed (*record*,
+    :func:`negative`) is never adopted."""
+    rows = list(uses)
+    out = trust.apply_outcome(trust.UNCHECKED, None, rows)
+    status, level, basis, rule, reason = out.status, out.level, out.basis, out.rule, out.reason
+    if negative(record) and status == trust.ADOPTED:
+        status, level, basis, rule, reason = trust.ON_TRIAL, trust.UNCHECKED, None, None, "its attempt failed"
+    t = trust.track(rows)
+    return {
+        "uses": [u.row() for u in rows],
+        "track": t,
+        "record_line": trust.record_line(t),
+        "status": status,
+        "status_basis": basis,
+        "status_rule": rule,
+        "status_reason": reason,
+        "status_text": trust.status_text(status, basis),
+        "level": level,
     }
 
 
 def refresh(record: dict) -> dict:
     """*record* with its derived fields recomputed from its cases: ``deterministic``, ``applies``, ``holds`` and
-    ``outcome`` (``failed`` when any case failed, ``contrary`` when a signal contradicted one, else the last signal's).
-    Nothing runs a capture, so nothing records whether it reproduces its case; and nothing here reads or keeps its
-    uses: they are the evidence store's (:func:`.serving.item_evidence`, which gives its status and what it rests on
-    from them)."""
+    ``outcome`` (``failed`` when any case failed, ``contrary`` when a signal contradicted one, else the last signal's);
+    then the fields its uses give it (:func:`use_fields`, from its ``uses`` rows). Nothing runs a capture, so nothing
+    records whether it reproduces its case."""
     cases = [c for c in record.get("cases") or [] if isinstance(c, dict)]
     dets = [c.get("deterministic") for c in cases if isinstance(c.get("deterministic"), bool)]
     record["deterministic"] = all(dets) if dets else None
@@ -487,11 +516,30 @@ def refresh(record: dict) -> dict:
     else:
         signals = [c.get("outcome") for c in cases if c.get("outcome") not in (None, "none")]
         record["outcome"] = signals[-1] if signals else "none"
-    # fields a record of an earlier build kept from uses that were never written: dropped, so no reader takes them
-    # for the capture's own
-    for key in USE_FIELDS:
-        record.pop(key, None)
+    uses = [u for u in (trust.use_from_row(r) for r in record.get("uses") or []) if u is not None]
+    record.update(use_fields(record, uses))
     return record
+
+
+def record_uses(store: Path | str, cid: str, uses: Iterable[Any]) -> bool:
+    """Write capture *cid*'s *uses* (:class:`.trust.Use` values, every use of it on record: the evidence store's, as
+    :func:`.serving.capture_uses` gives them) into its record, with the fields they give it (:func:`refresh`), under
+    the store's lock. Returns whether the record changed (False when the capture is not in the store)."""
+    root = Path(store)
+    if not _ID.fullmatch(str(cid)):
+        return False
+    d = root / cid
+    with _locked(root):
+        rec = _read_json(d / RECORD_FILE)
+        if not isinstance(rec, dict):
+            return False
+        before = _json(rec)
+        rec["uses"] = [u.row() for u in uses]
+        refresh(rec)
+        if _json(rec) == before:
+            return False
+        _write(d / RECORD_FILE, _json(rec))
+    return True
 
 
 def judged_outcome(signals: Iterable[Any], ep: Any, regime: str) -> dict:

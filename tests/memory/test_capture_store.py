@@ -361,12 +361,10 @@ def test_a_completed_attempt_is_captured_with_its_procedure_signature_and_record
     assert rec["applies"] is None and rec["holds"] is None
     assert rec["value"]["present"] is True
     assert rec["outcome"] == "positive"
-    # its uses, and the status and level they give it, are the evidence store's, never its record's
-    from unify.memory.captures import USE_FIELDS
-
-    assert not set(USE_FIELDS) & set(rec)
+    # no use yet: its record and the served evidence give it the same status and level from none (one derivation)
+    assert rec["uses"] == []
     served = _served(tmp_path / "stores", store, cid)
-    assert (served["status"], served["level"]) == (START_STATUS, LEVELS[0])
+    assert (served["status"], served["level"]) == (START_STATUS, LEVELS[0]) == (rec["status"], rec["level"])
     assert served["support"] == {"episodes": 1, "accepted": 1, "confirmed_uses": 0}
 
     rows = _events(store)
@@ -445,9 +443,10 @@ def test_an_attempt_with_a_contrary_signal_is_captured_as_negative_knowledge(tmp
     store, cid = _captured(tmp_path, label="fail")
     rec = _record(store, cid)
     assert rec["outcome"] == CONTRARY and negative(rec)
-    assert "status" not in rec and "level" not in rec
+    # no use yet: the record and the served evidence give it the same status and level (one derivation)
+    assert rec["uses"] == []
     served = _served(tmp_path / "stores", store, cid)
-    assert (served["status"], served["level"]) == (START_STATUS, LEVELS[0])
+    assert (served["status"], served["level"]) == (START_STATUS, LEVELS[0]) == (rec["status"], rec["level"])
     assert served["support"] == {"episodes": 1, "accepted": 0, "confirmed_uses": 0}
 
 
