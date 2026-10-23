@@ -1,7 +1,7 @@
 """In library mode the request's use record (``memory_use.json``) lists the library failures its cells met
 (``library_failures``), beside the counts it already had. Each entry holds:
 
-* ``kind``: ``item``, ``index``, ``show``, ``find``, ``match``, ``import`` or ``name``;
+* ``kind``: ``item``, ``get``, ``items``, ``match``, ``run``, ``import`` or ``name``;
 * ``target``: an item id, or the argument shape, never argument values;
 * ``exception``: the exception's type name;
 * ``message``: the first line of its message, redacted;
@@ -34,7 +34,7 @@ LIST_FIELD = "library_failures"
 #: The count of entries left out once the list is full.
 DROPPED_FIELD = "library_failures_dropped"
 ENTRY_FIELDS = {"kind", "target", "exception", "message", "cell"}
-KINDS = {"item", "index", "show", "find", "match", "import", "name"}
+KINDS = {"item", "get", "items", "match", "run", "import", "name"}
 
 
 def _transcript(run: Any) -> list[dict]:
@@ -138,9 +138,9 @@ async def test_failures_are_listed_by_kind_target_exception_message_and_cell(wor
         # a later cell: the item again, uncaught, on a dict holding the planted value
         res = await _run(ex, run, f"explode({{'name': {PLANTED_ARG!r}, 'rows': [1, 2]}})")
         assert "ValueError" in res["error"]
-        res = await _run(ex, run, "memory.show('memory.nothing.here:f')")
+        res = await _run(ex, run, "memory.get('memory.nothing.here:f')")
         assert "NotFound" in res["error"]
-        res = await _run(ex, run, f"memory.index({PLANTED_KEY!r})")
+        res = await _run(ex, run, f"memory.items({PLANTED_KEY!r})")
         assert "NotFound" in res["error"]
         res = await _run(ex, run, "import memory.data.nope")
         assert "ModuleNotFoundError" in res["error"]
@@ -158,10 +158,10 @@ async def test_failures_are_listed_by_kind_target_exception_message_and_cell(wor
     assert items[1]["message"].startswith("refused: api_key=")
     # the two failures of one cell share its index; the later cell's is greater
     assert items[0]["cell"] == items[1]["cell"] < items[2]["cell"]
-    (show,) = [e for e in entries if e["kind"] == "show"]
-    assert show["exception"] == "NotFound"
-    (index,) = [e for e in entries if e["kind"] == "index"]
-    assert index["exception"] == "NotFound" and items[2]["cell"] < show["cell"] < index["cell"]
+    (got,) = [e for e in entries if e["kind"] == "get"]
+    assert got["exception"] == "NotFound"
+    (listed,) = [e for e in entries if e["kind"] == "items"]
+    assert listed["exception"] == "NotFound" and items[2]["cell"] < got["cell"] < listed["cell"]
     (imported,) = [e for e in entries if e["kind"] == "import"]
     assert imported["exception"] == "ModuleNotFoundError"
     # targets are item ids or argument shapes, never values
@@ -183,7 +183,7 @@ async def test_a_name_error_on_memory_is_listed(world, monkeypatch):  # noqa: F8
     run = _library_run(monkeypatch, paths)
     ex = Cells()
     try:
-        res = await _run(ex, run, f"memory.find({{'name': {PLANTED_ARG!r}}})")
+        res = await _run(ex, run, f"memory.get({{'name': {PLANTED_ARG!r}}})")
     finally:
         await ex.close()
     assert "NameError" in res["error"]

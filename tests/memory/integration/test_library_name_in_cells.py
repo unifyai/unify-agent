@@ -85,10 +85,10 @@ async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted
                 ex,
                 run,
                 "first = repr(memory)\n"
-                "head = memory.index().splitlines()[0]\n"
-                f"shown = memory.show({PARSE_DATE!r}).splitlines()[0]\n"
+                "listed = [i.id for i in memory.items()]\n"
+                f"shown = str(memory.get({PARSE_DATE!r})).splitlines()[0]\n"
                 "from memory.text.dates import parse_date\n"
-                "[first, type(memory).__name__, head == memory.index().splitlines()[0], "
+                "[first, type(memory).__name__, listed == [i.id for i in memory.items()], "
                 "'parse_date' in shown, parse_date('2026-10-09')]",
             ),
         )
@@ -100,14 +100,15 @@ async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted
         # a library function that raises, and a helper that raises: both counted
         res = await _run(ex, run, "parse_date(None)")
         assert "AttributeError" in res["error"]
-        res = await _run(ex, run, "memory.show('memory.nothing.here:f')")
+        res = await _run(ex, run, "memory.get('memory.nothing.here:f')")
         assert "NotFound" in res["error"] and "no item named 'memory.nothing.here:f'" in res["error"]
     finally:
         await ex.close()
     assert run.runtime_calls["counts"][PARSE_DATE]["ok"] >= 1
     assert run.runtime_calls["counts"][PARSE_DATE]["error"] == 1
     assert run.runtime_calls["helpers_failed"] == 1
-    assert run.runtime_calls["helpers"]["index"]["ok"] >= 2  # memory.index() with no import line, twice
+    assert run.runtime_calls["helpers"]["items"]["ok"] >= 2  # memory.items() with no import line, twice
+    assert run.runtime_calls["helpers"]["get"] == {"ok": 1, "refused": 0, "error": 1}
     assert library_failures(run.runtime_calls, run.cell_errors) == {
         "library_calls_failed": 2,
         "library_name_errors": 0,
@@ -117,11 +118,11 @@ async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted
     shown_id = "memory.nothing.here:f"
     assert [(e["kind"], e["target"], e["exception"], e["call"]) for e in run.failures["entries"]] == [
         ("item", PARSE_DATE, "AttributeError", "c2"),
-        ("show", f"(str[{len(shown_id)}])", "NotFound", "c3"),
+        ("get", f"(str[{len(shown_id)}])", "NotFound", "c3"),
     ]
     assert run.failures["pending"] == [] and run.failures["dropped"] == 0
     assert run.failures["entries"][1]["message"].startswith(
-        "memory.show('memory.nothing.here:f'): no item named 'memory.nothing.here:f'.",
+        "memory.get('memory.nothing.here:f'): no item named 'memory.nothing.here:f'.",
     )
 
 
@@ -141,12 +142,12 @@ async def test_an_empty_library_is_bound_too(world, monkeypatch, tmp_path):  # n
             await _run(
                 ex,
                 run,
-                "['The library is empty.' in memory.index(), memory.find({'a': 1})]",
+                "[str(memory.items()), len(memory.items())]",
             ),
         )
     finally:
         await ex.close()
-    assert list(out) == [True, []]
+    assert list(out) == ["memory.items(): no items yet.\n", 0]
 
 
 @needs_bwrap
@@ -173,11 +174,11 @@ async def test_a_library_that_fails_to_import_never_breaks_the_session(
             _ok(await _run(ex, run, "import json, os\njson.dumps({'a': os.sep})"))
             == '{"a": "/"}'
         )
-        res = await _run(ex, run, "memory.index()")
+        res = await _run(ex, run, "memory.items()")
         assert "ImportError" in res["error"] and "this library is broken" in res["error"]
         assert _ok(await _run(ex, run, "1 + 1")) == 2
         # the next use tries again, and fails the same way
-        res = await _run(ex, run, "memory.index()")
+        res = await _run(ex, run, "memory.items()")
         assert "this library is broken" in res["error"]
     finally:
         await ex.close()
@@ -200,7 +201,7 @@ async def test_a_library_that_never_finishes_importing_is_stopped_by_the_cell_ti
     ex = Cells(limit=5)
     try:
         assert _ok(await _run(ex, run, "x = 1\nx")) == 1  # starting the worker imports nothing of it
-        res = await _run(ex, run, "memory.index()")
+        res = await _run(ex, run, "memory.items()")
         # rev 2's interpreter: the cell is stopped at its limit and the interpreter restarted, said in a note the
         # actor reads beside the cell's output (the cell has no error of its own)
         shown = "".join(p.text for p in res["stdout"])
@@ -231,7 +232,7 @@ async def test_without_a_library_cells_have_no_memory_and_a_name_error_is_counte
     assert hooks.worker_globals() == {}
     ex = Cells()
     try:
-        res = await _run(ex, run, "memory.index()")
+        res = await _run(ex, run, "memory.items()")
     finally:
         await ex.close()
     assert "NameError" in res["error"]
@@ -270,14 +271,14 @@ def test_the_init_global_only_in_library_mode_with_a_package(
 def test_helper_calls_are_counted_apart_from_items():
     audit = CellAudit([])
     audit.begin()
-    audit("memory.helper_call", ("memory:show", "ab12", "error"))
-    audit("memory.helper_call", ("memory:index", "ab12", "ok"))
+    audit("memory.helper_call", ("memory:get", "ab12", "error"))
+    audit("memory.helper_call", ("memory:items", "ab12", "ok"))
     audit("memory.helper_call", ("memory.text.dates:parse_date", "ab12", "ok"))
     audit("memory.call", (PARSE_DATE, "ab12", "refused"))
     calls = audit.drain()["calls"]
     assert calls["helpers"] == {
-        "memory:show": {"ok": 0, "refused": 0, "error": 1},
-        "memory:index": {"ok": 1, "refused": 0, "error": 0},
+        "memory:get": {"ok": 0, "refused": 0, "error": 1},
+        "memory:items": {"ok": 1, "refused": 0, "error": 0},
     }
     assert calls["malformed"] == 1 and set(calls["counts"]) == {PARSE_DATE}
     audit.begin()
@@ -314,7 +315,7 @@ def test_the_library_mode_use_record_carries_the_counts():
         {
             "calls": {
                 "counts": {PARSE_DATE: {"ok": 1, "refused": 1, "error": 2}},
-                "helpers": {"memory:find": {"ok": 0, "refused": 0, "error": 1}},
+                "helpers": {"memory:match": {"ok": 0, "refused": 0, "error": 1}},
             },
         },
     )
@@ -335,9 +336,6 @@ def test_the_library_mode_use_record_carries_the_counts():
         "ask": {"ok": 0, "refused": 0, "error": 0},
         "get": {"ok": 0, "refused": 0, "error": 0},
         "items": {"ok": 0, "refused": 0, "error": 0},
-        "index": {"ok": 0, "refused": 0, "error": 0},
-        "show": {"ok": 0, "refused": 0, "error": 0},
-        "find": {"ok": 0, "refused": 0, "error": 1},
-        "match": {"ok": 0, "refused": 0, "error": 0},
+        "match": {"ok": 0, "refused": 0, "error": 1},
         "run": {"ok": 0, "refused": 0, "error": 0},
     }

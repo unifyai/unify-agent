@@ -2,9 +2,9 @@
 
 Before rev 2 a landed procedure's reader, ``applies``, procedure and ``holds`` ran, confined, on the store's other
 recorded requests when it landed, and the counts of true and false holds (and of the recorded variants its reader
-failed on) decided whether ``memory.match`` and the librarian listed it. That was code run to classify, which the
+failed on) decided whether the package's structural check and the librarian listed it. That was code run to classify, which the
 harness no longer does: no capture or landed procedure is executed to classify, dedupe, rank or list it. The actor's
-own ``memory.run`` is the one place stored code runs.
+own call of an item is the one place stored code runs.
 
 Now every landed procedure is listed, and the librarian judges fit at ask time from its catalogue row
 (``library_export.dispatch_data``: the writer's declared ``applies`` as text, its form, the tool calls its code names,
@@ -34,7 +34,7 @@ def not_run() -> dict:
 
 
 def listing(rec: Mapping[str, Any] | None) -> tuple[bool, str]:
-    """Whether a procedure with recognition record *rec* is listed by ``memory.match`` and in the librarian's
+    """Whether a procedure with recognition record *rec* is listed by ``Item.fits`` and in the librarian's
     catalogue, and the line that says why: always listed (module docstring); ``""`` for a procedure with no record."""
     if not isinstance(rec, Mapping):
         return True, ""

@@ -285,7 +285,7 @@ def test_the_evidence_index_and_the_record_agree_on_runtime_facts(tmp_path):
 
 def test_library_mode_installs_the_call_hook_without_a_work_tree_capture(monkeypatch):
     """The runtime calls "used" rests on are recorded even when no work tree is captured (the library copy is the
-    only file root then). Rev 2: the library layout is always on, so a run always has the hook; no run, none."""
+    only file root then). The library layout is always on, so a run always has the hook; no run, none."""
     from unify.memory.integration import hooks, worktree_capture
 
     monkeypatch.setattr(hooks, "_run", lambda: object())
@@ -308,24 +308,26 @@ def test_the_package_helpers_calls_are_counted_by_helper_and_outcome():
     acc = runtime_calls_empty()
     assert library_helper_calls(acc) == {
         name: {"ok": 0, "refused": 0, "error": 0}
-        for name in ("ask", "get", "items", "index", "show", "find", "match", "run")  # rev 2 counts memory.ask too
+        for name in ("ask", "get", "items", "match", "run")  # memory.ask counts too
     }
     first = _drained({})
-    first["calls"]["helpers"] = {"memory:index": {"ok": 2}, "memory:show": {"ok": 1, "error": 1}}
+    first["calls"]["helpers"] = {"memory:get": {"ok": 2}, "memory:items": {"ok": 1, "error": 1}}
     second = _drained({PD: {"ok": 1}})
-    second["calls"]["helpers"] = {"memory:index": {"ok": 1}, "memory:find": {"refused": 1}, "other": {"ok": 5}}
+    second["calls"]["helpers"] = {
+        "memory:get": {"ok": 1},
+        "memory:match": {"refused": 1},
+        "other": {"ok": 5},
+        "memory:show": {"ok": 1},  # an earlier call's id: no longer one of the package's helpers
+    }
     add_runtime_calls(acc, first)
     add_runtime_calls(acc, second)
     assert library_helper_calls(acc) == {
         "ask": {"ok": 0, "refused": 0, "error": 0},
-        "get": {"ok": 0, "refused": 0, "error": 0},
-        "items": {"ok": 0, "refused": 0, "error": 0},
-        "index": {"ok": 3, "refused": 0, "error": 0},
-        "show": {"ok": 1, "refused": 0, "error": 1},
-        "find": {"ok": 0, "refused": 1, "error": 0},
-        "match": {"ok": 0, "refused": 0, "error": 0},
+        "get": {"ok": 3, "refused": 0, "error": 0},
+        "items": {"ok": 1, "refused": 0, "error": 1},
+        "match": {"ok": 0, "refused": 1, "error": 0},
         "run": {"ok": 0, "refused": 0, "error": 0},
     }
-    assert acc["malformed"] == 1  # an id that is not one of the package's helpers
+    assert acc["malformed"] == 2  # the ids that are not one of the package's helpers
     # the failures still count the helpers' refused and error calls once
     assert library_failures(acc, {})["library_calls_failed"] == 2

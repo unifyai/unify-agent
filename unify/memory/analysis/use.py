@@ -99,7 +99,6 @@ module (``import memory [as m]``, ``from memory import catalog, find, describe``
 * ``memory.describe(<function>)`` and ``help(<function>)`` show that function: a bound item, or for
   ``describe`` a constant naming it (``env/<ch>:<fn>``, ``env.<ch>.<fn>``, ``<ch>.<fn>`` or a name only one
   channel has); ``help(<channel module>)`` shows the channel and its functions;
-* ``memory.find(<value>)`` shows functions that depend on the value at run time, so it is only counted.
 
 ``cell_exposure`` holds ``items`` and ``channels`` (a shown item's channel is shown too) and ``calls``, the
 number of call sites of ``catalog``, ``find``, ``describe`` and ``help`` (on a memory object). An argument
@@ -645,7 +644,7 @@ def cells_before_more_input(lines: Iterable[Any]) -> int | None:
 
 
 def match_run_fields(runtime: Any, lines: Iterable[Any] = ()) -> dict:
-    """The use record's fields for ``memory.match`` and ``memory.run`` (design I.4.4 and I.5.5), from the request's
+    """The use record's fields for ``Item.fits`` checks and tracked item calls (design I.4.4 and I.5.5), from the request's
     runtime call evidence (``integration.request.add_runtime_calls``) and the transcript's order:
 
     * ``match_calls``: the ``match`` results the audit hook saw; ``match_rows``: per result, its ``cell`` and the

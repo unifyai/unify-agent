@@ -1,11 +1,12 @@
-"""The renamed evidence levels and statuses, in the item records, the index line and ``memory.show``.
+"""The renamed evidence levels and statuses, in the item records, the index line and an item's card
+(``print(memory.get(ref))``).
 
 An item has two separate axes. Its evidence level says how much its evidence shows:
-``unchecked`` -> ``reproduces-its-case`` -> ``confirmed-by-outcomes`` (rev 2.1: the gate runs no code, so only
-outcomes after use move it; the index line and ``memory.show`` show what an item rests on in its place: its kind,
-the episodes it comes from and its confirmed uses). Its status says where it is in its life:
-``on-trial`` -> ``adopted`` -> ``retired``. The old status names (``experimental``, ``stable``) never reach a record, an
-index line or ``memory.show`` again, but a record stored under an old name still loads, as the new name.
+``unchecked`` -> ``reproduces-its-case`` -> ``confirmed-by-outcomes`` (the gate runs no code, so only outcomes after
+use move it; the index line and the card show what an item rests on in its place: its kind, the episodes it comes
+from and its confirmed uses). Its status says where it is in its life: ``on-trial`` -> ``adopted`` -> ``retired``. The
+old status names (``experimental``, ``stable``) never reach a record, an index line or a card again, but a record
+stored under an old name still loads, as the new name.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ ON_TRIAL, ADOPTED, RETIRED = "on-trial", "adopted", "retired"
 OLD_STATUS_LOADS_AS = {"experimental": ON_TRIAL, "stable": ADOPTED}
 #: the record fields the harness writes from the gate run
 LEVEL_FIELD, LEVEL_REASONS_FIELD = "level", "level_reasons"
-#: what the brackets show in its place (rev 2.1): an item whose record names no provenance episode
+#: what the brackets show in its place: an item whose record names no provenance episode
 SHOWN_SUPPORT = "curated item from 0 episodes"
 #: the level a record stored before evidence levels existed reads as, when nothing in it shows its examples ran on
 #: recorded values: the lowest (a missing level fails closed; decided for this revision)
@@ -187,9 +188,9 @@ def test_the_index_line_shows_the_status_and_the_support_apart(tmp_path):
     assert "[experimental" not in index and "[stable" not in index
 
 
-def test_show_gives_the_status_the_support_and_the_gates_finding(tmp_path):
-    """An item the check with unseen values flagged lands at the lowest level; the flag is shown to the agent
-    (``memory.show``, as a gate finding) as well as to the writer (the gate's reply)."""
+def test_the_card_gives_the_status_and_the_support_and_never_the_gates_finding(tmp_path):
+    """An item the check with unseen values flagged lands at the lowest level; the flag is the writer's (the gate's
+    reply), never on the agent's card."""
     records = {
         DATE: _record(
             DATE,
@@ -199,7 +200,7 @@ def test_show_gives_the_status_the_support_and_the_gates_finding(tmp_path):
     }
     root = _library(tmp_path, records)
     out = json.loads(
-        _py(root, f"import json, memory\nprint(json.dumps(memory.show({DATE!r})))"),
+        _py(root, f"import json, memory\nprint(json.dumps(str(memory.get({DATE!r}))))"),
     )
     first = out.splitlines()[0]
     assert first.startswith("memory.text.dates:parse_date(")
@@ -218,6 +219,6 @@ def test_a_record_from_before_levels_reads_as_the_lowest_level(tmp_path):
     week = _brackets(_index_line(root, WEEK))
     assert ADOPTED in week and SHOWN_SUPPORT in week
     out = json.loads(
-        _py(root, f"import json, memory\nprint(json.dumps(memory.show({WEEK!r})))"),
+        _py(root, f"import json, memory\nprint(json.dumps(str(memory.get({WEEK!r}))))"),
     )
     assert ADOPTED in out.splitlines()[0] and "stable" not in out.splitlines()[0]

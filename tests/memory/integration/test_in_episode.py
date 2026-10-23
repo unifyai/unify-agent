@@ -349,7 +349,7 @@ async def test_a_commit_landed_mid_cell_is_served_from_the_next_cell_with_one_no
         code = (
             "import os, time\n"
             "from memory.text.dates import parse_date as held\n"
-            "bound = memory.index().splitlines()[0]\n"
+            "bound = len(memory.items())\n"
             "open('/workspace/started', 'w').close()\n"
             "while not os.path.exists('/workspace/go'):\n    time.sleep(0.05)\n"
             "import memory.text.dates as again\n"

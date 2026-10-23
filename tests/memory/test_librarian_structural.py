@@ -1,7 +1,7 @@
-"""Rev 2, item 3: the librarian's evidence is a structural catalogue, and nothing runs to recognise or rank.
+"""The librarian's evidence is a structural catalogue, and nothing runs to recognise or rank.
 
 ``.memory/dispatch.json`` holds one row per stored procedure from its syntax and records; ``memory.ask`` sends no
-reader facts and ``memory.match`` compares structure only, so no process starts on either. Identifiers never reach
+reader facts and an item's check (``item.fits``) compares structure only, so no process starts on either. Identifiers never reach
 the librarian: not in a row's ``applies_text``, not in a searched card, not in the question it is sent. No model,
 network or key; no world vocabulary.
 """
@@ -104,15 +104,15 @@ def test_a_capture_that_returns_a_constant_gets_the_same_row_as_any_other():
 
 def test_an_identifier_keyed_applies_keeps_its_identifier():
     """The analysis found a capture whose applies tested a task's identifier in the request; with the identifier
-    replaced by a placeholder on both sides the librarian served it for another request (rev 2). Rev 2.1: the
-    catalogue row shows the applies as written, so the identifier it keys on is visible and is never a wildcard."""
+    replaced by a placeholder on both sides the librarian served it for another request. Now the catalogue row
+    shows the applies as written, so the identifier it keys on is visible and is never a wildcard."""
     row = _rows()["capture:" + "e" * 16]
     assert KEY in row["applies_text"] and "<id>" not in json.dumps(row)
     assert "<id>" not in json.dumps(le.dispatch_data(Library(), captures=_captures()))
 
 
 def test_the_question_the_librarian_is_sent_keeps_its_identifiers():
-    """Rev 2.1: the asker's question (and its situation) reach the librarian as written, so it sees the same
+    """The asker's question (and its situation) reach the librarian as written, so it sees the same
     identifier on both sides and can tell an item keyed on another request's identifier from a fit."""
     for evidence in (None, {}):
         sent = lib_mod.sent_to_librarian(f"Please handle {KEY} as before", {"commit": "c", "dispatch": "d"},
@@ -124,7 +124,7 @@ def test_the_question_the_librarian_is_sent_keeps_its_identifiers():
 
 
 def test_searched_cards_keep_their_identifiers_as_written(tmp_path):
-    """Rev 2.1: a card shows what its procedure says, identifiers included, never a placeholder."""
+    """A card shows what its procedure says, identifiers included, never a placeholder."""
     from unify.memory import library_search
 
     caps = _captures()
@@ -145,11 +145,11 @@ def test_a_function_row_reads_its_code_and_its_named_applies():
     data = le.dispatch_data(Library(functions=[fn, check]), records=records, bodies=bodies)
     row = {r["id"]: r for r in data["procedures"]}[fn.item_id]
     assert row["kind"] == "function" and row["form"] == "function" and row["calls"] == ["env.store.put"]
-    # rev 2.1: the named applies as written, the identifier it tests included (never masked)
+    # the named applies as written, the identifier it tests included (never masked)
     assert row["applies_text"] == bodies[check.item_id]
 
 
-# --- nothing runs on ask or match ---------------------------------------------------------------------------------------
+# --- nothing runs on ask or a check -------------------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -168,18 +168,27 @@ def test_the_recogniser_is_gone_and_no_reader_loads():
     for gone in ("_RECOGNISER_RUNNER", "_recognise", "_facts", "_match_recognised", "_dispatch"):
         assert not hasattr(lh, gone), gone
     src = (le._HERE / "library_helper.py").read_text() + le.ASK_SOURCE.read_text()
-    # no loader of a stored reader remains (rev 1's LookupError path): read_input is read only by memory.run's child
-    # rev 1's _spec(target, name) loaded a stored reader; importlib's module_from_spec and find_spec are not it
+    # no loader of a stored reader remains (an earlier LookupError path): read_input is read only by a tracked
+    # call's child; an earlier _spec(target, name) loaded a stored reader; importlib's module_from_spec and find_spec are not it
     assert not re.search(r"(?<![\w.])_spec\(", src) and "_RECOGNISER_RUNNER" not in src
     assert src.count('ns.get("read_input")') == 1
 
 
-def test_match_compares_structure_only_and_starts_no_process(monkeypatch, no_process):
+def test_a_check_compares_structure_only_and_starts_no_process(monkeypatch, no_process):
     from unify.memory import library_helper as lh
+    from unify.memory import memory_helper
 
-    monkeypatch.setattr(lh, "_current_request", lambda: ('Total these: {"rows": [[1, 2]]}', [{"rows": [[1, 2]]}]))
-    seen = []
-    monkeypatch.setattr(lh, "_matched", lambda request, inputs: seen.append((request, inputs))
-                        or ([], [], lh.Query(request, inputs, ({"kind": "json"},)), 0, ""))  # fmt: skip
-    got = lh._match_all()
-    assert got == [] and seen == [('Total these: {"rows": [[1, 2]]}', {"rows": [[1, 2]]})]
+    data = {"rows": [[1, 2]]}
+    recorded = lh.Candidate(
+        id="capture:" + "a" * 16, source="capture", signature={"input": memory_helper.value_shape(data)},
+        docstring="Total these rows.", asked="Total these: rows", approach="", level="unchecked",
+        status="on-trial", failed=False, broke=(),
+    )  # fmt: skip
+    monkeypatch.setattr(lh, "_candidates_all", lambda: ([recorded], 0))
+    monkeypatch.setattr(lh, "_matcher", lambda: memory_helper)  # the shipped matcher is this module's code
+    call = f"memory.get({recorded.id!r}).fits(...)"
+    fit = lh._fit_check(recorded.id, data, call)
+    assert fit.ok is True and "(exact)" in fit.why
+    # the words it was saved against have no structure: no fit, and nothing ran to tell
+    words = lh._fit_check(recorded.id, "Total these: rows", call)
+    assert words.ok is False and "no structure to compare" in words.why

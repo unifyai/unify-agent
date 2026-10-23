@@ -1,6 +1,6 @@
 """Symbolic: one scripted library-mode request uses the library exactly as the actor's guide says, with no import
-line (``memory.index(...)``, then a stored function imported by its id), and its recorded ``memory_use.json`` shows
-it: the index helper's calls ok, the item's runtime calls ok, and ``memory_bound``.
+line (``memory.items(...)``, then a stored function imported by its id), and its recorded ``memory_use.json`` shows
+it: the listing helper's calls ok, the item's runtime calls ok, and ``memory_bound``.
 
 The request runs end to end in process: the memory run begins (the read-only copy of a seeded library and its
 index), the actor's cells run in the real sandboxed worker with tools in code and a persistent interpreter, and the
@@ -29,8 +29,8 @@ from unify.settings import SETTINGS
 PD = "memory.text.dates:parse_date"
 REQUEST = "Report the date 2026-10-09 in the library's date form."
 
-#: The guide's own steps, with no import line for `memory`: look in the index, then use an item by its id.
-LOOK = 'print(memory.index("text"))'
+#: The guide's own steps, with no import line for `memory`: browse the library, then use an item by its id.
+LOOK = 'print(memory.items("text"))'
 USE = "from memory.text.dates import parse_date\nprint('DATE', parse_date('2026-10-09'))"
 
 
@@ -83,6 +83,6 @@ def test_a_request_that_uses_the_library_as_the_guide_says_records_it(core_world
     raw = Repo(paths.episodes).show("main", f"{episode_dir(run)}/memory_use.json")
     rec = json.loads(raw)
     assert rec["memory_bound"] is True, rec
-    assert rec["library_helper_calls"]["index"]["ok"] >= 1, rec["library_helper_calls"]
+    assert rec["library_helper_calls"]["items"]["ok"] >= 1, rec["library_helper_calls"]
     assert rec["items"][PD]["runtime"]["ok"] >= 1, rec["items"].get(PD)
     assert rec["library_calls_failed"] == 0 and rec["library_name_errors"] == 0, rec

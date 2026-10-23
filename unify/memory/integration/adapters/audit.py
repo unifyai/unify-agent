@@ -88,16 +88,14 @@ of a frame is the cell's own report.
 
 The package's own calls raise ``memory.helper_call`` with the same
 arguments, under the ids ``memory:get`` and ``memory:items`` (lookups),
-``memory:ask`` (a question to the librarian), and, for the calls they replace
-and their aliases, ``memory:index``, ``memory:show``, ``memory:find``,
-``memory:match`` (also an item's applicability check, ``Item.fits``) and
-``memory:run`` (also a function item's tracked call); they are counted under
-``helpers`` only, never as items.
+``memory:ask`` (a question to the librarian), ``memory:match`` (an item's
+applicability check, ``Item.fits``) and ``memory:run`` (a function item's
+tracked call); they are counted under ``helpers`` only, never as items.
 
-``memory.match`` and ``Item.fits`` also raise ``memory.match_result`` with
+``Item.fits`` also raises ``memory.match_result`` with
 two tuples of ``(id, level, status, matched)`` rows (the procedures listed,
-the failed attempts listed apart), and ``memory.run`` and a function item's
-call raise ``memory.run_result``
+the failed attempts listed apart), and a function item's
+call raises ``memory.run_result``
 with its target id, its outcome (``returned``, ``refused`` or ``error``),
 its level and its conditions (``none``, ``held``, ``not-held`` or
 ``error``): the one call it made (rev 2.1: never a second run, never
@@ -113,7 +111,7 @@ holds, in order::
 
 where ``calls_before`` and ``runs_before`` count the cell's ``records`` and
 ``runs`` kept before it, so a consumer can tell which calls came after.
-``no_outcome`` is there only when ``memory.match`` ran the stored readers
+``no_outcome`` is there only when an earlier build ran the stored readers
 (the librarian's dispatch file) and some gave no outcome: each such reader's
 procedures with the label ``not-started`` or ``failed`` and a fixed short
 reason (:data:`_ASK_REASON`), the event's optional third element.
@@ -213,9 +211,6 @@ HELPER_ITEMS = frozenset(
         "memory:get",
         "memory:items",
         "memory:ask",
-        "memory:index",
-        "memory:show",
-        "memory:find",
         "memory:match",
         "memory:run",
     },
@@ -224,7 +219,7 @@ HELPER_ITEMS = frozenset(
 FAILED_EVENT = "memory.call_failed"
 #: The helper ids a failure may name.
 FAILURE_HELPERS = HELPER_ITEMS
-#: What ``memory.match`` or ``Item.fits`` listed and how a tracked call (``memory.run``, or calling a function item)
+#: What ``Item.fits`` listed and how a tracked call (calling a function item)
 #: went (ids and outcomes only).
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"

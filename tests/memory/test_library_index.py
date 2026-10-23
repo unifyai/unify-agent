@@ -1,4 +1,4 @@
-"""links.json, INDEX.md and the index view: complete, sorted, deterministic."""
+"""links.json and INDEX.md: complete, sorted, deterministic."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import pytest
 
 from tests.memory.test_layout import FUNCTIONS, LIB, _tree
 from unify.memory import layout
-from unify.memory.library_helper import find_section
 from unify.memory.library_index import INDEX_HEAD, build_links, listed, render_index, render_links
 
 PARSE_DATE = "memory.text.dates:parse_date"
@@ -95,24 +94,6 @@ def test_an_empty_library_has_an_index_with_no_items(tmp_path):
     assert index == INDEX_HEAD + "\nThe library is empty.\n" and listed(index) == 0
 
 
-def test_sections_are_found_by_package_or_notes_topic(tmp_path):
-    lib = _lib(tmp_path)
-    index = render_index(lib, build_links(lib))
-    text = find_section(index, "text")
-    assert (
-        text.startswith("## memory.text — Text helpers.\n") and "memory.web" not in text
-    )
-    assert (
-        find_section(index, "memory.text") == text == find_section(index, "memory/text")
-    )
-    assert find_section(index, "notes/text").startswith("## notes/text\n")
-    with pytest.raises(
-        LookupError,
-        match="no index section 'memory.nope' or 'notes/nope'; the sections are: memory.text",
-    ):
-        find_section(index, "nope")
-
-
 def test_the_index_shows_no_effect_and_no_test_breadth(tmp_path):
     """Nothing a test or a judgement of an item's code gave is served: the index's brackets hold its status and its
     support only."""
@@ -157,7 +138,7 @@ def test_a_stale_example_is_never_quoted_in_the_index(tmp_path):
 
 
 def test_an_items_support_shows_beside_its_status(tmp_path):
-    """Rev 2.1, fix 9: every index line says what its item rests on (its kind, the episodes it comes from and its
+    """Every index line says what its item rests on (its kind, the episodes it comes from and its
     confirmed uses) in place of the evidence level the gate used to set by running it."""
     from unify.memory.item_records import empty_record, support
 
@@ -177,10 +158,14 @@ def test_an_items_support_shows_beside_its_status(tmp_path):
     index = render_index(lib, links, None, support_of=support_of)
     assert "- `memory.text.dates:week(s)` — The ISO week of a date. [on-trial, curated item from 1 episode]\n" in index
     assert "Split text on whitespace. [on-trial, curated item from 2 episodes, 3 confirmed uses]\n" in index
-    # an item with no record shows nothing it does not know; a note with one shows its support too
-    assert "Count the words of a text. [on-trial]\n" in index
+    # an item with no record says so, and shows no count it does not have; a note with one shows its support too
+    assert "Count the words of a text. [on-trial, curated item, no record]\n" in index
     assert "How dates are written. [on-trial, curated item from 1 episode]; " in index
     assert "curated item from <n> episodes" in INDEX_HEAD and "evidence:" not in INDEX_HEAD
-    # no support function: the index is byte for byte the one without support
-    assert render_index(lib, links) == render_index(lib, links, support_of=lambda i: None)
+    # no support function (a library without item records): no support in the brackets; a support function that
+    # keeps no record of any item says so on every line
+    assert "Count the words of a text. [on-trial]\n" in render_index(lib, links)
+    assert render_index(lib, links, support_of=lambda i: None) == render_index(lib, links).replace(
+        "[on-trial]", "[on-trial, curated item, no record]"
+    )
     assert "evidence:" not in render_index(lib, links, support_of=support_of)

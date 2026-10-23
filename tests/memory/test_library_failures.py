@@ -63,17 +63,19 @@ def test_the_hook_keeps_each_failure_first_line_masked_and_bounded():
     audit.begin()
     audit("memory.call", (PARSE_DATE, "ab12", "error"))
     audit("memory.call_failed", (PARSE_DATE, "AttributeError", f"no attribute\nsecond {KEY_SHAPED}", ""))
-    audit("memory.call_failed", ("memory:find", "TypeError", f"bad {KEY_SHAPED}", "(dict[3])"))
+    audit("memory.call_failed", ("memory:get", "TypeError", f"bad {KEY_SHAPED}", "(dict[3])"))
     audit("memory.call_failed", ("memory:match", "LookupError", "x" * 1000, "(str[4])"))
-    # malformed: an id that is neither an item's nor a helper's, a non-identifier type, a wrong arity
+    # malformed: an id that is neither an item's nor a helper's (a removed helper's among them), a non-identifier
+    # type, a wrong arity
     audit("memory.call_failed", ("memory:nothing", "TypeError", "m", ""))
+    audit("memory.call_failed", ("memory:find", "TypeError", "m", "(dict[3])"))
     audit("memory.call_failed", (PARSE_DATE, "not a type", "m", ""))
     audit("memory.call_failed", (PARSE_DATE, "TypeError", "m"))
     calls = audit.drain()["calls"]
     failures = calls["failures"]
     assert [(f["item"], f["exception"]) for f in failures] == [
         (PARSE_DATE, "AttributeError"),
-        ("memory:find", "TypeError"),
+        ("memory:get", "TypeError"),
         ("memory:match", "LookupError"),
     ]
     assert failures[0]["message"] == "no attribute" and failures[0]["shape"] == ""
@@ -81,7 +83,7 @@ def test_the_hook_keeps_each_failure_first_line_masked_and_bounded():
     assert len(failures[2]["message"]) <= audit_mod.MAX_FAILURE_TEXT + len(audit_mod.CLIP_MARK)
     assert failures[2]["message"].endswith(audit_mod.CLIP_MARK)
     assert KEY_SHAPED not in json.dumps(calls)
-    assert calls["failures_dropped"] == 0 and calls["malformed"] == 3
+    assert calls["failures_dropped"] == 0 and calls["malformed"] == 4
 
 
 def test_the_hook_lists_at_most_its_cap_per_cell_and_counts_the_rest(monkeypatch):
@@ -106,8 +108,8 @@ def _failing_cell() -> dict:
     audit.begin()
     audit("memory.call", (PARSE_DATE, "ab12", "refused"))
     audit("memory.call_failed", (PARSE_DATE, "MemoryInputError", f"not a date: {PLANTED_SECRET}", ""))
-    audit("memory.helper_call", ("memory:show", "ab12", "error"))
-    audit("memory.call_failed", ("memory:show", "LookupError", "memory: no item 'x'", "(str[1])"))
+    audit("memory.helper_call", ("memory:get", "ab12", "error"))
+    audit("memory.call_failed", ("memory:get", "LookupError", "memory: no item 'x'", "(str[1])"))
     return audit.drain()
 
 
@@ -144,7 +146,7 @@ def test_the_run_settles_its_cells_and_the_use_record_lists_them():
         redactor=Redactor({"SERVICE_TOKEN": PLANTED_SECRET}),
     )
     assert "error" not in rec, rec
-    assert [(e["kind"], e["cell"]) for e in rec["library_failures"]] == [("item", 1), ("show", 1)]
+    assert [(e["kind"], e["cell"]) for e in rec["library_failures"]] == [("item", 1), ("get", 1)]
     assert rec["library_failures_dropped"] == 0
     # beside the existing counts, which are unchanged
     assert rec["library_calls_failed"] == 2

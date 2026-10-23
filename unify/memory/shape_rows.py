@@ -3,8 +3,7 @@
 A function's input shapes are the shapes of its recorded inputs (with :mod:`.memory_helper`'s ``file_shape`` and
 ``value_shape``): for a library function, the values of its recorded-inputs fixture (:func:`static_shapes`), and for
 one merged before snapshots, its covers' recorded observations (:func:`descriptor`). A row may name the parameter a
-value is passed as (``"param"``), so ``memory.find`` can say which parameter a value fits; a row without one is still
-found. A function with no known shape has no row. Shapes are kept as a
+value is passed as (``"param"``); a row without one is still kept. A function with no known shape has no row. Shapes are kept as a
 **snapshot per memory commit** in the evidence store (``commit_shapes``): item -> ``{"body": digest,
 "shapes": [...], "backfilled": bool}``, written once and never changed. So exporting any commit again, a
 pinned replay of an old one included, renders byte-identical catalogue files.

@@ -1,27 +1,25 @@
 """The memory library: four calls and one item type.
 
-    memory.ask(question=None) -> list[Item]         # with the librarian on: every item it judges applicable to
-                                                    # the current request (or your question), each with .reason;
-                                                    # [] when nothing applies
+    memory.ask(question=None) -> list[Item]         # the librarian's answer for the current request (or your
+                                                    # question): the best fit and at most one fallback for when
+                                                    # it fails, each with .reason; [] when nothing fits
     memory.items(topic=None, kind=None) -> Items    # browse; print() shows a compact table, page by page
     memory.get(ref) -> Item                         # one item, by any name that names exactly one
     memory.request() -> str                         # the current request, as a procedure's recipe takes it
 
-An :class:`Item` is a frozen record of one function or note: ``id``, ``kind``, ``summary``, ``applies``,
-``evidence``, ``status``, ``example``, ``text``, ``links``, ``history`` (and ``reason``, from ``ask``).
+An :class:`Item` is a frozen record of one function, note or recorded procedure: ``id``, ``kind``, ``summary``,
+``applies``, ``evidence``, ``status``, ``example``, ``text``, ``links``, ``history`` (and ``reason``, from ``ask``).
 ``print(item)`` shows its card; ``item.fits(inputs)`` is its own applicability check (a :class:`Fit`); a function
 item is called directly, ``item(*args)``: the call is tracked, and what the function raises reaches the caller
 unchanged; calling a note raises an error that says what to do instead. A procedure with a recipe (one function
-that applies it to a request where one call can do the job) shows on its card the one call that applies it to the current request,
-``memory.get(<recipe id>)(memory.request())``; nothing runs it until that call is made. Every call checks its arguments' types
-first, and every error of the package's own names the call as written, what was expected with an example call,
-and the nearest valid targets or the right call. The whole typed contract is ``memory/__init__.pyi`` beside this
-file; ``help(memory)`` shows the same calls and types. Library functions also import as ordinary modules:
-``from memory.text.dates import parse_date``.
-
-For one build the earlier calls stay as aliases that work and print one line naming the new call:
-``index`` (now ``items``), ``show`` (now ``get``), ``find`` and ``match`` (now ``Item.fits``, and ``ask``) and
-``run`` (now calling the item).
+that applies it to a request where one call can do the job) shows on its card the one call that applies it to the
+current request, ``memory.get(<recipe id>)(memory.request())``; nothing runs it until that call is made. A recorded
+procedure that acts through its episode's tools (``run(state, env)``) is not run by any call: its card shows its code
+and says how its work is done from here. Every call checks its arguments' types first, and every error of the
+package's own names the call as written, what was expected with an example call, and the nearest valid targets or
+the right call. The whole typed contract is ``memory/__init__.pyi`` beside this file; ``help(memory)`` shows the
+same calls and types. Library functions also import as ordinary modules: ``from memory.text.dates import
+parse_date``.
 
 The harness generates this file as ``memory/__init__.py`` in every copy of the library; edits are discarded. It
 imports only the standard library and its sibling ``memory/_contract.py``, and reads only files beside the package:
@@ -32,27 +30,22 @@ imported (:class:`_CallFinder`), so that each call raises the audit event ``memo
 digest of the arguments (never their values) and the outcome: ``ok``, ``refused`` (a ``MemoryInputError`` left it)
 or ``error`` (any other exception). The wrapper returns what the function returns and re-raises what it raises,
 unchanged; whatever audit hooks the process has decide what is kept. The package's own calls raise
-``memory.helper_call`` the same way: ``memory:get``, ``memory:items`` and ``memory:ask`` (lookups and questions),
-the aliases under their own names (``memory:index``, ``memory:show``, ``memory:find``, ``memory:match``,
-``memory:run``), a function item's call as ``memory:run`` (a tracked call, as ``run`` is) and ``Item.fits`` as
-``memory:match``.
+``memory.helper_call`` the same way: ``memory:get``, ``memory:items`` and ``memory:ask`` (lookups and questions), a
+function item's call as ``memory:run`` and ``Item.fits`` as ``memory:match``.
 
-``Item.fits`` and ``match`` read what each stored procedure was saved against (the landed procedures in
-``.memory/find.json``'s ``procedures``, the harness's captured attempts under ``.memory/captures/``) and pass it,
-as written, to :data:`MATCHER`, a replaceable module-level hook; the default compares structure only and runs
-nothing. No reader and no ``applies`` runs to recognise or rank a procedure (rev 2); running stays the caller's own
-``memory.run``. Each raises
-``memory.match_result`` with the ids it listed. A tracked call (``run``, or calling a
-function item) also raises ``memory.run_result`` with its target and outcome. Neither event carries a value or a
-result. A call that raised also raises ``memory.call_failed`` with the id, the exception's type, the first line of
-its message and, for the package's own calls, the arguments' shape (types and sizes, never values).
+``Item.fits`` reads what the stored procedure was saved against (a landed procedure's row in ``.memory/find.json``'s
+``procedures``, a recorded procedure's files under ``.memory/captures/``) and compares its structure with what was
+passed; it runs nothing (no reader and no ``applies`` runs to recognise or rank a procedure). It raises
+``memory.match_result`` with the row it found. A tracked call (calling a function item) also raises
+``memory.run_result`` with its target and outcome. Neither event carries a value or a result. A call that raised also
+raises ``memory.call_failed`` with the id, the exception's type, the first line of its message and, for the package's
+own calls, the arguments' shape (types and sizes, never values).
 
 With the harness's evidence beside the package (``.memory/item_evidence.json``), each card also states what the
-item's status rests on, its recorded failures, what contradicted it and its stated conditions; ``Item.fits`` gives
-a :class:`FitEvidence` (structurally similar or not, with the item's recorded failures: evidence, never a claim that
-it does what is needed) and ``match`` words its rows the same way; and a library item the writer retired or
-superseded (``.memory/withdrawn_items.json``) is withdrawn as a capture is: no listing shows it, and asking for it by
-its id gives what replaced it.
+item's status rests on, its recorded failures, its later uses and its stated conditions; ``Item.fits`` gives a
+:class:`FitEvidence` (structurally similar or not, with the item's recorded failures: evidence, never a claim that it
+does what is needed); and a library item the writer retired or superseded (``.memory/withdrawn_items.json``) is
+withdrawn as a capture is: no listing shows it, and asking for it by its id gives what replaced it.
 """
 
 from __future__ import annotations
@@ -115,7 +108,7 @@ MATCHER_FILE = ".memory/matcher.py"
 SHAPES_FILE = ".memory/shapes.py"
 ITEM_LINE = "- `"
 CALL_EVENT = "memory.call"
-#: The audit event of a call of this package's own helpers (``index``, ``show``, ``find``): the same arguments
+#: The audit event of a call of this package's own helpers (``get``, ``items``, ``ask``): the same arguments
 #: as ``memory.call``, kept apart because the helpers are not library items.
 HELPER_EVENT = "memory.helper_call"
 CALL_OUTCOMES = ("ok", "refused", "error")
@@ -159,55 +152,12 @@ def split_index(text: str) -> tuple[str, list[tuple[str, str]]]:
     return "".join(head), [(h, b) for h, b in sections]
 
 
-def section_key(heading: str) -> str:
-    """``memory.<package>`` or ``notes/<topic>``: a heading without its summary."""
-    return heading.split(" — ", 1)[0].strip()
-
-
-def wanted_key(name: object) -> str:
-    """The section a name means: ``"reports"`` and ``"memory/reports"`` both mean ``memory.reports``."""
-    n = str(name).strip().strip("/")
-    if n.startswith(("memory.", "notes/")):
-        return n
-    if n.startswith("memory/"):
-        return "memory." + n[len("memory/") :].replace("/", ".")
-    return "memory." + n
-
-
-def wanted_keys(name: object) -> list[str]:
-    """The sections a name can mean, in order: :func:`wanted_key`, then for a bare name (no ``memory.``,
-    ``memory/`` or ``notes/`` prefix) the notes topic of that name, ``notes/<name>``."""
-    n = str(name).strip().strip("/")
-    keys = [wanted_key(name)]
-    if n and not n.startswith(("memory.", "memory/", "notes/")):
-        keys.append("notes/" + n)
-    return keys
-
-
-def find_section(text: str, name: object) -> str:
-    """The full section of the index *text* that *name* means: a package, else for a bare name the notes
-    topic of that name; LookupError naming the sections otherwise."""
-    _, sections = split_index(text)
-    wanted = wanted_keys(name)
-    for key in wanted:
-        for heading, body in sections:
-            if section_key(heading) == key:
-                return f"## {heading}\n{body}"
-    keys = ", ".join(section_key(h) for h, _ in sections) or "(none)"
-    tried = " or ".join(repr(k) for k in wanted)
-    raise LookupError(
-        f"memory: no index section {tried}; the sections are: {keys}; "
-        'memory.show("<id>") shows one item',
-    )
-
-
 def item_count(body: str) -> int:
     """The item lines of a section body."""
     return sum(1 for line in body.splitlines() if line.startswith(ITEM_LINE))
 
 
-#: The contract: what ``help(memory)`` and ``from memory import *`` show. The aliases (``index``, ``show``, ``find``,
-#: ``match``, ``run``) and the matcher hook stay attributes of the package for one build, outside the contract.
+#: The contract: what ``help(memory)`` and ``from memory import *`` show.
 __all__ = [
     "Ambiguous",
     "ArgumentError",
@@ -226,26 +176,6 @@ _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(
     _PKG_DIR,
 )  # the copy's root: INDEX.md, links.json, memory/, notes/, .memory/
-_LEVELS = {2: "exact", 1: "structure", 0: "weak"}
-_MATCHER: Any = None
-
-
-class _Text(str):
-    """Text that shows as itself when a cell's last expression evaluates to it."""
-
-    def __repr__(self) -> str:
-        return str(self)
-
-
-class Found(NamedTuple):
-    """One function :func:`find` lists: its id, how to call it, and which of its parameters the value fits."""
-
-    name: str  # memory.<package>.<module>:<name>
-    signature: str
-    param: str  # the parameter the matching recorded input is passed as ("" when that is not known)
-    match: str  # exact | structure | weak (a single named key, or a whole shape without named keys)
-    summary: str
-    reason: str  # the keys or columns that matched
 
 
 class _FileUnreadable(RuntimeError):
@@ -278,18 +208,6 @@ def _json(rel: str) -> dict:
     return data
 
 
-def _item_id(item: Any) -> str:
-    if callable(item) and not isinstance(item, str):
-        return f"{getattr(item, '__module__', '')}:{getattr(item, '__name__', '')}"
-    s = str(item).strip()
-    if s.startswith("notes/") or ":" in s:
-        return s
-    if s.startswith("memory.") and s.count(".") >= 3:
-        module, _, name = s.rpartition(".")
-        return f"{module}:{name}"
-    return s
-
-
 def _summary(record: Any) -> str:
     if not record:
         return "no record yet"
@@ -297,11 +215,11 @@ def _summary(record: Any) -> str:
 
 
 def _matcher() -> Any:
-    """The shape matcher shipped beside the package (``.memory/matcher.py``, v2's own matching code). Its
+    """The shape comparison shipped beside the package (``.memory/matcher.py``), loaded once per process. Its
     ``__file__`` is set at the root, so it loads its shape functions from ``.memory/shapes.py``.
     """
-    global _MATCHER
-    if _MATCHER is None:
+    loaded = _matcher.__dict__.get("module")
+    if loaded is None:
         path = os.path.join(_ROOT, MATCHER_FILE)
         spec = importlib.util.spec_from_loader("_memory_matcher", loader=None)
         module = importlib.util.module_from_spec(spec)
@@ -312,8 +230,8 @@ def _matcher() -> Any:
             exec(code, module.__dict__)  # noqa: S102 - the harness's own generated file
         except Exception as exc:  # noqa: BLE001 - a missing or malformed matcher is the copy's, named as such
             raise _FileUnreadable(MATCHER_FILE, type(exc).__name__) from None
-        _MATCHER = module
-    return _MATCHER
+        _matcher.__dict__["module"] = loaded = module
+    return loaded
 
 
 def _candidates(m: Any, value: Any, exts: list[str]) -> list[dict]:
@@ -347,87 +265,13 @@ def _candidates(m: Any, value: Any, exts: list[str]) -> list[dict]:
     return out
 
 
-def _param(desc: dict) -> str:
-    p = desc.get("param")
-    return p if isinstance(p, str) else ""
-
-
-def _match(m: Any, mine: dict, recorded: dict) -> Any:
-    """v2's match; else, for two shapes without a named key (a list of lists, a list of numbers),
-    their exact equality as the weakest match, so such an argument is still found, after every v2 match.
-    """
-    found = m.match(mine, recorded)
-    if found is None and m.signature(mine) and m.same_shape(mine, recorded):
-        return 0, 0.0, []
-    return found
-
-
-def _find(value: Any) -> list[Found]:
-    """The functions with a recorded input of the shape of *value*, best match first, each with the parameter that
-    input is passed as when that is known. v2's input-shape matcher and ranking, unchanged (level,
-    then share of named keys matched, then how many recorded shapes match, then name; at most five). A shape
-    without named keys (a list of lists) matches only an identical one, ranked weak and below every named match. A
-    function's best-matching shape names the parameter, the first in recorded order on a tie. An empty list
-    means that no listed function has a known input of this shape (shapes appear only where they are known: a
-    function whose recorded inputs give none is never listed), or that the value has too little structure (plain
-    text has none)."""
-    m = _matcher()
-    entries = _json(FIND_FILE).get("functions", [])
-    exts = sorted(
-        {
-            d.get("ext", "")
-            for e in entries
-            for d in e.get("input_shapes", [])
-            if d.get("kind") == "file"
-        },
-    )
-    mine = _candidates(m, value, exts)
-    ranked: list[tuple[int, float, int, str, Found]] = []
-    for e in entries:
-        best = None
-        count = 0
-        param = ""
-        for d in e.get("input_shapes", []):
-            shape = {k: v for k, v in d.items() if k != "param"}
-            hits = [x for x in (_match(m, v, shape) for v in mine) if x is not None]
-            if not hits:
-                continue
-            top = max(hits, key=lambda x: (x[0], x[1]))
-            if best is None or top[:2] > best[:2]:
-                best, count, param = top, 1, _param(d)
-            elif top[:2] == best[:2]:
-                count += 1
-        if best is None:
-            continue
-        level, share, matched = best
-        shown = [p[3:] if p.startswith("[].") else p for p in matched]
-        reason = (
-            "matched "
-            + ", ".join(shown[:8])
-            + (f" and {len(shown) - 8} more" if len(shown) > 8 else "")
-            if shown
-            else "matched the whole shape (it has no named keys)"
-        )
-        name = e["id"]
-        found = Found(
-            name,
-            e.get("signature", ""),
-            param,
-            _LEVELS[level],
-            e.get("summary", ""),
-            reason,
-        )
-        ranked.append((-level, -share, -count, name, found))
-    return [f for *_, f in sorted(ranked, key=lambda r: r[:4])][: m.MAX_RESULTS]
-
-
-# --- recognition by content (``match``) and trying a stored procedure (``run``) ---------------------------------
+# --- an item's applicability check (``Item.fits``) and its tracked call ----------------------------------------------
 #
-# ``match`` informs and runs no procedure: it reads what each stored procedure was saved against and asks the matcher
-# (:data:`MATCHER`, a module-level hook) which of them fit what the caller passed, structure only (rev 2: no reader or
-# ``applies`` runs to recognise or rank anything). ``run`` is the agent's own call of one procedure, in its own cell; nothing here runs on its own. Everything
-# read here was built by the harness as written (signatures, docstrings, summary sections, what broke); nothing
-# strips or masks an identifier (rev 2.1).
+# ``Item.fits`` informs and runs no procedure: it reads what the stored procedure was saved against and compares its
+# structure with what the caller passed (no reader or ``applies`` runs to recognise or rank anything). Calling an item
+# is the agent's own call of one procedure, in its own cell; nothing here runs on its own. Everything read here was
+# built by the harness as written (signatures, docstrings, summary sections, what broke); nothing strips or masks an
+# identifier.
 
 #: Captured attempts the harness exported beside the package, one directory per capture id (written by the capture
 #: store, never by this file): ``signature.json``, ``record.json``, ``procedure.py`` and ``saved.json`` (what the
@@ -446,8 +290,8 @@ WITHDRAWN_FILE = ".memory/captures/withdrawn.json"
 #: items the writer retired or superseded with what replaces each. Without the first file every call is as before.
 EVIDENCE_FILE = ".memory/item_evidence.json"
 WITHDRAWN_ITEMS_FILE = ".memory/withdrawn_items.json"
-#: The audit events of a ``match`` result (each listed row's id, level, status and how it matched; the failed
-#: attempts apart) and of a ``run`` (its target, outcome, level and conditions).
+#: The audit events of an applicability check (its row's id, level, status and how it matched; a failed attempt apart)
+#: and of a tracked call (its target, outcome, level and conditions).
 #: Ids and short labels only: never a value, a result or a request's text.
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
@@ -481,7 +325,7 @@ class Candidate(NamedTuple):
 
 
 class Query(NamedTuple):
-    """What a ``match`` call was given: the request text, the caller's inputs (unchanged), and the shapes the
+    """What an applicability check was given: the request text, the caller's inputs (unchanged), and the shapes the
     structural reading gives them (none for plain text)."""
 
     request: Any
@@ -490,7 +334,7 @@ class Query(NamedTuple):
 
 
 class MatchRow(NamedTuple):
-    """One procedure ``match`` lists."""
+    """One procedure an applicability check found similar in structure."""
 
     id: str
     source: str
@@ -501,79 +345,6 @@ class MatchRow(NamedTuple):
     conditions: str
     goal: str
     broke: tuple
-
-
-def _row_text(row: MatchRow) -> str:
-    parts = [f"level {row.level}", f"status {row.status}", f"matched: {row.matched}"]
-    if row.relations:
-        parts.append("relations: " + ", ".join(row.relations))
-    parts.append("conditions: " + row.conditions)
-    evidence = _evidence()
-    if evidence is not None:
-        parts.append("recorded failures: " + _failure_text(_failures(evidence, row.id)))
-    lines = [f"- {row.id}  [" + "; ".join(parts) + "]"]
-    if row.goal:
-        lines.append("  goal: " + " ".join(row.goal.split())[:300])
-    for line in row.broke:
-        lines.append("  broke: " + line)
-    return "\n".join(lines)
-
-
-class Matches(list):
-    """The runnable procedures ``match`` lists (a list of :class:`MatchRow`), with ``failed``, the captured attempts
-    that were tried on input like this and failed, kept apart. It prints as a few lines."""
-
-    def __init__(self, rows: list, failed: list, note: str = "", recognised: bool = False) -> None:
-        super().__init__(rows)
-        self.failed = list(failed)
-        self.note = note
-        # the rows are the procedures that recognise the request (the dispatch file's readers and applies ran)
-        self.recognised = recognised
-
-    def __repr__(self) -> str:
-        out: list[str] = []
-        if self.recognised and self and _evidence() is not None:
-            out.append(
-                f"{len(self)} stored procedure(s) have evidence for the request: each one's reader parsed it and its "
-                "stated applies held on what the reader gave (both ran in a separate confined process; only the "
-                "outcomes are kept). That is evidence about the shape of the input only, not that the procedure does "
-                "what you need; each row shows its recorded failures. memory.get(id) opens one and calling it tries "
-                "it:",
-            )
-            out += [_row_text(r) for r in self]
-        elif self.recognised and self:
-            out.append(
-                f"{len(self)} stored procedure(s) recognise the request: each one's reader parsed it and its stated "
-                "applies held on what the reader gave (both ran in a separate confined process; only the outcomes "
-                "are kept). One can still be wrong for your case; memory.get(id) opens one and calling it tries it:",
-            )
-            out += [_row_text(r) for r in self]
-        elif self.recognised:
-            out.append("No stored procedure recognises the request: none has a reader that parsed it with its "
-                       "stated applies holding.")
-        elif self and _evidence() is not None:
-            out.append(
-                f"{len(self)} stored procedure(s) are structurally similar to what you passed: the match compares "
-                "structure only, which says nothing of whether one does what you need; each row shows its recorded "
-                "failures. memory.get(id) opens one and calling it tries it:",
-            )
-            out += [_row_text(r) for r in self]
-        elif self:
-            out.append(
-                f"{len(self)} stored procedure(s) match what you passed. The match compares structure only, so "
-                "it can be wrong; memory.get(id) opens one and calling it tries it:",
-            )
-            out += [_row_text(r) for r in self]
-        else:
-            out.append("No stored procedure matches what you passed.")
-        if self.failed:
-            out.append("Tried on input like this and failed:")
-            out += [_row_text(r) for r in self.failed]
-        if self.note:
-            out.append(self.note)
-        return "\n".join(out) + "\n"
-
-    __str__ = __repr__
 
 
 def _read_text(path: str) -> str | None:
@@ -645,7 +416,8 @@ def _failure_text(rows: list[dict]) -> str:
 
 def _evidence_lines(evidence: dict | None, iid: str) -> list[str]:
     """A card's evidence lines (with the harness's evidence serving on): what its status rests on, its recorded
-    failures, its contradictions and its stated conditions; [] without it."""
+    failures, its later uses (the calls made of it since it was stored, by how they ended) and its stated
+    conditions; [] without it."""
     if evidence is None:
         return []
     row = evidence.get(iid) if isinstance(evidence.get(iid), dict) else {}
@@ -653,6 +425,7 @@ def _evidence_lines(evidence: dict | None, iid: str) -> list[str]:
         "Status by evidence: "
         + _str(row.get("status_text"), "no outcome signal has arrived for any use of this item"),
         "Recorded failures: " + _failure_text(_failures(evidence, iid)),
+        "Later uses: " + _str(row.get("later_uses_text"), "none yet"),
     ]
     if _str(row.get("conditions")):
         out.append("States that it applies when: " + _str(row.get("conditions")))
@@ -754,8 +527,7 @@ def _capture_dir(capture_id: str) -> str:
 
 
 def _capture_candidates() -> tuple[list[Candidate], int]:
-    """The exported captures, in id order, and how many could not be read (no ``signature.json`` object). A captured
-    procedure whose landing found it not listed (its record's ``listing``) is no candidate."""
+    """The exported captures, in id order, and how many could not be read (no ``signature.json`` object)."""
     base = os.path.join(_ROOT, CAPTURES_DIR)
     try:
         names = sorted(os.listdir(base))
@@ -763,18 +535,19 @@ def _capture_candidates() -> tuple[list[Candidate], int]:
         return [], 0
     out: list[Candidate] = []
     unreadable = 0
+    evidence = _evidence() or {}
     for name in names:
         if _CAPTURE_ID.fullmatch(name) is None:
             continue
         d = os.path.join(base, name)
+        row = evidence.get(CAPTURE_PREFIX + name)
+        row = row if isinstance(row, dict) else {}
         sig = _read_json(os.path.join(d, "signature.json"))
         if not isinstance(sig, dict):
             unreadable += 1
             continue
         rec = _read_json(os.path.join(d, "record.json"))
         rec = rec if isinstance(rec, dict) else {}
-        if isinstance(rec.get("listing"), dict) and rec["listing"].get("listed") is False:
-            continue
         saved = _read_json(os.path.join(d, "saved.json"))
         saved = saved if isinstance(saved, dict) else {}
         failed = rec.get("outcome") in _NEGATIVE
@@ -787,8 +560,9 @@ def _capture_candidates() -> tuple[list[Candidate], int]:
                 docstring=_str(saved.get("docstring")),
                 asked=_str(saved.get("asked")) or _str(sig.get("goal")),
                 approach=_str(saved.get("approach")),
-                level=_str(rec.get("level"), "unchecked"),
-                status=_str(rec.get("status"), "on-trial"),
+                # what its uses gave it (the harness's evidence), never its record's
+                level=_str(row.get("level"), "unchecked"),
+                status=_str(row.get("status"), "on-trial"),
                 failed=failed,
                 broke=tuple(str(b) for b in broke if isinstance(b, str)) if failed else (),
             ),
@@ -826,8 +600,7 @@ def _candidates_all() -> tuple[list[Candidate], int]:
 
 def _query(m: Any, request: Any, inputs: Any, candidates: list[Candidate]) -> Query:
     """The query for *request* (read as JSON text only: sniffing prose as a table would make its first line's words
-    column names) and *inputs* (read as ``find`` reads a value: a parsed value, JSON text, a structured file or its
-    path)."""
+    column names) and *inputs* (a parsed value, JSON text, a structured file or its path)."""
     exts = sorted(
         {
             str(c.signature["input"].get("ext", ""))
@@ -863,42 +636,26 @@ def _is_file(m: Any, value: Any) -> bool:
     )
 
 
-def structural_match(query: Query, candidates: list[Candidate]) -> list[tuple[str, str]]:
-    """The default matcher: structure only, never words. A candidate matches when one of the query's shapes has the
-    same shape as its signature's ``input`` (``exact``) or matches it as ``find`` matches an argument, with at least
-    a structure-level match (``structure``). The docstring and the summary sections are not compared, and nothing
-    is run here: a stated ``applies`` is shown, not called (``match`` with the dispatch file calls it, confined, and
-    uses this matcher only to order its rows). Candidates keep their given order (no ranking)."""
-    if not query.shapes:
-        return []
+def _structure_match(query: Query, candidate: Candidate) -> str:
+    """How the structure of what was passed matches the input *candidate* was saved against, never by words:
+    ``exact`` (one of the query's shapes has the same shape as its signature's ``input``, or matches it at the exact
+    level), ``structure`` (a structure-level match), or '' (no match, no shapes or no recorded input). The docstring
+    and the summary sections are not compared, and nothing is run."""
+    recorded = candidate.signature.get("input") if isinstance(candidate.signature, dict) else None
+    if not query.shapes or not isinstance(recorded, dict):
+        return ""
     m = _matcher()
-    out: list[tuple[str, str]] = []
-    for c in candidates:
-        recorded = c.signature.get("input") if isinstance(c.signature, dict) else None
-        if not isinstance(recorded, dict):
+    best = ""
+    for mine in query.shapes:
+        try:
+            if m.same_shape(mine, recorded):
+                return "exact"
+            found = m.match(mine, recorded)
+        except Exception:  # noqa: BLE001 - a malformed signature matches nothing
             continue
-        best = ""
-        for mine in query.shapes:
-            try:
-                if m.same_shape(mine, recorded):
-                    best = "exact"
-                    break
-                found = m.match(mine, recorded)
-            except Exception:  # noqa: BLE001 - a malformed signature matches nothing
-                continue
-            if found is not None and found[0] >= 1 and best != "exact":
-                best = "exact" if found[0] == 2 else "structure"
-        if best:
-            out.append((c.id, best))
-    return out
-
-
-#: The matching strategy: called as ``MATCHER(query, candidates)`` with a :class:`Query` and the
-#: :class:`Candidate` list (each with its signature, docstring and source episode's Asked and Approach sections), it
-#: returns ``(candidate id, how it matched)`` pairs in the order to show them. Replace it (``memory.MATCHER = fn``, or
-#: in the harness's copy of this file) to change how ``match`` matches; the call, its audit event and its printed
-#: form stay the same.
-MATCHER: Any = structural_match
+        if found is not None and found[0] >= 1:
+            best = "exact" if found[0] == 2 else (best or "structure")
+    return best
 
 
 def _conditions(signature: dict) -> str:
@@ -934,36 +691,6 @@ def _emit_event(event: str, *args: Any) -> None:
         sys.audit(event, *args)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
         pass
-
-
-def _matched(request: Any, inputs: Any) -> tuple[list[MatchRow], list[MatchRow], Query, int, str]:
-    """The rows :data:`MATCHER` gives for *request* and *inputs*: runnable, failed, the query, unreadable captures,
-    and why the matcher gave nothing when it raised (``""`` otherwise): a failing matcher lists nothing and never
-    breaks the cell."""
-    m = _matcher()
-    candidates, unreadable = _candidates_all()
-    query = _query(m, request, inputs, candidates)
-    by_id: dict[str, Candidate] = {}
-    for c in candidates:
-        by_id.setdefault(c.id, c)  # an item offered in a withdrawn capture's place is listed as itself
-    rows: list[MatchRow] = []
-    failed: list[MatchRow] = []
-    seen: set[str] = set()
-    try:
-        pairs = list(MATCHER(query, list(candidates)) or ())
-    except Exception as exc:  # noqa: BLE001 - the matcher's failure is reported, not raised
-        return rows, failed, query, unreadable, f"the matcher failed ({type(exc).__name__}), so nothing is listed."
-    for pair in pairs:
-        try:
-            cid, how = pair
-        except (TypeError, ValueError):
-            continue
-        c = by_id.get(cid) if isinstance(cid, str) else None
-        if c is None or cid in seen:
-            continue
-        seen.add(cid)
-        (failed if c.failed else rows).append(_match_row(c, str(how)[:40]))
-    return rows, failed, query, unreadable, ""
 
 
 # --- the current request, and the harness's catalogue ---------------------------------------------------------------
@@ -1094,37 +821,8 @@ def _event_rows(rows: list[MatchRow]) -> tuple:
     return tuple((r.id, _label(r.level, "unknown"), _label(r.status, "unknown"), _label(r.matched)) for r in rows)
 
 
-def _match_all(request: Any = None, inputs: Any = None) -> Matches:
-    """The stored procedures that fit what you pass: *request*, the request's text, and *inputs*, data you were
-    given (a dict, a list, JSON text, or a structured file or its path); both None mean the current request and the
-    JSON values it carries, when the cells have it. Each row gives the procedure's id, evidence level, status, how it
-    matched, the relations and conditions it was saved with, and the goal it was built for; captured attempts that
-    were tried on input like this and failed are listed apart, under ``.failed``, and are never offered to run. How
-    it matches is :data:`MATCHER`'s choice (structure only by default, so plain text with no structure matches
-    nothing), in the catalogue's order; a match can be wrong, and nothing runs (rev 2: no reader and no ``applies``
-    runs to recognise or rank anything)."""
-    if request is None and inputs is None:
-        text, data = _current_request()
-        if text is not None:
-            request = text
-            if isinstance(data, list) and data:
-                inputs = data[0] if len(data) == 1 else data
-    rows, failed, query, unreadable, broken = _matched(request, inputs)
-    note = broken
-    if not query.shapes and not broken:
-        note = (
-            "What you passed has no structure the matcher reads (plain text has none); pass data you were "
-            "given as inputs=..., or browse with memory.items()."
-        )
-    if unreadable:
-        note = (note + " " if note else "") + f"{unreadable} captured attempt(s) could not be read."
-    _emit_event(MATCH_EVENT, _event_rows(rows), _event_rows(failed))
-    return Matches(rows, failed, note)
-
-
-
 class RunReport:
-    """How one ``run`` went: the one call it made (rev 2.1: a stored procedure is called once, never a second time and
+    """How one tracked call went: the one call it made (rev 2.1: a stored procedure is called once, never a second time and
     never beside another procedure). ``outcome``: returned, refused (``MemoryInputError``) or error; ``result``: what
     it returned (None otherwise); ``conditions``: whether its stated conditions held."""
 
@@ -1191,8 +889,8 @@ def _procedure_level(target: str) -> str:
 
 
 class AsyncItemError(TypeError):
-    """``memory.run`` of an ``async def`` item from a cell whose event loop is already running: it cannot be awaited
-    from inside a synchronous call there. Await the item itself instead: ``await memory.get(ref)...``."""
+    """A tracked call of an ``async def`` item from a cell whose event loop is already running: it cannot be awaited
+    from inside a synchronous call there. Import the item's function and await it instead."""
 
 
 def _settled(result: Any) -> Any:
@@ -1210,7 +908,8 @@ def _settled(result: Any) -> Any:
         return asyncio.run(result)
     result.close()
     raise AsyncItemError(
-        "this item is an async def and this cell's event loop is running: call it with await instead of memory.run"
+        "this item is an async def and this cell's event loop is running: import its function from its module and "
+        "await it instead"
     )
 
 
@@ -1476,14 +1175,13 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
                          f"{_str(gone.get('status'), 'closed')} it"
                          + (f"; {by} is offered in its place: memory.get({by!r})" if isinstance(by, str) and by
                             else "; memory.ask() names what applies"))
-    rec = _read_json(os.path.join(_capture_dir(capture_id), "record.json"))
-    rec = rec if isinstance(rec, dict) else {}
-    base = {"level": _str(rec.get("level"), "unchecked"), "status": _str(rec.get("status"), "on-trial")}
+    rec, row = _capture_facts(capture_id)
+    base = {"level": _str(row.get("level"), "unchecked"), "status": _str(row.get("status"), "on-trial")}
     if rec.get("outcome") in _NEGATIVE:
         return RunReport(target, outcome="error", error="LookupError",
                          detail="this captured attempt failed; it is listed to show what broke, not to run", **base)
-    if _capture_form(capture_id) == "state_env" and len(args) == 1 and not kwargs and isinstance(args[0], str):
-        # nothing is run and no use is recorded: the call cannot pass it the tools it acts through
+    if _capture_form(capture_id) == "state_env":
+        # nothing is run and no use is recorded: no call can pass it the tools it acts through
         return RunReport(target, outcome="error", error="WrongCall", detail=BY_HAND.format(cid=target), **base)
     rep = _confined(capture_id, args, kwargs)
     if rep.get("error") != "LookupError" or rep["outcome"] != "error":
@@ -1498,14 +1196,14 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
         detail=_str(rep.get("detail")),
         conditions=conditions,
         conditions_code=code,
-        record=_record_line(rec.get("track") if isinstance(rec.get("track"), dict) else None),
-        rests_on=_support_line("recorded procedure", rec.get("support")) or "recorded procedure",
+        record="later uses before this one: " + _str(row.get("later_uses_text"), "none recorded"),
+        rests_on=_support_line("recorded procedure", _capture_support(rec, row)),
         **base,
     )
 
 
 def _tracked_run(target: str, args: tuple, kwargs: dict) -> RunReport:
-    """The tracked call of one stored procedure (``memory.run``, and calling a function :class:`Item`): try it on the
+    """The tracked call of one stored procedure (calling a function :class:`Item`): try it on the
     arguments, in this cell, once, and report how it went: whether it returned, its result, whether its stated
     conditions held, and its evidence level and status. Rev 2.1: nothing calls it a second time or calls another
     procedure beside it. *target* is an item id (``memory.<package>.<module>:<name>``) or a ``capture:<id>``. A
@@ -1598,7 +1296,7 @@ def _support_line(kind: str, facts: Any) -> str:
     (``curated item`` or ``recorded procedure``), the episodes it comes from and, when it has any,
     the uses whose outcome confirmed it. *facts* is the export's ``support`` (``{"episodes", "confirmed_uses"}``)."""
     if not isinstance(facts, dict):
-        return ""  # no record of what it rests on: the card says nothing rather than a count it does not have
+        return f"{kind}, no record"  # no record of what it rests on: said so, never a count it does not have
     n = facts.get("episodes") if isinstance(facts.get("episodes"), int) else 0
     m = facts.get("confirmed_uses") if isinstance(facts.get("confirmed_uses"), int) else 0
     a = facts.get("accepted") if isinstance(facts.get("accepted"), int) else 0
@@ -1732,18 +1430,52 @@ def _capture_form(capture_id: str) -> str:
     return form if isinstance(form, str) else ""
 
 
-#: How a recorded procedure that acts through tools is run, as its card and a call's refusal say it.
+#: What a recorded procedure that acts through tools is, and how its work is done from here, as its card and a call's
+#: refusal say it: no call runs it (a call cannot pass it the tools it acts through), its code is shown, and the
+#: same tool calls made in a cell with the agent's own tools do its work.
 BY_HAND = (
-    "it acts through the tools of the episode it came from (run(state, env)), which a call from here cannot pass "
-    "to it; run it in a cell with your own tools: ns = {{}}; exec(memory.get({cid!r}).text, ns); "
-    "ns['run'](state, tools), where state has .request (memory.request()), .messages, .last and .data"
+    "it acts through the tools of the episode it came from (run(state, env)), and no call can pass it tools, so "
+    "a call does not run it here; print(memory.get({cid!r}).text) shows its code, and making the same tool calls "
+    "in a cell with your own tools, on the current request (memory.request() gives its text), does its work"
 )
+
+
+def _capture_facts(capture_id: str) -> tuple[dict, dict]:
+    """A recorded procedure's record (what the capture step saw) and its evidence row (its uses, what it rests on and
+    its status, from the harness's evidence store); {} for either when it is not here."""
+    rec = _read_json(os.path.join(_capture_dir(capture_id), "record.json"))
+    row = (_evidence() or {}).get(CAPTURE_PREFIX + capture_id)
+    return (rec if isinstance(rec, dict) else {}), (row if isinstance(row, dict) else {})
+
+
+def _capture_support(rec: dict, row: dict) -> Any:
+    """What a recorded procedure rests on: its evidence row's (its episodes, accepted work and confirmed uses), else
+    its record's (its episodes and accepted work; its uses are not known here); None when neither has it."""
+    got = row.get("support")
+    if isinstance(got, dict):
+        return got
+    got = rec.get("support")
+    return got if isinstance(got, dict) else None
+
+
+#: The most characters of a recorded procedure's code its card prints; the whole code is the item's ``text``.
+CAPTURE_CARD_CHARS = 2000
+
+
+def _capture_code(text: str | None, iid: str) -> str:
+    """A recorded procedure's code as its card prints it: at most :data:`CAPTURE_CARD_CHARS` characters, ending with
+    where the rest is when there is more."""
+    code = (text or "(its procedure cannot be read)").rstrip("\n")
+    if len(code) <= CAPTURE_CARD_CHARS:
+        return code
+    return code[:CAPTURE_CARD_CHARS].rstrip() + f"\n… (the rest of its code: print(memory.get({iid!r}).text))"
 
 
 def _capture_lines(iid: str, rec: dict) -> list[str]:
     """What a recorded procedure's card says it is and how it runs, from its record only: accepted work only when its
     record shows an accepted episode (``support.accepted``); a no-argument call only for the forms that take the
-    request (``value``, ``state``); how to run it yourself for one that acts through tools."""
+    request (``value``, ``state``); for one that acts through tools, that no call runs it and how its work is done
+    from here (:data:`BY_HAND`)."""
     if rec.get("outcome") in _NEGATIVE:
         return ["A recorded attempt; its episode failed."]
     support = rec.get("support") if isinstance(rec.get("support"), dict) else {}
@@ -1757,7 +1489,8 @@ def _capture_lines(iid: str, rec: dict) -> list[str]:
     if form in ("value", "state"):
         how = "Calling it with no arguments runs it on the current request, in a separate confined process."
     elif form == "state_env":
-        how = "To run it: " + BY_HAND.format(cid=iid) + "."
+        how = BY_HAND.format(cid=iid)
+        how = how[0].upper() + how[1:] + "."
     else:
         how = "Calling it runs it in a separate confined process on text or JSON values."
     return [what, how]
@@ -1821,9 +1554,11 @@ class FitEvidence(Fit):
 class Item:
     """One item of the library, a function or a note: a frozen record with every member typed.
 
-    ``print(item)`` shows its full card: a function's signature, a recorded example call, its source with its
-    docstring, or a note's text; then its links both ways, its status, its evidence level with the findings that
-    set it, its verification and use records and the library commits that changed it.
+    ``print(item)`` shows its card: a function's signature, a recorded example call and its source with its
+    docstring; a note's front matter and its ``## Rule`` section (the whole note stays readable at its path); a
+    recorded procedure's code, up to a few thousand characters (``item.text`` holds all of it); then its status and
+    what it rests on, its recorded failures and later uses, its links both ways and the library commits that changed
+    it.
 
     Members:
         id: a function is ``memory.<package>.<module>:<name>`` (a captured procedure ``capture:`` and 16 hex
@@ -1835,7 +1570,8 @@ class Item:
             or, on a record from before rev 2.1, ``'reproduces-its-case'``; a note is unchecked.
         status: ``'on-trial'``, ``'adopted'`` or ``'retired'``.
         example: one recorded call, for a function ('' when none is shown).
-        text: a note's text, or a function's source with its docstring.
+        text: a note's front matter and ``## Rule`` section, a function's source with its docstring, or a recorded
+            procedure's whole code.
         links: the ids of the items it links to and of those that link to it.
         history: the library commits that changed it, newest first.
         reason: why ``memory.ask`` judged it applicable ('' from ``memory.get`` and ``memory.items``).
@@ -1863,7 +1599,8 @@ class Item:
 
     def _on_request(self) -> "Item | None":
         """What a call with no arguments runs on the current request: this item when it is a captured procedure
-        (it reads the request itself), its recipe when it is a procedure with one, else None."""
+        (one of the value or state form reads the request itself), its recipe when it is a procedure with one, else
+        None."""
         if self.id.startswith(CAPTURE_PREFIX):
             return self
         try:
@@ -1908,8 +1645,10 @@ class Item:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call a function item on *args* and *kwargs*, as calling the function directly would. The call is tracked:
         a library function runs in this cell, as an import would call it, and what it raises reaches you unchanged
-        (its refusal is its own ``MemoryInputError``); a captured procedure runs in a separate confined process and
-        takes text or JSON values.
+        (its refusal is its own ``MemoryInputError``); a captured procedure of the value or state form runs in a
+        separate confined process and takes text or JSON values. A captured procedure that acts through its episode's
+        tools (``run(state, env)``) is not run by any call: the call raises WrongCall, which says how its work is done
+        from here (its card says the same).
 
         Args:
             args: the function's own positional arguments.
@@ -1923,30 +1662,26 @@ class Item:
                 note on what to do next (for its MemoryInputError: do the step yourself or find another item).
             ArgumentError: a captured procedure refused the input or did not return; the error says why.
             NotFound: the function could not be loaded from this copy of the library.
-            WrongCall: the item is a note, which is read, not called.
+            WrongCall: the item is a note, which is read, not called; or a captured procedure that acts through its
+                episode's tools, which no call runs.
 
         Example:
             memory.get('memory.text.dates:parse_date')('2026-10-09')
 
-        With no arguments, a procedure that takes the request (a captured procedure, or a procedure with a recipe)
-        runs on the current request, as ``memory.request()`` gives it: one call re-runs the stored work on it.
+        With no arguments, a procedure that takes the request (a captured procedure of the value or state form, or a
+        procedure with a recipe) runs on the current request, as ``memory.request()`` gives it: one call re-runs the
+        stored work on it.
         """
-        if not args and not kwargs:
-            target = self._on_request()
-            if target is not None:
-                return target(request())
-        if (
-            self.id.startswith(CAPTURE_PREFIX)
-            and len(args) == 1
-            and not kwargs
-            and isinstance(args[0], str)
-            and _capture_form(self.id[len(CAPTURE_PREFIX) :]) == "state_env"
-        ):
+        if self.id.startswith(CAPTURE_PREFIX) and _capture_form(self.id[len(CAPTURE_PREFIX) :]) == "state_env":
             # a fact of the harness, not a failure of the procedure: nothing is run and no use is recorded
             raise WrongCall(
                 call_text(f"memory.get({self.id!r})", args, kwargs),
                 "nothing was run: " + BY_HAND.format(cid=self.id) + ".",
             )
+        if not args and not kwargs:
+            target = self._on_request()
+            if target is not None:
+                return target(request())
         report = _RUN_TARGET(self.id, *args, **kwargs)
         if report.outcome == "returned":
             return report.result
@@ -2453,7 +2188,7 @@ class _Catalog:
         return built, self._card(iid, row, text.rstrip("\n"), missing)
 
     def _card(self, wanted: str, row: dict, body: str, missing: str) -> str:
-        """One item in full, as ``memory.show`` printed it: a function's signature, with an example call quoted from
+        """One item in full, as ``print(memory.get(ref))`` shows it: a function's signature, with an example call quoted from
         its tests (``Example (from <test id>): <call>``) when one is recorded and still in its test file, then its
         source with its docstring; or a note's text. Then its links both ways, its status with what it rests on (its
         kind, the episodes it comes from and its confirmed uses) and, for a function, its effect (and why, for an item
@@ -2507,9 +2242,11 @@ class _Catalog:
         rec, sig, saved = (x if isinstance(x, dict) else {} for x in (rec, sig, saved))
         text = _read_text(os.path.join(d, "procedure.py"))
         asked = _str(saved.get("asked")) or _str(sig.get("goal"))
-        level = _str(rec.get("level"), "unchecked")
+        # its status and level are what its uses gave it (the evidence store's), never its record's
+        _, row = _capture_facts(iid[len(CAPTURE_PREFIX) :])
+        level = _str(row.get("level"), "unchecked")
         level = _OLD_LEVELS.get(level, level)
-        status = _str(rec.get("status"), _NEW_ITEM_STATUS)
+        status = _str(row.get("status"), _NEW_ITEM_STATUS)
         status = _OLD_STATUSES.get(status, status)
         built = Item(
             id=iid,
@@ -2522,9 +2259,9 @@ class _Catalog:
             text=text or "",
             links=(),
             history=(),
-            support=_support_line("recorded procedure", rec.get("support")),
+            support=_support_line("recorded procedure", _capture_support(rec, row)),
         )
-        out = [f"{iid}  [{built.support or 'recorded procedure'}]", *_capture_lines(iid, rec)]
+        out = [f"{iid}  [{built.support}]", *_capture_lines(iid, rec)]
         by = self.generalised_by(iid, rec)
         if by:
             out.append("Generalised by: " + ", ".join(by))
@@ -2535,7 +2272,7 @@ class _Catalog:
             out += [f"  broke: {b}" for b in (broke if isinstance(broke, list) else []) if isinstance(b, str)]
         if asked:
             out.append(f"Asked: {' '.join(asked.split())}")
-        out += ["", (text or "(its procedure cannot be read)").rstrip("\n")]
+        out += ["", _capture_code(text, iid)]
         return built, "\n".join(out) + "\n"
 
 
@@ -2607,18 +2344,13 @@ def _items(topic: str | None, kind: str | None, call: str) -> Items:
             cat.not_a_topic(topic)
         ids = found or []
     if kind is not None:
-        ids = [i for i in ids if (_reads_as_note(i) == (kind == "note"))]
+        ids = [i for i in ids if i.startswith("notes/") == (kind == "note")]
     return Items(tuple(cat.item(i) for i in ids), topic, kind)
 
 
-def _reads_as_note(iid: str) -> bool:
-    """Whether item *iid* is read rather than called: a note. Every captured procedure is called the same way."""
-    return iid.startswith("notes/")
-
-
 def _fit(target: str, inputs: Any) -> Fit:
-    """``Item.fits``: the applicability check of one item, as ``match`` checks every procedure. It raises
-    ``memory.match_result`` with the row it listed (none when it does not fit), as ``match`` does."""
+    """``Item.fits``: the applicability check of one item (:func:`_structure_match`). It raises
+    ``memory.match_result`` with the row it found (none when it does not fit)."""
     call = call_text(f"memory.get({target!r}).fits", (inputs,))
     return _guard(call, _fit_check, target, inputs, call)
 
@@ -2668,22 +2400,12 @@ def _fit_check(target: str, inputs: Any, call: str) -> Fit:
             False,
             "what you passed has no structure to compare (plain text has none); pass the data you were given",
         )
-    try:
-        pairs = list(MATCHER(query, list(mine)) or ())
-    except Exception as exc:  # noqa: BLE001 - the matcher's failure is reported, not raised
-        _emit_event(MATCH_EVENT, (), ())
-        return _fitted(
-            target, False, f"the matcher failed ({type(exc).__name__}), so nothing here says whether it fits"
-        )
-    how = None
-    for pair in pairs:
-        try:
-            cid, matched = pair
-        except (TypeError, ValueError):
-            continue
-        if cid == target:
-            how = str(matched)[:40]
-            break
+    # the item as it was saved, then as it is offered in a withdrawn capture's place, saved against what that was
+    matched = [(c, _structure_match(query, c)) for c in mine]
+    hit = next(((c, h) for c, h in matched if h), None)
+    how = hit[1] if hit is not None else None
+    if hit is not None:
+        mine = [hit[0]]
     if how is None:
         _emit_event(MATCH_EVENT, (), ())
         return _fitted(target, False, "the input it was saved against has a different structure from what you passed")
@@ -2709,9 +2431,9 @@ def _fit_check(target: str, inputs: Any, call: str) -> Fit:
 
 
 def _run_target(target: str, /, *args: Any, **kwargs: Any) -> RunReport:
-    """A function item's call, ``item(...)``: ``run``'s tracked path (:func:`_tracked_run`). In the package it raises
+    """A function item's call, ``item(...)``: the tracked path (:func:`_tracked_run`). In the package it raises
     ``memory.helper_call`` as ``memory:run`` once per call, ``ok`` whatever the item did (its outcome is in
-    ``memory.run_result``), as ``run`` does; a note's call is refused here."""
+    ``memory.run_result``); a note's call is refused here."""
     if target.startswith("notes/"):
         raise WrongCall(
             call_text(f"memory.get({target!r})", args, kwargs),
@@ -2721,210 +2443,10 @@ def _run_target(target: str, /, *args: Any, **kwargs: Any) -> RunReport:
     return _tracked_run(target, args, kwargs)
 
 
-#: An item's applicability check and its tracked call; in the package each raises ``memory.helper_call`` (as
-#: ``memory:match`` and ``memory:run``), bound at the end of this file.
+#: An item's applicability check and its tracked call; in the package each raises ``memory.helper_call`` (under the
+#: audit ids ``memory:match`` and ``memory:run``), bound at the end of this file.
 _FIT: Any = _fit
 _RUN_TARGET: Any = _run_target
-
-
-# --- the earlier calls, kept for one build --------------------------------------------------------------------------
-
-#: The one line each earlier call prints, to the cell's error output beside what the cell prints, naming its
-#: replacement.
-ALIAS_LINES = {
-    "index": "memory.index is now memory.items(topic); print(memory.items(...))",
-    "show": "memory.show is now memory.get(ref); print(memory.get(...))",
-    "find": "memory.find is now memory.get(ref).fits(inputs); browse with print(memory.items())",
-    "match": "memory.match is now memory.get(ref).fits(inputs); browse with print(memory.items())",
-    "run": "memory.run is now a call of the item: memory.get(ref)(...)",
-}
-
-
-def _alias(name: str) -> None:
-    line = ALIAS_LINES[name]
-    if name in ("find", "match") and callable(globals().get("ask")):
-        line += ", or ask with memory.ask()"
-    try:
-        print(line, file=sys.stderr)
-    except Exception:  # noqa: BLE001 - the note never changes the call
-        pass
-
-
-@checked(name="memory.index")
-def index(package: str | None = None) -> str:
-    """The index (``INDEX.md``), one package's or notes topic's section in full, or the card of an item named
-    there. Kept for one build: ``memory.items(topic)`` replaces it and ``memory.get(ref)`` opens one item; each
-    call prints one line saying so.
-
-    Args:
-        package: a package (``'text'``, ``'memory.text'``), a notes topic (``'notes/text'``, or ``'text'`` when no
-            package has that name), or an item's id or name; None for the whole index.
-
-    Returns:
-        The text: the whole index, one section, or one item's card.
-
-    Raises:
-        ArgumentError: package is not a str.
-        NotFound: no section or item has that name; the error gives the nearest topics.
-        Ambiguous: the name names several items; the error lists each exact id with its call.
-
-    Example:
-        memory.index('text')
-    """
-    _alias("index")
-    call = call_text("memory.index", [package] if package is not None else [])
-    return _guard(call, _index_text, package, call)
-
-
-def _index_text(package: str | None, call: str) -> str:
-    """``index``'s text: the index, a section (:func:`find_section`), or the card of the item a name names; else the
-    error naming the nearest of the index's sections."""
-    text = _read(INDEX_FILE)
-    if package is None:
-        return _Text(text)
-    try:
-        return _Text(find_section(text, package))
-    except LookupError:
-        pass
-    try:
-        cat: _Catalog | None = _Catalog(call)
-    except _FileUnreadable:
-        cat = None  # a copy without its items: the index's own sections still name the topics
-    if cat is not None and cat.matches(package):
-        return _Text(str(cat.resolve(package)))
-    topics = [section_key(h) for h, _ in split_index(text)[1]]
-    near = nearest(package, topics)
-    raise NotFound(
-        call,
-        f"no section or item named {package!r}.",
-        expected=_TOPIC_EXPECTED,
-        example=f"memory.items({(near or topics or ['notes/reports'])[0]!r})",
-        nearest=near,
-        hint="Browse every topic with memory.items(); memory.get(ref) opens one item.",
-    )
-
-
-@checked(name="memory.show")
-def show(item: Any) -> str:
-    """One item's full card, as ``print(memory.get(ref))`` shows it. Kept for one build: ``memory.get(ref)``
-    replaces it; each call prints one line saying so.
-
-    Args:
-        item: anything ``memory.get`` takes: an item's id or name, the library function itself, or an Item.
-
-    Returns:
-        The card's text.
-
-    Raises:
-        ArgumentError: item is not a str, a function or an Item.
-        NotFound: no item has that name; the error gives the nearest ids.
-        Ambiguous: the name names several items; the error lists each exact id with its call.
-        WrongCall: the name is a topic, not an item.
-
-    Example:
-        memory.show('notes/reports/summary.md')
-    """
-    _alias("show")
-    call = call_text("memory.show", (item,))
-    return _guard(call, _show_text, item, call)
-
-
-def _show_text(item: Any, call: str) -> str:
-    return _Text(str(_Catalog(call).resolve(item)))
-
-
-@checked(name="memory.find")
-def find(value: Any) -> list[Found]:
-    """The functions with a recorded input of the shape of *value*, best match first, each with the parameter that
-    input is passed as when that is known. Shapes appear only where they are known: a function whose recorded
-    inputs give none is never listed. Kept for one build: an item's own check, ``memory.get(ref).fits(inputs)``,
-    replaces it; each call prints one line saying so.
-
-    Args:
-        value: structured data: a dict, a list of records, JSON text, or a structured file such as a CSV with a
-            header, or its path. Plain text has no structure and finds nothing.
-
-    Returns:
-        At most five Found rows (name, signature, param, match, summary, reason); an empty list when nothing
-        matches.
-
-    Raises:
-        NotFound: the library copy cannot be read.
-
-    Example:
-        memory.find({'date': '2026-10-09', 'zone': 'UTC'})
-    """
-    _alias("find")
-    return _guard(call_text("memory.find", (value,)), _find, value)
-
-
-@checked(name="memory.match")
-def match(request: Any = None, inputs: Any = None) -> Matches:
-    """The stored procedures that fit what you pass: *request*, the request's text, and *inputs*, data you were
-    given. Kept for one build: an item's own check, ``memory.get(ref).fits(inputs)``, replaces it; each call prints
-    one line saying so. It compares structure only, and nothing runs.
-
-    Args:
-        request: the request's text; None (with no inputs) means the current request.
-        inputs: data you were given: a dict, a list, JSON text, or a structured file or its path; None (with no
-            request) means the current request's data.
-
-    Returns:
-        Matches: the rows that fit (id, level, status, how it matched, relations, conditions, goal), with the
-        captured attempts that failed on input like this under ``.failed``.
-
-    Raises:
-        NotFound: the library copy cannot be read.
-
-    Example:
-        memory.match('Total the table by month.', inputs={'rows': [[1, 2, 3]]})
-    """
-    _alias("match")
-    call = call_text(
-        "memory.match",
-        [request] if request is not None else [],
-        {"inputs": inputs} if inputs is not None else {},
-    )
-    return _guard(call, _match_all, request, inputs)
-
-
-@checked(name="memory.run")
-def run(item: Any, /, *args: Any, **kwargs: Any) -> RunReport:
-    """Try one stored procedure on the arguments you pass, once, and report how it went: whether it returned, its
-    result, whether its stated conditions held, and its evidence level and status. Kept for one build: calling the item, ``memory.get(ref)(...)``,
-    replaces it; each call prints one line saying so. A failure is reported, never raised.
-
-    Args:
-        item: the procedure: anything ``memory.get`` takes, a ``capture:`` id, or a row ``match`` returned.
-        args: the procedure's own positional arguments.
-        kwargs: the procedure's own keyword arguments.
-
-    Returns:
-        RunReport: outcome (returned, refused or error), result, conditions, level and status.
-
-    Raises:
-        ArgumentError: no procedure is given.
-
-    Example:
-        memory.run('memory.text.dates:parse_date', '2026-10-09')
-    """
-    _alias("run")
-    return _tracked_run(_run_target_of(item), args, kwargs)
-
-
-def _run_target_of(item: Any) -> str:
-    """The id ``run`` tries: a row's or an Item's own, a capture id, the one item a name names, else the name as
-    given (whose run then reports that no stored procedure has it)."""
-    if isinstance(item, (MatchRow, Item)):
-        return item.id
-    if isinstance(item, str) and not item.strip().startswith(CAPTURE_PREFIX):
-        try:
-            found = _Catalog("memory.run").matches(item)
-        except Exception:  # noqa: BLE001 - an unreadable copy is reported by the run itself
-            found = []
-        if len(found) == 1:
-            return found[0]
-    return _item_id(item)
 
 
 # --- runtime call evidence ------------------------------------------------------------------------------
@@ -3157,16 +2679,11 @@ def _install_call_finder(package: str) -> None:
 
 
 # Only as the library package itself: the harness also imports this file as a module of its own.
-# The package's own calls each raise ``memory.helper_call`` once (module docstring): the lookups, the aliases, and an
-# item's tracked call and applicability check, under the ids of the calls they replace.
+# The package's own calls each raise ``memory.helper_call`` once (module docstring): the lookups, and an item's
+# tracked call and applicability check under the audit ids ``memory:run`` and ``memory:match``.
 if __name__ == "memory":
     _install_call_finder(__name__)
     get = wrap_call(get, "memory:get", HELPER_EVENT)
     items = wrap_call(items, "memory:items", HELPER_EVENT)
-    index = wrap_call(index, "memory:index", HELPER_EVENT)
-    show = wrap_call(show, "memory:show", HELPER_EVENT)
-    find = wrap_call(find, "memory:find", HELPER_EVENT)
-    match = wrap_call(match, "memory:match", HELPER_EVENT)
-    run = wrap_call(run, "memory:run", HELPER_EVENT)
     _RUN_TARGET = wrap_call(_run_target, "memory:run", HELPER_EVENT)
     _FIT = wrap_call(_fit, "memory:match", HELPER_EVENT)

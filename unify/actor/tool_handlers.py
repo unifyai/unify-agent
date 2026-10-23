@@ -14,8 +14,8 @@ its worker pool); one that waits on the record or the request is a coroutine fun
 * The record tools go through ``ctx.record`` (:class:`unify.common.tool_registry.Record`: the agent record).
 * ``answer(answer)`` records the request's answer, validated against the request's response format as the loop
   validates a response tool's payload; the loop ends the request when the cell returns.
-* ``current_request()`` gives the memory package the request the agent works on (``memory.ask()`` and
-  ``memory.match()`` run the stored readers on it); it is on the channel but never in a cell's ``tools``.
+* ``current_request()`` gives the memory package the request the agent works on (``memory.ask()`` asks about it and
+  ``memory.request()`` gives it); it is on the channel but never in a cell's ``tools``.
 """
 
 from __future__ import annotations

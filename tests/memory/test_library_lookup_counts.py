@@ -1,5 +1,5 @@
-"""How the request's use record counts the actor's lookups in the library: calls of ``memory.match`` and
-``memory.run`` among the package's helper calls, and ``library_file_lookups``, the file reads and greps of the
+"""How the request's use record counts the actor's lookups in the library: an item's checks (``item.fits``, as
+``match``) and calls (``item(...)``, as ``run``) among the package's helper calls, and ``library_file_lookups``, the file reads and greps of the
 library copy (``/memory-library``), which no helper call records.
 
 The unit tests feed the use record both sources it may count from: the cells' code in the transcript, and the
@@ -26,7 +26,7 @@ from unify.memory.integration.request import (
 )
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
-#: The new helpers' audit ids and their names in ``library_helper_calls``.
+#: The audit ids of an item's check and call, and their names in ``library_helper_calls``.
 NEW_HELPERS = {"memory:match": "match", "memory:run": "run"}
 #: The use record's field for file reads and greps of the library copy.
 LOOKUPS_FIELD = "library_file_lookups"
@@ -57,8 +57,10 @@ def test_match_and_run_are_counted_among_the_helper_calls_by_outcome():
     acc = runtime_calls_empty()
     zero = {k: 0 for k in OUTCOMES}
     empty = library_helper_calls(acc)
-    for name in ("index", "show", "find", *NEW_HELPERS.values()):
+    for name in ("get", "items", *NEW_HELPERS.values()):
         assert empty[name] == zero, name
+    # the earlier calls are gone, and so are their counts
+    assert not {"index", "show", "find"} & set(empty)
     add_runtime_calls(
         acc,
         {
@@ -75,8 +77,8 @@ def test_match_and_run_are_counted_among_the_helper_calls_by_outcome():
     got = library_helper_calls(acc)
     assert got["match"] == {"ok": 2, "refused": 0, "error": 0}
     assert got["run"] == {"ok": 1, "refused": 1, "error": 1}
-    assert got["index"] == {"ok": 1, "refused": 0, "error": 0}
-    assert acc["malformed"] == 0  # both ids are the package's helpers
+    assert "index" not in got
+    assert acc["malformed"] == 1  # match and run are the package's helpers; a removed helper's id is not
     assert library_failures(acc, {})["library_calls_failed"] == 2
 
 
@@ -128,7 +130,7 @@ ELSEWHERE = (
     "import subprocess\n"
     "print(subprocess.run(['grep', '-rn', 'total', '/workspace'], capture_output=True, text=True).stdout)\n"
 )
-HELPERS_ONLY = "print(memory.index())\nprint(memory.show('memory.text.dates:parse_date'))\n"
+HELPERS_ONLY = "print(memory.items())\nprint(memory.get('memory.text.dates:parse_date'))\n"
 
 
 def _drained(records: list[dict]) -> dict:

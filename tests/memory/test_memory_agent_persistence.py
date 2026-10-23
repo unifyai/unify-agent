@@ -132,7 +132,7 @@ def test_a_helper_cell_sees_the_last_cells_variables(tmp_path, monkeypatch):
 
 BOUND = (
     "print('TYPE', type(memory).__name__)\n"
-    "print('INDEX', memory.index() is not None)\n"
+    "print('ITEMS', memory.items() is not None)\n"
     "help(len)\n"
 )
 
@@ -143,15 +143,15 @@ def test_memory_and_help_are_bound_in_the_writers_cells_with_no_import(tmp_path,
     _run(writer)
     out = model.outputs["c1"]
     # imported by the first cell that names it, inside that cell, before its first line runs
-    assert "TYPE module" in out and "INDEX True" in out, out
+    assert "TYPE module" in out and "ITEMS True" in out, out
     assert "number of items" in out and "Error" not in out, out
 
 
 @needs_box
 def test_memory_and_help_are_bound_in_a_helpers_cells_with_no_import(tmp_path, monkeypatch):
-    library = "def index():\n    return 'helper index\\n'\n"
+    library = "def items():\n    return 'helper items\\n'\n"
     out = _helper(tmp_path, [("c1", BOUND)], library=library)["c1"]
-    assert "TYPE module" in out and "INDEX True" in out, out
+    assert "TYPE module" in out and "ITEMS True" in out, out
     assert "number of items" in out and "Error" not in out, out
 
 

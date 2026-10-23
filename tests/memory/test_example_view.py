@@ -1,5 +1,5 @@
-"""One example call quoted from a function's tests: the quote, the record that carries it (kept from a gate before
-rev 2.1, which picked it) and ``memory.show``."""
+"""One example call quoted from a function's tests: the quote, the record that carries it (kept from an earlier gate,
+which picked it) and the item's card (``print(memory.get(ref))``)."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def test_only_files_under_memory_are_read(tmp_path):
 # --- the pick ---------------------------------------------------------------------------------------------
 
 
-# --- the record, the export and show ----------------------------------------------------------------------
+# --- the record, the export and the card ------------------------------------------------------------------
 
 
 def test_a_recorded_example_reaches_the_record_and_input_is_gone():
@@ -113,7 +113,7 @@ def _records(example: dict | None) -> dict:
     return {PD: {**empty_record(PD, "function"), "example": example}}
 
 
-def test_show_prints_the_example_under_the_signature(tmp_path):
+def test_the_card_prints_the_example_under_the_signature(tmp_path):
     root = _tree(tmp_path / "lib")
     write_files(
         root,
@@ -123,7 +123,7 @@ def test_show_prints_the_example_under_the_signature(tmp_path):
         ),
     )
     out = json.loads(
-        _py(root, f"import json, memory\nprint(json.dumps(memory.show({PD!r})))"),
+        _py(root, f"import json, memory\nprint(json.dumps(str(memory.get({PD!r}))))"),
     )
     assert out.splitlines()[:3] == [
         "memory.text.dates:parse_date(s: str) -> str  [on-trial, curated item from 0 episodes]",
@@ -133,7 +133,7 @@ def test_show_prints_the_example_under_the_signature(tmp_path):
     week = json.loads(
         _py(
             root,
-            "import json, memory\nprint(json.dumps(memory.show('memory.text.dates:week')))",
+            "import json, memory\nprint(json.dumps(str(memory.get('memory.text.dates:week'))))",
         ),
     )
     assert "Example (from" not in week

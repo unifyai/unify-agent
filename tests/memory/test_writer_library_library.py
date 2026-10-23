@@ -31,8 +31,9 @@ def test_the_box_gets_the_generated_files_and_the_writer_can_use_them(tmp_path):
     generated = writer._stage_library_library_mode(box, sha)
     assert {"memory/__init__.py", "INDEX.md", "links.json"} <= set(generated)
     assert (
-        _py(box, "import memory\nprint(memory.index('text').splitlines()[0])")
-        == "## memory.text — Text helpers.\n"
+        _py(box, "import memory\nprint(sorted(i.id for i in memory.items('memory.text')))")
+        == "['memory.text.dates:parse_date', 'memory.text.dates:week', 'memory.text.parse:tokens', "
+        "'memory.text.parse:words', 'memory.text.report:summary']\n"
     )
 
 
@@ -58,7 +59,7 @@ def test_library_first_message_points_to_the_index_and_no_library_json(
     _, _, writer = _writer(tmp_path, Turns([]), max_calls=1)
     _run(writer)
     first = writer.messages[1]["content"]
-    # the index is a file the brief names (/memory/INDEX.md, memory.index()); the first message inlines none of it
+    # the index is a file the brief names (/memory/INDEX.md); the first message inlines none of it
     assert "Current library index" not in first and "# Memory index" not in first
     assert "/memory/INDEX.md" in writer.messages[0]["content"]
     assert "Functions on this pass's channels" not in first

@@ -72,9 +72,9 @@ def test_generated_files_replace_committed_ones(tmp_path):
     export_actor_library_mode(mem.git_dir, sha, dest)
     out = _py(
         dest,
-        "import memory.text.dates as d, memory\nprint(d.parse_date('2026-10-09'), memory.index('web').splitlines()[0])",
+        "import memory.text.dates as d, memory\nprint(d.parse_date('2026-10-09'), [i.id for i in memory.items('web')])",
     )
-    assert out == "2026-10-09 ## memory.web\n"
+    assert out == "2026-10-09 ['memory.web.fetch:get']\n"
 
 
 def test_the_export_is_read_only_and_still_removable(tmp_path):
@@ -175,12 +175,12 @@ async def test_a_cell_imports_the_library_and_cannot_write_it(
             "    tried = errno.errorcode.get(exc.errno, str(exc.errno))\n"
             f"root = {sandbox.LIBRARY_MOUNT!r}\n"
             "seen = sorted(os.path.relpath(os.path.join(r, f), root) for r, _, fs in os.walk(root) for f in fs)\n"
-            "[d.parse_date('2026-10-09'), tried, memory.index('web').splitlines()[0], seen]",
+            "[d.parse_date('2026-10-09'), tried, [i.id for i in memory.items('web')], seen]",
         )
     finally:
         await ex.close()
     # EROFS comes only from the read-only bind: the owner may chmod a file of mode 0444 on a writable mount
-    assert list(out)[:3] == ["2026-10-09", "EROFS", "## memory.web"]
+    assert list(out)[:3] == ["2026-10-09", "EROFS", ["memory.web.fetch:get"]]
     # what the actor itself sees: the library and notes, never its tests or their data
     seen = list(out)[3]
     assert set(KEPT) <= set(seen) and not any("tests" in f.split("/") for f in seen)

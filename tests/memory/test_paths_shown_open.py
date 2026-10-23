@@ -35,7 +35,9 @@ def test_the_calls_the_librarian_and_the_cards_print_go_through_memory():
     call = block.splitlines()[2].split("call: ", 1)[1]
     assert L._call_problem(call) == ""
     by_hand = lh.BY_HAND.format(cid="capture:" + "a" * 16)
-    assert "memory.get('capture:" in by_hand and "exec(" in by_hand
+    shown = "print(memory.get('capture:" + "a" * 16 + "').text)"
+    # the card's way to an acting capture's work is a call the agent can make: it shows the code, nothing is executed
+    assert shown in by_hand and "exec(" not in by_hand and L._call_problem(shown) == ""
 
 
 def test_every_refusal_of_a_path_names_a_next_step():

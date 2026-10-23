@@ -15,7 +15,7 @@ status names: :func:`read_records` maps them as it reads (``experimental`` to ``
 ``adopted``, ``suspect`` and ``deprecated`` to ``retired``; a ``deprecated`` item was the curator's, so it reads as a
 retirement with the rule ``curate``), so an existing library loads unchanged.
 
-Models never write these records. The writer and the actor read them through ``memory.show``
+Models never write these records. The writer and the actor read them through ``memory.get``
 (``.memory/items.json``, one of the generated files).
 """
 
@@ -74,7 +74,7 @@ def empty_record(item: str, kind: str) -> dict:
     (:func:`.captures.landed_items`): ``landed_from`` (``{"capture", "reader"}``: the capture's id and the reader it
     was landed with), ``signature`` (the capture's applicability signature), ``applies`` (the item that is its
     stated ``applies``) and ``recognition`` (how its ``applies`` did on the other recorded requests when it landed,
-    and whether ``memory.match`` and the librarian list it, with why: :mod:`.recognition`). Each is None for any other
+    and whether ``Item.fits`` and the librarian list it, with why: :mod:`.recognition`). Each is None for any other
     item."""
     return {
         "item": item,
@@ -332,7 +332,7 @@ def support_text(kind: str, facts: Mapping | None) -> str:
 
 
 def use_totals(record: Mapping | None) -> dict:
-    """What ``memory.show`` prints of the use record: the totals over every library commit."""
+    """What a card prints of the use record: the totals over every library commit."""
     use = record.get("use") if isinstance(record, Mapping) else None
     use = use if isinstance(use, dict) else {}
     out = {"commits": len(use), **dict.fromkeys(_USE_TOTAL_KEYS, 0)}

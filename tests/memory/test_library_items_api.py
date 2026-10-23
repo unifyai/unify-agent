@@ -2,8 +2,8 @@
 
 Every way of naming one item resolves in one place; several matches list each exact id, and none gives the nearest ids
 and the topic to browse. Each call checks its argument types, and a malformed generated file never escapes as a raw
-exception. Calling a function item is a tracked call, as ``memory.run`` is; calling a note raises. The earlier calls
-work as aliases for one build and print one line naming the new call. The export generates the package's typed stub.
+exception. Calling a function item is a tracked call; calling a note raises. The export generates the package's
+typed stub.
 The error texts are the approved memory API's own examples (docs/design/memory-api-items-20261013.md in the research
 repository).
 """
@@ -230,17 +230,16 @@ def test_a_topic_given_to_get_and_an_unknown_topic_name_the_right_call(tmp_path)
 # --- the recorded failure, as regressions -------------------------------------------------------------------------
 
 
-def test_the_recorded_failure_opens_the_note_by_the_alias_and_by_get(tmp_path):
-    """In the live runs a note's id was passed to memory.index in many visits; the alias and memory.get both open
-    the note, and the wrong call to memory.items names memory.get (the design's second example, exactly)."""
+def test_the_recorded_failure_opens_the_note_by_get(tmp_path):
+    """In the live runs a note's id was passed to a listing call in many visits; memory.get opens the note, and the
+    wrong call to memory.items names memory.get (the design's second example, exactly)."""
     root = _library(tmp_path)
-    by_index, by_get, by_show, wrong = _json(
+    by_get, wrong = _json(
         root,
-        f"print(json.dumps([memory.index({NOTE!r}), str(memory.get({NOTE!r})), memory.show({NOTE!r}),"
-        f" err(memory.items, {NOTE!r})]))\n",
+        f"print(json.dumps([str(memory.get({NOTE!r})), err(memory.items, {NOTE!r})]))\n",
     )
-    assert by_index == by_get == by_show
-    assert by_get.startswith("notes/grid/stencil.md  [on-trial]  Stencils\n") and "drawn row by row" in by_get
+    assert by_get.startswith("notes/grid/stencil.md  [on-trial, curated item, no record]  Stencils\n")
+    assert "drawn row by row" in by_get
     assert wrong[0] == "WrongCall" and wrong[1] == (
         "memory.items('notes/grid/stencil.md'): that is an item, not a topic. "
         "Open it with memory.get('notes/grid/stencil.md')."
@@ -256,11 +255,11 @@ def test_each_call_checks_its_argument_types_before_any_work(tmp_path):
         root,
         "item = memory.get('fill')\n"
         "print(json.dumps([err(memory.get, 3), err(memory.items, kind='notes'), err(memory.items, 3),"
-        " err(memory.get), err(item.fits), err(memory.items().page, 0), err(memory.index, 3)]))\n",
+        " err(memory.get), err(item.fits), err(memory.items().page, 0)]))\n",
     )
     for kind, _, bases in got:
         assert kind == "ArgumentError" and "TypeError" in bases
-    by_number, by_kind, by_topic, missing, fits, page, index = (text for _, text, _ in got)
+    by_number, by_kind, by_topic, missing, fits, page = (text for _, text, _ in got)
     assert by_number == (
         "memory.get(3): ref is 3 (int).\n"
         "Expected ref: str | Item | Callable, e.g. memory.get('notes/reports/summary.md')."
@@ -273,15 +272,13 @@ def test_each_call_checks_its_argument_types_before_any_work(tmp_path):
     assert missing.startswith("memory.get(): missing a required argument: 'ref'.")
     assert fits.startswith("Item.fits(Item('memory.grid.cells:fill')): missing a required argument: 'inputs'.")
     assert "n is 0 (int).\nExpected n: int >= 1, e.g. print(memory.items().page(2))." in page
-    assert index.startswith("memory.index(3): package is 3 (int).")
 
 
 def test_no_raw_exception_escapes_a_malformed_items_file(tmp_path):
     root = _library(tmp_path)
     (root / library_helper.ITEMS_FILE).write_text("{not json")
-    calls = "[err(memory.get, 'fill'), err(memory.items), err(memory.items, 'grid'), err(memory.show, 'fill')]"
-    got, section = _json(root, f"print(json.dumps([{calls}, memory.index('grid').splitlines()[0]]))")
-    assert section == "## memory.grid — Grid helpers."  # the index alias still reads INDEX.md
+    calls = "[err(memory.get, 'fill'), err(memory.items), err(memory.items, 'grid')]"
+    got = _json(root, f"print(json.dumps({calls}))")
     for kind, text, bases in got:
         assert kind == "NotFound" and "LookupError" in bases, text
         assert "the library copy is unreadable: its .memory/items.json cannot be read (JSONDecodeError)" in text
@@ -299,14 +296,20 @@ def test_a_malformed_row_or_matcher_never_escapes_either(tmp_path):
     data["items"][FILL] = {"kind": "function", "history": 3, "level": ["x"]}  # no path, signature or summary
     (root / library_helper.ITEMS_FILE).write_text(json.dumps(data))
     (root / library_helper.MATCHER_FILE).write_text("def broken(:\n")
-    card, matched, found = _json(
+    # a recorded procedure with a recorded input, so its check reaches the matcher
+    capture = "capture:" + "a" * 16
+    d = root / ".memory" / "captures" / ("a" * 16)
+    d.mkdir(parents=True)
+    (d / "procedure.py").write_text("def run(value):\n    return value\n")
+    (d / "signature.json").write_text(json.dumps({"input": {}, "relations": [], "constraints": {}}))
+    card, fitted = _json(
         root,
-        "print(json.dumps([str(memory.get('fill')), err(memory.match, inputs={'a': 1}),"
-        " err(memory.find, {'a': 1})]))\n",
+        f"print(json.dumps([str(memory.get('fill')), err(memory.get({capture!r}).fits, {{'a': 1}})]))\n",
     )
-    assert card.startswith(f"{FILL}  [on-trial]\n") and "(its source cannot be read: IsADirectoryError)" in card
-    for kind, text, _ in (matched, found):
-        assert kind == "NotFound" and "its .memory/matcher.py cannot be read (SyntaxError)" in text
+    assert card.startswith(f"{FILL}  [on-trial, curated item, no record]\n")
+    assert "(its source cannot be read: IsADirectoryError)" in card
+    kind, text, _ = fitted
+    assert kind == "NotFound" and "its .memory/matcher.py cannot be read (SyntaxError)" in text
 
 
 # --- Item, Items and Fit -----------------------------------------------------------------------------------------
@@ -321,7 +324,7 @@ def test_an_item_carries_every_member_and_prints_its_card(tmp_path):
         "fill = memory.get('fill')\n"
         "frozen = err(setattr, paint, 'id', 'x')\n"
         "fields = {f.name: getattr(paint, f.name) for f in dataclasses.fields(paint)}\n"
-        "print(json.dumps([fields, repr(paint), str(paint), memory.show(paint), fill.applies, note.kind,"
+        "print(json.dumps([fields, repr(paint), str(paint), str(memory.get(paint)), fill.applies, note.kind,"
         " note.summary, note.links, note.evidence, frozen[0]]))\n",
     )
     fields, shown_repr, card, shown, applies, kind, summary, links, evidence, frozen = got
@@ -331,7 +334,7 @@ def test_an_item_carries_every_member_and_prints_its_card(tmp_path):
     assert fields["text"].startswith("def paint(g):") and "Notes: notes/grid/stencil.md" in fields["text"]
     assert fields["links"] == [NOTE] and fields["history"] == ["abc123def456 add paint"]
     assert shown_repr == f"Item({PAINT!r})"
-    assert card == shown and card.startswith(f"{PAINT}(g)  [on-trial]\n")
+    assert card == shown and card.startswith(f"{PAINT}(g)  [on-trial, curated item, no record]\n")
     assert "Links to: notes/grid/stencil.md\nLinked from: notes/grid/stencil.md\n" in card
     assert "History (newest first):\n  abc123def456 add paint\n" in card
     assert applies == "a request asks for a grid of one colour."
@@ -352,10 +355,10 @@ def test_items_prints_a_compact_table_page_by_page(tmp_path):
         "memory.items(): 7 item(s), 4 function(s) and 3 note(s). Open one with memory.get(id); call a function "
         "item directly."
     )
-    # rev 2.1: what each item rests on in place of the evidence level ("-": this library has no item records)
+    # what each item rests on in place of the evidence level (this library has no item records, and says so)
     assert lines[1].split() == ["id", "kind", "rests", "on", "summary"]
-    assert lines[2].split()[:3] == [FILL, "function", "-"] and lines[2].endswith(
-        "Fill every cell of a grid with one value.",
+    assert lines[2].split()[:2] == [FILL, "function"] and lines[2].endswith(
+        "  curated item, no record  Fill every cell of a grid with one value.",
     )
     assert len(lines) == 2 + 3 + 2
     assert lines[-2] == (
@@ -363,7 +366,8 @@ def test_items_prints_a_compact_table_page_by_page(tmp_path):
     )
     assert lines[-1] == "Page 1 of 3. print(memory.items().page(2)) shows the next."
     assert last == page_three and last.splitlines()[-1] == "Page 3 of 3."
-    assert last.splitlines()[2].split()[:3] == ["notes/text/colours.md", "note", "-"]
+    assert last.splitlines()[2].split()[:2] == ["notes/text/colours.md", "note"]
+    assert "  curated item, no record  " in last.splitlines()[2]
 
 
 def test_items_is_a_frozen_sequence_of_items(tmp_path):
@@ -390,7 +394,7 @@ def _events(seen: list, *names: str) -> list:
     return [(ev, a[0], a[1] if ev == "memory.run_result" else a[2]) for ev, a in seen if ev in names]
 
 
-def test_calling_a_function_item_is_tracked_as_run_is(tmp_path):
+def test_calling_a_function_item_is_tracked(tmp_path):
     root = _library(tmp_path)
     got = _json(
         root,
@@ -399,16 +403,13 @@ def test_calling_a_function_item_is_tracked_as_run_is(tmp_path):
         "start = len(seen)\n"
         "out = fill([[0, 0]], 7)\n"
         "by_call = seen[start:]\n"
-        "start = len(seen)\n"
-        f"report = memory.run({FILL!r}, [[0, 0]], 7)\n"
-        "by_run = seen[start:]\n"
-        "print(json.dumps([out, report.result, by_call, by_run]))\n",
+        "print(json.dumps([out, by_call]))\n",
     )
-    out, result, by_call, by_run = got
-    assert out == result == [[7, 7]]
+    out, by_call = got
+    assert out == [[7, 7]]
     names = ("memory.call", "memory.run_result", "memory.helper_call")
-    assert _events(by_call, *names) == _events(by_run, *names) == [
-        ("memory.call", FILL, "ok"),  # rev 2.1: called once; nothing calls it a second time
+    assert _events(by_call, *names) == [
+        ("memory.call", FILL, "ok"),  # called once; nothing calls it a second time
         ("memory.run_result", FILL, "returned"),
         ("memory.helper_call", "memory:run", "ok"),
     ]
@@ -433,7 +434,7 @@ RAISED = (
 
 def test_a_refusal_reaches_the_caller_as_the_functions_own_error(tmp_path):
     """A direct call's refusal is the function's own ``MemoryInputError``: the same exception, raised in the stored
-    function's frame, unwrapped; the tracked call's events are as ``run``'s."""
+    function's frame, unwrapped; the tracked call raises its events."""
     root = _library(tmp_path)
     kind, text, where, function, bases, alone, events = _json(
         root,
@@ -547,41 +548,6 @@ def test_fits_says_why_when_nothing_is_recorded_to_compare(tmp_path):
     ]
 
 
-# --- the earlier calls, for one build ----------------------------------------------------------------------------
-
-
-def test_each_alias_works_and_prints_one_line_naming_its_replacement(tmp_path):
-    root = _library(tmp_path)
-    out, err = _cell(
-        root,
-        EVENTS
-        + "results = [memory.show('fill').splitlines()[0], memory.index('grid').splitlines()[0],"
-        " memory.find({'a': 1}), list(memory.match(inputs={'a': 1})), memory.run('fill', [[0]], 1).result]\n"
-        "silent = [memory.get('fill').id, len(memory.items())]\n"
-        "print(json.dumps([results, [a[0] for ev, a in seen if ev == 'memory.helper_call']]))\n",
-    )
-    results, helpers = json.loads(out)
-    assert results == [f"{FILL}(g, v)  [on-trial]", "## memory.grid — Grid helpers.", [], [], [[1]]]
-    assert err.splitlines() == [
-        library_helper.ALIAS_LINES["show"],
-        library_helper.ALIAS_LINES["index"],
-        library_helper.ALIAS_LINES["find"],
-        library_helper.ALIAS_LINES["match"],
-        library_helper.ALIAS_LINES["run"],
-    ]
-    assert library_helper.ALIAS_LINES["show"] == "memory.show is now memory.get(ref); print(memory.get(...))"
-    # each call raises one helper event under its own id; the new lookups under theirs
-    assert helpers == [
-        "memory:show",
-        "memory:index",
-        "memory:find",
-        "memory:match",
-        "memory:run",
-        "memory:get",
-        "memory:items",
-    ]
-
-
 # --- the contract as Python ----------------------------------------------------------------------------------------
 
 
@@ -621,7 +587,7 @@ def test_help_shows_the_contract(tmp_path):
     assert "memory.get(ref) -> Item" in text and "memory/__init__.pyi" in text
     for shown in ("get(ref:", "items(topic:", "class Item(", "class Items(", "class Fit(", "fits(self, inputs"):
         assert shown in text, shown
-    assert "show(item:" not in text and "run(item:" not in text  # the aliases are outside the contract
+    assert "show(item:" not in text and "run(item:" not in text  # the earlier calls are gone
 
 
 def test_every_public_call_is_checked_and_documented():
@@ -636,7 +602,6 @@ def test_every_public_call_is_checked_and_documented():
         "Item.fits": library_helper.Item.fits,
         "Item.__call__": library_helper.Item.__call__,
         "Items.page": library_helper.Items.page,
-        **{f"memory.{n}": getattr(library_helper, n) for n in ("index", "show", "find", "match", "run")},
     }
     for name, fn in calls.items():
         assert getattr(fn, "__contract_checked__", False), name
@@ -645,6 +610,7 @@ def test_every_public_call_is_checked_and_documented():
             assert f"\n    {header}\n" in doc or f"\n        {header}\n" in doc, (name, header)
     assert set(library_helper.__all__) >= {"get", "items", "Item", "Items", "Fit", "NotFound", "ArgumentError"}
     assert not {"index", "show", "find", "match", "run"} & set(library_helper.__all__)
+    assert not [n for n in ("index", "show", "find", "match", "run") if hasattr(library_helper, n)]
     assert {"ask", "get", "items"} <= layout.RESERVED_PACKAGES
     assert layout.classify("memory/get/x.py") is None and layout.classify("memory/items/x.py") is None
 

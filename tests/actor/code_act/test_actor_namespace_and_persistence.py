@@ -243,10 +243,10 @@ async def test_in_library_mode_memory_is_bound_with_no_import_even_when_empty(wo
         second = _out(
             await session.run_cell(
                 "print('NEXT', y + 1, type(memory).__name__)\n"
-                "print('EMPTY', 'The library is empty.' in memory.index())\n",
+                "print('EMPTY', memory.items())\n",
             ),
         )
-        assert "NEXT 42 module" in second and "EMPTY True" in second, second
+        assert "NEXT 42 module" in second and "EMPTY memory.items(): no items yet." in second, second
         names = _names(session.opening())
         assert {"tools", "memory"} <= names, names
     finally:

@@ -1,4 +1,4 @@
-"""One example call of a library function, quoted from its tests: what the index, ``memory.show`` and the
+"""One example call of a library function, quoted from its tests: what the index, an item's card and the
 docstring's ``Example:`` line show of how to call it.
 
 An item record may keep one example call of its function (``{"test", "line", "call"}``), picked by a gate before

@@ -1,8 +1,8 @@
-"""Argument shapes as ``memory.find`` matches them, frozen per commit.
+"""Argument shapes as the library export records them, frozen per commit.
 
-A row a gate before rev 2.1 recorded from a function's example calls names the parameter its argument was passed as,
-so ``find`` says which parameter a value fits; rows recorded from a function's covers have no parameter. Both are kept
-and still found. (The gate now runs no test, so it records no argument shapes.)
+A row an earlier gate recorded from a function's example calls names the parameter its argument was passed as; rows
+recorded from a function's covers have no parameter. Both are kept in the export. (The gate now runs no test, so it
+records no argument shapes.)
 """
 
 from __future__ import annotations
@@ -11,10 +11,9 @@ import json
 from pathlib import Path
 
 from tests.memory.test_layout import _tree
-from tests.memory.test_library_helper import _py
 from unify.memory import library_export as lx
 from unify.memory import memory_helper
-from unify.memory.catalogue import body_digest, write_files
+from unify.memory.catalogue import body_digest
 from unify.memory.evidence import EvidenceStore
 from unify.memory.layout import function_bodies
 from unify.memory.library_helper import FIND_FILE
@@ -54,31 +53,11 @@ def _rows(root: Path, new: dict, prev: dict | None = None) -> dict:
     )
 
 
-def _find(root: Path, rows: dict, value) -> list[list]:
-    write_files(root, lx.generated_library_mode(root, shapes=lookup_from(rows)))
-    return json.loads(
-        _py(
-            root,
-            f"import json, memory\nprint(json.dumps([list(f) for f in memory.find({value!r})]))",
-        ),
-    )
-
-
-#: the row a gate before rev 2.1 recorded for ``flood_fill(grid, colour)`` called on GRID and 3 (an int has no shape)
+#: the row an earlier gate recorded for ``flood_fill(grid, colour)`` called on GRID and 3 (an int has no shape)
 GRID_ROW = [{**memory_helper.value_shape(GRID), "param": "grid"}]
 
 
-def test_a_recorded_grid_argument_is_found_by_a_grid_and_names_its_parameter(tmp_path):
-    root = _tree(tmp_path / "lib", FILES)
-    descs = GRID_ROW
-    found = _find(root, _rows(root, {FILL_ID: descs}), [[5, 5, 5], [5, 0, 5]])
-    assert [(f[0], f[2], f[3], f[5]) for f in found] == [
-        (FILL_ID, "grid", "weak", "matched the whole shape (it has no named keys)"),
-    ]
-    assert _find(root, _rows(root, {FILL_ID: descs}), [{"a": 1}]) == []
-
-
-def test_snapshot_rows_are_frozen_with_param_and_legacy_rows_are_still_found(
+def test_snapshot_rows_are_frozen_with_param_and_legacy_rows_are_kept(
     tmp_path,
 ):
     root = _tree(tmp_path / "lib", FILES)
@@ -109,5 +88,3 @@ def test_snapshot_rows_are_frozen_with_param_and_legacy_rows_are_still_found(
     assert all("input" not in e for e in entries.values())
     assert entries[FILL_ID]["input_shapes"][0]["param"] == "grid"
     assert entries[TOTAL_ID]["input_shapes"] == [legacy]
-    found = _find(root, frozen, [{"vendor": "V-7", "amount": 9}])
-    assert [(f[0], f[2], f[3]) for f in found] == [(TOTAL_ID, "", "exact")]

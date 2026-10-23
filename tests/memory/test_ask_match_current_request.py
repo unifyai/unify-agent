@@ -1,11 +1,11 @@
-"""``memory.ask()`` and ``memory.match()`` on the current request (``UNIFY_MEMORY_LIBRARIAN=on``).
+"""``memory.ask()`` and an item's check, ``item.fits(...)``, on the current request (``UNIFY_MEMORY_LIBRARIAN=on``).
 
 * The host gives the current request through ``current_request``: on the actor's and a teammate's channel, never in
   their ``tools`` module, ``tools.list()``, ``tools.help`` or ``dir(tools)``. The memory package calls it through the
   channel client (``tools._call``). With no request known it is refused, and nothing crashes.
 * ``memory.ask()`` asks about the current request; a question of the agent's own goes to the librarian alone. No
-  stored reader runs (rev 2).
-* ``memory.match()`` compares structure only, on the current request's data when it is given nothing; nothing runs.
+  stored reader runs.
+* ``item.fits(memory.request().data[0])`` compares structure only, on the current request's data; nothing runs.
 * An ask's audit event carries the catalogue's row count, never reader facts.
 
 The generated package runs in a fresh isolated interpreter, as a cell imports it, with a stand-in ``tools`` module for
@@ -192,7 +192,7 @@ def test_ask_reads_the_current_request_and_sends_the_question_given(tmp_path):
     (first, first_facts), (second, second_facts) = out["sent"]
     # with no question the request itself is asked about; a question of the agent's own is sent as given
     assert first == REQUEST and second == "Which item totals a table?"
-    # rev 2: no reader runs, so nothing but the question is sent, and a question of its own needs no request
+    # no reader runs, so nothing but the question is sent, and a question of its own needs no request
     assert first_facts is None and second_facts is None
     assert out["requests"] == [["current_request", {}]] and out["notes"] == ["", ""]
     assert PLANTED_VALUE not in json.dumps(out)
@@ -206,9 +206,7 @@ def test_with_no_current_request_nothing_crashes_and_the_note_says_so(tmp_path):
     code = host(None) + (
         "a = memory.ask()\n"
         "b = memory.ask('Which item totals a table?')\n"
-        "m = memory.match()\n"
-        "print(json.dumps({'sent': sent, 'a': [list(a), a.note, str(a)], 'b': [list(b), b.note], "
-        "'m': [list(m), m.note]}))\n"
+        "print(json.dumps({'sent': sent, 'a': [list(a), a.note, str(a)], 'b': [list(b), b.note]}))\n"
     )
     out = json.loads(_py(root, code))
     # nothing to ask about: nothing is sent, and the answer says why
@@ -216,42 +214,44 @@ def test_with_no_current_request_nothing_crashes_and_the_note_says_so(tmp_path):
     assert out["a"][2] == out["a"][1] + "\n"
     # a question of the agent's own still goes, alone
     assert out["sent"] == [["Which item totals a table?", None]] and out["b"][1] == ""
-    assert out["m"][0] == [] and "no structure the matcher reads" in out["m"][1]
 
 
-# --- match ------------------------------------------------------------------------------------------------------
+# --- an item's check ---------------------------------------------------------------------------------------------
 
 
-def test_match_compares_structure_only_on_the_current_request_and_runs_nothing(tmp_path):
-    """Rev 2: no reader or applies runs to recognise the request; match lists what has the structure of the current
-    request's data, in the catalogue's order, whatever a stored reader would have said."""
+def test_a_check_compares_structure_only_on_the_current_request_and_runs_nothing(tmp_path):
+    """No reader or applies runs to recognise the request; an item fits when its recorded input has the structure of
+    the current request's data, whatever a stored reader would have said."""
     extra = _capture(SAME_SHAPE, NEVER_PARSES, DATA)
     root = _copy(tmp_path, extra)
+    same = "capture:" + SAME_SHAPE
     # the host gives the request's data as the list of the JSON values its text carries (tool_handlers.current_request)
     code = host(REQUEST, [DATA]) + (
-        "m = memory.match()\n"
-        "print(json.dumps({'ids': [r.id for r in m], 'text': str(m), 'events': events}, default=list))\n"
+        "data = memory.request().data\n"
+        f"fits = [memory.get(i).fits(data[0]) for i in {[same, TOTAL]!r}]\n"
+        "print(json.dumps({'fits': [[f.ok, f.why] for f in fits], 'events': events}, default=list))\n"
     )
     out = json.loads(_py(root, code))
-    # the capture whose reader never parses is listed by its structure (it was saved against the request's data):
-    # nothing ran to tell otherwise. A library procedure saved against its reader's value is not listed by the
-    # request's structure: nothing runs its reader to get that value
-    assert "capture:" + SAME_SHAPE in out["ids"] and TOTAL not in out["ids"]
-    assert "compares structure only" in out["text"] and "recognise the request" not in out["text"]
-    (ev, (listed, _failed)), = out["events"]
-    assert ev == "memory.match_result" and [row[0] for row in listed] == out["ids"]
-    # without the librarian's catalogue match is the same
+    # the capture whose reader never parses fits by its structure (it was saved against the request's data): nothing
+    # ran to tell otherwise. A library procedure saved against its reader's value does not fit the request's
+    # structure: nothing runs its reader to get that value
+    (same_ok, same_why), (total_ok, _) = out["fits"]
+    assert same_ok is True and total_ok is False
+    assert "has the structure of what you passed" in same_why and "recognise the request" not in same_why
+    (ev, (listed, _failed)), (ev2, (listed2, _failed2)) = out["events"]
+    assert ev == ev2 == "memory.match_result" and [row[0] for row in listed] == [same] and listed2 == []
+    # without the librarian's catalogue the check is the same
     off = _copy(tmp_path, extra, librarian=False, name="off")
-    got = json.loads(_py(off, f"import json, memory\nm = memory.match({REQUEST!r}, {DATA!r})\n"
-                               "print(json.dumps([[r.id for r in m], str(m)]))\n"))
-    assert "capture:" + SAME_SHAPE in got[0] and "compares structure only" in got[1]
+    got = json.loads(_py(off, f"import json, memory\nf = memory.get({same!r}).fits({DATA!r})\n"
+                               "print(json.dumps([f.ok, f.why]))\n"))
+    assert got[0] is True and "has the structure of what you passed" in got[1]
 
 
 def test_the_audit_hook_keeps_the_catalogue_count_of_an_ask_and_refuses_facts():
     audit = CellAudit([])
     audit.begin()
     audit("memory.ask_result", ((TOTAL,), False, 7))
-    audit("memory.ask_result", ((), True, ((TOTAL, "parsed", "held"),)))  # rev 1's facts: malformed now
+    audit("memory.ask_result", ((), True, ((TOTAL, "parsed", "held"),)))  # an earlier form's facts: malformed now
     audit("memory.ask_result", ((), True, -1))
     audit("memory.ask_result", ((), True, True))
     calls = audit.drain()["calls"]
@@ -341,7 +341,7 @@ async def test_the_host_gives_the_acts_request_and_refuses_when_none_is_known(tm
     assert "current_request" not in text.allow and "current_request" not in text.stub
     assert json.loads(ask(text).text) == {"text": "Total the table, please.", "data": []}
     # exactly what the first user message shows: never a field of the request it does not show
-    # rev 2: act() takes the request as text (071805608); a value that is not text shows the model no text, so it is
+    # act() takes the request as text (071805608); a value that is not text shows the model no text, so it is
     # refused, and none of its fields reaches the box
     structured = session({"task": "total", "rows": [[1, 2]], "task_id": "arc-0451"}, "b")
     assert ask(structured).status == "refused"

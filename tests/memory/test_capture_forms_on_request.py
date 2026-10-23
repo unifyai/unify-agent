@@ -2,7 +2,8 @@
 
 * ``value``: its ``read_input`` reads the request; ``state``: it is handed the state of a request that has just begun
   (``.request``, ``.messages``, ``.last``, ``.data``); ``state_env``: a call cannot pass it the tools it acts through,
-  so the call refuses before anything runs, says how to run it by hand, and records no use of it.
+  so every call of it refuses before anything runs, says where its code is and how its work is done from here, and
+  records no use of it.
 * Its card says what its record shows: accepted work only when an accepted episode is on record; that its episode
   failed when it did; the no-argument call only for the forms that take the request.
 """
@@ -56,9 +57,6 @@ def _put(store: Path, source: str, form: str, outcome: str) -> str:
         "episodes": ["ep-1"],
         "cases": [{"episode": "ep-1", "outcome": outcome}],
         "outcome": outcome,
-        "level": "unchecked",
-        "status": "on-trial",
-        "track": {},
         "entry_point": {"form": form, "name": "run"},
     }
     (d / captures.PROCEDURE_FILE).write_text(source)
@@ -88,14 +86,24 @@ def test_each_form_runs_on_a_request_or_refuses_cleanly(tmp_path):
     cap = {k: f"capture:{v}" for k, v in ids.items()}
     got = _cell(
         root,
+        "seen = []\n"
+        "sys.addaudithook(lambda e, a: seen.append(a[0]) if e == 'memory.call' else None)\n"
         f"print(json.dumps({{'state': memory.get({cap['state']!r})({request!r}), "
         f"'value': memory.get({cap['value']!r})({request!r}), "
         f"'env': err(memory.get({cap['env']!r}), {request!r}), "
-        f"'env_run': repr(memory.run({cap['env']!r}, {request!r}))}}))\n",
+        f"'env_none': err(memory.get({cap['env']!r})), "
+        f"'env_other': err(memory.get({cap['env']!r}), [1, 2], rows=3), "
+        "'calls': seen}))\n",
     )
     assert got["state"] == 3 and got["value"] == 3
-    assert got["env"][0] == "WrongCall" and "nothing was run" in got["env"][1] and "run it in a cell" in got["env"][1]
-    assert "error: WrongCall" in got["env_run"]
+    # a procedure that acts through its episode's tools is run by no call: with a text, with no arguments or with
+    # other arguments, the call refuses, names where its code is, and records no use
+    for key in ("env", "env_none", "env_other"):
+        name, message = got[key]
+        assert name == "WrongCall" and "nothing was run: " in message, got[key]
+        assert f"print(memory.get('{cap['env']}').text) shows its code" in message, message
+        assert "no call can pass it tools" in message and "exec(" not in message, message
+    assert cap["env"] not in got["calls"] and sorted(got["calls"]) == sorted([cap["state"], cap["value"]])
 
 
 def test_a_card_says_only_what_the_record_shows(tmp_path):
@@ -109,7 +117,9 @@ def test_a_card_says_only_what_the_record_shows(tmp_path):
     assert "re-runs work an earlier request accepted" in cards["state"]
     assert "Calling it with no arguments runs it on the current request" in cards["state"]
     assert "accepted" not in cards["value"] and "no outcome of that request is on record" in cards["value"]
-    assert "Calling it with no arguments" not in cards["env"] and "run it in a cell" in cards["env"]
+    assert "Calling it with no arguments" not in cards["env"]
+    assert "no call can pass it tools, so a call does not run it here" in cards["env"]
+    assert f"print(memory.get('capture:{ids['env']}').text) shows its code" in cards["env"]
 
 
 def test_a_failed_attempts_card_never_says_accepted(tmp_path):

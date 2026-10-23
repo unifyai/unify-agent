@@ -1,4 +1,4 @@
-"""The generated ``memory/__init__.py``: the earlier calls (index, show, find) as a cell runs them, the generated
+"""The generated ``memory/__init__.py``: item cards as a cell prints them (``print(memory.get(ref))``), the generated
 files, and the library calls' audit events. The contract itself (``memory.get``, ``memory.items``, ``Item``) is
 tested in ``test_library_items_api``."""
 
@@ -11,7 +11,6 @@ from pathlib import Path
 
 from tests.memory.test_layout import NOTE, PARSE, _tree
 from unify.memory import library_export as lx
-from unify.memory import memory_helper
 from unify.memory.catalogue import write_files
 from unify.memory.gitio import Repo
 from unify.memory.layout import INDEX_FILE, LINKS_FILE, RESERVED_CONTRACT, RESERVED_INIT, RESERVED_STUB
@@ -82,47 +81,44 @@ def test_generated_files_are_the_nine_and_deterministic(tmp_path):
     )
 
 
-def test_index_and_show_from_the_generated_helper(tmp_path):
+def test_cards_from_the_generated_helper(tmp_path):
     root = _library(tmp_path, history=({DATE: ["abc123def456 add dates"]}, True))
     code = (
         "import json, memory, memory.text.dates as d\n"
-        "try:\n    memory.show('memory.text.dates:nope')\nexcept LookupError as exc:\n    missing = str(exc)\n"
-        "print(json.dumps([memory.index(), memory.index('text'), memory.show('"
+        "try:\n    memory.get('memory.text.dates:nope')\nexcept LookupError as exc:\n    missing = str(exc)\n"
+        "print(json.dumps([str(memory.get('"
         + DATE
-        + "'),\n"
-        "    memory.show('memory.text.dates.week'), memory.show('notes/text/dates.md'), memory.show(d.parse_date),\n"
-        "    missing, memory.__file__]))"
+        + "')),\n"
+        "    str(memory.get('memory.text.dates.week')), str(memory.get('notes/text/dates.md')),\n"
+        "    str(memory.get(d.parse_date)), missing, memory.__file__]))"
     )
-    full, text, fn, week, note, by_object, missing, where = json.loads(_py(root, code))
-    assert full == (root / "INDEX.md").read_text()
-    assert (
-        text.startswith("## memory.text — Text helpers.\n") and "memory.web" not in text
-    )
+    fn, week, note, by_object, missing, where = json.loads(_py(root, code))
+    # a library without item records: each card says no record of what the item rests on is kept
     assert (
         fn.splitlines()[0]
-        == "memory.text.dates:parse_date(s: str) -> str  [on-trial]"
+        == "memory.text.dates:parse_date(s: str) -> str  [on-trial, curated item, no record]"
     )
     assert "def parse_date(s: str) -> str:" in fn and "Notes: notes/text/dates.md" in fn
     assert "Links to: notes/text/dates.md\nLinked from: notes/text/dates.md\n" in fn
     assert "Use: no record yet\n" in fn and "Verification:" not in fn
     assert "History (newest first):\n  abc123def456 add dates\n" in fn
     assert (
-        week.splitlines()[0] == "memory.text.dates:week(s)  [on-trial]"
+        week.splitlines()[0] == "memory.text.dates:week(s)  [on-trial, curated item, no record]"
         and "History: none recorded" in week
     )
     assert (
-        note.startswith("notes/text/dates.md  [on-trial]  Dates\n")
+        note.startswith("notes/text/dates.md  [on-trial, curated item, no record]  Dates\n")
         and "Dates are YYYY-MM-DD." in note
     )
     assert by_object == fn
     assert missing.startswith(
-        "memory.show('memory.text.dates:nope'): no item named 'memory.text.dates:nope'.\n"
+        "memory.get('memory.text.dates:nope'): no item named 'memory.text.dates:nope'.\n"
         "Expected an item id, a function name, or a note slug, e.g. memory.get(",
     )
     assert where == str(root / "memory" / "__init__.py")
 
 
-def test_show_explains_a_hidden_item(tmp_path):
+def test_the_card_explains_a_hidden_item(tmp_path):
     root = _library(
         tmp_path,
         status_of=lambda i: "retired" if i.endswith(":week") else "on-trial",
@@ -130,61 +126,14 @@ def test_show_explains_a_hidden_item(tmp_path):
     out = json.loads(
         _py(
             root,
-            "import json, memory\nprint(json.dumps(memory.show('memory.text.dates:week')))",
+            "import json, memory\nprint(json.dumps(str(memory.get('memory.text.dates:week'))))",
         ),
     )
     assert out.splitlines()[:2] == [
-        "memory.text.dates:week(s)  [retired]",
+        "memory.text.dates:week(s)  [retired, curated item, no record]",
         "Not in the index: its status is retired.",
     ]
     assert "memory.text.dates:week(" not in (root / "INDEX.md").read_text()
-
-
-def test_find_ranks_by_the_shape_matcher(tmp_path):
-    """Ranking is the shape matcher's (level, then share of named keys); ``Found.param`` names the parameter that
-    matched."""
-    value = {"date": "2026-10-09", "zone": "UTC"}
-    shapes = {
-        DATE: [
-            {
-                **memory_helper.value_shape({"date": "2025-01-01", "zone": "CET"}),
-                "param": "s",
-            },
-        ],
-        "memory.text.parse:tokens": [
-            {
-                **memory_helper.value_shape(
-                    {"date": "2025-01-01", "zone": "CET", "n": 1},
-                ),
-                "param": "s",
-            },
-        ],
-    }
-    root = _library(
-        tmp_path,
-        shapes=lambda item, digest: (shapes[item], False) if item in shapes else None,
-    )
-    got = json.loads(
-        _py(
-            root,
-            f"import json, memory\nprint(json.dumps([list(f) for f in memory.find({value!r})]))",
-        ),
-    )
-    entries = json.loads((root / FIND_FILE).read_text())["functions"]
-    assert all("input" not in e for e in entries)
-    assert [(g[0], g[2], g[3]) for g in got] == [
-        (DATE, "s", "exact"),
-        ("memory.text.parse:tokens", "s", "structure"),
-    ]
-    assert (
-        json.loads(
-            _py(
-                root,
-                "import json, memory\nprint(json.dumps(memory.find('plain text')))",
-            ),
-        )
-        == []
-    )
 
 
 def test_the_shipped_matcher_is_the_helper_from_its_imports_on():
@@ -231,7 +180,7 @@ def test_history_lists_the_commits_that_changed_each_item(tmp_path):
 
 
 def test_history_subjects_reach_the_actor_redacted(tmp_path):
-    """show() prints each item's history to the actor; a commit subject may come from any merge path, so a
+    """An item's card prints its history to the actor; a commit subject may come from any merge path, so a
     key-shaped string in it never reaches the export."""
     key = "sk-or-v1-" + "ab" * 32
     mem = Repo.init_bare(tmp_path / "memory")
@@ -261,10 +210,10 @@ def test_a_derived_effect_is_shown_nowhere_the_actor_or_the_librarian_reads(tmp_
     index = (root / "INDEX.md").read_text()
     assert "`memory.text.dates:week(s)` — The ISO week of a date. [on-trial, curated item from 0 episodes]" in index
     assert "effect:" not in index
-    # an item without a record keeps the plain status: no effect and no support it does not have
-    assert "Split text on whitespace. [on-trial]\n" in index
+    # an item without a record says so: no effect, and no support it does not have
+    assert "Split text on whitespace. [on-trial, curated item, no record]\n" in index
     out = json.loads(
-        _py(root, f"import json, memory\nprint(json.dumps(memory.show({week!r})))"),
+        _py(root, f"import json, memory\nprint(json.dumps(str(memory.get({week!r}))))"),
     )
     assert out.splitlines()[:2] == [
         "memory.text.dates:week(s)  [on-trial, curated item from 0 episodes]",
@@ -273,8 +222,8 @@ def test_a_derived_effect_is_shown_nowhere_the_actor_or_the_librarian_reads(tmp_
     ]
 
 
-def test_show_gives_the_support_and_never_the_gates_findings(tmp_path):
-    """Show gives what an item rests on (its kind, episodes and confirmed uses), never an evidence level a test gave or
+def test_the_card_gives_the_support_and_never_the_gates_findings(tmp_path):
+    """The card gives what an item rests on (its kind, episodes and confirmed uses), never an evidence level a test gave or
     the gate's findings (the writer's, for its own work)."""
     from unify.memory.item_records import empty_record
 
@@ -292,12 +241,12 @@ def test_show_gives_the_support_and_never_the_gates_findings(tmp_path):
     index = (root / "INDEX.md").read_text()
     assert "The ISO week of a date. [on-trial, curated item from 0 episodes]\n" in index
     out = json.loads(
-        _py(root, f"import json, memory\nprint(json.dumps(memory.show({week!r})))"),
+        _py(root, f"import json, memory\nprint(json.dumps(str(memory.get({week!r}))))"),
     )
     assert out.splitlines()[0] == "memory.text.dates:week(s)  [on-trial, curated item from 0 episodes]"
     assert "Gate findings:" not in out and reasons[0] not in out and reasons[1] not in out
     date = json.loads(
-        _py(root, f"import json, memory\nprint(json.dumps(memory.show({DATE!r})))"),
+        _py(root, f"import json, memory\nprint(json.dumps(str(memory.get({DATE!r}))))"),
     )
     assert date.splitlines()[0] == (
         "memory.text.dates:parse_date(s: str) -> str  [on-trial, curated item from 1 episode, 1 confirmed use]"
@@ -305,7 +254,7 @@ def test_show_gives_the_support_and_never_the_gates_findings(tmp_path):
     assert "Evidence level" not in date
 
 
-def test_show_reads_old_status_and_level_names_in_todays_names(tmp_path):
+def test_the_card_reads_old_status_and_level_names_in_todays_names(tmp_path):
     """A row written before the names changed (the bytes of an older copy's items.json) shows today's names."""
     root = _library(tmp_path)
     items = json.loads((root / ITEMS_FILE).read_text())
@@ -313,10 +262,10 @@ def test_show_reads_old_status_and_level_names_in_todays_names(tmp_path):
     row.update(status="suspect", status_reason=None, level="verified", level_reasons=[])
     (root / ITEMS_FILE).write_text(json.dumps(items))
     out = json.loads(
-        _py(root, "import json, memory\nprint(json.dumps(memory.show('memory.text.dates:week')))"),
+        _py(root, "import json, memory\nprint(json.dumps(str(memory.get('memory.text.dates:week'))))"),
     )
     assert out.splitlines()[:2] == [
-        "memory.text.dates:week(s)  [retired]",
+        "memory.text.dates:week(s)  [retired, curated item, no record]",
         "Not in the index: its status is retired.",
     ]
     assert "Evidence level" not in out and "verified" not in out
@@ -430,7 +379,7 @@ for arg in ("a private value", -1):
     except (MemoryInputError, ValueError):
         pass
 try:
-    memory.show({"private-key-name": "private value"}, )
+    memory.get({"private-key-name": "private value"}, )
 except Exception:
     pass
 print(json.dumps(failed))
@@ -445,9 +394,9 @@ print(json.dumps(failed))
     ]
     # a helper's failure carries the arguments' types and sizes, never their values (its message is the
     # exception's own first line, which the harness redacts when it lists it)
-    (show,) = failed[2:]
-    assert show[:2] == ["memory:show", "ArgumentError"] and show[3] == "(dict[1])", show
-    assert show[2].startswith("memory.show({") and show[2].endswith("(dict).") and "\n" not in show[2]
+    (get,) = failed[2:]
+    assert get[:2] == ["memory:get", "ArgumentError"] and get[3] == "(dict[1])", get
+    assert get[2].startswith("memory.get({") and get[2].endswith("(dict).") and "\n" not in get[2]
     assert "private" not in json.dumps([e[3] for e in failed])
 
 
@@ -516,10 +465,10 @@ from memory.text.guard import double
 import memory.text.tests.test_dates as t
 assert getattr(double, "__memory_item__") == "memory.text.guard:double"
 assert not hasattr(t.test_parse_date, "__memory_item__")
-text = memory.show(double)
+text = str(memory.get(double))
 assert "def double(x):" in text and "[on-trial" in text
-assert memory.index("text")
-memory.find({"date": "2026-10-09"})
+assert memory.items("text")
+memory.get(double).fits({"date": "2026-10-09"})
 print(json.dumps(events))
 """,
     )
