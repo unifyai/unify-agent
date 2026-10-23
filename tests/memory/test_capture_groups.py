@@ -336,7 +336,8 @@ def test_the_first_message_names_the_group():
     es = [_e("a" * 16, state="handed"), _e("b" * 16, state="handed")]
     text = tools.first_message(att, SimpleNamespace(attention=es), "900")
     assert text.startswith("Pass p9: a group of 2 related captures needs your attention")
-    assert "with 1 related capture an earlier pass decided" in text and "2 library items" in text
+    assert "with 1 related capture closed earlier (by a pass, or by the harness)" in text and "2 library items" in text
+    assert "each related pair with its relations" in text and "from its records only" not in text
     assert "/inputs/attention/group.json" in text and "900 s" in text
 
 

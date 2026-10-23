@@ -233,7 +233,7 @@ def test_a_checklist_note_lands_and_is_served(library_example_world, tmp_path): 
 
     note = "notes/files/checks.md"
     files = {
-        note: "---\ntitle: Before writing a report\ndescription: what to check first\nuses: []\n---\n"
+        note: "---\ntitle: Before writing a report\ndescription: what to check first\nuses: []\n---\n## Rule\n"
         "- the rows are read from the latest message\n- the report path is given, never assumed\n",
     }
     res = _merge(

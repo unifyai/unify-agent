@@ -46,8 +46,8 @@ kind ``capture`` and ``failure``, and ``/inputs/captures/``), writes library ite
 that edits the library.
 
 Evidence: ``captures-events.jsonl`` holds one row per capture step; an episode with a row there is done, and the
-attention ledger reads these rows (:func:`episode_rows`). Nothing here keys on a task id, a stream boundary or a
-position.
+attention ledger reads these rows (:func:`episode_rows`). Nothing here keys on an id of a request, a stream boundary
+or a position.
 """
 
 from __future__ import annotations
@@ -939,7 +939,7 @@ def capture_settled(
     Each is captured under the trace contract (:func:`capture_trace_step`): what it did, nothing run. A segment's
     staging dir (``<episode>.s<n>``, ``UNIFY_MEMORY=in_episode``) is captured from the segment's own record, read by
     *segment_episode* (None: segments are left alone), unjudged: its episode is still running, so no signal of it is
-    recorded yet, and the episode's own rules would judge it by the final value, which it did not hand back. Once its
+    recorded yet, and the episode's own rules would judge it by the final value, which it did not return. Once its
     episode is recorded, :func:`judge_segments` gives it its outcome from the signals about the segment itself."""
     from .staging import STATUS_FILES
     from .segments import split_staging_name

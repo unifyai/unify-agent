@@ -138,7 +138,7 @@ GATE = GatePolicy(
             "tests (plain pytest, an exact assertion against a trusted value, and no test lost or weakened without a "
             "reason, fewer tests included; the gate runs none of them: they state what the item claims)",
         ),
-        ("G4", "the index (a note when it has outgrown its budget)"),
+        ("G4", "the index (a note when the index has grown past its size limit)"),
     ),
 )
 

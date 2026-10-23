@@ -463,7 +463,9 @@ def test_the_helper_keeps_its_own_refusal_words_for_read_and_grep():
     assert helpers._own_refusal("read", "outside_box", path="/x") == (
         "refused: /x is outside /inputs, /task, /memory and /work"
     )
-    assert tool_spec.refusal("read", "outside_box", path="/x") == "refused: /x is outside /inputs, /memory and /work"
+    assert tool_spec.refusal("read", "outside_box", path="/x") == (
+        "refused: /x is outside /inputs, /task, /memory and /work"
+    )
     assert tool_spec.refusal("execute_code", "no_time") == "not run: the pass's wall clock is used up"
     assert tool_spec.refusal("grep", "not_found", path="/x") == "refused: /x does not exist"
 

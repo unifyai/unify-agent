@@ -1824,8 +1824,8 @@ _IN_CODE: dict[str, dict] = {
         },
         add_refusals=_RECORD_POST_FORMS,
         returns="the answer that arrived, or a line saying none came yet.",
-        examples=('answer = tools.ask("@writer should totals include tax?")',),
-        off_text={"examples": ('answer = tools.ask("should totals include tax?")',)},
+        examples=('answer = tools.ask("@writer should the count include the header line?")',),
+        off_text={"examples": ('answer = tools.ask("should the count include the header line?")',)},
         when="Ask when you cannot go on without an answer; a question that names no one goes to whoever started "
         "you.",
         kind="record",

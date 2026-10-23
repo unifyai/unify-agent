@@ -1,5 +1,5 @@
 """The reading rule is gone: finish never waits on reading, a batch episode the writer never opened is recorded as
-unread (in the read log and, with the pool, as an ``unread`` entry), and nothing reads those measures back.
+unread in the read log only (the pool has no ``unread`` kind), and nothing reads that measure back.
 """
 
 from unify.memory import pool
@@ -16,15 +16,13 @@ def test_no_unread_entry_enters_the_pool(tmp_path, monkeypatch):
         _finish_with(m, EMPTY)
         st = _Stores(tmp_path / "o")
         out, _ = st.run(FINISH, "p1")
-    entry = st.pool().entries[uid]
-    assert entry.kind == "unread" and entry.status == "open"
-    assert entry.provenance["episodes"] == ["e2"] and "coverage" not in entry.title
-    assert out.pool["unread_open"] == 1
+    assert uid not in st.pool().entries and "unread" not in pool.KINDS
+    assert out.coverage["unread"] == ["e2"] and "unread_open" not in out.pool
     with monkeypatch.context() as m:
         _finish_with(m, EMPTY)
         st2 = _Stores(tmp_path / "r")
         out2, _ = st2.run([_open("e2"), *FINISH], "p1")
-    assert uid not in st2.pool().entries and out2.pool["unread_open"] == 0
+    assert uid not in st2.pool().entries and out2.coverage["unread"] == []
 
 
 @needs_bwrap

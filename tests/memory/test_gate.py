@@ -439,7 +439,7 @@ def test_any_edit_a_notes_only_change_lands(library_example_world):
     note = "---\ntitle: Account ids\ndescription: Where a user id is read from.\n---\nThe acct.me response holds it.\n"
     res = gate().merge(
         mem.head(),
-        lw.candidate(mem, {NOTE: note}),
+        lw.written_candidate(mem, {NOTE: note}),
         lw.manifest({}, {"item": NOTE, "kind": "note", "source_episodes": ["e1"]}),
         "p2",
         "write",

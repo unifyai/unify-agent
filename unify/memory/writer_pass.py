@@ -2170,8 +2170,6 @@ class WriterPass:
                 "commit": p.save(pass_id),
                 "at_start": self._pool_at_start,
             }
-            # the backlog of episodes no writer opened (a measure, no gate)
-            res["unread_open"] = sum(1 for e in p.open_entries() if e.kind == "unread")
             # per batch episode, the attempt captured from it and the item it landed as (its pool entry merged), or
             # the item that superseded it (a draft staged from its episode, adopted instead)
             caps = {}

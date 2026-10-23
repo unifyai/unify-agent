@@ -633,8 +633,8 @@ ATTENTION_TEXT = (
     "`tools.open_entries` and `tools.find`, and `tools.take` those that do; taking a closed entry shows its material "
     "and what was decided, read-only. /inputs/attention/index.json lists your entries, each with the material it "
     "owes a read (its summary, its "
-    "procedure, its use, its signal, its note or its message); the harness checks what you opened, never what you "
-    "say you read. One decision can close several entries: that is how you record that they are one rule. A "
+    "procedure, its use, its signal, its note or its message); the harness checks what you opened (its "
+    "/inputs/sitecustomize.py records the files your cells open), never what you say you read. One decision can close several entries: that is how you record that they are one rule. A "
     "decision is one of new_item, changed_item, merged_into (naming the item), note, retire, nothing_to_keep and "
     "defer (the work stays open as a new entry). An entry you do not decide comes back to a later pass.\n"
 )
@@ -771,10 +771,10 @@ def _write_brief_in_code(
     role = (
         "# Role\n"
         "You are the library writer. A working model handles requests, and its cells import a shared Python "
-        "library, `memory`. You build functions with their tests, and linked notes, in that library from the recorded episodes "
-        "and from proposals. The proposals ("
+        "library, `memory`. You build functions with their tests, and linked notes, in that library from the "
+        "recorded episodes and from proposals. The proposals ("
         + _join(proposals_from)
-        + ") are drafts by agents that each saw part of the evidence. Use, fix, merge, generalise or rewrite them, "
+        + ") are drafts by agents that each saw part of the evidence. Use, fix, merge or rewrite them, "
         "or build something new they informed. Not using a draft is fine when your summary says why. You can also "
         "build from any recorded episode with no proposal behind it. The episodes are the evidence: what the "
         "working model did and what the environment answered. You work in a sandbox with no network and no "
@@ -829,9 +829,6 @@ def _write_brief_in_code(
     )
     inputs.append(_LIBRARY_BULLET_IN_CODE)
     inputs.append("- /inputs/gate/previous.md: the last pass's full gate result.\n")
-    inputs.append(
-        "- /inputs/sitecustomize.py is the harness's own: it records which files your cells open.\n",
-    )
 
     look = ["staged candidates and their cases"]
     if helpers:
