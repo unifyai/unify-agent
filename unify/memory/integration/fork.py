@@ -23,18 +23,15 @@ else.
 * It starts after the episode is recorded, from bytes serialised once. Nothing flows back to the reply or the
   transcript. Its relay (:mod:`unify.agents.fork_relay`) answers its calls to the run record.
 
-**Settling and admission.** ``fork.json`` is written last and means the fork has settled, whatever its status. An
-episode enters a pass only once it has settled (:class:`Admission`); an unsettled one waits. Settlement is always reached:
+**Settling.** ``fork.json`` is written last and means the fork has settled, whatever its status:
 
 * the request reserves the staging dir before the episode is recorded (:func:`reserve`) and holds an exclusive lock
   on its ``fork.lock``; the lock passes to the worker process when it starts, so the lock is held exactly while the
   request or the worker is alive;
 * the worker's own wall bound (:data:`.fork_worker.WALL_GUARD_S`) ends it with status ``"timeout"``;
-* a worker that dies without writing ``fork.json`` (killed, out of memory) releases the lock with it; the first
-  admission check that finds the lock free and no ``fork.json`` records status ``"lost"`` (:func:`settled`);
-* a lock still held past :data:`STALE_S` is recorded as ``"timeout"`` and admitted, so no episode waits forever.
-
-This keys on a per-episode signal only, never on the stream.
+* the request waits for the worker (:func:`finish`) and writes ``fork.json`` for one that leaves none: ``"timeout"``
+  when the wait guard stopped it, ``"lost"`` when it ended without its record. A staging dir with no status file
+  counts as no staging (:mod:`..staging`).
 
 **Lifetime.** The fork runs in its own session, and :func:`finish` holds the CLI after the reply until the fork ends,
 so a host whose sandbox ends every process of the controller with it never cuts a fork short, and the lane outlives
@@ -47,17 +44,14 @@ is no token cap; the lane's cap bounds the money.
 
 from __future__ import annotations
 
-import errno
 import fcntl
 import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -236,10 +230,6 @@ STAGING_IN_BOX = "/staging"
 #: Operational guard on the CLI's wait for the fork (run safety, reported; not a design limit).
 WAIT_GUARD_S = 1800.0
 WRITE_GUARD_S = 120.0
-#: A staging dir with no lock file this long after it was made was never started: recorded as lost.
-UNSTARTED_S = 120.0
-#: A lock still held this long after the reservation: the fork is recorded as timed out and admitted.
-STALE_S = WAIT_GUARD_S + 300.0
 def fork_instruction() -> str:
     """The fixed instruction appended to the actor's conversation for the fork (:data:`INSTRUCTION`)."""
     return INSTRUCTION
@@ -478,8 +468,8 @@ def reserve(
     eid: str,
     progress: Callable[[str], None] = lambda _m: None,
 ) -> Reservation | None:
-    """Make the episode's fresh staging dir and lock it, before the episode is recorded, so that an admission check
-    never sees a recorded episode without its dir. None when the dir exists.
+    """Make the episode's fresh staging dir and lock it, before the episode is recorded, so that a recorded episode
+    always has its dir. None when the dir exists.
     """
     staging = staging_dir(paths, eid)
     try:
@@ -502,94 +492,6 @@ def reserve(
         _record(staging, eid, f"error: lock: {type(exc).__name__}")
         return None
     return Reservation(staging, eid, fd)
-
-
-def _age_s(path: Path) -> float:
-    return time.time() - os.lstat(path).st_mtime
-
-
-def settled(root: Path | str, eid: str) -> bool:
-    """Whether *eid*'s fork has settled under *root* (``<state>/memory-staging``): first :func:`resolve` (which records
-    ``"lost"`` or ``"timeout"`` for a fork that can no longer settle itself), then the pure rule
-    :func:`..trigger.admit_settled`."""
-    from ..trigger import admit_settled
-
-    resolve(root, eid)
-    return bool(admit_settled(root, [eid])[0])
-
-
-def resolve(root: Path | str, eid: str) -> None:
-    """Record ``"lost"`` when *eid*'s fork process is gone without its record (its lock is free) or was never
-    started, and ``"timeout"`` when its lock is still held past :data:`STALE_S`; otherwise leave it alone.
-    """
-    from ..staging import STATUS_FILES
-
-    try:
-        _resolve(Path(root), eid, STATUS_FILES)
-    except OSError:
-        pass  # unreadable state: nothing recorded; the pure rule decides on the files as they are
-
-
-def _resolve(root: Path, eid: str, status_files: Any) -> bool:
-    d = root / eid
-    try:
-        st = os.lstat(d)
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return True
-    if not stat.S_ISDIR(st.st_mode):
-        return True  # a link or a file is never read as staging
-    if any(os.path.lexists(d / name) for name in status_files):
-        return True
-    try:
-        fd = os.open(d / LOCK_FILE, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except FileNotFoundError:
-        if _age_s(d) < UNSTARTED_S:
-            return False
-        _settle_record(d, eid, "lost", "the fork was never started: no lock file")
-        return True
-    except OSError as exc:
-        _settle_record(
-            d,
-            eid,
-            "lost",
-            f"the fork's lock cannot be opened: {type(exc).__name__}",
-        )
-        return True
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
-                raise
-            # held: the request or its fork worker is alive
-            if _age_s(d / LOCK_FILE) < STALE_S:
-                return False
-            _settle_record(
-                d,
-                eid,
-                "timeout",
-                f"the fork was still running {STALE_S:g} s after it was reserved; admitted without it",
-            )
-            return True
-        if not os.path.lexists(d / FORK_JSON):
-            _settle_record(
-                d,
-                eid,
-                "lost",
-                "the fork process ended without writing its record",
-            )
-        return True
-    finally:
-        os.close(fd)
-
-
-def _settle_record(d: Path, eid: str, status: str, detail: str) -> None:
-    try:
-        _record(d, eid, status, detail)
-    except OSError:
-        pass
 
 
 # --- the box and the process ---------------------------------------------------------------------------------------

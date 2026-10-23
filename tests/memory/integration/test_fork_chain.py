@@ -17,7 +17,6 @@ import pytest
 from unify.memory import staging
 from unify.memory.integration import fork as fork_mod
 from unify.memory.integration import fork_worker as fw
-from tests.memory.test_episodes import _ep
 
 CORPUS = Path(__file__).resolve().parents[1] / "data" / "fork_replies" / "corpus.json"
 PY = "/usr/bin/python3"
@@ -375,15 +374,6 @@ def test_the_wall_timer_interrupts_a_call_and_records_timeout(tmp_path):
     assert doc["status"] == "timeout" and (tmp_path / "fork.json").exists()
 
 
-def _sleeper(reservation, tmp_path):
-    return fork_mod.launch(
-        reservation,
-        [PY, "-I", "-c", "import time; time.sleep(120)"],
-        b"{}",
-        tmp_path / "worker.log",
-    )
-
-
 def test_the_real_worker_settles_its_episode_itself(tmp_path):
     paths = _paths(tmp_path)
     res = fork_mod.reserve(paths, "e1")
@@ -400,7 +390,6 @@ def test_the_real_worker_settles_its_episode_itself(tmp_path):
         tmp_path / "worker.log",
     )
     fork.proc.wait(timeout=60)
-    assert fork_mod.settled(Path(paths.state_dir) / "memory-staging", "e1")
     doc = _status(paths, "e1")
     assert doc["status"].startswith("error:") and doc["blocks"] == {
         "blocks": 0,
@@ -423,36 +412,6 @@ def test_finish_records_lost_when_the_waited_worker_exits_without_a_record(tmp_p
     fork_mod.finish(fork)
     doc = _status(paths, "e1")
     assert doc["status"] == "lost" and "code 3" in doc["detail"]
-
-
-def test_a_dir_never_started_and_a_stale_lock_settle(tmp_path, monkeypatch):
-    paths = _paths(tmp_path)
-    root = Path(paths.state_dir) / "memory-staging"
-    (root / "bare").mkdir(parents=True)
-    assert not fork_mod.settled(
-        root,
-        "bare",
-    )  # just made: its request may still be locking it
-    monkeypatch.setattr(fork_mod, "UNSTARTED_S", 0.0)
-    assert fork_mod.settled(root, "bare") and _status(paths, "bare")["status"] == "lost"
-    res = fork_mod.reserve(paths, "slow")
-    assert not fork_mod.settled(root, "slow")
-    monkeypatch.setattr(fork_mod, "STALE_S", 0.0)
-    assert (
-        fork_mod.settled(root, "slow") and _status(paths, "slow")["status"] == "timeout"
-    )
-    res.close()
-    assert fork_mod.settled(root, "no-dir")  # no staging dir: the episode had no fork
-
-
-# --- the trigger under admission --------------------------------------------------------------------------------------
-
-
-def _index(ev, eid):
-    ev.index_episode(
-        _ep(episode_id=eid, transcript=[], actions=[]),
-        hashlib.sha1(eid.encode()).hexdigest(),
-    )
 
 
 @pytest.mark.parametrize(
@@ -521,20 +480,6 @@ def test_write_record_keeps_the_raw_reply_and_the_ledger_in_the_staging_dir(tmp_
     assert view.files == {} and [r["path"] for r in view.refused] == [
         "x.txt",
     ]  # record files are never content
-
-
-def test_admit_settled_is_the_pure_rule(tmp_path):
-    from unify.memory.trigger import admit_settled
-
-    for eid, status in (("a", "ok"), ("b", None), ("c", "timeout"), ("d", "lost")):
-        (tmp_path / eid).mkdir()
-        if status:
-            (tmp_path / eid / "fork.json").write_text(json.dumps({"status": status}))
-    assert admit_settled(tmp_path, ["b", "a", "c", "d", "e"]) == (
-        ["a", "c", "d", "e"],
-        ["b"],
-    )
-    assert not (tmp_path / "b" / "fork.json").exists()  # pure: nothing recorded
 
 
 def test_request_from_source_builds_the_fork_request_directly():
@@ -622,17 +567,9 @@ def test_the_reply_text_joins_every_turn_and_tool_call_blocks_are_kept(tmp_path)
     )
 
 
-def test_any_status_file_settles_and_helpers_are_a_source(tmp_path):
-    from unify.memory.trigger import admit_settled
-
-    for eid, name in (
-        ("r", "replay_fork.json"),
-        ("h", "helper.json"),
-        ("a", "analyst.json"),
-    ):
-        (tmp_path / eid).mkdir()
-        (tmp_path / eid / name).write_text('{"status": "ok"}')
-    assert admit_settled(tmp_path, ["r", "h", "a"]) == (["r", "h"], ["a"])
+def test_helpers_are_a_staging_source(tmp_path):
+    (tmp_path / "h").mkdir()
+    (tmp_path / "h" / "helper.json").write_text('{"status": "ok"}')
     assert staging.read(tmp_path, "h").source == "helper"
 
 

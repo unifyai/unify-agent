@@ -2,9 +2,8 @@
 
 Readers write the same files under ``<state>/memory-staging/<episode>/``: the actor's episode-end fork
 (:mod:`.integration.fork_worker`, which writes ``fork.json`` last) and the offline replay of the fork (which writes
-``replay_fork.json`` last). Writer-launched helpers write the same format to their own folder (:mod:`.helpers`). A directory without its status file is still being
-written and counts as no staging; with the fork on, admission (:func:`.integration.fork.settled`) keeps such an
-episode out of a pass batch until it settles.
+``replay_fork.json`` last). Writer-launched helpers write the same format to their own folder (:mod:`.helpers`). A directory without its status file counts as no
+staging (its reader is still writing it, or ended without its record).
 
 Staging is untrusted input. :func:`read` takes only regular files, never through a link, under the paths the fork
 worker allows (:func:`.integration.fork_worker.allowed`), within its operational quota; anything else is listed as
