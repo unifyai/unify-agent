@@ -66,5 +66,3 @@ def signature(shape: dict) -> str:
     """The stable part of an output shape: format, JSON tree, delimiter and width."""
     keep = {k: shape[k] for k in ("format", "tree", "delimiter", "width") if k in shape}
     return json.dumps(keep, sort_keys=True, ensure_ascii=False)
-
-

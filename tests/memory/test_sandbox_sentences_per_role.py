@@ -28,12 +28,6 @@ from tests.memory import prompt_guards as guards
 # ==== names and sentences this file assumes (the spec gives them; adapt them here, in one place) ====================
 #: tool_registry.sandbox_paragraph(agent, names, persistent) -> str (design D.1)
 SANDBOX_PARAGRAPH = "sandbox_paragraph"
-#: tool_registry.prebound_names(agent, facts) -> iterable of names (design B.1)
-PREBOUND_NAMES = "prebound_names"
-#: the facts keys prebound_names reads: tools called from code, a library copy with its package, clarification on
-FACT_IN_CODE = "tools"
-FACT_LIBRARY = "memory"
-FACT_CLARIFICATION = "clarification"
 #: design D.1, persistent form (the default), in two sentences
 PERSISTENT_SENTENCE = (
     "Your Python sandbox is persistent and stateful: variables, imports and functions you define in one cell are "
@@ -53,12 +47,6 @@ NAMES_SENTENCE = re.compile(
     r"((?:`[A-Za-z_][A-Za-z0-9_]*`(?:, | and |, and )?)+) (?:is|are) already available as (?:a )?variables? in every "
     r"cell; no import needed\.",
 )
-#: design D.3 (B.4): the writer's sentence about a library file edited after it was imported
-REIMPORT_SENTENCE = (
-    "Names you bound earlier keep the code they were bound to; after you edit a library file, import it again."
-)
-#: design D.2: the actor's library guide and role
-GUIDE_BOUND = "is already available in your cells as `memory`"
 # =====================================================================================================================
 
 ROLES = ("actor", "teammate", "writer", "helper")  # rev 2 has no curator
@@ -281,41 +269,3 @@ def test_the_preamble_carries_the_paragraph_for_the_cell_state_it_is_given():
         off = flat(R.preamble(agent, {"persistent": False}))
         assert on.count(PERSISTENT_SENTENCE) == 1 and FRESH_SENTENCE not in on, agent
         assert off.count(FRESH_SENTENCE) == 1 and PERSISTENT_SENTENCE not in off, agent
-
-
-def _prebound(agent: str, **facts) -> set[str]:
-    return set(getattr(R, PREBOUND_NAMES)(agent, facts))
-
-
-def test_prebound_names_of_the_memory_agents():
-    for agent in MEMORY_ROLES:
-        lib = {FACT_IN_CODE: True, FACT_LIBRARY: True}
-        assert _prebound(agent, **lib) == {"tools", "memory", "help"}, agent
-        assert _prebound(agent, **{FACT_IN_CODE: True, FACT_LIBRARY: False}) == {"tools", "help"}, agent
-        # tools stay JSON tools with the switch off: no `tools`, the rest the same
-        assert _prebound(agent, **{FACT_IN_CODE: False, FACT_LIBRARY: True}) == {"memory", "help"}, agent
-
-
-def test_prebound_names_of_the_actor_and_teammate():
-    facts = {FACT_IN_CODE: True, FACT_LIBRARY: True, FACT_CLARIFICATION: True}
-    actor = _prebound("actor", **facts)
-    assert {
-        "tools",
-        "memory",
-        "help",
-        "display",
-        "query_llm",
-        "list_llms",
-        "unillm",
-        "run_coro_sync",
-        "ModelRequestError",
-    } <= actor, actor
-    # rev 2: no request_clarification global (the actor asks the user on the run record), so the actor and a
-    # teammate have the same names and the clarification fact changes nothing
-    mate = _prebound("teammate", **facts)
-    assert "request_clarification" not in actor and actor == mate
-    assert "memory" not in _prebound("actor", **{**facts, FACT_LIBRARY: False})
-    assert _prebound("actor", **{**facts, FACT_CLARIFICATION: False}) == actor
-    for names in (actor, mate):
-        assert not names & set(REPLACED), names
-        assert not names & {"functions", "guidance"}, names

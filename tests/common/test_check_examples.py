@@ -20,6 +20,7 @@ import pytest
 from unify.common import box_check_source
 from unify.common import tool_registry as R
 from unify.memory import value_diff
+from tests.memory.prompt_guards import tool_names_in
 
 FULL = frozenset({"pool", "similar", "helper", "edit", "store"})
 CODE_AGENTS = ("actor", "teammate", "writer", "helper")  # rev 2 has no curator role
@@ -248,7 +249,7 @@ def test_the_help_is_typed_and_shows_a_json_and_a_text_example(load, capsys):
     assert text.startswith("check_examples(candidate, examples)\n")
     assert "examples (array, required)" in text and "candidate (any, required)" in text
     assert "tools.check_examples(totals, [{" in text and "tools.check_examples(initials, [[" in text
-    assert R.tool_names_in(text) <= set(R.registry()) | {"help"}
+    assert tool_names_in(text) <= set(R.registry()) | {"help"}
     tools = load()
     assert tools.check_examples.__doc__ == text
     # help returns its text and prints nothing (every call returns text)

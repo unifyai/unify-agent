@@ -39,7 +39,7 @@ def _spawn_form(exc: Exception) -> str:
     if isinstance(exc, PostRefused):
         return "record_full" if text.startswith("the record is full") else "too_large"
     if isinstance(exc, PermissionError):
-        return "not_main_agent" if text.startswith("only the main agent") else "spawn_off"
+        return "spawn_off"
     if isinstance(exc, ValueError):
         return "short_request" if text.startswith("the request must say") else "bad_name"
     if isinstance(exc, RuntimeError):

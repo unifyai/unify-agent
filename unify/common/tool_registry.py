@@ -25,7 +25,7 @@ import keyword
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional, Protocol, runtime_checkable
+from typing import Any, Iterable, Optional
 
 #: Every agent a tool can be given to, by role name.
 AGENTS = ("actor", "teammate", "writer", "helper", "librarian")
@@ -1378,7 +1378,6 @@ _RECORD_POST_FORMS = {
     "too_fast": "{why}; nothing was sent",
 }
 _SPAWN_FORMS = {
-    "not_main_agent": "no helper started: {why}",
     "spawn_off": "no helper started: {why}",
     "short_request": "no helper started: {why}",
     "bad_name": "no helper started: {why}",
@@ -1395,17 +1394,6 @@ _ANSWER = {
         },
     },
     "required": ["answer"],
-    "additionalProperties": False,
-}
-_TIMEOUT = {
-    "type": "object",
-    "properties": {
-        "timeout": {
-            "type": "number",
-            "description": "Seconds to wait: a timeout is required, at most 600.",
-        },
-    },
-    "required": ["timeout"],
     "additionalProperties": False,
 }
 #: The librarian's answer (design J(b).4); its form and ids are checked by the handler, which refuses a malformed one.
@@ -1848,22 +1836,6 @@ _IN_CODE: dict[str, dict] = {
         when="Ask when you cannot go on without an answer; a question that names no one goes to whoever started "
         "you.",
         kind="record",
-    ),
-    "write": dict(
-        returns="the path written and its size.",
-        examples=('tools.write("memory/pkg/totals.py", src)',),
-        when="Write a whole new file or replace one; use edit for a small change to an existing file.",
-        kind="action",
-        deadline_s=60.0,
-        blocking=False,
-    ),
-    "edit": dict(
-        returns="the path changed.",
-        examples=('tools.edit("memory/pkg/totals.py", "return a + b", "return round(a + b, 2)")',),
-        when="Change one exact passage; add surrounding lines to `old` until it occurs once.",
-        kind="action",
-        deadline_s=60.0,
-        blocking=False,
     ),
 }
 
@@ -2940,21 +2912,6 @@ def namespace_names(agent: str, facts: dict) -> tuple[str, ...]:
     return tuple(prebound(agent, facts))
 
 
-#: The actor's and teammates' other globals, bound as the worker's own or synced from the host's namespace (the
-#: in-code prompt's sandbox section names them; ``ModelRequestError`` is what a failed model call raises).
-_ACTOR_GLOBALS = ("display", "query_llm", "list_llms", "unillm", "run_coro_sync", "ModelRequestError")
-
-
-def prebound_names(agent: str, facts: dict) -> tuple[str, ...]:
-    """Every name bound in *agent*'s cells before any cell runs, with *facts* (``tools``, ``memory`` as for
-    :func:`prebound`): the namespaces, ``help`` (the worker's own), and for the actor and teammates their other
-    globals. A declared set: binding a name never widens what the agent may do."""
-    names = [*namespace_names(agent, facts), "help"]
-    if agent in (_A, _T):
-        names += _ACTOR_GLOBALS
-    return tuple(names)
-
-
 def names_sentence(names: Iterable[str]) -> str:
     """The sentence naming the pre-bound *names* (empty when there are none)."""
     shown = [f"`{n}`" for n in names]
@@ -3071,27 +3028,3 @@ class RecordRefused(Exception):
     def __init__(self, form: str, text: str) -> None:
         super().__init__(text)
         self.form, self.text = form, text
-
-
-@runtime_checkable
-class Record(Protocol):
-    """The record the record tools use, whichever agent calls them: a memory pass's in-memory record
-    (:class:`unify.common.record_adapters.PassRecordAdapter`) or the actor's agent record
-    (:class:`unify.common.record_adapters.AgentRecordAdapter`). A refused operation raises :class:`RecordRefused`."""
-
-    def post(self, sender: str, text: str, to: Optional[list] = None) -> dict: ...
-
-    def unseen(self, reader: str) -> list: ...
-
-    async def wait(self, reader: str, timeout: float) -> list: ...
-
-    def roster(self) -> list: ...
-
-    async def start(self, spawner: str, task: str, **kw: Any) -> dict: ...
-
-    async def stop(self, by: str, name: str) -> dict: ...
-
-
-def tool_names_in(text: str) -> set[str]:
-    """Every ``tools.<name>`` a text names (to check that each one is registered)."""
-    return set(re.findall(r"\btools\.([A-Za-z_][A-Za-z0-9_]*)", text))

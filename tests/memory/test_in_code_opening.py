@@ -11,6 +11,7 @@ import warnings
 import pytest
 
 from unify.common import tool_registry as R
+from tests.memory.prompt_guards import tool_names_in
 
 HEADING = "## How you work here"
 LIST_SENTENCE = "`print(tools.list())` shows one line per tool you have"
@@ -68,7 +69,7 @@ def test_every_memory_agent_starts_with_the_shared_opening(monkeypatch, planted)
         assert text.count(HEADING) == 1, name
         # the opening names only tools the agent's allow-list has, with the flags its pass builds the list with
         allow = set(R.allow_list(agent, flags))
-        named = R.tool_names_in(opening) - {"list", "help", "Refused", "NotRun"}
+        named = tool_names_in(opening) - {"list", "help", "Refused", "NotRun"}
         assert named <= allow, f"{name}: {sorted(named - allow)}"
         # box paths and limits only: no host path, no run root, no environment value
         for value in (planted["root"], planted["tmp"], PLANTED_VALUE, os.getcwd(), os.path.expanduser("~")):

@@ -26,6 +26,7 @@ import pytest
 
 from unify.common import tool_registry as R
 from unify.memory import agent_profiles, helpers, mining, pool, tool_spec
+from tests.memory.prompt_guards import tool_names_in
 
 ROOT = Path(__file__).resolve().parents[2]
 FULL = frozenset({"pool", "similar", "helper", "edit", "store"})
@@ -196,7 +197,7 @@ def test_every_tool_named_in_a_rendered_text_is_registered(stand_ins):
         R.preamble(a, {"environment": "/workspace read-write", "memory": "", "flags": FULL}) for a in R.AGENTS
     ]
     for text in texts:
-        assert R.tool_names_in(text) - set(R.registry()) - own == set()
+        assert tool_names_in(text) - set(R.registry()) - own == set()
 
 
 def test_one_rule_binds_the_namespaces_and_never_widens_the_allow_list():
@@ -206,13 +207,8 @@ def test_one_rule_binds_the_namespaces_and_never_widens_the_allow_list():
         both = R.prebound(agent, {"tools": True, "memory": True})
         assert both == {"tools": ["module", "tools"], "memory": ["lazy_module", "memory"]}
         assert R.namespace_names(agent, {"memory": True}) == ("memory",)
-        assert R.prebound_names(agent, {"memory": True})[:2] == ("memory", "help")
         # the allow-list is the registry's whatever is bound
         assert R.allow_list(agent, FULL) == R.allow_list(agent, FULL)
-    # rev 2 binds no request_clarification (the actor asks the user on the run record)
-    assert "request_clarification" not in R.prebound_names("actor", {"clarification": True})
-    assert "request_clarification" not in R.prebound_names("teammate", {"clarification": True})
-    assert "display" not in R.prebound_names("writer", {"tools": True, "memory": True})
     with pytest.raises(ValueError):
         R.prebound("fork", {})
 
@@ -373,7 +369,7 @@ ADDED_FORMS = {
     "read": ["outside_library", "not_in_library"],
     "grep": ["search_failed", "outside_library", "not_in_library"],
     "finish": ["answered", "bad_answer"],
-    "delegate": ["bad_name", "not_main_agent", "record_full", "short_request", "spawn_off", "too_large"],
+    "delegate": ["bad_name", "record_full", "short_request", "spawn_off", "too_large"],
     # the run record's addresses nobody would read (a role the run does not have, an agent that has ended)
     "send": ["record_full", "too_fast", "too_large", "no_role", "ended"],
     "reply": ["record_full", "too_fast", "too_large"],

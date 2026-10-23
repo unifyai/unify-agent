@@ -20,6 +20,7 @@ import pytest
 
 from tests.actor.code_act.core_world import core_world  # noqa: F401 (fixture)
 from tests.actor.code_act.sandbox_world import ENV_SECRET, TOKEN_VALUE, needs_bwrap, world  # noqa: F401 (fixture)
+from tests.memory.prompt_guards import tool_names_in
 from tests.scripted_model import ScriptedModel, reply, scripted
 from unify.actor import in_code_tools
 from unify.common import tool_registry as R
@@ -134,7 +135,7 @@ def _assert_opening_first(call, session, world: dict) -> str:
         f"opening; first 300: {system[:300]!r}",
         stacklevel=1,
     )
-    names = R.tool_names_in(opening) - {"list", "help", "Refused", "NotRun"}
+    names = tool_names_in(opening) - {"list", "help", "Refused", "NotRun"}
     assert names <= set(session.allow), sorted(names - set(session.allow))
     for value in (ENV_SECRET, TOKEN_VALUE, os.path.expanduser("~")):
         assert value not in opening

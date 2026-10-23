@@ -180,11 +180,3 @@ def check_examples(candidate, examples):
         results.append(row)
     return CheckReport(_ck_text(results), results)
 '''.replace("__SHOWN_CHARS__", str(SHOWN_CHARS))
-
-#: The names :data:`SOURCE` defines that the ``tools`` module exports.
-NAMES = ("check_examples", "CheckReport")
-
-
-def source() -> str:
-    """:data:`SOURCE`, the text the ``tools`` module embeds."""
-    return SOURCE

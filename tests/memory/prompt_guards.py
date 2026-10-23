@@ -51,3 +51,8 @@ def benchmark_words(text: str) -> list[str]:
 
 def example_checks(text: str) -> list[str]:
     return [m.group(0) for rx in _EXAMPLE_CHECKS for m in rx.finditer(text)]
+
+
+def tool_names_in(text: str) -> set[str]:
+    """Every ``tools.<name>`` a text names (to check that each one is registered)."""
+    return set(re.findall(r"\btools\.([A-Za-z_][A-Za-z0-9_]*)", text))

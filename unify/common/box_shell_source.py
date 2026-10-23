@@ -194,8 +194,3 @@ def _sh_run(command, timeout):
         status = proc.returncode
     return ShellResult(text, status)
 '''
-
-
-def source() -> str:
-    """:data:`SOURCE`, the text the ``tools`` module embeds."""
-    return SOURCE

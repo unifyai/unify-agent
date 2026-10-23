@@ -377,31 +377,3 @@ def fork_llm_client(
         fork._pending_thinking_log = pending_log
     _install_request_metadata(fork, parent)
     return fork
-
-
-def _make_openai_strict_json_schema_compatible(node: Any) -> None:
-    """Mutate a JSON schema in-place to satisfy OpenAI strict requirements.
-
-    OpenAI's strict JSON-schema mode requires that:
-    - For any schema object with explicit `properties`, the `required` array
-      must exist and include *every* property key.
-    - `additionalProperties` must be false (to forbid extra keys).
-
-    Pydantic excludes fields with default values from `required` (because they're
-    optional at validation time). This helper normalizes the schema to the strict
-    subset that OpenAI enforces.
-    """
-    if isinstance(node, dict):
-        props = node.get("properties")
-        if node.get("type") == "object" and isinstance(props, dict):
-            node["additionalProperties"] = False
-            node["required"] = list(props.keys())
-        for v in node.values():
-            _make_openai_strict_json_schema_compatible(v)
-        return
-
-    if isinstance(node, list):
-        for v in node:
-            _make_openai_strict_json_schema_compatible(v)
-
-
