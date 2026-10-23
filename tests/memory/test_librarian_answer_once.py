@@ -133,8 +133,10 @@ async def test_another_question_is_asked_again_one_answer_per_key(tmp_path):
     assert one == FITS and three == NEAREST
     assert two == {**FITS, L.ALREADY_GIVEN: True} and four == {**NEAREST, L.ALREADY_GIVEN: True}
     assert len(turn.calls) == 2 and session.usage.calls == 2
-    asked = [m["content"] for m in session.messages if m.get("role") == "user"]
-    assert len(asked) == 2 and "counts rows" in asked[1] and all("parse" not in a for a in asked)
+    # each question was asked in a fresh context: the model's second call carries that question alone
+    asked = [[m["content"] for m in msgs if m.get("role") == "user"] for msgs in turn.calls]
+    assert [len(a) for a in asked] == [1, 1] and "counts rows" in asked[1][0] and "counts rows" not in asked[0][0]
+    assert all("parse" not in a for q in asked for a in q)
     fields = L.usage_fields([session])
     assert (fields["questions"], fields["answers_from_cache"], fields["calls"]) == (4, 2, 2)
 

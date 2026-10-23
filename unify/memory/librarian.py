@@ -3,7 +3,8 @@
 ``memory.ask()`` in an actor or teammate cell (the ``memory.ask`` section of the generated package, :mod:`.library_ask`)
 runs nothing: it sends the question (the current request's text when none is given) to the host through the in-code
 tool ``ask_library`` (:func:`unify.actor.tool_handlers.ask_library`). The handler opens the request's
-:class:`LibrarianSession` on the first question and keeps it for the request's follow-ups; the session ends with the
+:class:`LibrarianSession` on the first question and keeps it for the request's follow-ups (its box and the answers it
+gave; each question starts from a fresh context, the system message and this question only); the session ends with the
 request (``InCodeTools.close``). At the request's start the harness asks the same question itself, once, and puts the
 answer at the top of the actor's first message (:func:`request_start_block`).
 
@@ -157,8 +158,8 @@ BRIEF = (
     'or `{"fits": [], "nearest": [{"id": ..., "differs": ...}, ...]}` when nothing fits. Every id is the id of an '
     "item of the library, as search shows it. An answer in another form, or with an id the library does not hold, "
     "is refused with the reason; correct it and call `tools.finish` again.\n"
-    "- When the agent asks again in the same request, the new question arrives as a new message, and you answer "
-    "each one with `tools.finish`.\n"
+    "- Each question starts a fresh conversation with you: what you read for an earlier question of the same "
+    "request is not in it, so read what this question needs, and answer it with `tools.finish`.\n"
 )
 
 
@@ -941,8 +942,9 @@ class LibrarianSession:
             from unify.agents.run_record import RunRecordView
 
             self.view = RunRecordView(run_record, name, AGENT)
-        #: whether the first question (which carries the common section and the roster lines) was sent
-        self._introduced = False
+        #: the messages every question starts from (the system message, and the role's notes once read): each
+        #: question gets a fresh context, never an earlier question's conversation; set at the first question
+        self._preamble: list[dict] | None = None
 
         self.copy = Path(copy)
         self.library = library if isinstance(library, str) and library else None
@@ -1061,12 +1063,16 @@ class LibrarianSession:
             self.state.answer, self.state.finished, self.state.finish_text = None, False, None
             self.state.schema, self.state.schema_failures = schema, 0
             content = sent["message"]
-            if self.view is not None and not self._introduced:
-                # the run record: the common section and this agent's roster lines, once, after the constant brief
+            if self.view is not None:
+                # the run record: the common section and this agent's roster lines, with every question (each
+                # question's context is fresh), after the constant brief
                 from unify.agents.run_record import prompt_lines
 
                 content = f"{content}\n\n{prompt_lines(self.name, AGENT)}"
-                self._introduced = True
+            # a fresh context for each question: the system message (and the role's notes), then this question only
+            if self._preamble is None:
+                self._preamble = list(self.messages)
+            self.messages[:] = list(self._preamble)
             self.messages.append({"role": "user", "content": content})
             try:
                 answer = await self._turns()

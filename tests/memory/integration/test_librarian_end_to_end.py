@@ -313,8 +313,8 @@ async def test_ask_returns_the_librarians_answers_reuses_the_session_and_is_acco
     for call in model.calls:
         assert w.PLANTED_VALUE not in json.dumps(call.request)
 
-    # the follow-up reuses the session: its request continues the first question's conversation
-    assert "Which stored items fit this text?" in _not_assistant(lib[1]) and Q2 in _not_assistant(lib[1])
+    # the follow-up reuses the session, in a fresh context: its request carries its own question, not the first one's
+    assert "Which stored items fit this text?" not in _not_assistant(lib[1]) and Q2 in _not_assistant(lib[1])
     one, two = (_headers(sent, model, c) for c in lib)
     assert one.get("X-Unify-Session") and one.get("X-Unify-Session") == two.get("X-Unify-Session")
 
