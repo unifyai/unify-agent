@@ -67,7 +67,6 @@ BASIS_VERDICTS = "verdicts"
 BASIS_IMPLICIT = "implicit"
 
 REGIMES = ("dense", "sparse", "implicit", "none")
-OUTCOMES = ("returned", "refused", "error")
 VERDICTS = ("accepted", "rejected")
 END_OUTCOMES = ("positive", "contrary")
 

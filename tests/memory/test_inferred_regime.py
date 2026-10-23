@@ -9,7 +9,7 @@ import sqlite3
 
 import pytest
 
-from tests.memory.arrivals import read_arrivals
+from tests.memory.arrivals import read_arrivals, regime_changes
 from tests.memory.test_checker_visible import _arc_lines
 from tests.memory.test_episodes import _ep
 from unify.memory import captures, lifecycle, serving, trust
@@ -181,7 +181,7 @@ def test_the_store_keeps_its_schema_until_a_regime_is_inferred(tmp_path):
     assert (
         _schema(path) == before
         and ev.inferred_regimes() == []
-        and ev.regime_changes() == []
+        and regime_changes(ev) == []
     )
     ev.add_signal(
         outcomes.timed(
@@ -213,7 +213,7 @@ def test_the_store_keeps_its_schema_until_a_regime_is_inferred(tmp_path):
         "signals",
     )
     assert [
-        (c["before"], c["after"], c["signal_id"]) for c in ev.regime_changes("e0")
+        (c["before"], c["after"], c["signal_id"]) for c in regime_changes(ev, "e0")
     ] == [
         (None, "sparse", None),
         ("sparse", "dense", "e0.late.x.1"),
@@ -362,7 +362,7 @@ def test_a_late_contrary_verdict_changes_the_regime_reopens_and_recomputes_the_u
     }
     # the regime record changed, with the signal that changed it
     assert stores.evidence.regime_of("e1") == "sparse"
-    assert stores.evidence.regime_changes("e1")[-1]["signal_id"] == "e1.late.e9.1"
+    assert regime_changes(stores.evidence, "e1")[-1]["signal_id"] == "e1.late.e9.1"
     # the signal is attached by the episode's id, timed after the episode, about the item
     (late,) = [
         s for s in stores.evidence.signals_for("e1") if s.signal_id == "e1.late.e9.1"

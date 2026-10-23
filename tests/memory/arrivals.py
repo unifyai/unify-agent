@@ -1,4 +1,5 @@
-"""The signal arrival rows as the tests read them (``signal-arrivals.jsonl``, :mod:`unify.memory.integration.outcomes`)."""
+"""The signal arrival rows (``signal-arrivals.jsonl``, :mod:`unify.memory.integration.outcomes`) and the evidence store's
+regime changes, as the tests read them."""
 
 from __future__ import annotations
 
@@ -23,3 +24,16 @@ def read_arrivals(state_dir: Path | str) -> list[dict]:
         if isinstance(row, dict) and row.get("v") == 1:
             out.append(row)
     return out
+
+
+def regime_changes(evidence, eid: str | None = None) -> list[dict]:
+    """Every regime change the evidence store logged (only *eid*'s when given), oldest first."""
+    made = evidence.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='regime_changes'").fetchone()
+    if not made:
+        return []
+    q = "SELECT episode_id, at, before, after, basis, signal_id FROM regime_changes"
+    args: tuple = ()
+    if eid is not None:
+        q, args = q + " WHERE episode_id=?", (eid,)
+    keys = ("episode_id", "at", "before", "after", "basis", "signal_id")
+    return [dict(zip(keys, r)) for r in evidence.db.execute(q + " ORDER BY seq", args).fetchall()]

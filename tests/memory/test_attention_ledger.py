@@ -466,8 +466,6 @@ def test_late_evidence_reopens_the_closed_entries_of_the_items_it_bears_on(tmp_p
     led.sync(fresh)
     assert led.get(u.entry).reopen_count == 1
     assert led.report().reopens_by_item == {item: 1}
-    # reopen by hand needs a closed entry
-    assert led.reopen(l1.entry, "test") is False
 
 
 def test_an_actor_report_on_the_record_is_a_message_and_a_failed_use(tmp_path):
@@ -727,7 +725,9 @@ def test_an_entry_read_but_never_decided_goes_alone_then_ends_unreadable(tmp_pat
     assert e.state == "unreadable" and e.undecided == 2 and "read and not decided in 3 passes, the last pass:p3" in e.why
     assert [x.entry for x in led.hand("p4", 4)] == [other.entry]
     # a reopen starts the count again
-    assert led.reopen(one.entry, "late_evidence:x") and led.get(one.entry).undecided == 0
+    with led.locked():
+        led._write([{"op": "reopen", "entry": one.entry, "by": "late_evidence:x", "at": led.now()}])
+    assert led.get(one.entry).undecided == 0
 
 
 def test_a_grouped_decision_refused_names_every_unread_entry(tmp_path):

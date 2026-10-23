@@ -711,18 +711,6 @@ class EvidenceStore:
         ).fetchall()
         return [(r[1], r[2]) for r in rows if r[0] != exclude]
 
-    def regime_changes(self, eid: str | None = None) -> list[dict]:
-        """Every logged regime change (only *eid*'s when given), oldest first."""
-        if not self._has_table("regime_changes"):
-            return []
-        q = "SELECT episode_id, at, before, after, basis, signal_id FROM regime_changes"
-        args: tuple = ()
-        if eid is not None:
-            q, args = q + " WHERE episode_id=?", (eid,)
-        rows = self.db.execute(q + " ORDER BY seq", args).fetchall()
-        keys = ("episode_id", "at", "before", "after", "basis", "signal_id")
-        return [dict(zip(keys, r)) for r in rows]
-
     def add_item_evidence(self, item: str, eid: str, role: str) -> None:
         with self.db:
             self.db.execute(
@@ -999,23 +987,6 @@ class EvidenceStore:
                     commit,
                 ),
             )
-
-    def fixture_provenance(self, path: str, sha256: str) -> dict | None:
-        """The kept provenance entry of the fixture at *path* with bytes hashing to *sha256*; None when none is
-        kept (or before any merge kept one)."""
-        if not self._has_table("fixture_provenance"):
-            return None
-        row = self.db.execute(
-            "SELECT entry FROM fixture_provenance WHERE path=? AND sha256=?",
-            (path, sha256),
-        ).fetchone()
-        if row is None:
-            return None
-        try:
-            val = json.loads(row[0])
-        except (TypeError, ValueError):
-            return None
-        return val if isinstance(val, dict) else None
 
     def add_pass_notes(self, pass_id: str, notes: list[str]) -> None:
         """Append *notes* to a recorded pass's reasons (after the gate's); KeyError if it is not recorded."""

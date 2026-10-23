@@ -1159,14 +1159,6 @@ class Ledger:
             out.append(row)
         return out
 
-    def reopen(self, eid: str, by: str) -> bool:
-        """Open a closed (or unreadable, or not reached) entry again, naming why (*by*); False when it is not one."""
-        with self.locked():
-            e = self.entries().get(eid)
-            if e is None or e.state not in ("closed", "unreadable", "not_reached"):
-                return False
-            self._write([{"op": "reopen", "entry": eid, "by": str(by), "at": self.now()}])
-        return True
 
     # -- handing out --------------------------------------------------------------------------------------------------
 
