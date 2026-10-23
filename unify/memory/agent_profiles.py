@@ -9,34 +9,53 @@ enforces, :func:`unify.common.tool_registry.allow_list`). The tools themselves c
 
 from __future__ import annotations
 
-from .integration.switch import PASS_WALL_S
 from .library_prompts import MEMORY_HELP_LINE
 
-#: The real limits of a writer or helper pass, each with its number (the briefs state them as information).
-_PASS_LIMITS = [
-    {"limit": "reader page", "value": 8000, "unit": "bytes"},
-    {"limit": "reader calls per model turn", "value": 16, "unit": "calls"},
-    {"limit": "read_episode parts per call", "value": 8, "unit": "parts"},
-    {"limit": "cells per model turn", "value": 8, "unit": "cells"},
-    {"limit": "cell time", "value": 60, "unit": "s"},
-    {"limit": "file under /memory", "value": 1048576, "unit": "bytes"},
-    {"limit": "all files under /memory", "value": 20971520, "unit": "bytes"},
-    {"limit": "entries under /memory", "value": 2000, "unit": "entries"},
-    {"limit": "step guard", "value": 500, "unit": "model and check calls"},
-    {"limit": "time left for a check", "value": 60, "unit": "s"},
-    {"limit": "pass wall clock", "value": PASS_WALL_S, "unit": "s"},
-]
-#: A helper's limits: its own /work and cell time, its staging quota, the writer pass's step guard and wall clock.
-_HELPER_LIMITS = [
-    {"limit": "cell time", "value": 60, "unit": "s"},
-    {"limit": "files under /work", "value": 2000, "unit": "files"},
-    {"limit": "file under /work", "value": 2097152, "unit": "bytes"},
-    {"limit": "all files under /work", "value": 20971520, "unit": "bytes"},
-    {"limit": "staged files", "value": 200, "unit": "files"},
-    {"limit": "staged bytes", "value": 4194304, "unit": "bytes"},
-    {"limit": "step guard", "value": 500, "unit": "model calls"},
-    {"limit": "pass wall clock", "value": PASS_WALL_S, "unit": "s"},
-]
+
+def _pass_limits() -> list[dict]:
+    """The real limits of a writer pass, each read from the constant that enforces it (the brief states them as
+    information). The pass's wall clock is stated once, by its first message: the writer's own deadline is the
+    pass's wall bound less the final merge's reserve."""
+    from unify.common import tool_registry as R
+
+    from . import views, writer_pass
+
+    return [
+        {"limit": "reader page", "value": views.VIEW_BYTES, "unit": "bytes"},
+        {"limit": "reader calls per model turn", "value": R.READERS_PER_TURN, "unit": "calls"},
+        {"limit": "read_episode parts per call", "value": R.READ_PARTS_PER_CALL, "unit": "parts"},
+        {"limit": "cells per model turn", "value": writer_pass._MAX_CELLS_PER_TURN, "unit": "cells"},
+        {"limit": "cell time", "value": writer_pass.PassConfig.cell_timeout_s, "unit": "s"},
+        {"limit": "file under /memory", "value": writer_pass.QUOTA_FILE_BYTES, "unit": "bytes"},
+        {"limit": "all files under /memory", "value": writer_pass.QUOTA_TOTAL_BYTES, "unit": "bytes"},
+        {"limit": "entries under /memory", "value": writer_pass.QUOTA_ENTRIES, "unit": "entries"},
+        {"limit": "step guard", "value": writer_pass.STEP_GUARD, "unit": "model and check calls"},
+        {"limit": "time left for a check", "value": writer_pass.CHECK_FLOOR_S, "unit": "s"},
+    ]
+
+
+def _helper_limits() -> list[dict]:
+    """A helper's limits, each read from the constant that enforces it: its own /work and cell time, its staging
+    quota and the writer pass's step guard (its first message states the wall clock left)."""
+    from . import helpers, writer_pass
+    from .integration import fork_worker
+
+    return [
+        {"limit": "cell time", "value": helpers.CELL_TIMEOUT_S, "unit": "s"},
+        {"limit": "files under /work", "value": helpers.WORK_ENTRIES, "unit": "files"},
+        {"limit": "file under /work", "value": helpers.WORK_FILE_BYTES, "unit": "bytes"},
+        {"limit": "all files under /work", "value": helpers.WORK_TOTAL_BYTES, "unit": "bytes"},
+        {"limit": "staged files", "value": fork_worker.QUOTA_FILES, "unit": "files"},
+        {"limit": "staged bytes", "value": fork_worker.QUOTA_BYTES, "unit": "bytes"},
+        {"limit": "step guard", "value": writer_pass.STEP_GUARD, "unit": "model calls"},
+    ]
+
+
+def _gate_limits() -> list[dict]:
+    """The gate's limit as the writer meets it: a check starts only while this much of the wall clock remains."""
+    from . import writer_pass
+
+    return [{"limit": "time left for a check", "value": writer_pass.CHECK_FLOOR_S, "unit": "s"}]
 #: What any memory prompt may inline: constant text, ids and numbers; never a list past these bounds.
 _INLINE_BOUND = {"items": 10, "bytes": 1000, "tokens": 250}
 _EVENTS = [{"event": "tool_call", "path": "<pass output dir>/tool-events.jsonl"}]
@@ -323,7 +342,8 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {"artifact": "task", "path": "delegate arguments", "consumer": "helper"},
             {"artifact": "record", "path": _RECORD, "consumer": "helper"},
         ],
-        "limits": list(_PASS_LIMITS),
+        # read from the enforcing constants when the row is asked for (profile)
+        "limits": _pass_limits,
         "inlined": [
             {"what": "brief (constant)", "bound": _INLINE_BOUND},
             {
@@ -451,8 +471,8 @@ AGENT_PROFILES: tuple[dict, ...] = (
             {"artifact": "record", "path": _RECORD, "consumer": "writer"},
             {"artifact": "record", "path": _RECORD, "consumer": "helper"},
         ],
-        # the helper's own limits, as its brief and first message state them (helpers.py constants)
-        "limits": list(_HELPER_LIMITS),
+        # the helper's own limits, as its brief and first message state them (read when the row is asked for)
+        "limits": _helper_limits,
         "inlined": [
             {
                 "what": "helper brief and task (constant per call)",
@@ -560,9 +580,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "consumer": "librarian",
             },
         ],
-        "limits": [
-            {"limit": "time left for a check", "value": 60, "unit": "s"},
-        ],
+        "limits": _gate_limits,
         "inlined": [
             {"what": "repair message (names the result file)", "bound": _INLINE_BOUND},
         ],
@@ -607,9 +625,11 @@ AGENT_PROFILES: tuple[dict, ...] = (
 
 
 def profile(agent: str) -> dict:
+    """*agent*'s row, its limits read from the constants that enforce them."""
     for row in AGENT_PROFILES:
         if row["agent"] == agent:
-            return row
+            limits = row.get("limits")
+            return {**row, "limits": limits()} if callable(limits) else row
     raise KeyError(f"no agent profile {agent!r}")
 
 

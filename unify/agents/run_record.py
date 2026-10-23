@@ -173,7 +173,7 @@ SHOULD_MENTION: dict[str, tuple[dict[str, str], ...]] = {
             "when": "to ask the running actor a clarifying question about its own episode; never to give it "
             "instructions while it works, unless it asked",
         },
-        {"who": "helpers", "when": "to delegate reading or testing"},
+        {"who": "helpers", "when": "to message the helpers you started (tools.delegate starts one)"},
     ),
     "helper": ({"who": "<starter>", "when": "to report findings, with their sources"},),
     "librarian": (

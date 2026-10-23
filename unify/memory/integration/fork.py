@@ -140,8 +140,9 @@ CAPTURE_BULLETS = (
     "request (`request` is its text, `request.data` the list of the JSON objects and arrays it contains) and returns "
     "the value `run` works on.\n"
     "  `run` returns the result you handed back when you handed one back, and None when the outcome of the work is "
-    "what it did (its tool calls, the files it changed). Calling a stored procedure with no arguments runs it on the "
-    "current request (`read_input` gets the request's text). If the work has conditions on its input or its result, "
+    "what it did (its tool calls, the files it changed). Called later with no arguments, a stored procedure of the "
+    "`read_input` and `run(value)` form or of the `run(state)` form runs on the current request (`read_input` gets "
+    "the request's text); one of the `run(state, env)` form is not run that way. If the work has conditions on its input or its result, "
     "write them as `applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or "
     "False. Its "
     "docstring says whether the record shows the work accepted, quoting the line that shows it, or says \"not "
@@ -155,7 +156,7 @@ CAPTURE_BULLETS = (
 #: (``fork_worker.TOOL_REPLY``).
 RECORD_CALLS_ONLY = (
     "Call no tool except the record's: tools.send, tools.messages, tools.wait and tools.who, each a statement of its "
-    "own in a cell (the record's section below says how they work); nothing else runs here."
+    "own in a cell (the record's section in your first message says how they work); nothing else runs here."
 )
 #: The fork's instruction: what to write, its limits, and the one block format with an example. The per-reply time is
 #: not stated, since nothing the fork writes can act on it.
@@ -165,7 +166,7 @@ INSTRUCTION = (
     "your reply, in the format below. " + RECORD_CALLS_ONLY + "\n\n"
     "What to write:\n"
     "- `summary.md`: a short account of this episode for a reader who has not seen it, in the format below.\n"
-    "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a function "
+    "- `candidates/<name>.py`: for code you wrote here that ran and worked, a function "
     "with a docstring. <name> uses only letters, digits and underscores. Only code that actually ran here; never "
     "say code worked if it did not. " + CANDIDATE_CONTRACT_IN_CODE + "\n"
     "- `cases/<name>.json`, with the same <name>: the inputs that function had in this conversation and the "
@@ -277,7 +278,8 @@ def part_list(ep: Any) -> str:
             gist = _first_line(obs[int(name[12:])])
         elif name.startswith("cell:"):
             c = cells[name]
-            raised = c.error is not None or "Traceback (most recent call last)" in (c.output or "")
+            # the cell's recorded error status, never a word of its output
+            raised = c.error is not None
             gist = _first_line(c.code) + ("  (raised an error)" if raised else "")
         elif name.startswith("action:"):
             a = ep.actions[int(name[7:])]

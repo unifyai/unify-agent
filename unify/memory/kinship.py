@@ -8,8 +8,9 @@ new capture and the earlier ones, each described by its behaviour only (what its
 calls it makes and the outcome its episode had), which earlier ones do the same kind of work? A named capture becomes a
 ``judged`` relation (the ledger's ``kin`` rows, :meth:`.attention.Ledger.record_kin`).
 
-What the judge is shown is behaviour, never the request a capture came from: the procedure's code and its docstring,
-its entry form, the key paths of its input, its ordered calls and its outcome. The captures are labelled ``[1]``,
+What the judge is shown is behaviour, never the request a capture came from: the procedure's code with its docstrings
+and comments left out (a docstring may quote the record, so it may carry request or environment text), the key paths
+of its input, its ordered calls and its outcome. The captures are labelled ``[1]``,
 ``[2]``, ... in the question; the labels are mapped back here, so the question carries no stored identifier. Nothing is
 run, and no word of a capture is matched by the harness: the judgement is the model's.
 
@@ -20,6 +21,7 @@ sees it from the other side, or by the harness's own relations.
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -30,7 +32,7 @@ CANDIDATES = 40
 NEW_CODE = 4000
 BRIEF_CODE = 600
 BRIEF = (
-    "You compare recorded procedures by what they do. Each was written from one piece of finished work: its code, "
+    "You compare recorded procedures by what they do. Each was written from finished work: its code, "
     "the shape of the input it reads, the calls it makes through its environment, in order, and the outcome that "
     "work had.\n"
     "You are shown one new procedure and earlier ones, numbered [1], [2], and so on. Name every earlier procedure "
@@ -51,18 +53,25 @@ def _read(path: Path) -> str:
         return ""
 
 
-def _saved_docstring(capture_dir: Path) -> str:
+def code_only(source: str) -> str:
+    """*source* with every docstring and comment left out (parsed as data, never run); what does not parse is not
+    shown."""
     try:
-        saved = json.loads(_read(capture_dir / "saved.json") or "{}")
-    except ValueError:
-        return ""
-    doc = saved.get("docstring") if isinstance(saved, dict) else None
-    return " ".join(str(doc).split())[:600] if isinstance(doc, str) else ""
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return "# (the code does not parse; not shown)"
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant):
+                if isinstance(body[0].value.value, str):
+                    node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
 
 
 def card(profile: Any, capture_dir: Path, *, code_chars: int) -> str:
     """One capture as the judge sees it: its behaviour only (module docstring)."""
-    code = _read(capture_dir / "procedure.py")
+    code = code_only(_read(capture_dir / "procedure.py"))
     if len(code) > code_chars:
         code = code[:code_chars] + "\n# ... (the rest of the code is not shown)"
     lines = [
@@ -70,9 +79,6 @@ def card(profile: Any, capture_dir: Path, *, code_chars: int) -> str:
         "input key paths: " + (", ".join(sorted(getattr(profile, "input", ()) or ())[:20]) or "none recorded"),
         f"outcome of its work: {getattr(profile, 'outcome', None) or 'not shown'}",
     ]
-    doc = _saved_docstring(capture_dir)
-    if doc:
-        lines.append(f"what it does, as its author described it: {doc}")
     lines.append("code:\n" + code.rstrip("\n"))
     return "\n".join(lines)
 

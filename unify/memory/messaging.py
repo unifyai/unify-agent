@@ -23,6 +23,7 @@ from typing import Any, Optional
 from unify.agents.options import Options
 from unify.agents.pool import Pool
 from unify.agents.record import Record
+from unify.common.tool_registry import HELPERS_AT_ONCE, HELPERS_PER_PASS
 from unify.transcripts import scrub
 
 from unify.common import tool_registry as _registry
@@ -33,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 #: The pass's operational guard on the run record: at most this many helpers running at once and started in one pass,
 #: with the run record's own backstops.
-RUN_PASS_OPTIONS = Options(max_live=16, max_total=64, max_entries=None, max_record_bytes=512 * 1024 * 1024)
+RUN_PASS_OPTIONS = Options(
+    max_live=HELPERS_AT_ONCE, max_total=HELPERS_PER_PASS, max_entries=None, max_record_bytes=512 * 1024 * 1024
+)
 #: How long :func:`close` gives cancelled helpers to end (a running cell ends within its own time limit).
 CLOSE_GRACE_S = 90.0
 #: A helper's line in ``who``: the start of its task, at most this many characters.

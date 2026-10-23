@@ -82,7 +82,8 @@ class Supervisor:
         self.window: tuple[int | None, int | None] = (None, None)
         self.last: Supervised | None = None
         self.reconciled: dict | None = None
-        # every pass of the slot, in order, with its own reconciliation (WRITE's is never overwritten by CURATE's)
+        # every pass of the slot, in order, each with its own reconciliation (a later pass never overwrites an earlier
+        # one's)
         self.runs: list[tuple[Supervised, dict | None]] = []
 
     @property

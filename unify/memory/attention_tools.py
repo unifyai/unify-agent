@@ -437,11 +437,12 @@ def first_message(att: AttentionPass, req: Any, wall: str) -> str:
         return (
             f"Pass {att.pass_id}: a group of {len(handed)} related "
             f"{'capture' if len(handed) == 1 else 'captures'} needs your attention: {ids}"
-            + (f", with {closed} related {'capture' if closed == 1 else 'captures'} an earlier pass decided"
-               if closed else "")
+            + (f", with {closed} related {'capture' if closed == 1 else 'captures'} closed earlier (by a pass, or by "
+               "the harness)" if closed else "")
             + ".\n"
-            "/inputs/attention/group.json says why the harness put them together (from its records only), what earlier "
-            f"passes decided, and the {lib} library {'item' if lib == 1 else 'items'} the group touches. Read them "
+            "/inputs/attention/group.json says why the harness put them together (each related pair with its "
+            "relations), what was decided on the earlier ones, "
+            f"and the {lib} library {'item' if lib == 1 else 'items'} the group touches. Read them "
             "together with the library, and decide what to keep. What each entry "
             "owes a read is in /inputs/attention/index.json; decide each with tools.decide.\n"
             f"Wall clock for this pass: {wall} s.\n"
