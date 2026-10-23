@@ -94,6 +94,10 @@ def test_every_pair_of_agents_reads_each_shared_tool_the_same(stand_ins):
                 spec = R.registry()[name]
                 own = {a, b} & set(spec.role_args)
                 texts = {a, b} & set(spec.role_text)   # an agent with texts of its own (its roots) reads them
+                # a tool with texts for a run without memory: the actor and a teammate follow the run's setting, a
+                # memory agent always has memory, so two of them read the same text only in a run with memory
+                if spec.off_text and R._agent_memory(a) != R._agent_memory(b):
+                    continue
                 ha, hb = R.help_text(name, a), R.help_text(name, b)
                 if not texts:
                     assert _above_marker(ha) == _above_marker(hb), (name, a, b)

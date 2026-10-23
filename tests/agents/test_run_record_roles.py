@@ -39,6 +39,7 @@ def run_record_on(monkeypatch):
 
 
 def test_who_shows_the_roster_and_whom_this_agent_should_mention(tmp_path):
+    # the roster holds the writer, so this is a run with memory although the suite's setting is off
     from unify.agents import run_record_tools as T
 
     home = tmp_path / "home"
@@ -70,7 +71,9 @@ def test_who_shows_the_roster_and_whom_this_agent_should_mention(tmp_path):
 # --- test 6 and 7: the common section, and the prompt-size report -----------------------------------------------------
 
 
-def test_the_common_section_is_the_same_bytes_in_every_roles_lines(run_record_on):
+def test_the_common_section_is_the_same_bytes_in_every_roles_lines(run_record_on, monkeypatch):
+    # a run with memory: every role's lines carry COMMON_SECTION (without memory see test_off_prompt_names_no_memory_agent)
+    monkeypatch.setattr(R, "memory_is_on", lambda: True)
     for role in ("actor", "fork", "librarian", "writer", "helper"):
         lines = rr.prompt_lines(
             f"{role}-x" if role != "writer" else "writer", role, "writer"
@@ -88,8 +91,9 @@ def test_the_actors_and_a_teammates_first_message_carry_the_common_section(
     monkeypatch.setattr(binding, "_run_home", lambda: tmp_path / "home")
     main = binding.bind_for_act(request="Do the thing.", user_reads=False)
     section = main.prompt_section()
+    rules = R.common_section()   # the run's own section (this suite runs with UNIFY_MEMORY=off)
     assert (
-        section.count(R.COMMON_SECTION) == 1
+        section.count(rules) == 1
         and f"you are `{main.name}` (actor)" in section
     )
     assert main.name.startswith("actor-") and main.is_main and main.run_role == "actor"

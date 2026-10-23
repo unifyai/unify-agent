@@ -83,7 +83,11 @@ def test_an_unreadable_address_is_a_typed_refusal_not_a_generic_one(form):
 # --- the actor mentions the librarian only where the run has one -------------------------------------------------------------
 
 
-def test_the_actor_is_told_to_mention_the_librarian_only_in_a_run_with_one(tmp_path):
+def test_the_actor_is_told_to_mention_the_librarian_only_in_a_run_with_one(tmp_path, monkeypatch):
+    # a run with memory (the suite's own setting is UNIFY_MEMORY=off): only such a run can seed a librarian
+    from unify.common import tool_registry
+
+    monkeypatch.setattr(tool_registry, "memory_is_on", lambda: True)
     home = tmp_path / "home"
     without = rr.prompt_lines("actor-1", "actor", home=home)
     assert "Mention @librarian" not in without and "Mention @writer" in without

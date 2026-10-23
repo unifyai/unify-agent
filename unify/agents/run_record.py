@@ -893,9 +893,7 @@ class RunRecord(Record):
         help_text = " ".join(clean_text(help_text).split())
         if len(help_text) > HELP_CHARS:
             help_text = help_text[:HELP_CHARS] + "…"
-        memory = run_has_memory(self.home, role, spawner)
-        mention = [dict(m) for m in SHOULD_MENTION.get(role, ())
-                   if memory or m["who"] not in _registry.MEMORY_ROLES]   # without memory: no writer, fork or librarian
+        mention = [dict(m) for m in SHOULD_MENTION.get(role, ())]   # who_text drops the roles the run does not have
         if role == "helper":
             mention = [
                 {"who": spawner or "the agent that started you", "when": m["when"]}

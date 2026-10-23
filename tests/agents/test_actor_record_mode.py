@@ -62,11 +62,13 @@ async def test_the_record_rules_are_one_help_topic_away(core_world, monkeypatch,
     requests, _, _ = await _run([_cell('print(tools.help("record"))'), *_DONE], monkeypatch, tmp_path)
     # rev 2: the record's rules (COMMON_SECTION) come after the cache-preserving system prompt, in the first user
     # message, and tools.help("record") gives them again
+    # the run's own section: this suite runs with UNIFY_MEMORY=off, so the one that names no memory agent
+    rules = R.common_section()
     messages = requests[0]["messages"]
-    assert R.COMMON_SECTION not in str(messages[0].get("content"))  # the system message
+    assert rules not in str(messages[0].get("content"))  # the system message
     first_user = next(m for m in messages if m.get("role") == "user")
-    assert R.COMMON_SECTION in str(first_user.get("content"))
-    assert json.dumps(R.COMMON_SECTION)[1:-1] in _tool_texts(requests[1])  # the tool texts are JSON-encoded
+    assert rules in str(first_user.get("content"))
+    assert json.dumps(rules)[1:-1] in _tool_texts(requests[1])  # the tool texts are JSON-encoded
 
 
 async def test_a_stopped_main_agent_stops_its_helpers_and_records_no_reply(
