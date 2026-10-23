@@ -142,7 +142,9 @@ BRIEF = (
     "record you relied on.\n"
     "- For each item that applies, give a call the agent can run as written: for a procedure whose card shows the "
     "call that applies its recipe to the current request, that call; for another function, the item called on the "
-    "question's input.\n"
+    "question's input. The agent reaches the library only through its `memory` package (`memory.get` with an "
+    "item's id, `memory.request` for its current request): the /memory paths are yours, so a call never reads a "
+    "path or uses another tool.\n"
     "- When nothing applies, answer that nothing fits, and name the nearest items with what differs between each of "
     "them and the question.\n"
     '- Answer with `tools.finish(answer)`, where answer is `{"fits": [{"id": ..., "call": ..., "why": ...}, ...]}`, '
@@ -421,6 +423,55 @@ def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+#: Builtins a suggested call may wrap a memory call in; nothing that reads files or runs code.
+_PLAIN_BUILTINS = frozenset({"print", "len", "list", "dict", "str", "repr", "sorted", "tuple", "set", "int", "float"})
+
+
+def _call_problem(call: str) -> str:
+    """Why a fit's *call* is not one the asking agent can run as written ('' when it is): it must parse as Python,
+    and every call in it is through ``memory`` (``memory.get(...)``, ``memory.request()``, or what those return):
+    the agent reaches the library only through ``memory``, never by a path or another tool. A parse of the call
+    against the agent's API: no word of it is matched."""
+    import ast
+
+    try:
+        tree = ast.parse(call.strip(), mode="exec")
+    except SyntaxError:
+        return "is not Python the agent can run; give the memory call, e.g. memory.get('<id>')(memory.request())"
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    if not calls:
+        return "makes no call; give the memory call, e.g. memory.get('<id>')(memory.request())"
+    for node in calls:
+        root = node.func
+        while isinstance(root, (ast.Attribute, ast.Call, ast.Subscript)):
+            root = root.func if isinstance(root, ast.Call) else root.value
+        if isinstance(root, ast.Name) and root.id in _PLAIN_BUILTINS:
+            continue  # print(...), len(...) around a memory call
+        if not (isinstance(root, ast.Name) and root.id == "memory") and not _returned_by_memory(node, tree):
+            return (
+                "is not through memory: the agent reaches the library only with memory.get(<id>) and "
+                "memory.request(), e.g. memory.get('<id>')(memory.request())"
+            )
+    return ""
+
+
+def _returned_by_memory(node: Any, tree: Any) -> bool:
+    """Whether *node* calls a name the same snippet bound to what a ``memory`` call returned (``f = memory.get(..)``
+    then ``f(x)``)."""
+    import ast
+
+    if not isinstance(node.func, ast.Name):
+        return False
+    for stmt in ast.walk(tree):
+        if isinstance(stmt, ast.Assign) and any(isinstance(t, ast.Name) and t.id == node.func.id for t in stmt.targets):
+            value = stmt.value
+            while isinstance(value, (ast.Attribute, ast.Call, ast.Subscript)):
+                value = value.func if isinstance(value, ast.Call) else value.value
+            if isinstance(value, ast.Name) and value.id == "memory":
+                return True
+    return False
+
+
 def check_answer(
     answer: Any,
     ids: list[str],
@@ -448,6 +499,9 @@ def check_answer(
             return None, f"fit {i}: {f['id'][:200]!r} is not an item of the library"
         if f["id"] in failed:
             return None, f"fit {i}: {f['id']!r} was tried and failed; it is never offered to run (name it as nearest)"
+        why_not = _call_problem(f["call"])
+        if why_not:
+            return None, f"fit {i}: its call {f['call'][:200]!r} {why_not}"
         entry = recipes.get(f["id"])
         if entry and entry not in f["call"]:
             return None, (

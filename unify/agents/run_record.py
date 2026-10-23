@@ -150,14 +150,11 @@ HELPS_WITH = {
 
 #: Whom each role should mention, and when (§2.2): the complete default set; general, naming no world.
 SHOULD_MENTION: dict[str, tuple[dict[str, str], ...]] = {
+    # the actor asks the library one way, memory.ask (its tool text says so); it is never told to mention @librarian
     "actor": (
         {
             "who": "writer",
             "when": "a served item was wrong, misleading, or something you needed was missing",
-        },
-        {
-            "who": "librarian",
-            "when": "you want to know whether stored items fit the current situation",
         },
     ),
     "fork": (
@@ -1785,6 +1782,9 @@ class RunRecordView:
                                 self.spawner if sender == self.name else None)
         roles = [f"@{r}" for r in ROLE_ADDRESSES if (r not in INSTANCE_ROLES or role_seeded(self.record.home, r))
                  and (memory or r not in _registry.MEMORY_ROLES)]   # without memory: no writer, fork or librarian
+        if self.role == "actor" and sender == self.name:
+            # an episode's fork starts only when the episode has ended: the actor never reaches one
+            roles = [r for r in roles if r != "@fork"]
         return ", ".join(dict.fromkeys(names + roles))
 
     def messages_all(self, limit: int = 50) -> tuple[list[dict], int]:

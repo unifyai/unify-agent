@@ -64,7 +64,8 @@ def test_who_shows_the_roster_and_whom_this_agent_should_mention(tmp_path):
     assert "Mention @librarian" not in text and "@librarian" not in text.splitlines()[-1]
     rr.seed_role(home, "librarian", by="test")
     text = T.who_text(rr.RunRecordView(rec, "actor-3f9a", "actor"))
-    assert "Mention @librarian when you want to know whether stored items fit" in text
+    # the actor asks the library with memory.ask, the one way; the seeded role still answers what reaches it
+    assert "Mention @librarian" not in text
     assert "@librarian" in text.splitlines()[-1]
 
 

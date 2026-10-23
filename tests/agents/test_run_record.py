@@ -430,4 +430,4 @@ def test_rows_carry_the_schema_fields(tmp_path):
     roster = read_roster(home)
     actor = next(a for a in roster["agents"] if a["name"] == "actor-3f9a")
     assert actor["can_mention"] == ["*"] and actor["state"] == "running"
-    assert [m["who"] for m in actor["should_mention"]] == ["writer", "librarian"]
+    assert [m["who"] for m in actor["should_mention"]] == ["writer"]  # the librarian is asked with memory.ask

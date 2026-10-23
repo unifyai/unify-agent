@@ -417,8 +417,12 @@ IDS_IN_ORDER = [COUNT, TOTAL, READ_ROWS, "capture:" + CAPTURE, "capture:" + FAIL
         ({"fits": [{"id": "memory.nope:x", "call": "c", "why": "w"}]}, "not an item of the library"),
         ({"fits": [{"id": "capture:" + FAILED, "call": "c", "why": "w"}]}, "never offered to run"),
         ({"fits": []}, "`nearest` must be a list"),
-        ({"fits": [{"id": TOTAL, "call": "c", "why": "w"}], "nearest": []}, "only when nothing fits"),
+        ({"fits": [{"id": TOTAL, "call": "memory.get('x')()", "why": "w"}], "nearest": []}, "only when nothing fits"),
         ({"fits": [], "nearest": [], "score": 1}, "unknown keys"),
+        # a suggested call goes through memory: never a path read, another tool or a name the agent does not have
+        ({"fits": [{"id": TOTAL, "call": "tools.read('/memory/x.md')", "why": "w"}]}, "is not through memory"),
+        ({"fits": [{"id": TOTAL, "call": "total(rows)", "why": "w"}]}, "is not through memory"),
+        ({"fits": [{"id": TOTAL, "call": "c", "why": "w"}]}, "makes no call"),
     ],
 )
 def test_a_malformed_answer_or_an_unknown_id_is_refused_with_the_reason(answer, why):
@@ -427,7 +431,8 @@ def test_a_malformed_answer_or_an_unknown_id_is_refused_with_the_reason(answer, 
 
 
 def test_an_answer_passes_as_the_librarian_gave_it_with_nothing_added_or_reordered():
-    fits = [{"id": TOTAL, "call": "a", "why": "b"}, {"id": COUNT, "call": "c", "why": "d"}]
+    fits = [{"id": TOTAL, "call": f"memory.get({TOTAL!r})(memory.request())", "why": "b"},
+            {"id": COUNT, "call": f"print(memory.get({COUNT!r})(rows))", "why": "d"}]
     got, _ = L.check_answer({"fits": fits}, IDS_IN_ORDER)
     assert got == {"fits": fits}
     got, _ = L.check_answer({"fits": [], "nearest": [{"id": "capture:" + FAILED, "differs": "it failed"}]}, IDS_IN_ORDER)
@@ -515,7 +520,9 @@ def test_off_the_actor_has_no_ask_tool_and_its_stub_is_unchanged():
     off = R.allow_list("actor", H.actor_flags("actor", librarian=False))
     on = R.allow_list("actor", H.actor_flags("actor", librarian=True))
     assert "ask_library" not in off and set(on) - set(off) == {"ask_library"}
-    assert "ask_library" not in R.allow_list("teammate", H.actor_flags("teammate", librarian=True))
+    # a teammate asks the library the same way as the actor (one way to ask), and not in a run without memory
+    assert "ask_library" in R.allow_list("teammate", H.actor_flags("teammate", librarian=True))
+    assert "ask_library" not in R.allow_list("teammate", H.actor_flags("teammate", librarian=False))
     assert "ask_library" not in R.render_stub(off, "actor")
     assert R.preamble("actor", {"flags": frozenset(H.actor_flags("actor", librarian=False))}) == R.preamble(
         "actor", {"flags": H.actor_flags("actor", librarian=False)},

@@ -21,6 +21,7 @@ its worker pool); one that waits on the record or the request is a coroutine fun
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
@@ -97,7 +98,8 @@ def response_validator(rf_norm: Any) -> Callable[[Any], str]:
 
 def actor_flags(agent: str, *, librarian: Optional[bool] = None) -> frozenset:
     """The configuration flags the actor's or a teammate's allow-list is built with: teammates are offered
-    (``helper``), and asking the librarian only for the actor (*librarian*; None: whenever the run has memory)."""
+    (``helper``), and asking the librarian for the actor and its teammates alike (*librarian*; None: whenever the run
+    has memory)."""
     from unify.settings import SETTINGS
 
     if librarian is None:
@@ -106,7 +108,7 @@ def actor_flags(agent: str, *, librarian: Optional[bool] = None) -> frozenset:
         librarian = memory_on(SETTINGS)
     return frozenset(
         {"helper"}
-        | ({_registry.LIBRARIAN_FLAG} if librarian and agent == "actor" else set())
+        | ({_registry.LIBRARIAN_FLAG} if librarian and agent in ("actor", "teammate") else set())
         # UNIFY_MEMORY=in_episode: the actor marks the pauses of its work (tools.checkpoint)
         | ({_registry.CHECKPOINT_FLAG} if agent == "actor" and _in_episode(SETTINGS) else set()),
     )
@@ -186,8 +188,70 @@ def _box_path(path: Any) -> str:
     return text
 
 
+#: The box path of the run's library copy (read-only), as the actor's memory guide names it (``unify.sandbox``'s
+#: library mount); ``/memory`` is the same library as the librarian and the writer name it. Either names it here.
+LIBRARY = "/memory-library"
+_LIBRARY_NAMES = (LIBRARY, "/memory")
+
+
+def _library_root() -> Optional[str]:
+    """The host directory of the current request's library copy (the one its cells read at :data:`LIBRARY`), or None
+    when the run has no library."""
+    try:
+        from unify.memory.integration import request as _request
+
+        run = _request.current()
+    except Exception:  # noqa: BLE001 - no memory integration: no library
+        return None
+    copy = getattr(run, "copy_root", None) or getattr(getattr(run, "paths", None), "checkout", None)
+    return str(copy) if copy is not None and os.path.isdir(copy) else None
+
+
+def _in_library(vpath: str) -> Optional[str]:
+    """*vpath* as a path under :data:`LIBRARY` when it names the library by either of its names, else None."""
+    for name in _LIBRARY_NAMES:
+        if vpath == name or vpath.startswith(name + "/"):
+            return LIBRARY + vpath[len(name) :]
+    return None
+
+
 def _outside(tool: str, path: str) -> Any:
+    if _library_root() is not None:
+        # a run with a library: the refusal names both roots and the call that opens an entry
+        return _refused(
+            Refusal(
+                f"{REFUSED}{path[:200]} is outside {WORKSPACE} and the library ({LIBRARY}, read-only); an entry of "
+                "the library opens with memory.get(<its id>)",
+                tool,
+                "outside_roots",
+            ),
+        )
     return _refused(Refusal(f"{REFUSED}{path[:200]} is outside {WORKSPACE}", tool, "outside_roots"))
+
+
+def _read_library(vpath: str, offset: int) -> Any:
+    """``read`` of a path in the library copy (read-only), opened from the copy's root one component at a time."""
+    from unify.memory import safe_paths as _safe
+    from unify.memory import views as _views
+
+    root = _library_root()
+    try:
+        prefix, parts = _safe.split(vpath, [LIBRARY])
+    except _safe.Outside:
+        return _outside("read", vpath)
+    virtual = _safe.virtual(prefix, parts)
+    where = ({"path": virtual, "mode": "read"},)
+    if root is None:
+        return _outside("read", vpath)
+    try:
+        text, mode = _views.read_entry(virtual, {LIBRARY: root}, offset)
+    except _safe.Outside:
+        return _outside("read", vpath)
+    except (_safe.LinkFound, _safe.NotRegular) as exc:
+        return _reply(refusal("read", "unreadable", error=exc.reason, path=virtual), "refused", "unreadable", where)
+    except OSError:
+        return _reply(refusal("read", "not_found", path=virtual), "refused", "not_found", where)
+    return _reply(text, paths=({"path": virtual, "mode": mode},))
 
 
 def _hidden(virtual: str, policy: Any) -> Optional[str]:
@@ -212,6 +276,9 @@ def read(ctx: Any, args: dict) -> Any:
     vpath = _box_path(args.get("path"))
     offset = args.get("offset", 0)
     offset = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
+    library = _in_library(vpath)
+    if library is not None:
+        return _read_library(library, offset)
     root = (ctx.roots or {}).get(WORKSPACE)
     try:
         prefix, parts = _safe.split(vpath, [WORKSPACE])
@@ -250,8 +317,12 @@ async def grep(ctx: Any, args: dict) -> Any:
     vpath = _box_path(args.get("path") or WORKSPACE)
     offset = args.get("offset", 0)
     offset = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
+    library = _in_library(vpath)
+    if library is not None and _library_root() is not None:
+        # the library copy is mounted read-only in the workspace sandbox at LIBRARY: the search runs there
+        vpath = library
     try:
-        prefix, parts = _safe.split(vpath, [WORKSPACE])
+        prefix, parts = _safe.split(vpath, [WORKSPACE, LIBRARY] if vpath.startswith(LIBRARY) else [WORKSPACE])
     except _safe.Outside:
         return _outside("grep", vpath)
     virtual = _safe.virtual(prefix, parts)

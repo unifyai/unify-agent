@@ -758,8 +758,17 @@ def _library_candidates() -> list[Candidate]:
     return out
 
 
+#: Where a writer pass is handed its captures (its own box's inputs), so ``memory.get('capture:<id>')`` opens a
+#: handed capture there as it opens an exported one in a request's copy.
+HANDED_CAPTURES = "/inputs/captures"
+
+
 def _capture_dir(capture_id: str) -> str:
-    return os.path.join(_ROOT, CAPTURES_DIR, capture_id)
+    exported = os.path.join(_ROOT, CAPTURES_DIR, capture_id)
+    if os.path.isdir(exported):
+        return exported
+    handed = os.path.join(HANDED_CAPTURES, capture_id)
+    return handed if os.path.isdir(handed) else exported
 
 
 def _capture_candidates() -> tuple[list[Candidate], int]:
@@ -1661,12 +1670,15 @@ def _relative(text: str) -> str | None:
 
 
 def _capture_ids() -> list[str]:
-    """The exported captured procedures' ids, in id order."""
-    try:
-        names = sorted(os.listdir(os.path.join(_ROOT, CAPTURES_DIR)))
-    except OSError:
-        return []
-    return [CAPTURE_PREFIX + n for n in names if _CAPTURE_ID.fullmatch(n) is not None]
+    """The captured procedures' ids, in id order: those exported into the copy, and those handed to a writer pass
+    (:data:`HANDED_CAPTURES`)."""
+    names: set[str] = set()
+    for base in (os.path.join(_ROOT, CAPTURES_DIR), HANDED_CAPTURES):
+        try:
+            names.update(n for n in os.listdir(base) if os.path.isfile(os.path.join(base, n, "procedure.py")))
+        except OSError:
+            continue
+    return [CAPTURE_PREFIX + n for n in sorted(names) if _CAPTURE_ID.fullmatch(n) is not None]
 
 
 @dataclasses.dataclass(frozen=True)

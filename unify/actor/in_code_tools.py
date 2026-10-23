@@ -185,8 +185,8 @@ class InCodeTools:
         )
         # the request the memory package reads through current_request (its text, and the JSON values it carries)
         self.state.request_text, self.state.request_data = H.request_of(request)
-        # the actor asks the request's librarian (tools.ask_library, from memory.ask)
-        asks = agent == "actor" and _librarian_on()
+        # the actor and its teammates ask the request's librarian (tools.ask_library, from memory.ask), the same way
+        asks = agent in ("actor", "teammate") and _librarian_on()
         if asks:
             from unify.memory import librarian as _librarian
 

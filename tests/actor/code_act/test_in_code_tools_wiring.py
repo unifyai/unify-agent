@@ -382,7 +382,8 @@ async def test_a_teammate_gets_the_same_wiring_with_its_own_allow_list(in_code):
         assert R.COMMON_SECTION not in system and "Messages: other agents" not in system
         assert "You end your work with" not in system
         assert "`tools.answer(answer)` gives it from a cell." in " ".join(system.split())
-    assert mate.allow == R.allow_list("teammate", frozenset({"helper"}))
+    # the teammate's own allow-list, with the run's flags (with memory on it asks the library as the actor does)
+    assert mate.allow == R.allow_list("teammate", mate.flags) and "helper" in mate.flags
     assert "delegate" in mate.allow and "ask" in mate.allow  # any agent may start agents
     assert mate.state.spawner == by_agent["actor"].binding.name
     rows = _rows(mate)

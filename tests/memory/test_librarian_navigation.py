@@ -351,7 +351,7 @@ def test_finish_refuses_an_id_that_is_not_an_item_of_the_library(tmp_path, no_ba
         got, reason = L.check_answer(answer, ids, failed, recipes)
         assert got is None and why in reason, (answer, reason)
     fine = {"fits": [{"id": PAGES, "call": "memory.get('...')(fetch, url)", "why": "a paginated endpoint"},
-                     {"id": RETRY, "call": "c", "why": "the service may be busy"}]}
+                     {"id": RETRY, "call": f"memory.get({RETRY!r})()", "why": "the service may be busy"}]}
     assert L.check_answer(fine, ids, failed, recipes) == (fine, "")
     # a retired item is no longer an item the librarian may name
     items = json.loads((copy / ".memory/items.json").read_text())

@@ -80,6 +80,9 @@ _TEAMMATE_IN_CODE = [
     "ask",
     "delegate",
     "answer",
+    "request",
+    # only with memory on (registry flag "librarian"): a teammate asks the library as the actor does
+    "ask_library",
     "sh",
     "check_examples",
 ]

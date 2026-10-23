@@ -83,7 +83,7 @@ def test_an_unreadable_address_is_a_typed_refusal_not_a_generic_one(form):
 # --- the actor mentions the librarian only where the run has one -------------------------------------------------------------
 
 
-def test_the_actor_is_told_to_mention_the_librarian_only_in_a_run_with_one(tmp_path, monkeypatch):
+def test_the_actor_is_never_told_to_mention_the_librarian_it_asks_with_memory_ask(tmp_path, monkeypatch):
     # a run with memory (the suite's own setting is UNIFY_MEMORY=off): only such a run can seed a librarian
     from unify.common import tool_registry
 
@@ -93,6 +93,7 @@ def test_the_actor_is_told_to_mention_the_librarian_only_in_a_run_with_one(tmp_p
     assert "Mention @librarian" not in without and "Mention @writer" in without
     assert "Mention @librarian" not in rr.prompt_lines("actor-1", "actor")  # no home: never named
     rr.seed_role(home, "librarian", by="test")
-    assert "Mention @librarian" in rr.prompt_lines("actor-1", "actor", home=home)
+    # one way to ask the library: memory.ask, whose tool text says so; the record never offers a second
+    assert "Mention @librarian" not in rr.prompt_lines("actor-1", "actor", home=home)
     # the common section names the librarian only as the run's, when it has one
     assert "@librarian (the run's librarian, when it has one)" in rr.COMMON_SECTION

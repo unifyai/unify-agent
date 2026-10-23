@@ -898,7 +898,8 @@ ASK_LIBRARY = RegisteredTool(
         "no_answer": "the librarian gave no answer ({why})",
     },
     requires=LIBRARIAN_FLAG,
-    roles=(_A,),
+    # the actor and the teammates it starts: one way to ask the library, the same for each
+    roles=(_A, _T),
     returns="the librarian's answer as JSON text (memory.ask returns it as a plain object).",
     examples=("print(memory.ask())",),
     when="Call memory.ask() rather than this tool: it asks about your current request for you.",
@@ -990,6 +991,25 @@ CURRENT_REQUEST = RegisteredTool(
     when="Never from a cell: memory.ask() and memory.match() call it.",
     kind="reader",
     handler="unify.actor.tool_handlers:current_request",
+)
+
+#: The actor's and a teammate's reader of the request they work on, in every run (with or without memory): its exact
+#: text, so values are taken from it in code rather than copied by hand.
+REQUEST = RegisteredTool(
+    name="request",
+    summary="the exact text of the request you are working on.",
+    description=(
+        "The exact text of the request you are working on, as you were given it. Take the values you need from it "
+        "in code (split, parse, index)."
+    ),
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    refusals={"unavailable": "the request's text is not available here ({why})"},
+    roles=(_A, _T),
+    returns="the request's text, a str.",
+    examples=("text = tools.request()\nrows = text.splitlines()",),
+    when="When your work needs values the request holds: read them from its text in code.",
+    kind="reader",
+    handler="unify.actor.tool_handlers:request",
 )
 
 SH = RegisteredTool(

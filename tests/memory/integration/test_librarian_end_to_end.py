@@ -118,7 +118,8 @@ Q1 = (
 Q2 = "And is there one that matches ledger rows against payments?"
 ANSWER_ONE = {
     "fits": [
-        {"id": w.READ_ORDERS, "call": "rows = read_orders(text)", "why": "its reader parsed the text"},
+        # every suggested call goes through memory: the agent reaches the library one way
+        {"id": w.READ_ORDERS, "call": f"rows = memory.get({w.READ_ORDERS!r})(text)", "why": "its reader parsed the text"},
         # a procedure with a recipe: its fit carries the call that applies the recipe to the current request
         {"id": w.TOTAL, "call": item_records.recipe_call(w.TOTAL_RECIPE), "why": "saved against totalling an order table"},
     ],
