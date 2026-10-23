@@ -685,6 +685,8 @@ class CoverageReport:
     #: entries per terminal state at the time of the report, and the reopen count per item
     not_reached_why: Mapping[str, int]
     reopens_by_item: Mapping[str, int]
+    #: captures no pass was ever handed (:meth:`Ledger.never_grouped`)
+    never_grouped: int = 0
 
     def lines(self) -> list[str]:
         out = ["kind: created / closed / open / unreadable / not reached; creation-to-read delay median, p90 (s)"]
@@ -695,6 +697,7 @@ class CoverageReport:
                 f"{k.read_delay_median_s if k.read_delay_median_s is not None else '-'}, "
                 f"{k.read_delay_p90_s if k.read_delay_p90_s is not None else '-'}",
             )
+        out.append(f"captures never handed to a pass (never grouped): {self.never_grouped}")
         return out
 
 
@@ -1578,6 +1581,17 @@ class Ledger:
             self._write(rows)
         return [r["entry"] for r in rows]
 
+    def never_grouped(self) -> list[dict]:
+        """The captures no pass was ever handed: new-experience entries with a capture that is still open or was not
+        reached, never handed (no related capture arrived, or the run ended first). Their captures stayed served;
+        they were never written up. Each as ``{"entry", "captures", "state"}``."""
+        return [
+            {"entry": e.entry, "captures": list(e.refs.captures), "state": e.state}
+            for e in self.entries().values()
+            if e.kind == "new_experience" and e.refs.captures and e.hand_count == 0
+            and e.state in ("open", "not_reached")
+        ]
+
     # -- the report --------------------------------------------------------------------------------------------------
 
     def report(self) -> CoverageReport:
@@ -1610,7 +1624,12 @@ class Ledger:
             if e.reopen_count:
                 for i in dict.fromkeys(e.refs.items + e.decided_items):
                     reopens[i] = reopens.get(i, 0) + e.reopen_count
-        return CoverageReport(kinds, why, reopens)
+        never = sum(
+            1 for e in state.values()
+            if e.kind == "new_experience" and e.refs.captures and e.hand_count == 0
+            and e.state in ("open", "not_reached")
+        )
+        return CoverageReport(kinds, why, reopens, never)
 
 
 KIND_WORDS = {

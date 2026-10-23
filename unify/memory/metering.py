@@ -16,7 +16,9 @@ whole USD on one ``handed_not_read`` row with no entry, so the view always sums 
 **Per item** (``metering/items.jsonl``): the shares of the entries that closed on it (an entry closed on several items
 splits its share equally over them, exactly), the requests after the item's pass that called it and those of them
 with no error or refusal, and solves where a scorer supplies them (never in the build: ``null``), with USD per solve
-(``"no solve"`` at zero). What the items do not take of the passes' USD is ``no_yield`` (``metering/summary.json``).
+(``"no solve"`` at zero). What the items do not take of the passes' USD is ``no_yield`` (``metering/summary.json``),
+which also counts the captures no pass was ever handed (``never_grouped``: no related capture arrived, or the run
+ended first; they stayed served).
 
 **Reports** (:func:`run_report`, :func:`render_report`): the headline is the whole run's all-lane USD (actor, writer,
 fork, helper, embedding and the user simulator where a world has one), summed from the key proxy's lane journals,
@@ -534,6 +536,18 @@ def summary(
     }
 
 
+def _never_grouped(home: Path | str) -> dict:
+    """The captures no pass was ever handed (no related capture arrived, or the run ended first): their count and
+    the entries, from the attention ledger; an unreadable ledger leaves the count unknown."""
+    from .attention import Ledger
+
+    try:
+        rows = Ledger(home).never_grouped()
+    except Exception:  # noqa: BLE001 - unknown stays unknown
+        return {"never_grouped": UNKNOWN, "never_grouped_entries": []}
+    return {"never_grouped": len(rows), "never_grouped_entries": rows}
+
+
 def rebuild_views(
     home: Path | str, *, solves: Optional[Mapping[str, int]] = None
 ) -> dict:
@@ -543,6 +557,7 @@ def rebuild_views(
     entries = entries_view(passes)
     items = items_view(home, passes, entries, solves=solves)
     totals = summary(passes, entries, items)
+    totals.update(_never_grouped(home))
     folder = metering_dir(home)
     _atomic_text(
         folder / ENTRIES_FILE,

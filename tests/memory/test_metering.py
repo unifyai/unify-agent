@@ -397,3 +397,26 @@ def test_through_the_service_a_killed_turn_is_counted_once_and_the_shares_sum_to
         )
     finally:
         ws.stop_service(home, "operator", "done", grace_s=0.5, term_s=2)
+
+
+def test_captures_no_pass_was_ever_handed_are_counted_never_grouped(tmp_path):
+    """A capture with no related capture is never written up alone: at the run's end it is counted ``never_grouped``
+    (open, or not reached), apart from one a pass was handed."""
+    from unify.memory.attention import Ledger
+
+    at = "2026-10-20T00:00:00.000Z"
+    ids = ["a" * 16, "b" * 16, "c" * 16, "d" * 16]
+    rows = [{"op": "create", "entry": e, "kind": "new_experience", "at": at,
+             "refs": {"episodes": [e], "captures": [e]}} for e in ids[:3]]  # fmt: skip
+    rows.append({"op": "create", "entry": ids[3], "kind": "new_experience", "at": at, "refs": {"episodes": [ids[3]]}})
+    rows.append({"op": "hand", "entry": ids[0], "pass_id": "p1", "at": at})  # handed: grouped
+    rows.append({"op": "not_reached", "entry": ids[2], "why": "run_ended", "at": at})
+    ledger = Ledger(tmp_path)
+    with ledger.locked():
+        ledger._write(rows)
+    totals = M.rebuild_views(tmp_path)
+    assert totals["never_grouped"] == 2
+    assert [r["entry"] for r in totals["never_grouped_entries"]] == [ids[1], ids[2]]
+    assert json.loads((M.metering_dir(tmp_path) / M.SUMMARY_FILE).read_text())["never_grouped"] == 2
+    assert ledger.report().never_grouped == 2
+    assert ledger.report().lines()[-1].endswith(": 2")
