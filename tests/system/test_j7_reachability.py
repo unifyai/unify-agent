@@ -14,10 +14,10 @@ ROOT = Path(__file__).resolve().parents[2]
 #: The processes and modules the harness starts by name or path (audit H3's entry points).
 ENTRY_POINTS = (
     "unify.__main__", "unify.cli", "unify.memory.integration.fork_worker", "unify.agents.relay_boot",
-    "unify.agents.relay_server", "unify.common.transformation_child", "unify.memory.box_audit_hook",
-    "unify.memory.box_state", "unify.common.tool_channel_client", "unify.common.worker_child",
-    "unify.memory.writer_service", "unify.memory.integration.async_pass", "unify.memory.views",
-    "unify.memory.worktree_shapes", "unify.sandbox",
+    "unify.lanes.relay_server", "unify.common._async_tool.transformation_child", "unify.memory.box_audit_hook",
+    "unify.memory.box_state", "unify.common.tool_channel_client", "unify.actor.execution.worker_child",
+    "unify.memory.writer_service", "unify.memory.integration.async_pass", "unify.memory.views", "unify.agents.views",
+    "unify.memory.integration.adapters.worktree_shapes", "unify.sandbox",
 )
 
 
@@ -70,7 +70,8 @@ def test_every_module_is_reachable_from_an_entry_point():
                 return ".".join(parts[:i])
         return None
 
-    seen, stack = set(), [e for e in ENTRY_POINTS if e in mods]
+    assert all(e in mods for e in ENTRY_POINTS), [e for e in ENTRY_POINTS if e not in mods]
+    seen, stack = set(), list(ENTRY_POINTS)
     while stack:
         m = stack.pop()
         if m in seen:
@@ -84,7 +85,7 @@ def test_every_module_is_reachable_from_an_entry_point():
 
 def _literals_outside_refusal_tables(trees: dict[str, ast.AST]) -> set[str]:
     """Every string literal of ``unify/`` except the keys of refusal tables (a ``refusals=`` dict, or a module-level
-    ``…REFUSALS`` dict): where a form is named by its producer."""
+    ``…REFUSALS`` dict) and docstrings: where a form is named by its producer."""
     skip: set[int] = set()
     for tree in trees.values():
         for n in ast.walk(tree):
@@ -97,6 +98,8 @@ def _literals_outside_refusal_tables(trees: dict[str, ast.AST]) -> set[str]:
                     tables.append(n.value)
             for d in tables:
                 skip.update(id(k) for k in d.keys if k is not None)
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant):  # a docstring names, never produces
+                skip.add(id(n.value))
     return {n.value for tree in trees.values() for n in ast.walk(tree)
             if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in skip}
 

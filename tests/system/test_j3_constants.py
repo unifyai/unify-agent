@@ -16,7 +16,7 @@ def _num(s: str) -> int:
 
 
 #: "the gate runs/re-runs/replays …" or "… lands … only if …": a description of a gate that runs code.
-GATE_RUNS = re.compile(r"\b[Tt]he gate (?:then )?(?:re-?runs|runs|replays|executes)\b(?! no\b| neither\b)"
+GATE_RUNS = re.compile(r"\b[Tt]he gate (?:then )?(?:re-?runs|runs|replays|executes)\b(?! no\b| none\b| neither\b)"
                        r"|\blands?\b[^.]{0,60}\bonly if\b")
 
 
