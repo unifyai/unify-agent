@@ -35,7 +35,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..analysis.cells import _raw, _stdout
 from ..episodes import Action, Cell, Episode
 from ..fingerprint import fingerprint
 from ..redact import _MIN_SECRET_LEN, _SECRET_NAME_PARTS, Redactor
@@ -140,6 +139,18 @@ def _arguments(fn: dict) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _raw(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    return "".join(p.get("text", "") for p in content or [] if isinstance(p, dict))
+
+
+def _stdout(raw: str) -> str:
+    if "\n--- stdout ---\n" in raw:
+        raw = raw.split("\n--- stdout ---\n", 1)[1]
+    return raw.split("\n--- stderr ---\n", 1)[0]
+
+
 def _placeholder(content: Any) -> bool:
     if not isinstance(content, str):
         return False
@@ -151,7 +162,7 @@ def _placeholder(content: Any) -> bool:
 
 
 def timed_cells(folded: list[dict]) -> list[TimedCell]:
-    """Every ``execute_code`` call with a result, in result order, as in :func:`..analysis.cells.cells_from_transcript`.
+    """Every ``execute_code`` call with a result, in result order.
 
     ``start`` is the ``ts`` of the assistant line that made the call; ``end`` that of the final result.
     A call whose result never left its placeholder keeps no output and says so in ``error``.

@@ -179,23 +179,6 @@ def test_test_loss_needs_a_reason_and_write_may_not_remove(tmp_path):
     # (CURATE, which could merge tests with a stated reason, is gone in rev 2)
 
 
-def test_plain_pytest_refuses_the_gate_kit(tmp_path):
-    c_files = _write(
-        tmp_path / "c",
-        {T: b"from memlab.inputs import inputs\n\ndef test_a():\n    assert 1\n"},
-    )
-    v = _checks(tmp_path, [_item(tests=[T])], c_files=c_files, changed=[T])
-    v._plain()
-    assert v.run.fails == [
-        (
-            "G3",
-            f"[library_mode:plain] {T} imports the gate's test kit (memlab or the pin plugin); a "
-            "library's tests run with plain pytest",
-            ["memory.calc.sums:total"],
-        ),
-    ]
-
-
 # --- the library-mode manifest, persisted typed covers ----------------------------------------------------------
 
 

@@ -1,4 +1,4 @@
-"""The per-kind toolkit: file shapes, dialogue transitions, shell output shapes and recorded blobs."""
+"""The per-kind shapes fingerprints compare: file shapes, dialogue observation shapes and shell output shapes."""
 
 import io
 import json
@@ -6,8 +6,7 @@ import sys
 
 import pytest
 
-from unify.memory.analysis import recorded, shapes, shellout, transitions
-from unify.memory.episodes import Action
+from unify.memory.analysis import shapes, shellout, transitions
 
 INVOICES = (
     "vendor_id,invoice_no,amount,due_date,status\n"
@@ -154,117 +153,10 @@ def test_shape_is_deterministic_and_bounded():
     )
 
 
-# --- transitions -----------------------------------------------------------------------------------------
+# --- observation shapes ----------------------------------------------------------------------------------
 
 
-def _crafter_row():
-    def act(i, text, obs, status="ok"):
-        return {
-            "index": i,
-            "cell": -1,
-            "channel": "dialogue:user",
-            "method": "reply",
-            "args": [text],
-            "kwargs": {},
-            "response": obs,
-            "status": status,
-            "effect": "unknown",
-            "error": None,
-            "kind": "dialogue",
-        }
-
-    return {
-        "episode_id": "c1",
-        "request": ["Status: health 9\nInventory: none\nFacing: tree"],
-        "actions": [
-            act(0, "do", "Status: health 9\nInventory: wood 1\nFacing: tree"),
-            {
-                "index": 1,
-                "channel": "world",
-                "method": "noop",
-                "args": [],
-                "kwargs": {},
-                "response": {},
-                "status": "ok",
-            },  # a tool row (no kind): ignored
-            act(2, "do", "Status: health 9\nInventory: wood 2\nFacing: tree"),
-            act(
-                3,
-                "make_wood_pickaxe",
-                "Status: health 9\nInventory: wood 2\nFacing: tree",
-            ),
-            act(4, "noop", None, "unrecorded"),
-        ],
-    }
-
-
-def _wood(obs):
-    for line in (obs or "").splitlines():
-        if line.startswith("Inventory:"):
-            parts = line.split()
-            return int(parts[parts.index("wood") + 1]) if "wood" in parts else 0
-    return None
-
-
-def test_transitions_pair_actions_with_before_and_after():
-    ts = transitions.transitions([_crafter_row()])
-    assert [(t.index, t.action) for t in ts] == [
-        (0, "do"),
-        (2, "do"),
-        (3, "make_wood_pickaxe"),
-    ]
-    assert ts[0].before.startswith("Status") and "wood 1" in ts[0].after
-    assert ts[1].before == ts[0].after
-    tbl = transitions.table(ts, value=lambda t: _wood(t.after) - _wood(t.before))
-    assert tbl["do"] == {"1": [("c1", 0), ("c1", 2)]}
-    assert (
-        transitions.conflicts(ts, value=lambda t: _wood(t.after) - _wood(t.before))
-        == {}
-    )
-    assert set(transitions.conflicts(ts)) == {"do"}  # raw next observations differ
-
-
-def test_check_reports_every_contradiction():
-    ts = transitions.transitions([_crafter_row()])
-
-    def predict(
-        t,
-    ):  # "do adds one wood; crafting needs 3 wood and otherwise changes nothing"
-        if t.action == "do":
-            return _wood(t.before) + 1
-        return _wood(t.before) - (3 if _wood(t.before) >= 3 else 0)
-
-    res = transitions.check(ts, predict, lambda t: _wood(t.after))
-    assert res.ok and res.checked == 3
-    bad = transitions.check(
-        ts,
-        lambda t: 0,
-        lambda t: _wood(t.after),
-        in_scope=lambda t: t.action == "do",
-    )
-    assert not bad.ok and bad.out_of_scope == 1
-    assert [(e, i) for e, i, _, _ in bad.contradictions] == [("c1", 0), ("c1", 2)]
-    raised = transitions.check(ts, lambda t: 1 / 0, lambda t: 1)
-    assert raised.contradictions[0][2] == "raised ZeroDivisionError"
-    rows = transitions.fixture(ts)
-    assert json.loads(json.dumps(rows))[0]["action"] == "do"
-
-
-def test_transitions_from_action_objects_and_observation_shapes():
-    acts = [
-        Action(
-            -1,
-            "dialogue:user",
-            "reply",
-            ["submit"],
-            {},
-            "incorrect",
-            "ok",
-            kind="dialogue",
-        ),
-    ]
-    [t] = transitions.from_actions("a1", acts)
-    assert (t.index, t.action, t.after) == (0, "submit", "incorrect")
+def test_observation_shapes():
     a = transitions.observation_shape(
         "Status: health 9\nInventory: wood 1\nFacing: tree",
     )
@@ -285,117 +177,16 @@ def test_transitions_from_action_objects_and_observation_shapes():
 # --- shell outputs ---------------------------------------------------------------------------------------
 
 
-def _shell(i, cmd, code, tail):
-    return {
-        "index": i,
-        "cell": 0,
-        "channel": "shell:uv",
-        "method": "run",
-        "args": [cmd],
-        "kwargs": {},
-        "response": {"exit_code": code, "tail": tail},
-        "status": "ok" if code == 0 else "error",
-        "effect": "unknown",
-        "error": None,
-        "kind": "shell",
-    }
-
-
-def test_shell_output_shapes_and_groups():
-    row = {
-        "episode_id": "s1",
-        "actions": [
-            _shell(
-                0,
-                "uv run pytest tests/test_dates.py -x",
-                1,
-                "F\n=== FAILURES ===\nE  assert 1 == 2\n=== 1 failed, 2 passed in 0.31s ===",
-            ),
-            _shell(1, "uv run pytest", 0, "...\n=== 3 passed in 0.12s ==="),
-            _shell(
-                2,
-                "uv pip list --format json",
-                0,
-                '[{"name": "a", "version": "1"}]',
-            ),
-            {
-                "index": 3,
-                "channel": "shell:uv",
-                "method": "spawn",
-                "args": ["uv"],
-                "kwargs": {},
-                "response": None,
-                "status": "unrecorded",
-                "kind": "shell",
-            },
-        ],
-    }
-    recs = shellout.records([row])
-    assert [r.index for r in recs] == [0, 1, 2] and recs[0].exit_code == 1
-    s0 = shellout.output_shape(recs[0].tail)
+def test_shell_output_shapes():
+    failed = "F\n=== FAILURES ===\nE  assert 1 == 2\n=== 1 failed, 2 passed in 0.31s ==="
+    s0 = shellout.output_shape(failed)
     assert s0["format"] == "lines" and s0["last"] == "=== 9 a, 9 a a 9.9a ==="
     assert "0.31" not in json.dumps(s0)
-    s2 = shellout.output_shape(recs[2].tail)
+    s2 = shellout.output_shape('[{"name": "a", "version": "1"}]')
     assert s2["format"] == "json" and s2["tree"] == [{"name": "str", "version": "str"}]
     assert shellout.output_shape("") == {"format": "empty", "lines": 0}
     t = shellout.output_shape("a.txt  12\nb.txt  7\n")
     assert t["format"] == "table" and t["delimiter"] == "whitespace" and t["width"] == 2
-    assert shellout.exit_codes(recs) == {"shell:uv": [0, 1]}
-    groups = shellout.by_shape(recs)
-    assert sorted(len(v) for v in groups.values()) == [1, 1, 1]
     assert shellout.signature(s0) == shellout.signature(
-        shellout.output_shape(recs[1].tail),
-    )
-
-
-# --- recorded blobs --------------------------------------------------------------------------------------
-
-
-def test_load_blob_and_worktree_queries(tmp_path):
-    import hashlib
-
-    data = INVOICES.encode()
-    sha = hashlib.sha256(data).hexdigest()
-    (tmp_path / sha).write_bytes(data)
-    missing = "f" * 64
-    (tmp_path / "index.json").write_text(
-        json.dumps({"exported": [sha], "skipped": {missing: "over the per-blob cap"}}),
-    )
-    assert recorded.load_blob(sha, tmp_path) == data
-    with pytest.raises(KeyError, match="per-blob cap"):
-        recorded.load_blob(missing, tmp_path)
-    with pytest.raises(ValueError):
-        recorded.load_blob("../index.json", tmp_path)
-    row = {
-        "episode_id": "o1",
-        "actions": [
-            {
-                "index": 0,
-                "channel": "venmo",
-                "method": "me",
-                "args": [],
-                "response": {},
-            },
-            {
-                "index": 1,
-                "channel": "worktree:workspace",
-                "method": "read",
-                "args": ["finance/ap/invoices.csv"],
-                "kind": "worktree",
-                "response": {
-                    "blob_before": sha,
-                    "blob_after": sha,
-                    "size": len(data),
-                    "shape": shapes.shape("invoices.csv", data),
-                },
-            },
-        ],
-    }
-    assert [a["index"] for a in recorded.actions_of_kind(row, "tool")] == [0]
-    [f] = recorded.worktree_files(row)
-    assert f["path"] == "finance/ap/invoices.csv" and f["blob_before"] == sha
-    assert recorded.blob_ids(row["actions"][1]) == [sha]
-    assert (
-        recorded.blob_ids({"kind": "worktree", "response": {"blob_before": "../x"}})
-        == []
+        shellout.output_shape("...\n=== 3 passed in 0.12s ==="),
     )

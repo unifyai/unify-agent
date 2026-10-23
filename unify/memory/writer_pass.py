@@ -747,7 +747,7 @@ def export_blobs(
     "worktree"`` actions are looked up, in episode and action order. A blob larger than *per_blob_bytes*,
     one past *total_bytes* in all, or one missing from the store is skipped; a cap of ``None`` is no cap
     ``<dest>/index.json`` lists
-    ``{"exported": [...], "skipped": {id: reason}}`` (memlab's ``analysis.recorded.load_blob`` reads it).
+    ``{"exported": [...], "skipped": {id: reason}}``.
     """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -1909,8 +1909,6 @@ class WriterPass:
 
         for name, text in input_pointer_files().items():
             (inputs / name).write_text(text)
-        # no test kit is staged: a library's tests are plain pytest (the gate refuses a test that imports the kit), and
-        # nothing the writer is told names it
         self._drafts = []
         from .drafts import stage_drafts
 

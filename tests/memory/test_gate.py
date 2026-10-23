@@ -13,7 +13,6 @@ from unify.memory.gitio import Repo
 from unify.memory.snapshot import blob_id, tree_listing
 from unify.memory.gate_policy import NOT_RUN_GATE
 from tests.memory.test_episodes import _ep
-from tests.memory.test_overrides import RULE_BODY
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -295,11 +294,6 @@ def test_tree_listing_hashes_in_python_and_refuses_names_git_would_not_take(tmp_
         "a\r": ("100644", blob_id(b"two")),
     }
     assert len(refused) == 1 and refused[0].startswith("unsafe path"), refused
-
-
-# --- G2: a function that replaces a value it computed from its input under a condition -------
-
-RULE_MOD = MOD.replace('    return apis.venmo.me()["user_id"]\n', RULE_BODY)
 
 
 # --- the library mode: the whole output of each failing run, and one stage-5 seed per pass -------------------

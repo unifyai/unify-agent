@@ -1,12 +1,9 @@
-"""The memory home's fixed paths, hardened git, the state file and the request lock (integration Task 18)."""
-
-import subprocess
+"""The memory home's fixed paths, the state file and the request lock (integration Task 18)."""
 
 import pytest
 
 from unify.memory.fingerprint import Generations
-from unify.memory.gitio import GitError, Repo
-from unify.memory.integration import hardgit
+from unify.memory.gitio import Repo
 from unify.memory.integration.paths import Paths
 from unify.memory.integration.state import State, acquire_lock, release_lock
 
@@ -58,29 +55,6 @@ def test_paths_are_fixed_under_home(tmp_path):
     assert p.state == p.state_dir / "state.json"
     assert p.errors == p.state_dir / "errors.jsonl"
     assert p.worktree_git == tmp_path / "worktree.git"
-
-
-def test_hardgit_ignores_global_config_and_inherited_git_env(tmp_path, monkeypatch):
-    mem, sha = _seed(tmp_path)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / ".gitconfig").write_text("[alias]\n\tfoo = log\n")
-    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nowhere"))
-    assert hardgit.git(mem.git_dir, "rev-parse", "main").decode().strip() == sha
-    with pytest.raises(GitError):
-        hardgit.git(mem.git_dir, "foo")
-
-
-def test_hardgit_timeout_is_a_git_error(tmp_path, monkeypatch):
-    seen = {}
-
-    def slow(argv, **kw):
-        seen.update(kw)
-        raise subprocess.TimeoutExpired(argv, kw["timeout"])
-
-    monkeypatch.setattr(hardgit.subprocess, "run", slow)
-    with pytest.raises(GitError, match="timed out"):
-        hardgit.git(tmp_path, "status", timeout=0.2)
-    assert seen["timeout"] == 0.2
 
 
 def test_state_roundtrip_and_default(tmp_path):

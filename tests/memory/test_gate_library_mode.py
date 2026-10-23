@@ -143,17 +143,6 @@ def test_a_decision_rule_grounded_on_one_episode_passes(
     library_example_world,
 ):
     """A function that encodes a decision rule needs examples from one recorded episode, like every function."""
-    from unify.memory.analysis.overrides import find_overrides
-    import ast
-
-    (fn,) = [
-        n
-        for n in ast.walk(ast.parse(RULE_MODULE))
-        if isinstance(n, ast.FunctionDef) and n.name == "user_id"
-    ]
-    assert find_overrides(
-        fn,
-    ).line, "the module must encode a rule the gate's analysis flags"
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(
         blobs.get,

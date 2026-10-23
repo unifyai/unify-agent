@@ -21,7 +21,6 @@ refuse and which only label is :data:`.gate_policy.GATE`'s to say.
     (it lands with the label). The recipe is not run: its verification record says so (``recipe``: ``ran: false`` and why);
   - each function's examples (the calls its listed tests make) are labelled, not run.
 * **G3:**
-  - plain pytest: no test-kit import;
   - per changed function, at least one exact assertion against a trust 1–3 value on a recorded fixture, and no
     self-reimplementing oracle (:mod:`.quality`);
   - no test deleted or weakened without a reason in the manifest's ``tests_changed``;
@@ -64,7 +63,6 @@ from .quality import (
     recorded_literals,
     test_changes,
 )
-from .testkit import imports_kit
 
 def _no_episode(eid: str) -> Episode | None:
     return None
@@ -212,7 +210,6 @@ class LibraryChecks:
     def static(self) -> None:
         """The checks that run no code, for :meth:`.gate.Gate.preview`."""
         self.g1()
-        self._plain()
         self._test_changes()
         self.aliases_kept()
 
@@ -501,7 +498,6 @@ class LibraryChecks:
 
     # -- G3 -------------------------------------------------------------------------------------------------
     def g3(self) -> None:
-        self._plain()
         self._test_changes()
         for it in self._edited():
             self._exact(it)
@@ -514,18 +510,6 @@ class LibraryChecks:
         """Why the gate did not run *item* (:func:`.gate_policy.not_run_reason`, from its candidate source)."""
         body = self.run.c_bodies.get(item)
         return not_run_reason(body[1] if body is not None and body[0] == "function" else None)
-
-    def _plain(self) -> None:
-        run = self.run
-        for p in sorted(set(run.changed) & set(run.c_files)):
-            if p.startswith("memory/") and "/tests/" in p and p.endswith(".py"):
-                if imports_kit((run.c_tree / p).read_bytes()):
-                    run.fail(
-                        "G3",
-                        f"[library_mode:plain] {p} imports the gate's test kit (memlab or the pin plugin); a library's tests "
-                        "run with plain pytest",
-                        self._owners(p),
-                    )
 
     def _test_changes(self) -> None:
         run = self.run

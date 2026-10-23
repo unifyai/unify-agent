@@ -32,9 +32,6 @@ REFUSALS = {
     "a listed item, test or case file missing from the candidate": (
         "G3", "listed test memory/a/tests/test_b.py is not in the candidate", ["memory.a.b:c"],
     ),
-    "a test that imports the gate's own test kit": (
-        "G3", "[library_mode:plain] memory/a/tests/test_b.py imports the gate's test kit", ["memory.a.b:c"],
-    ),
 }
 #: Findings the brief says only label (or note), as the gate writes them.
 LABELS = {

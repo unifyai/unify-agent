@@ -8,7 +8,7 @@ label as not run. A procedure of another kind has no runner; :func:`parse_cover`
 
 **Stored readers** (:func:`reader_parse`): a library function with one text parameter that a fixture names
 (``fixture(..., parser="<id>")``). The writer's fixture tool runs it on the recorded bytes to make the fixture,
-confined (:func:`.sandbox_run.run_confined`): the library read-only at ``/memory``, the kit at ``/kit``, the texts
+confined (:func:`.sandbox_run.run_confined`): the library read-only at ``/memory``, the texts
 read-only at ``/case``, writable only ``/out``, no network and an empty environment. The host only reads JSON.
 """
 
@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import testkit
 from .episodes import Action
 from .request_value import REQUEST_CLASS, request_data
 from .sandbox_run import SandboxResult, run_confined
@@ -134,7 +133,7 @@ def action_value(a: Action) -> Any:
 
 _PARSE = r"""
 import importlib, inspect, json, sys
-sys.path[:0] = ["/memory", "/kit"]
+sys.path[:0] = ["/memory"]
 sys.dont_write_bytecode = True
 spec = json.load(open("/case/case.json"))
 out = {"results": []}
@@ -224,10 +223,9 @@ def run_reader(
     """
     if not texts:
         return [], None
-    case, out, kit = work / "case", work / "out", work / "kit"
+    case, out = work / "case", work / "out"
     case.mkdir(parents=True)
     out.mkdir()
-    testkit.stage_package(kit / testkit.PACKAGE)
     (case / "run.py").write_text(_PARSE)
     texts = [str(t) for t in texts]
     data = [request_data(t) for t in texts]
@@ -235,7 +233,7 @@ def run_reader(
     limit = float(timeout_s) * len(texts)
     res = runner(
         [str(python), "-I", "/case/run.py"],
-        ro={tree: "/memory", case: "/case", kit: "/kit"},
+        ro={tree: "/memory", case: "/case"},
         rw={out: "/out"},
         cwd="/memory",
         timeout_s=limit,

@@ -54,7 +54,7 @@ the whole gate again before it lands.
 uncommitted tree, for the writer's ``check`` tool; it never decides or records a merge. A landed merge also freezes
 the candidate's input-shape snapshot (:mod:`.shape_rows`) for the catalogue; computing it never fails the gate.
 The gate reads the library layout only (``memory/<package>`` functions and ``notes/`` notes, :mod:`.layout`).
-Stage 5 (:mod:`.qa`) checks statically that the test kit stays test-side (``[qa:kit]``).
+Stage 5 (:mod:`.qa`) checks statically that no stored file names the ``/inputs`` path (``[qa:inputs]``).
 """
 
 from __future__ import annotations
@@ -328,7 +328,7 @@ class Gate:
     ) -> None:
         """*library_mode* is the library's checks' configuration (:class:`.library_checks.LibraryConfig`): G3's not-run
         labels and per-item reduction are scoped by the import graph, and the library gate checks
-        (:mod:`.library_checks`) and stage 5's kit check run. Every finding but the hard ones is a label on its item,
+        (:mod:`.library_checks`) and stage 5's ``/inputs`` check run. Every finding but the hard ones is a label on its item,
         and the gate runs no code (:mod:`.gate_policy`). *segments_dir* (``UNIFY_MEMORY=in_episode``):
         the state dir whose segment records (``<episode>.s<n>``) an item may cite as its source while their episode
         is still open; None: only recorded episodes.
@@ -378,7 +378,7 @@ class Gate:
         (:func:`.snapshot.tree_listing` lists it without git; empty directories are no entries). *parent* is
         a :meth:`parent_snapshot` (then the preview runs no git at all) or a revision to snapshot now.
         Runs the manifest parse, the early layout and safety refusals, G1 (the gate's and the library's static
-        checks), G6 and the test kit's static check. Never G2's evidence, G3 or anything about outcomes, and never
+        checks), G6 and stage 5's ``/inputs`` check. Never G2's evidence, G3 or anything about outcomes, and never
         writes: no commit, git object, evidence or pass row. A clean preview does not mean the gate will pass.
         """
         res = GateResult(True, {c: True for c in CHECKS})
@@ -422,7 +422,7 @@ class Gate:
             self._g1(run)
             self._g6(run)
             self._library_mode(run).static()
-            QAChecks(self, run).kit()  # library code never uses the test kit (static)
+            QAChecks(self, run).inputs_paths()  # no stored file names /inputs (static)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         return list(res.reasons)
@@ -669,8 +669,8 @@ class Gate:
                 self._g1(run)
                 v.g1()
                 v.g2()
-                # stage 5: the test kit stays test-side (static)
-                QAChecks(self, run).kit()
+                # stage 5: no stored file names /inputs (static)
+                QAChecks(self, run).inputs_paths()
                 self._g3(run)
                 v.g3()
                 v.g4()

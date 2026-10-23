@@ -9,7 +9,6 @@ import json
 import time
 from types import SimpleNamespace
 
-from unify.memory.analysis.cells import cells_from_transcript
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action, CostRow, EpisodeWriter, load_episode
 from unify.memory.gitio import Repo
@@ -190,13 +189,6 @@ def test_cell_times_are_epoch_seconds_on_the_harness_clock():
     naive = {**lines[0], "ts": "2026-10-08T12:00:02"}  # no offset: read as UTC
     (c2,) = timed_cells(fold([naive, lines[1]]))
     assert c2.start == T0.timestamp() + 2
-
-
-def test_timed_cells_agree_with_the_analysis_reader():
-    folded = fold(_lines())
-    ours = [(c.cell.code, c.cell.output) for c in timed_cells(folded)]
-    theirs = [(c.code, c.output) for c in cells_from_transcript(folded)]
-    assert ours == theirs
 
 
 def test_a_result_left_as_a_placeholder_keeps_no_output():

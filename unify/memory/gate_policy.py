@@ -9,8 +9,7 @@ labels, never rejects; confinement, security, credential and record-keeping chec
   (G1 findings no item owns), the provenance of recorded evidence (fixtures re-derived from the recording's bytes,
   source episodes that exist), a new or changed note without its ``## Rule`` section, a pass with fewer items than its
   parent or a dropped alias (G5: retiring an item is a state change that keeps it on record, so nothing deletes an
-  item), and what breaks the library itself (code that does not parse, listed files missing, the gate's own kit in a
-  test).
+  item), and what breaks the library itself (code that does not parse, listed files missing).
 * **Labels**: every other finding about an item is recorded on its label, and a finding about the pass is a note.
 * **Execution**: none (``runs`` is empty). An item's tests, its recipe, its recorded calls and its package's suites
   are not run by the gate, and its label says ``not run: <why>`` (:data:`NOT_RUN_GATE`). Running code is the writer's
@@ -78,7 +77,6 @@ NO_SOURCE_MARK = "names no source episode"
 UNKNOWN_EPISODE_MARK = "cites unknown episode"
 NO_PARSE_MARK = "does not parse"
 MISSING_MARK = "is not in the candidate"
-KIT_MARK = "[library_mode:plain]"
 
 
 @dataclass(frozen=True)
@@ -119,7 +117,6 @@ GATE = GatePolicy(
         Refusal("a pass with fewer items than the library it started from, or a dropped alias (G5)", "G5"),
         Refusal("code that does not parse", None, (NO_PARSE_MARK,)),
         Refusal("a listed item, test or case file missing from the candidate", None, (MISSING_MARK,)),
-        Refusal("a test that imports the gate's own test kit", None, (KIT_MARK,)),
     ),
     labels=(
         (

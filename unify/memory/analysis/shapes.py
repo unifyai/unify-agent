@@ -15,7 +15,7 @@ Detection is structural: the file name's extension and the bytes, never the word
 vary from file to file (lines, rows) sit under ``"stats"``; :func:`signature` drops them, so it names the
 shape a fingerprint compares. Column names, JSON keys and sheet names are structure; cell values,
 JSON leaves and text lines are values and never appear. Imports only the standard library (openpyxl is
-optional), so the module runs inside the consolidation sandbox as ``memlab.analysis.shapes``.
+optional), so the module runs in the actor's box as the library's ``.memory/shapes.py``.
 """
 
 from __future__ import annotations

@@ -11,7 +11,7 @@ import subprocess
 import pytest
 
 from unify.memory import gitio, snapshot
-from unify.memory.integration import hardgit, request
+from unify.memory.integration import request
 from unify.memory.sandbox_run import HARNESS_ONLY_ENV
 
 SENTINEL = "http://127.0.0.1:1/route-sentinel"
@@ -68,9 +68,8 @@ def recorded(routed, monkeypatch):
 def test_every_git_env_builder_drops_the_routes(recorded, tmp_path):
     repo = gitio.Repo.init_bare(tmp_path / "m.git")
     snapshot._git_bytes(repo, ["rev-parse", "HEAD"])
-    hardgit.git(repo.git_dir, "rev-parse", "HEAD")
     request.build_id()
-    assert len(recorded) >= 5
+    assert len(recorded) >= 4
     for env in recorded:
         assert env, "a git call without an explicit environment"
         _clean(env)

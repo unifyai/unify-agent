@@ -82,22 +82,6 @@ class Script:
         return _call("f", "finish", {"summary": "added venmo.me"}), self.usd
 
 
-SMOKE = (
-    "import memlab.analysis.cells, memlab.analysis.provenance, memlab.analysis.slicing, "
-    "memlab.analysis.antiunify, memlab.analysis.shapes, memlab.analysis.transitions, "
-    "memlab.analysis.shellout, memlab.analysis.recorded, memlab.replay, memlab.episodes, "
-    "memlab.fingerprint; print('OK')"
-)
-REPLAY = (
-    "import json\n"
-    "from memlab.episodes import Action\n"
-    "from memlab.replay import RecordedEnv\n"
-    "ep = json.load(open('/inputs/episodes/e1.json'))\n"
-    "env = RecordedEnv([Action(**{k: v for k, v in a.items() if k != 'index'}) for a in ep['actions']])\n"
-    "req = json.load(open('/inputs/request.json'))\n"
-    "print('REPLAY', env.venmo.me()['user_id'], ep['actions'][0]['index'], req['channel'])\n"
-)
-READ_ONLY = "try:\n    open('/inputs/x', 'w')\nexcept OSError:\n    print('RO')\n"
 # the test command WRITER_SYSTEM gives, run as the writer would run it
 SUITE = (
     "import subprocess, sys\n"

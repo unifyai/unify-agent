@@ -5,15 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
-# Credentials this process holds outside its environment (memory v2's writer token).
-try:
-    from unify.process_secrets import registered_secrets
-except (
-    ImportError
-):  # copied into the writer's box as part of memlab, where unify is absent: it holds no secrets there
-
-    def registered_secrets() -> tuple:  # type: ignore[misc]
-        return ()
+# Credentials this process holds outside its environment (the writer's token).
+from unify.process_secrets import registered_secrets
 
 
 KEY_SHAPED = re.compile(
