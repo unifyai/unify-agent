@@ -4946,7 +4946,7 @@ def unillm_turn(
         }
     )
 
-    async def turn(messages: list[dict], tools: list[dict]) -> tuple[dict, str]:
+    async def turn(messages: list[dict], tools: list[dict] | None) -> tuple[dict, str]:
         costs: list[float | None] = []
         misrouted: list[bool] = []
 
@@ -4976,8 +4976,8 @@ def unillm_turn(
                     _check_route_in_effect(route)
                 await client.generate(
                     messages=copy.deepcopy(messages),
-                    # a call with no tools (the judge of behaviour's) sends neither tools nor a tool choice
-                    **({"tools": tools, "tool_choice": "auto"} if tools else {}),
+                    # a call given no tool list (None: the judge of behaviour's) sends neither tools nor a tool choice
+                    **({"tools": tools, "tool_choice": "auto"} if tools is not None else {}),
                     stateful=True,
                     **routed,
                 )

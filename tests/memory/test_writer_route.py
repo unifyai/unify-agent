@@ -158,6 +158,16 @@ def test_unset_route_builds_the_shipped_call(monkeypatch, actor_gateway):
     assert seen["transport"]["api_key"] == _digest(ACTOR_KEY)
 
 
+def test_a_call_given_no_tool_list_sends_neither_tools_nor_a_tool_choice(monkeypatch, actor_gateway):
+    """The judge of behaviour's call (tools None) carries no tools; a tool list, even an empty one, is sent as before."""
+    built = _fake_client(monkeypatch, lambda kw: None)
+    turn = unillm_turn("openai/gpt-6-sol", "low")
+    messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    asyncio.run(turn(messages, None))
+    asyncio.run(turn(messages, []))
+    assert built["generate"] == [["messages", "stateful"], ["messages", "stateful", "tool_choice", "tools"]]
+
+
 def test_unset_settings_give_no_route():
     cfg = consolidate.writer_settings(SimpleNamespace())
     assert cfg.route is None

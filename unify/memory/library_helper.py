@@ -1506,7 +1506,7 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
         return RunReport(target, outcome="error", error="LookupError",
                          detail="this captured attempt failed; it is listed to show what broke, not to run", **base)
     if _capture_form(capture_id) == "state_env" and len(args) == 1 and not kwargs and isinstance(args[0], str):
-        # nothing is run and no use is recorded: the call cannot hand it the tools it acts through
+        # nothing is run and no use is recorded: the call cannot pass it the tools it acts through
         return RunReport(target, outcome="error", error="WrongCall", detail=BY_HAND.format(cid=target), **base)
     rep = _confined(capture_id, args, kwargs)
     if rep.get("error") != "LookupError" or rep["outcome"] != "error":
@@ -1722,8 +1722,8 @@ def _capture_form(capture_id: str) -> str:
 
 #: How a recorded procedure that acts through tools is run, as its card and a call's refusal say it.
 BY_HAND = (
-    "it acts through the tools of the episode it came from (run(state, env)), which a call from here cannot hand "
-    "it; run it in a cell with your own tools: ns = {{}}; exec(memory.get({cid!r}).text, ns); "
+    "it acts through the tools of the episode it came from (run(state, env)), which a call from here cannot pass "
+    "to it; run it in a cell with your own tools: ns = {{}}; exec(memory.get({cid!r}).text, ns); "
     "ns['run'](state, tools), where state has .request (memory.request()), .messages, .last and .data"
 )
 
@@ -1731,7 +1731,7 @@ BY_HAND = (
 def _capture_lines(iid: str, rec: dict) -> list[str]:
     """What a recorded procedure's card says it is and how it runs, from its record only: accepted work only when its
     record shows an accepted episode (``support.accepted``); a no-argument call only for the forms that take the
-    request (``value``, ``state``); how to run it by hand for one that acts through tools."""
+    request (``value``, ``state``); how to run it yourself for one that acts through tools."""
     if rec.get("outcome") in _NEGATIVE:
         return ["A recorded attempt; its episode failed."]
     support = rec.get("support") if isinstance(rec.get("support"), dict) else {}

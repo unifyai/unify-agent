@@ -957,7 +957,7 @@ def test_a_capture_nothing_relates_is_put_to_the_judge_once_and_its_kin_is_hande
     assert len(asked) == 1
     messages, tools = asked[0]
     text = json.dumps(messages)
-    assert "ASKED-TEXT-NEVER-SHOWN" not in text and "Order the values." in text and tools == []  # no tools sent
+    assert "ASKED-TEXT-NEVER-SHOWN" not in text and "Order the values." in text and tools is None  # no tools sent
     entries = attention.Ledger(svc.home).entries()
     assert entries[ids[0]].kin_judged and entries[ids[0]].kin == (ids[1],)  # number 9 was never shown: left out
     assert sorted(got["handed"]) == sorted(ids)

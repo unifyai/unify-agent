@@ -1829,7 +1829,7 @@ async def _judge_kin(service: Any, ledger: Any, profiles: Any, worst: Decimal) -
     try:
         turn = _kin_turn(service, kin_id)
         with attribution(kin_id, [target.entry]):
-            message, cost = await _bounded_call(turn(messages, []), service, KIN_WALL_S)
+            message, cost = await _bounded_call(turn(messages, None), service, KIN_WALL_S)
         usd = _decimal(cost)
         named, why = kinship.answer(message if isinstance(message, dict) else {}, labels)
     except _KinCut as exc:

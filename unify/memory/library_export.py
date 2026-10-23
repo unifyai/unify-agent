@@ -838,7 +838,7 @@ def _capture_reader(rec: Mapping, source: Any) -> str:
             isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "read_input" for n in tree.body
         )
     if form == "state_env":
-        return "acts through the episode's tools (run(state, env)): no call runs it; run by hand in a cell"
+        return "acts through the episode's tools (run(state, env)): no call runs it; run it yourself in a cell"
     if form == "state":
         return "reader: the request's state (.request, .messages, .last, .data); a no-argument call runs it on the request"
     if reads:

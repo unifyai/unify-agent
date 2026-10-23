@@ -1,7 +1,7 @@
 """A recorded procedure called with no arguments (or with a request's text) runs on the request in every form it can.
 
 * ``value``: its ``read_input`` reads the request; ``state``: it is handed the state of a request that has just begun
-  (``.request``, ``.messages``, ``.last``, ``.data``); ``state_env``: a call cannot hand it the tools it acts through,
+  (``.request``, ``.messages``, ``.last``, ``.data``); ``state_env``: a call cannot pass it the tools it acts through,
   so the call refuses before anything runs, says how to run it by hand, and records no use of it.
 * Its card says what its record shows: accepted work only when an accepted episode is on record; that its episode
   failed when it did; the no-argument call only for the forms that take the request.

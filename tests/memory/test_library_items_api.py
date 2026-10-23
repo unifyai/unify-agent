@@ -493,7 +493,7 @@ def test_a_captured_procedures_failure_carries_its_detail_and_the_four_parts(tmp
     assert kind == "ArgumentError" and "TypeError" in bases and alone is True
     assert text == (
         f"memory.get({capture!r})('x'): it did not return (ValueError: no rows).\n"
-        f"Expected text or a JSON value like the input it was recorded on, e.g. memory.get({capture!r})(text).\n"
+        f"Expected no arguments (the current request), or a request's text, e.g. memory.get({capture!r})().\n"
         f"Its card shows what it was built for: print(memory.get({capture!r}))."
     )
     assert _events(events, "memory.call", "memory.run_result", "memory.helper_call") == [

@@ -64,9 +64,9 @@ def test_who_shows_the_roster_and_whom_this_agent_should_mention(tmp_path):
     assert "Mention @librarian" not in text and "@librarian" not in text.splitlines()[-1]
     rr.seed_role(home, "librarian", by="test")
     text = T.who_text(rr.RunRecordView(rec, "actor-3f9a", "actor"))
-    # the actor asks the library with memory.ask, the one way; the seeded role still answers what reaches it
+    # the actor asks the library with memory.ask, the one way: no text offers it @librarian, seeded or not
     assert "Mention @librarian" not in text
-    assert "@librarian" in text.splitlines()[-1]
+    assert "@librarian" not in text.splitlines()[-1]
 
 
 # --- test 6 and 7: the common section, and the prompt-size report -----------------------------------------------------
