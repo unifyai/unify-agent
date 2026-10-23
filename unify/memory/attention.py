@@ -6,7 +6,7 @@ the directory). A row holds ids and kinds only, never content: the reason text o
 ``decisions.jsonl``. The ledger's state is the fold of its rows (:meth:`Ledger.entries`).
 
 **What needs attention** (an *entry*; each kind fires from a record that exists in any world where its event happens,
-and from nothing else: no world name, label, task id, stream position or request word is read):
+and from nothing else: no world name, label, id of a request, stream position or request word is read):
 
 =====================  ==================================================================================================
 kind                   created when
@@ -952,7 +952,7 @@ class Ledger:
 
     def sync(self, sources: Sources | None = None) -> list[AttentionEntry]:
         """Record the entries the harness's own records now call for (module docstring); returns the new ones. Never
-        reads a world name, label, task id, stream position or request word. Late evidence reopens the closed
+        reads a world name, label, id of a request, stream position or request word. Late evidence reopens the closed
         entries it bears on."""
         sources = sources if sources is not None else HomeSources(self.home, state_dir=self.state_dir)
         with self.locked():

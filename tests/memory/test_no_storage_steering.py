@@ -112,6 +112,8 @@ PARAPHRASES = re.compile(
 ALLOWED = (
     ("every value whole", "check_examples shows each example's values whole: what the tool prints"),
     ("Generalises: ", "a card's link line naming the items an item generalises: a relation the writer stated"),
+    ("The recorded procedures item *iid* generalises", "the docstring of the link relation the card shows"),
+    ("The library items that generalise recorded procedure", "the docstring of the link relation the card shows"),
 )
 
 

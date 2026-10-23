@@ -65,9 +65,8 @@ POOL_FAILURE_KIND = "failure"
 LAND_TOOL = "land_capture"
 LAND_CALL_TEXT = "land_capture(capture_id, package, name)"
 BRIEF_CAPTURE_TEXT = "The harness runs no capture"
-BRIEF_FAILURE_TEXT = (
-    "A failed capture is knowledge too: a note of what broke, or a test marked as a known failure."
-)
+#: Wording that steered what the writer keeps of a failed capture (no prompt steers what is stored).
+BRIEF_FAILURE_TEXT = "A failed capture is knowledge too"
 
 
 def _capture(staging: Path, ep: Episode, store: Path, signals: list[Signal]):
@@ -603,6 +602,7 @@ def test_the_writer_brief_says_captures_exist_and_how_to_land_one():
     brief = lp.write_brief_now()
     assert LAND_CALL_TEXT in brief
     assert BRIEF_CAPTURE_TEXT in brief and "has already run" not in brief
-    assert BRIEF_FAILURE_TEXT in brief
+    assert BRIEF_FAILURE_TEXT not in brief
+    assert "A capture is a library entry from the moment it is stored" in brief
     assert guards.benchmark_words(brief) == []
     assert guards.example_checks(brief) == []

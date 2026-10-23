@@ -46,7 +46,7 @@ def error_signature(text: str) -> str:
 
 
 def path_family(path: str) -> str:
-    """``finance/ap/2026-10/invoices.csv`` -> ``finance/ap/#-#/*.csv``: directory plus extension."""
+    """``reports/q3/2026-10/rows.csv`` -> ``reports/q3/#-#/*.csv``: directory plus extension."""
     d = posixpath.dirname(path or "")
     d = re.sub(r"\d+", "#", d)
     ext = _shapes.extension(path or "")

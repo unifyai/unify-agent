@@ -197,7 +197,7 @@ def test_every_named_path_is_a_staged_input_or_the_library(registry):
     # library_prompts.input_pointer_files; "/inputs" alone is the folder itself
     allowed = re.compile(
         r"^/(inputs/(staging|captures|helpers|pool|drafts|batch_map\.json|batch_map_keys\.md|README\.md|attention|"
-        r"episodes|shared|usage|gate)|inputs$|memory|outputs)\b",
+        r"episodes|shared|usage|gate|blobs|sitecustomize\.py)|inputs$|memory|outputs)\b",
     )
     for name, text in _briefs().items():
         for path in re.findall(r"(?<![\w.])/(?:inputs|memory|outputs)[\w./<>-]*", text):

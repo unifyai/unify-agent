@@ -634,7 +634,8 @@ ATTENTION_TEXT = (
     "and what was decided, read-only. /inputs/attention/index.json lists your entries, each with the material it "
     "owes a read (its summary, its "
     "procedure, its use, its signal, its note or its message); the harness checks what you opened (its "
-    "/inputs/sitecustomize.py records the files your cells open), never what you say you read. One decision can close several entries: that is how you record that they are one rule. A "
+    "/inputs/sitecustomize.py records the files your cells open), never what you say you read. One decision can "
+    "close several entries: that is how you record that they are one rule. A "
     "decision is one of new_item, changed_item, merged_into (naming the item), note, retire, nothing_to_keep and "
     "defer (the work stays open as a new entry). An entry you do not decide comes back to a later pass.\n"
 )
