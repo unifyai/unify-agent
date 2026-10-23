@@ -343,7 +343,9 @@ def test_items_served_to_every_episode_relate_nothing_and_only_used_ones_relate(
     got = {e: profiles(_entry(e)) for e in episodes}
     assert got["ep03"].items == frozenset({"memory.ledger.post:book"})
     assert got["ep00"].items == frozenset()
-    assert "notes/general/checklist.md" in got["ep00"].touched   # the writer is still shown what was served
+    # served only: neither a relation nor shown to the writer as the group's
+    doc = cg.group_doc(cg.Group(id="ep00", open=[_e("ep00" * 4)]), lambda e: got["ep00"])
+    assert doc["library_items"] == [] and doc["members"][0]["used_items"] == []
     related = {(a, b) for i, a in enumerate(episodes) for b in episodes[i + 1:] if cg.related(got[a], got[b])}
     assert related == {("ep03", "ep07"), ("ep03", "ep08"), ("ep07", "ep08")}
 

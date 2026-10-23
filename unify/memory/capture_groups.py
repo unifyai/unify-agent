@@ -40,8 +40,9 @@ before: it is about an item that exists, which is its history.
 
 **What a group pass is given** (:func:`group_doc`, written to ``/inputs/attention/group.json``): its new members, its
 history (the related closed captures, the most related first, then the most recent, at most :data:`HISTORY_MAX`), why
-each pair is related, and the library items the group touches: those the members' episodes used, were served or failed
-with, and those earlier passes landed from related captures.
+each pair is related, and the library items the group touches: those the members' episodes used (called, or a call
+refused or errored), and those earlier passes landed from or decided on related captures. An item that was only at the
+pin, shown or served is not listed.
 
 **Why a group formed** is logged with its pass (the ledger's ``group`` row, :func:`reasons`): how many related pairs
 it has and how many of them each relation kind joined, so an audit can count them.
@@ -74,7 +75,7 @@ RELATION_KINDS = ("sequence", "subsequence", "items", "input", "judged")
 @dataclass(frozen=True)
 class Profile:
     """What the harness's records say of one entry's capture (nothing run): its entry form, the ``env`` chains its
-    procedure names, its input shape, the library items its episodes touched and its outcome."""
+    procedure names, its input shape, the library items its episodes used and its outcome."""
 
     entry: str
     captures: tuple[str, ...] = ()
@@ -84,9 +85,6 @@ class Profile:
     items: frozenset = frozenset()
     outcome: str | None = None
     sequence: tuple[str, ...] = ()
-    #: every library item its episodes touched (used, at the pin, shown or served): what the writer is shown, never a
-    #: relation (``items`` holds the used ones)
-    touched: frozenset = frozenset()
     #: the entries a judge of behaviour named as the same kind of work (the ledger's ``kin`` rows)
     kin: frozenset = frozenset()
 
@@ -273,10 +271,6 @@ class HomeProfiles:
         """The library items the episodes used (an observed call: made, refused or errored)."""
         return frozenset(item for item, used in self._use_rows(episodes) if used)
 
-    def touched_of(self, episodes: Iterable[str]) -> frozenset:
-        """Every library item the episodes touched (any use row: used, at the pin, shown or served)."""
-        return frozenset(item for item, _ in self._use_rows(episodes))
-
     def envelope(self) -> frozenset:
         """The input key paths every capture of the home with an input shape has (:data:`ENVELOPE_MIN` or more such
         captures; fewer: none): a shared envelope, which distinguishes none of them."""
@@ -300,9 +294,8 @@ class HomeProfiles:
             shape = shape - self.envelope()   # only what is below the shared envelope can relate
         own = {"capture:" + c for c in cids}
         items = frozenset(i for i in self.items_of(entry.refs.episodes) if i not in own)
-        touched = frozenset(i for i in self.touched_of(entry.refs.episodes) if i not in own)
         kin = frozenset(k for k in getattr(entry, "kin", ()) if isinstance(k, str))
-        return Profile(entry.entry, cids, form, effects, shape, items, outcome, sequence, touched, kin)
+        return Profile(entry.entry, cids, form, effects, shape, items, outcome, sequence, kin)
 
 
 def _read_json(path: Path) -> Any:
@@ -359,8 +352,8 @@ def _neg_time(at: str | None) -> float:
 def group_doc(group: Group, profile_of: Callable[[Any], Profile], *, landed: Mapping[str, Any] | None = None) -> dict:
     """``/inputs/attention/group.json`` for a pass handed *group*: its members and related closed entries (ids, kinds,
     episodes, captures, form, outcome, and for a closed one what was decided and on which items), why each related
-    pair is related, the reason it is due, and the library items it touches (*landed*: capture id -> the item landed
-    from it, when one was)."""
+    pair is related, the reason it is due, and the library items it used or is linked to (*landed*: capture id -> the
+    item landed from it, when one was)."""
     landed = landed or {}
 
     def member(e: Any) -> dict:
@@ -374,16 +367,18 @@ def group_doc(group: Group, profile_of: Callable[[Any], Profile], *, landed: Map
             "outcome": p.outcome,
             "effects": sorted(p.effects),
             "sequence": list(p.sequence),
-            "items_touched": sorted(p.touched or p.items),
+            "used_items": sorted(p.items),
         }
         if e.state == "closed":
             row.update(decision=e.decision, decided_items=list(e.decided_items))
         return row
 
+    # used (an observed call) or linked (landed from a member's capture, decided by an earlier pass); an item that was
+    # only at the pin, shown or served is not the group's
     touched: set[str] = set()
     for e in [*group.open, *group.context]:
         p = profile_of(e)
-        touched.update(p.touched or p.items)
+        touched.update(p.items)
         touched.update(str(landed[c]) for c in p.captures if landed.get(c))
         if e.state == "closed":
             touched.update(i for i in e.decided_items if isinstance(i, str))

@@ -20,7 +20,7 @@ the three. The rest of memory's configuration is in [CONFIG.md](../CONFIG.md); t
    - an item called again in new episodes.
 
    An entry stays open until a writer pass decides it. A new capture waits until its **capture group** is due:
-   captures whose records show they act through the same tools, touch the same library items or read the same shape
+   captures whose records show they act through the same tools, use the same library items or read the same shape
    of input (never an id, a word or the order they came in). A group is due once two of them are open, once a new one
    relates to captures an earlier pass decided, or, for a capture still alone, after 8 later captures or 10 minutes
    with none. Every other kind of entry is handed at once.

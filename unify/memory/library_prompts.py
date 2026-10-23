@@ -683,9 +683,9 @@ _WRITE_RULES_IN_CODE = (
 ATTENTION_TEXT = (
     "# Your entries\n"
     "You are given entries that need your attention; decide each with `tools.decide`. New captures come to you as a "
-    "group: captures whose records show they act through the same tools, touch the same library items or read the "
+    "group: captures whose records show they act through the same tools, use the same library items or read the "
     "same shape of input, with the related captures earlier passes already decided and the library items the group "
-    "touches (/inputs/attention/group.json). Read them together with the library and decide what to keep. Open "
+    "used or is linked to (/inputs/attention/group.json). Read them together with the library and decide what to keep. Open "
     "entries listed beside them may share a rule with yours; look with "
     "`tools.open_entries` and `tools.find`, and `tools.take` those that do; taking a closed entry shows its material "
     "and what was decided, read-only. /inputs/attention/index.json lists your entries, each with the material it "
