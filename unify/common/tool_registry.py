@@ -1820,6 +1820,8 @@ _IN_CODE: dict[str, dict] = {
                     "that names no one goes to the agent that started you. It returns the messages that arrive for "
                     "you, or says that no reply came yet."
                 ),
+                # a teammate's question goes to whoever started it: the same example with memory on or off
+                "examples": ('answer = tools.ask("should the count include the header line?")',),
             },
         },
         add_refusals=_RECORD_POST_FORMS,
