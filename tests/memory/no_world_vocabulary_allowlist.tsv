@@ -50,7 +50,6 @@ module:unify/memory/metering.py	their booking	a cost booked at the worst case (a
 module:unify/memory/metering.py	its booking	a cost booked at the worst case (accounting)
 module:unify/memory/metering.py	"hand"	the ledger row op for handing an entry to a pass
 module:unify/memory/capture_trace.py	keys on a task id	the code states it never reads a benchmark's task id
-module:unify/memory/attention.py	task id	the ledger states it never reads a benchmark's task id
 module:unify/memory/attention.py	Ledger.hand	the ledger's method that hands entries to a pass
 module:unify/memory/attention.py	**Hand order**	the order entries are handed to a pass
 module:unify/memory/attention.py	age-at-hand	how old an entry is when it is handed to a pass
