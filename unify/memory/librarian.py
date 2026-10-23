@@ -364,6 +364,7 @@ def sent_to_librarian(
     last_message: str | None = None,
     rows: int = 0,
     schema: dict | None = None,
+    failed: Any = (),
 ) -> dict:
     """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening and the brief, the same
     for every ask and every library): the user message (:func:`question_message`: the question and the catalogue
@@ -380,11 +381,25 @@ def sent_to_librarian(
         message = evidence_question_message(q, situation, rows)
     else:
         message = question_message(q, rows)
+    tried = sorted({i for i in failed or () if isinstance(i, str)})
+    if tried:
+        # the items whose call failed in this request: never offered again in it
+        message = message.rsplit("Answer with tools.finish(answer).", 1)[0] + failed_line(tried) + (
+            "\n\nAnswer with tools.finish(answer)."
+        )
     if schema is None:
         return {"message": message, "library": dict(library)}
     # a structured answer: the schema replaces the answer's form for this question (its digest is in the key)
     message = message.rsplit("Answer with tools.finish(answer).", 1)[0] + schema_instruction(schema)
     return {"message": message, "library": dict(library), "schema": _digest_of(schema)}
+
+
+def failed_line(failed: list[str]) -> str:
+    """The line of a question that names the items whose call failed in the agent's current request."""
+    return (
+        "Tried and failed in this request (the agent called each and the call failed; never offer one of them again "
+        "in this request, name it as nearest if it is): " + ", ".join(failed) + "."
+    )
 
 
 def schema_instruction(schema: dict) -> str:
@@ -437,6 +452,8 @@ class LibrarianCalls:
     recipes: dict[str, str] = field(default_factory=dict)
     #: the recorded procedures that act through their episode's tools, which no call runs (:func:`acting_captures`)
     acting: set[str] = field(default_factory=set)
+    #: the items whose call failed in the agent's current request, as the question in progress names them
+    failed_here: set[str] = field(default_factory=set)
     answer: dict | None = None
     finish_text: str | None = None
     finished: bool = False
@@ -574,13 +591,15 @@ def check_answer(
     failed: set[str] = frozenset(),
     recipes: Mapping[str, str] | None = None,
     acting: set[str] = frozenset(),
+    failed_here: set[str] = frozenset(),
 ) -> tuple[dict | None, str]:
     """The answer as the librarian gave it, or None with the reason it is refused: the form of design J(b).4, every
     id an item of the library (*ids*), no captured attempt that failed among the fits, each fit that names a
     procedure with a recipe (or the recipe) carrying the call that applies it to the current request (*recipes*:
     id -> that call), so the agent has the one call, and no fit calling a recorded procedure that acts through its
-    episode's tools (*acting*, :func:`acting_captures`), which no call runs. The harness adds and reorders nothing; it
-    only keeps the answer within its bound (:func:`bounded_answer`)."""
+    episode's tools (*acting*, :func:`acting_captures`), which no call runs, and none whose call failed in the agent's
+    current request (*failed_here*). The harness adds and reorders nothing; it only keeps the answer within its bound
+    (:func:`bounded_answer`)."""
     recipes = recipes or {}
     known = set(ids)
     if not isinstance(answer, dict):
@@ -598,6 +617,11 @@ def check_answer(
             return None, f"fit {i}: {f['id'][:200]!r} is not an item of the library"
         if f["id"] in failed:
             return None, f"fit {i}: {f['id']!r} was tried and failed; it is never offered to run (name it as nearest)"
+        if f["id"] in failed_here:
+            return None, (
+                f"fit {i}: {f['id']!r} was tried and failed in this request; it is not offered again in it (name it "
+                "as nearest)"
+            )
         why_not = _call_problem(f["call"])
         if why_not:
             return None, f"fit {i}: its call {f['call'][:200]!r} {why_not}"
@@ -698,7 +722,7 @@ async def finish(ctx: Any, args: dict) -> Any:
         return Reply(str(text), "refused", text.form)
     if state.schema is not None:
         return _finish_schema(state, args.get("answer"))
-    got, why = check_answer(args.get("answer"), state.ids, state.failed, state.recipes, state.acting)
+    got, why = check_answer(args.get("answer"), state.ids, state.failed, state.recipes, state.acting, state.failed_here)
     if got is None:
         text = refusal("finish", "bad_answer", reason=why[:2000])
         state.finish_text = str(text)
@@ -1021,21 +1045,25 @@ class LibrarianSession:
         request: str | None = None,
         last_message: str | None = None,
         schema: dict | None = None,
+        failed: Any = (),
     ) -> str:
         """One question about the current request, as JSON text (:meth:`answer`; *request* is not sent to the
         librarian, so it is not in the key; *facts*, which an older cell may still send, are not read: rev 2 runs no
         reader)."""
-        got = await self.answer(question, schema=schema, last_message=last_message)
+        got = await self.answer(question, schema=schema, last_message=last_message, failed=failed)
         return json.dumps(got, ensure_ascii=False, sort_keys=True)
 
-    async def answer(self, question: str, *, schema: dict | None = None, last_message: str | None = None) -> dict:
+    async def answer(
+        self, question: str, *, schema: dict | None = None, last_message: str | None = None, failed: Any = ()
+    ) -> dict:
         """One question about the current request. When the librarian was already sent the same
         (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave it, with :data:`ALREADY_GIVEN`, and
         no model call; otherwise the question goes as the next user message and the librarian's accepted answer is
         kept and returned. With *schema* (a JSON Schema, :func:`check_schema`; ValueError otherwise) the answer is
         ``{"value": ..., "repairs": n}``, or ``{"schema_error": {"raw", "errors"}}`` when the value missed it after
-        :data:`SCHEMA_REPAIRS` repair (never kept). Raises :class:`NoAnswer` when it ends without one (nothing is
-        kept, so the next ask asks again)."""
+        :data:`SCHEMA_REPAIRS` repair (never kept). *failed*: the items whose call failed in the agent's current
+        request; the question names them, and no fit may name one (:func:`check_answer`). Raises :class:`NoAnswer`
+        when it ends without one (nothing is kept, so the next ask asks again)."""
         if self.closed:
             raise NoAnswer("the request has ended")
         if schema is not None:
@@ -1043,18 +1071,20 @@ class LibrarianSession:
         async with self._lock:
             # the library as the ask finds it: a copy that changed since the session opened is asked about afresh
             self.dispatch = read_dispatch(self.copy)
-            ids, failed, recipes = library_items(self.copy) or ([], set(), {})
-            self.state.ids, self.state.failed, self.state.recipes = ids, failed, recipes
+            ids, tried_before, recipes = library_items(self.copy) or ([], set(), {})
+            self.state.ids, self.state.failed, self.state.recipes = ids, tried_before, recipes
             self.state.acting = acting_captures(self.copy)
+            here = {i for i in failed or () if isinstance(i, str) and i in set(ids)}
+            self.state.failed_here = here
             self.questions += 1
             library = {"commit": self.library, "dispatch": _digest_of(self.dispatch)}
             if self.evidence is not None:
                 # the evidence as the ask finds it, and the situation's latest message: what the answer answered
                 self.evidence = read_evidence(self.copy) or {}
                 sent = sent_to_librarian(question, library, evidence=self.evidence, last_message=last_message,
-                                         rows=len(self.dispatch), schema=schema)  # fmt: skip
+                                         rows=len(self.dispatch), schema=schema, failed=here)  # fmt: skip
             else:
-                sent = sent_to_librarian(question, library, rows=len(self.dispatch), schema=schema)
+                sent = sent_to_librarian(question, library, rows=len(self.dispatch), schema=schema, failed=here)
             key = answer_key(sent)
             given = self.answers.get(key)
             if given is not None:
@@ -1247,8 +1277,8 @@ class AskInstance(LibrarianSession):
     the record without the schema (only the value); the role's answer cache keeps it (:func:`keep_answers`)."""
 
     async def ask(self, question: str, facts: Any = None, request: str | None = None, last_message: str | None = None,
-                  schema: dict | None = None) -> str:  # fmt: skip
-        text = await super().ask(question, facts, request, last_message, schema)
+                  schema: dict | None = None, failed: Any = ()) -> str:  # fmt: skip
+        text = await super().ask(question, facts, request, last_message, schema, failed)
         keep_answers(self)
         try:
             self._post_ask(question, text)

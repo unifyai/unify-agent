@@ -22,6 +22,7 @@ if "wrap_call" not in globals():  # imported as a harness module of its own, not
         _bounded_exchange,
         _current_request,
         _stop_child,
+        failed_here,
         _tools,
         CAPTURE_PREFIX,
         DISPATCH_FILE,
@@ -383,11 +384,14 @@ def ask(question: Annotated[str, MinLen(1)] | None = None, schema: Any = None) -
         for c in (getattr(tools, name, None) for name in ("Refused", "ToolError", "ChannelClosed"))
         if isinstance(c, type) and issubclass(c, BaseException)
     )
+    # the items whose call failed in this request (here): the librarian never offers one of them again in it
+    tried = {"failed": failed_here()}
+    tried = tried if tried["failed"] else {}
     try:
         if shape is None:
-            reply = send(question if question is not None else text)
+            reply = send(question if question is not None else text, **tried)
         else:
-            reply = send(question if question is not None else text, schema=shape)
+            reply = send(question if question is not None else text, schema=shape, **tried)
     except failures as exc:
         raise NotFound(
             call,

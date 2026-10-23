@@ -912,8 +912,9 @@ ASK_LIBRARY = RegisteredTool(
         "nothing is run. `memory.ask()` calls this for you with your current request (`memory.ask(question)` asks a "
         "question of your own). The answer is JSON: "
         '{"fits": [{"id", "call", "why"}, ...]} with the best fit first and at most one fallback for when it fails, '
-        'or {"fits": [], "nearest": [{"id", "differs"}, ...]} when nothing fits. Follow-up questions in the same request go to the same '
-        "librarian; a question it already answered in this request gets that answer again, "
+        'or {"fits": [], "nearest": [{"id", "differs"}, ...]} when nothing fits. An item whose call failed in this '
+        "request is not offered again in it. Follow-up questions in the same request go to the same "
+        "librarian, each in a fresh conversation; a question it already answered in this request gets that answer again, "
         f'with "already_given": true. A request opens at most {MAX_ASK_SESSIONS} librarian sessions (the actor\'s and '
         "its first teammates'); a later teammate's question is then refused, and the teammate sends it to the actor "
         "(@actor) on the record instead. "
@@ -928,6 +929,12 @@ ASK_LIBRARY = RegisteredTool(
                 "type": ["object", "null"],
                 "description": "The JSON Schema of the answer wanted (memory.ask(..., schema=...) builds it).",
             },
+            "failed": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "The items whose call failed in this request (memory.ask fills it); the librarian "
+                "offers none of them again in it.",
+            },
         },
         "required": ["question"],
         "additionalProperties": False,
@@ -935,6 +942,7 @@ ASK_LIBRARY = RegisteredTool(
     refusals={
         "no_question": "question must be a non-empty string; nothing was asked",
         "bad_schema": "schema must be a JSON Schema object ({why}); nothing was asked",
+        "bad_failed": "failed must be a list of item ids; nothing was asked",
         "unavailable": "the librarian is not available here ({why}); nothing was asked",
         "no_answer": "the librarian gave no answer ({why})",
     },

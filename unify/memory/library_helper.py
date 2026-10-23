@@ -2606,6 +2606,37 @@ def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None
         sys.audit(event, item, digest, outcome)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
         pass
+    if event == CALL_EVENT and outcome != "ok":
+        _note_failed(item)
+
+
+#: The items whose call failed in this process (it raised, or refused its input), by the request they were called on
+#: (a digest of its text). ``memory.ask`` sends them with its question, so the librarian never offers one of them
+#: again in the same request: a use outcome of this request, kept in this process only, never stored.
+_FAILED_HERE: dict[str, set] = {}
+
+
+def _request_key() -> str:
+    """The current request as :data:`_FAILED_HERE` keys it: a digest of its text ('' when it is not known here)."""
+    text = _current_request()[0]
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16] if text else ""
+
+
+def _note_failed(item: str) -> None:
+    try:
+        _FAILED_HERE.setdefault(_request_key(), set()).add(item)
+    except Exception:  # noqa: BLE001 - keeping it never changes the call
+        pass
+
+
+def failed_here() -> list[str]:
+    """The items whose call failed in this process on the current request, in id order."""
+    if not _FAILED_HERE:
+        return []  # nothing failed in this process: no need to ask which request this is
+    try:
+        return sorted(_FAILED_HERE.get(_request_key(), ()))
+    except Exception:  # noqa: BLE001 - nothing known: nothing is held back
+        return []
 
 
 def _emit_failed(item: str, exc: BaseException, args: tuple, kwargs: dict, event: str) -> None:
