@@ -443,9 +443,10 @@ def recorded_members(doc: Optional[dict], members: Optional[dict] = None) -> lis
 
 def orphaned_members(doc: Optional[dict], members: Optional[dict] = None) -> list[int]:
     """Processes of the dead service's group that it had no time to record: the members of its process group that
-    started at or after the service and no later than it was last known alive. While the service was alive its group
-    was its own, so a process that joined it then is the service's; a group the number names later (once every
-    process of the service's has gone) starts after that. Only for a service that led its group (as every service
+    started at or after the service and before it could have missed a sign of life: its last heartbeat or member record
+    plus :data:`HEARTBEAT_S` and :data:`MEMBERS_S` (a living service writes one at least that often, so whatever it
+    started, it started by then, recorded or not). A process that joined the number later belongs to a group that took
+    the number once every process of the service's had gone. Only for a service that led its group (as every service
     does: ``setsid``), and only while that leader is gone or is still the recorded process (a leader with another
     start time means the number is someone else's)."""
     if not isinstance(doc, dict):
@@ -459,10 +460,11 @@ def orphaned_members(doc: Optional[dict], members: Optional[dict] = None) -> lis
     alive = last_alive(doc, members)
     if alive is None:
         return []
+    limit = alive + timedelta(seconds=HEARTBEAT_S + MEMBERS_S)
     out = []
     for p in group_pids(pgid, since=str(since)):
         at = started_at(proc_start(p) or "")
-        if at is not None and at <= alive:
+        if at is not None and at <= limit:
             out.append(p)
     return out
 
@@ -1099,14 +1101,16 @@ def stop_service(
     doc = read_state(home)
     if not isinstance(doc, dict):
         return Terminated(True, "clean")
-    if doc.get("state") == "stopped" and not lock_holders(service_dir(home) / LOCK_FILE):
-        # the service wrote its last state and nothing holds the home: nothing is left to stop (a step, or a test,
-        # that ran the loop in its own process is never signalled)
-        return Terminated(True, "clean")
     pgid = doc.get("pgid")
 
     def left() -> list[int]:
         return service_group(doc, read_members(home))
+
+    if doc.get("state") == "stopped" and not lock_holders(service_dir(home) / LOCK_FILE) and not left():
+        # the service wrote its last state, nothing holds the home and nothing of its group is left: nothing to stop
+        # (a step, or a test, that ran the loop in its own process is never signalled); a child it left running is
+        # stopped below like any other
+        return Terminated(True, "clean")
 
     def alive() -> bool:
         return owns(doc) or bool(left())
