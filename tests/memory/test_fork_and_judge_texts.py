@@ -69,3 +69,33 @@ def test_the_judge_sees_code_without_its_docstrings_or_comments(tmp_path):
     messages, labels = kinship.question((profile, d), [("x1", profile, d)])
     assert QUOTE not in messages[1]["content"] and labels == {"[1]": "x1"}
     assert "one piece of finished work" not in kinship.BRIEF
+
+
+def _long_procedure(statements: int, comments: int) -> str:
+    """A procedure with *statements* lines of code in ``run`` and *comments* comment lines before it."""
+    lines = ['"""Add the values up, one step at a time."""', ""]
+    lines += [f"# step {i}: every value is kept and only the total changes." for i in range(comments)]
+    lines += ["", "", "def run(value):", '    """The total."""', "    total = 0"]
+    lines += [f"    total = total + value[{i}]" for i in range(statements)]
+    lines += ["    return total", ""]
+    return "\n".join(lines)
+
+
+def test_the_judge_is_shown_bounded_code_and_told_where_it_was_cut(tmp_path):
+    """The bounds apply to the code the judge is shown, docstrings and comments already left out: long code is cut at
+    the bound with a marker, while comments alone never make code long."""
+    profile = SimpleNamespace(sequence=(), input=frozenset(), outcome="positive")
+    long_code = tmp_path / "long"
+    long_code.mkdir()
+    (long_code / "procedure.py").write_text(_long_procedure(statements=80, comments=0), encoding="utf-8")
+    commented = tmp_path / "commented"
+    commented.mkdir()
+    (commented / "procedure.py").write_text(_long_procedure(statements=3, comments=200), encoding="utf-8")
+    shown = kinship.card(profile, long_code, code_chars=kinship.BRIEF_CODE).split("code:\n", 1)[1]
+    assert shown.endswith("\n# ... (the rest of the code is not shown)")
+    assert len(shown) == kinship.BRIEF_CODE + len("\n# ... (the rest of the code is not shown)")
+    whole = kinship.card(profile, long_code, code_chars=kinship.NEW_CODE).split("code:\n", 1)[1]
+    assert "not shown" not in whole and whole.endswith("return total")
+    short = kinship.card(profile, commented, code_chars=kinship.BRIEF_CODE).split("code:\n", 1)[1]
+    assert "not shown" not in short and "step 199" not in short and short.endswith("return total")
+    assert (kinship.CANDIDATES, kinship.NEW_CODE, kinship.BRIEF_CODE) == (40, 4000, 600)
