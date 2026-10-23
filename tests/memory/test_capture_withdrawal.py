@@ -177,3 +177,70 @@ def test_the_request_always_withdraws_closed_captures_and_records_what_it_did():
     assert "withdrawn = withdrawn_captures(Repo(paths.memory))" in opening
     assert "withdrawn=withdrawn)" in opening and '"offered_in_place": sorted(' in opening
     assert opening.index("withdrawn_captures(Repo(paths.memory))") < opening.index("export_actor_library_mode(")
+
+
+# --- the writer's decisions in the attention ledger -------------------------------------------------------------------
+
+
+def _ledger(state, rows: list[dict], reasons: dict[str, list[dict]]) -> None:
+    """The attention ledger's close rows, and each pass's decisions with their reasons, as a writer pass leaves them."""
+    led = state / "memory-attention" / "ledger.jsonl"
+    led.parent.mkdir(parents=True, exist_ok=True)
+    led.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    for pass_id, decided in reasons.items():
+        path = state / "passes" / pass_id / "decisions.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(r) + "\n" for r in decided))
+
+
+def test_merged_capture_stays_served(tmp_path):
+    """After a ``merged_into`` decision naming a capture's entry, the capture is still listed and callable, and the
+    item it was merged into and the capture link to each other. Only a ``retire`` naming a capture withdraws it: kept
+    in the store, no longer listed, and asking for it says the writer retired it, with the writer's reason. The
+    withdrawn set is the one a request's export reads (the pool's closed captures and the ledger's retirements)."""
+    from unify.memory import attention
+    from unify.memory.library_helper import ITEMS_FILE
+
+    store, ids = _store(tmp_path)
+    state = store.parent
+    table, grid = f"capture:{ids['table']}", f"capture:{ids['grid']}"
+    root0, _ = _copy(tmp_path / "plain")
+    item = sorted(i for i, r in json.loads((root0 / ITEMS_FILE).read_text())["items"].items()
+                  if r.get("kind") == "function")[0]  # fmt: skip
+    _ledger(
+        state,
+        [
+            {"op": "close", "entry": "a" * 16, "pass_id": "p1", "decision": "merged_into", "items": [item],
+             "reason_ref": "pass:p1/decisions.jsonl#0"},
+            {"op": "close", "entry": "b" * 16, "pass_id": "p1", "decision": "retire", "items": [grid],
+             "reason_ref": "pass:p1/decisions.jsonl#1"},
+        ],
+        {"p1": [{"n": 0, "decision": "merged_into", "reason": "one function for both"},
+                {"n": 1, "decision": "retire", "reason": "its recorded use failed and no change repairs it"}]},
+    )  # fmt: skip
+    withdrawn = {**attention.retired_captures(state), **pool.withdrawn_captures(Repo.init_bare(tmp_path / "m.git"))}
+    assert set(withdrawn) == {ids["grid"]} and withdrawn[ids["grid"]]["status"] == "retired"
+    root, _ = _copy(tmp_path, withdrawn=withdrawn)
+    data = json.loads((root / ITEMS_FILE).read_text())
+    data["items"][item]["episodes"] = ["ep-1"]  # the episode every fixture capture comes from: the merged item's own
+    (root / ITEMS_FILE).write_text(json.dumps(data))
+    request = "TABLE\n" + json.dumps(ROWS)
+    got = _cell(
+        root,
+        f"listed = [i.id for i in memory.items()]\n"
+        f"print(json.dumps({{'listed': listed, 'called': memory.get({table!r})({request!r}), "
+        f"'cap': str(memory.get({table!r})), 'item': str(memory.get({item!r})), "
+        f"'retired': err(memory.get, {grid!r})}}))\n",
+    )
+    assert table in got["listed"] and got["called"] == 7
+    assert f"Generalised by: {item}" in got["cap"]
+    assert table in next(x for x in got["item"].splitlines() if x.startswith("Generalises: "))
+    assert grid not in got["listed"] and (store / ids["grid"] / captures.PROCEDURE_FILE).is_file()
+    assert got["retired"][0] == "NotFound", got["retired"]
+    assert "the library's writer retired it (its recorded use failed and no change repairs it)" in got["retired"][1]
+    # a later decision that keeps the capture puts it back
+    _ledger(state, [{"op": "close", "entry": "b" * 16, "pass_id": "p1", "decision": "retire", "items": [grid],
+                     "reason_ref": "pass:p1/decisions.jsonl#1"},
+                    {"op": "close", "entry": "c" * 16, "pass_id": "p2", "decision": "new_item", "items": [grid],
+                     "reason_ref": "pass:p2/decisions.jsonl#0"}], {})  # fmt: skip
+    assert attention.retired_captures(state) == {}
