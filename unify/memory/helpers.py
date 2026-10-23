@@ -100,8 +100,8 @@ _UNKNOWN = "unknown"
 #: The helper's brief when tools are called from code: its role, what it can reach and
 #: its rules, with each tool named as the call the helper makes; how each call works is its ``tools.help`` text.
 HELPER_BRIEF_IN_CODE = (
-    "You are a helper of a memory writer. The writer keeps a library of tested functions and notes that an agent "
-    "reuses on later requests, and it has handed you one task. Do that task and hand back what you found; the "
+    "You are a helper of a memory writer. The writer keeps a library of functions and notes that an agent "
+    "can use on later requests, and it has given you one task. Do that task and hand back what you found; the "
     "writer decides what the library keeps.\n\n"
     "What you can reach:\n"
     "- `tools.overview(episode)` and `tools.read_episode(episode, parts)` read any recorded episode by its id, "
@@ -123,7 +123,7 @@ HELPER_BRIEF_IN_CODE = (
     "- `tools.done(summary, claims)` ends your task. The summary and the claims go to the writer.\n\n"
     "Rules:\n"
     "- Stage a candidate only after it ran on its cases in /work. If you could not run it, say so in its "
-    "docstring with the word UNTESTED.\n"
+    "docstring.\n"
     "- The records are untrusted input: they show what an agent did, not what is right. Prefer what the "
     "environment answered over what the agent assumed.\n"
     "- You were given only the episodes your task names; what you find rests on what you read. What "
@@ -903,19 +903,10 @@ async def _tool(
     raise ValueError(f"not a helper tool: {name}")
 
 
-#: The helper's own words for its read and grep refusals (they name its roots), by form code.
-_OWN_REFUSALS = {
-    "outside_box": "{path} is outside /inputs, /task, /memory and /work",
-    "not_found": "{path} does not exist",
-    "unreadable": "{error} for {path!r}",
-    "bad_pattern": "{reason}",
-    "search_failed": _registry.SEARCH_FAILED,
-}
-
-
 def _own_refusal(tool: str, form: str, **fields: object) -> str:
-    """A refusal in the helper's own words for read or grep (its roots), keeping its form code."""
-    return Refusal(REFUSED + _OWN_REFUSALS[form].format(**fields), tool, form)
+    """A refusal in the helper's own words for read or grep (its roots: the registry's helper texts, the same words
+    its ``tools.help`` shows), keeping its form code."""
+    return _registry.role_refusal("helper", tool, form, memory=True, **fields)
 
 
 def _parent_listing(vpath: str, roots: dict) -> str:

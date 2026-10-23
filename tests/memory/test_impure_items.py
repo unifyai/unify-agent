@@ -17,7 +17,7 @@ from tests.memory import library_example_world as w
 from tests.memory.library_example_world import library_example_world  # noqa: F401 - the fixture
 from unify.memory import item_label, manifest as mf
 from unify.memory.episodes import Action, Episode
-from unify.memory.gate import Gate, _Run, labelled
+from unify.memory.gate import Gate, _Run
 from unify.memory.library_checks import LibraryConfig
 
 needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
@@ -153,9 +153,7 @@ def test_a_quality_finding_labels_its_item_and_a_hard_one_refuses(tmp_path):
     from unify.memory.manifest import Manifest
 
     def run():
-        r = _Run(GateResult(True, {}), Manifest(), {}, "", "", tmp_path)
-        r.labels_on = True
-        return r
+        return _Run(GateResult(True, {}), Manifest(), {}, "", "", tmp_path)
 
     r = run()
     r.fail("G2", f"{ITEM}: its recipe memory.files.report:apply does not give the expected output of case c", ITEM)
@@ -169,16 +167,15 @@ def test_a_quality_finding_labels_its_item_and_a_hard_one_refuses(tmp_path):
         ("G1", f"{ITEM} names no source episode", ITEM),
         ("G3", f"{TEST} does not parse", ITEM),
         ("G3", f"listed test {TEST} is not in the candidate", [ITEM]),
-        ("G3", "the parent's tests no longer pass against the candidate's library: [x]", None),
     ):
         h = run()
         h.fail(check, reason, owner)
         assert not h.res.passed, (check, reason)
-    # off: every finding refuses, as built
-    off = _Run(GateResult(True, {}), Manifest(), {}, "", "", tmp_path)
-    off.fail("G2", f"{ITEM} held-out value refused: rows", ITEM)
-    assert not off.res.passed and off.item_fail == {ITEM: ["G2"]}
-    assert labelled("G2", "x") and not labelled("G5", "x") and not labelled("G2", "memory/x.py does not parse")
+    # one rule for every run: a G5 finding refuses, as the brief says, and a parse failure refuses whatever its check
+    for check, reason in (("G5", "a pass may not reduce the number of items (2 to 1)"), ("G2", "memory/x.py does not parse")):
+        h = run()
+        h.fail(check, reason, None if check == "G5" else ITEM)
+        assert not h.res.passed, (check, reason)
 
 
 # --- 1. a side-effect-only item lands, labelled with its effects and its replay test -----------------------------------------

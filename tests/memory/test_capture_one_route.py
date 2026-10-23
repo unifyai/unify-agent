@@ -125,12 +125,12 @@ def test_the_brief_says_where_the_procedure_is_and_which_call_lands_it():
     doc = dict(lp.row_keys())["staging"]
     assert "`capture` (`{id, land}` when the episode's capture can be landed" in doc
     assert "its procedure then under /inputs/captures/<id>/ only; else null" in doc
-    for in_code in (False, True):
-        text = lp.captures_input(in_code)
-        assert "When an episode's capture can be landed, its procedure is here only, not in /inputs/staging/." in text
-        assert "its row's `staging.capture.land` is that call." in text
-        assert ("`tools.land_capture(capture_id, package, name)`" in text) == in_code
-    assert "staging.capture" not in lp.captures_input(False, land=False)
+    text = lp.captures_input()
+    assert "When an episode's capture can be landed, its procedure is here only, not in /inputs/staging/." in text
+    assert "its row's `staging.capture.land` is that call." in text
+    assert "`tools.land_capture(capture_id, package, name)`" in text
+    # a capture is a library entry from the moment it is stored; nothing runs it
+    assert "A capture is a library entry from the moment it is stored" in text and "The harness runs no capture" in text
 
 
 # --- the capture's pool entry closes by the route taken -----------------------------------------------------------

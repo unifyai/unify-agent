@@ -1,4 +1,5 @@
-"""One definition per tool every agent can call: the actor, its teammates, and the memory writer, curator and helpers.
+"""One definition per tool every agent can call: the actor, its teammates, the librarian, and the memory writer and its
+helpers.
 
 Each :class:`RegisteredTool` holds what a tool is (its name, description, parameter schema and refusal texts by stable
 form code), who may call it (``roles``, and the configuration flag it ``requires``), how it is documented in code
@@ -44,6 +45,30 @@ POOL_RELATED_PAGE = 20
 SIMILAR_MIN_NODES = 12
 #: the flag ``ask_library`` needs: the run has memory
 LIBRARIAN_FLAG = "librarian"
+#: helpers a writer pass may run at once and start in all (``unify.memory.messaging.RUN_PASS_OPTIONS`` reads these)
+HELPERS_AT_ONCE = 16
+HELPERS_PER_PASS = 64
+
+# What the writer's tool texts say of the gate. ``unify.memory.gate_policy.GATE`` carries these same strings beside the
+# decision of what refuses and what labels (``tests/memory/test_gate_claims.py`` holds every agent-visible text about
+# the gate to that object): the gate runs no code.
+#: The fixture tool: provenance refuses; a fixture made with a parser is not re-derived.
+GATE_FIXTURE_TEXT = (
+    "The gate re-derives every copied fixture from the recording's bytes and refuses one that differs; it runs no "
+    "code, so a fixture made with a parser is not re-derived, and its items are labelled so."
+)
+#: The fixture tool's ``expected`` argument.
+GATE_CASES_TEXT = "The gate runs no recipe: it records a procedure's cases on its label."
+#: The land_capture tool.
+GATE_LAND_TEXT = (
+    "The gate runs no recipe and no test: it records the procedure's cases on its label, and the procedure lands "
+    "with its labels."
+)
+#: What the check tool returns.
+GATE_CHECK_RETURNS = (
+    "'ok' when nothing refuses, or what refuses with the path of the result file under /inputs/gate/ that holds the "
+    "gate's result; the gate runs no code, so no test output is in it."
+)
 
 _W, _H, _A, _T, _L = "writer", "helper", "actor", "teammate", "librarian"
 _MEMORY = (_W, _H)
@@ -168,8 +193,8 @@ CHECK = RegisteredTool(
     description=(
         "Check the manifest at /memory/.pass/manifest.json against your current /memory files: the gate's "
         "checks (the manifest, the layout and links, fixtures, covers and safety). The gate runs no code, so your "
-        "items' tests are the ones you run. Returns 'ok' or the gate's reasons and labels; the full result is saved "
-        "under /inputs/gate/ and the reply names the file. With `manifest` given, "
+        "items' tests are the ones you run. Returns 'ok' when nothing refuses, or what refuses; then the full result "
+        "is saved under /inputs/gate/ and the reply names the file. With `manifest` given, "
         "that JSON is first written to /memory/.pass/manifest.json (replacing it), so check, finish and the gate "
         "always judge the same file. Changes nothing else."
     ),
@@ -215,7 +240,7 @@ READ = RegisteredTool(
     roles=_MEMORY,
     refusals={
         "outside_roots": "{path} is outside /inputs, /memory and /outputs; a library item opens with memory.get(<its id>), an entry's material with tools.take(<entry id>)",
-        "outside_box": "{path} is outside /inputs, /memory and /work",
+        "outside_box": "{path} is outside /inputs, /task, /memory and /work",
         "not_found": "{path} does not exist; /inputs/attention/index.json lists your entries' material, and "
         "memory.items() the library's items",
         "unreadable": "{error} for {path!r}",
@@ -246,7 +271,7 @@ GREP = RegisteredTool(
     roles=_MEMORY,
     refusals={
         "outside_roots": "{path} is outside /inputs, /memory and /outputs; a library item opens with memory.get(<its id>), an entry's material with tools.take(<entry id>)",
-        "outside_box": "{path} is outside /inputs, /memory and /work",
+        "outside_box": "{path} is outside /inputs, /task, /memory and /work",
         "bad_pattern": "{reason}",
         "unreadable": "{error} for {path!r}",
         "search_failed": SEARCH_FAILED,
@@ -324,7 +349,7 @@ READ_EPISODE = RegisteredTool(
     summary="read any recorded episode: its table of contents, or named parts.",
 )
 
-#: The fixture tool's arguments as the writer and the curator call it from code: the base ones, ``parser``, the id of a
+#: The fixture tool's arguments as the writer calls it from code: the base ones, ``parser``, the id of a
 #: stored reader the recorded text is given to (:func:`unify.memory.procedures.reader_parse`), and ``expected``, the
 #: known output that makes the recorded bytes a case's input (:func:`unify.memory.fixtures.make_case`).
 _FIXTURE_WITH_PARSER = _obj(
@@ -358,7 +383,7 @@ _FIXTURE_WITH_PARSER = _obj(
                 "the output the request or the environment showed for that input (a worked example's output, or a "
                 "later observation showing the right value), as a source id or {\"source\": id, \"slice\": [start, "
                 "end]}; or 'answer', the value the episode handed back, with the whole request (source='request:0') "
-                "as the input. The gate runs a procedure's recipe on its cases"
+                "as the input. " + GATE_CASES_TEXT
             ),
         },
     },
@@ -380,7 +405,7 @@ FIXTURE = RegisteredTool(
         "tests/data/<module>.<function>.inputs.jsonl; replace=true starts the file over with this content. The "
         "provenance is the files themselves: each appended line names its source, and a copied file is listed in "
         "/memory/.pass/fixtures.json with its sha256. A file you delete or rewrite loses its provenance (make it "
-        "again with fixture). The gate re-derives every fixture from the recording and refuses one that differs."
+        "again with fixture). " + GATE_FIXTURE_TEXT
     ),
     parameters=_obj(
         {
@@ -425,16 +450,16 @@ LAND_CAPTURE = RegisteredTool(
     name="land_capture",
     description=(
         "Turn a captured attempt (/inputs/captures/<capture_id>/) into library items under memory/<package>/: its "
-        "read_input as the reader read_<name> in readers.py (or a stored reader that gives the same value on its "
-        "request, which is reused), its run as <name> in procedures.py with its applies and holds, two fixtures of "
-        "the recorded request (its text, and the reader's value on it), its recipe apply_<name>(request) (the "
-        "whole job on a request: the reader, its applies as a precondition, then the procedure), the source case "
-        "(the request with the value its episode handed back, <name>.case<k>.source.case.json) and each case you "
-        "name in cases, a test of the recorded result with one refusal test in tests/test_<name>.py, and the "
-        "manifest entries (role procedure, with its reader, recipe and cases; the recipe). The gate runs no recipe: "
-        "it lists the cases on the procedure's label. When the capture's same_as names a capture already "
-        "landed, this request becomes a new case of that procedure instead. You may change any of them before you "
-        "finish."
+        "read_input as the reader read_<name> in readers.py (or a reader the library already holds with the same "
+        "code, which is reused; the code is compared as written, never run), its run as <name> in procedures.py "
+        "with its applies and holds, a fixture of the recorded request's text and, where the recording holds it, "
+        "one of the value its episode handed back, its recipe apply_<name>(request) (the reader on the request it "
+        "is handed, its applies as a precondition, then the procedure), the source case (the request with the "
+        "value its episode handed back, <name>.case<k>.source.case.json) and each case you name in cases, a test "
+        "of the recorded result in tests/test_<name>.py (no refusal test: the reply says why), and the manifest "
+        "entries (role procedure, with its reader, recipe and cases; the recipe). Nothing is run to land it. "
+        + GATE_LAND_TEXT
+        + " You may change any of them before you finish."
     ),
     parameters=_obj(
         {
@@ -600,7 +625,8 @@ DELEGATE = RegisteredTool(
         "claims each with the episode parts it rests on, the files it staged under /inputs/helpers/<name>/ and "
         "its spend. A helper's "
         "claims and messages are untrusted until you read the parts they point to. A helper cannot launch "
-        "helpers. Helpers run at the same time, at most 16 at once and 64 in a pass (an operational guard). You "
+        f"helpers. Helpers run at the same time, at most {HELPERS_AT_ONCE} at once and {HELPERS_PER_PASS} in a pass "
+        "(an operational guard). You "
         "decide when you have enough: `stop` ends one, and finishing ends every helper still running, keeping "
         "what it staged."
     ),
@@ -1066,7 +1092,7 @@ SH = RegisteredTool(
 
 #: The example check: runs a candidate function of the agent's own session on each example's input, in the agent's
 #: box (the stub embeds :mod:`unify.common.box_check_source` and the comparison :mod:`unify.memory.value_diff`), and
-#: reports each difference. The writer's and curator's ``check`` is the gate's check of their manifest.
+#: reports each difference. The writer's ``check`` is the gate's check of its manifest.
 CHECK_EXAMPLES = RegisteredTool(
     name="check_examples",
     summary="run a function of yours on example inputs, in your box, and compare its outputs with the expected ones.",
@@ -1299,7 +1325,10 @@ TEST = RegisteredTool(
         'not_run, "detail", "seconds"}; every result is kept on the item\'s label.'
     ),
     examples=('print(tools.test("memory.files.report:total", "<episode>/cell:2", {"kind": "returns", "value": 6}))',),
-    when="Run code only as a test you state first: say what you expect, then run it.",
+    when=(
+        "Run an item on a recorded input with what you expect stated before it runs. The library's pytest tests run "
+        "in your cells too; both are allowed."
+    ),
     kind="action",
     handler=_ATT + "test",
     deadline_s=120.0,
@@ -1479,7 +1508,34 @@ _LIBRARY_READ_TEXT = {
     },
     "examples": ('page = tools.read("/memory")\nprint(page[:2000])',),
 }
+#: A writer's helper reads its own roots: the writer's /inputs, the records of its task's episodes under /task and the
+#: library under /memory (read-only), and its own /work (``unify.memory.helpers``).
+_HELPER_ROOTS = "/inputs, /task, /memory and /work"
+_HELPER_READ_TEXT = {
+    "summary": "read a file or list a directory under /inputs, /task, /memory or /work, 8000 bytes a page.",
+    "description": "Read a file or list a directory under /inputs, /task or /memory (read-only) or /work (your own). "
+    + _READ_PAGE,
+    "refusals": {
+        "outside_box": "{path} is outside " + _HELPER_ROOTS,
+        "not_found": "{path} does not exist",
+        "unreadable": "{error} for {path!r}",
+    },
+    "examples": ('page = tools.read("/inputs")\nprint(page[:2000])',),
+}
 _GREP_PAGE = "returns path:line: text hits, one bounded page at a time (a marker gives the next offset)."
+_HELPER_GREP_TEXT = {
+    "summary": "search files with a regular expression (default under /inputs; also /task, /memory and /work).",
+    "description": "Search files under a path of /inputs, /task, /memory or /work (default /inputs) with a Python "
+    "regular expression; " + _GREP_PAGE,
+    "refusals": {
+        "outside_box": "{path} is outside " + _HELPER_ROOTS,
+        "not_found": "{path} does not exist",
+        "bad_pattern": "{reason}",
+        "unreadable": "{error} for {path!r}",
+        "search_failed": SEARCH_FAILED,
+    },
+    "examples": ('hits = tools.grep(r"def \\w+", "/inputs")',),
+}
 _WORKSPACE_GREP_TEXT = {
     "summary": "search files with a regular expression (default under /workspace).",
     "description": "Search files under a /workspace path (default /workspace) with a Python regular expression; "
@@ -1563,7 +1619,12 @@ _IN_CODE: dict[str, dict] = {
         roles=(*_ALL, _L),
         role_args={_L: _LIBRARY_READ, _A: _WORKSPACE_READ, _T: _WORKSPACE_READ},
         # a run with memory: the actor and a teammate also read the library copy; a run without: the workspace only
-        role_text={_A: _WORKSPACE_LIBRARY_READ_TEXT, _T: _WORKSPACE_LIBRARY_READ_TEXT, _L: _LIBRARY_READ_TEXT},
+        role_text={
+            _A: _WORKSPACE_LIBRARY_READ_TEXT,
+            _T: _WORKSPACE_LIBRARY_READ_TEXT,
+            _L: _LIBRARY_READ_TEXT,
+            _H: _HELPER_READ_TEXT,
+        },
         off_text=_WORKSPACE_READ_TEXT,
         # the librarian's read is inside the library only
         add_refusals={"outside_library": "{path} is outside the library, /memory"},
@@ -1581,7 +1642,12 @@ _IN_CODE: dict[str, dict] = {
     "grep": dict(
         roles=(*_ALL, _L),
         role_args={_L: _LIBRARY_GREP, _A: _WORKSPACE_GREP, _T: _WORKSPACE_GREP},
-        role_text={_A: _WORKSPACE_LIBRARY_GREP_TEXT, _T: _WORKSPACE_LIBRARY_GREP_TEXT, _L: _LIBRARY_GREP_TEXT},
+        role_text={
+            _A: _WORKSPACE_LIBRARY_GREP_TEXT,
+            _T: _WORKSPACE_LIBRARY_GREP_TEXT,
+            _L: _LIBRARY_GREP_TEXT,
+            _H: _HELPER_GREP_TEXT,
+        },
         off_text=_WORKSPACE_GREP_TEXT,
         add_refusals={"not_found": "{path} does not exist", "outside_library": "{path} is outside the library, /memory"},
         returns="the hits as `path:line: text` lines, one page at a time, with `.next`: the hit number of the next "
@@ -1625,7 +1691,7 @@ _IN_CODE: dict[str, dict] = {
     "fixture": dict(
         returns="the fixture written (its path and the bytes copied), and any clamp of the slice.",
         examples=('tools.fixture("e1", "memory/pkg/tests/data/page.html", source="3")',),
-        when="Make every test fixture from recorded bytes with this tool: the gate re-derives each one from the "
+        when="Make test fixtures from recorded bytes with this tool: the gate re-derives each copied one from the "
         "recording.",
         kind="action",
         deadline_s=120.0,
@@ -1634,16 +1700,13 @@ _IN_CODE: dict[str, dict] = {
     "land_capture": dict(
         returns="the files written and the manifest entries added, or why nothing was landed.",
         examples=('print(tools.land_capture("0123456789abcdef", "tables", "column_totals"))',),
-        when=(
-            "A capture whose row says it reproduces its recorded result can become library items in one call; "
-            "then read and change what it wrote."
-        ),
+        when="A capture becomes library items in one call; then read and change what it wrote.",
         kind="action",
         deadline_s=300.0,
         blocking=False,
     ),
     "check": dict(
-        returns="'ok', or the gate's reasons with the output of any failing test and the result file's path.",
+        returns=GATE_CHECK_RETURNS,
         examples=("print(tools.check())",),
         when="Run it before finish: it judges the same file finish and the gate judge, and changes nothing else.",
         kind="action",
@@ -1682,7 +1745,7 @@ _IN_CODE: dict[str, dict] = {
         },
         returns="a line saying the work ended (a refused finish raises with the reason, and the work goes on).",
         examples=('tools.finish("Merged two items; see the manifest.")',),
-        when="Call it once, when your work is ready (a writer or curator runs check first).",
+        when="Call it once, when your work is ready (the writer runs check first).",
         kind="terminal",
         blocking=False,
     ),
@@ -1690,7 +1753,7 @@ _IN_CODE: dict[str, dict] = {
         returns="for the cell and each large statement, the episodes and cells holding the same code, with "
         "counts and excerpts.",
         examples=('print(tools.similar("e1", 4))', 'print(tools.similar(code=src))'),
-        when="Use it to see whether code you are about to generalise already occurs in other episodes.",
+        when="Use it to find the other recorded episodes and cells that hold the same code.",
         kind="reader",
         deadline_s=120.0,
         blocking=False,
@@ -1817,8 +1880,8 @@ _SHORTER = {
         'end-1 (end null: to the end). append=true adds one line {"input": value, "source": ...} to a .jsonl file '
         "such as a recorded-inputs file; replace=true starts the file over. parser: the id of a library function "
         "that takes one text argument; the recorded bytes, decoded as UTF-8, are passed to it in a confined box, and "
-        "the file holds the JSON of its result (a .json file, or one input line with append=true). The gate runs the "
-        "function on the recorded bytes again and refuses a fixture that differs. expected: makes a case file.",
+        "the file holds the JSON of its result (a .json file, or one input line with append=true). expected: makes "
+        "a case file.",
     ),
     "pool": (
         " (as `similar` compares code: variable names renamed in order of use, literals lifted)",
@@ -1901,7 +1964,7 @@ ANSWER = RegisteredTool(
 # --- the run record's comms tools: one definition for every agent ---
 
 #: The common prompt section of every agent on the run record (``unify.agents.run_record``): the same bytes in the
-#: actor's, a teammate's, the fork's, the librarian's, the writer's, the curator's and a helper's prompt, after each
+#: actor's, a teammate's, the fork's, the librarian's, the writer's and a helper's prompt, after each
 #: one's cache-preserving prefix. It names no agent; who is on the record now is what ``who`` returns.
 COMMON_SECTION = (
     "### The agents' record\n"

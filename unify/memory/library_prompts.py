@@ -1,13 +1,13 @@
-"""The memory prompts: the actor's guide, the writer's store-pass (WRITE) brief and its curate-pass (CURATE) brief.
+"""The memory prompts: the actor's guide and the writer's brief.
 
 Each text serves one role and states its role, inputs, outputs, rules and when it is done. None carries another
-role's instructions, any benchmark's vocabulary, or an instruction to check a task's examples:
+role's instructions, any benchmark's vocabulary, or an instruction to check a request's examples:
 ``tests/memory/test_prompts_library_mode.py`` pins that, and ``test_prompts_library_contradictions.py`` pins
 :data:`RULES` (each rule stated in its owners' prompts only) and :data:`V2_RETIRED` (no retired rule survives).
 
-Every number a brief states is read from the constant that enforces it (:func:`write_brief_now`,
-:func:`curate_brief_now`), so a brief cannot drift from its gate. A change to any of these texts is a reviewed
-change. Read-only access is enforced by the mounts, not by wording.
+Every number the writer's brief states is read from the constant that enforces it (:func:`write_brief_now`), and what
+it says of the gate from :data:`.gate_policy.GATE`, so the brief cannot drift from its gate. A change to any of these
+texts is a reviewed change. Read-only access is enforced by the mounts, not by wording.
 """
 
 from __future__ import annotations
@@ -103,11 +103,11 @@ GUIDE_LIBRARIAN = (
 )
 
 
-# --- the writer's briefs: store pass (WRITE) and curate pass (CURATE) ---------------------------------------------
+# --- the writer's brief ------------------------------------------------------------------------------------------
 #
-# Each brief is built from stable text plus the configuration of the run (which optional inputs exist, which tools
+# The brief is built from stable text plus the configuration of the run (which optional inputs exist, which tools
 # are registered for the role), so it is byte-stable for a whole run. Nothing that changes between passes (the
-# library index, the pool, use counts, drafts, why a curate pass runs) is inlined: those live in files the brief
+# library index, the pool, use counts, drafts) is inlined: those live in files the brief
 # points to. The Tools section is rendered from the tool spec registry (:func:`.tool_spec.tools_section`), so it
 # names exactly the tools the role gets.
 
@@ -187,11 +187,8 @@ SUMMARY_NOT_EVIDENCE = (
     "the part it points to."
 )
 
-#: Row keys the pass adds when an optional input exists (described only then).
-#: The keys of a batch-map row's ``staging`` entry (:func:`.staging.export`, plus ``candidates`` and ``capture``), in
-#: the order the row key's text names them. Which reader staged the files is not among them: that stays in the
-#: host-side records.
-STAGING_ROW_FIELDS = ("status", "files", "refused", "path", "summary", "blocks", "candidates", "capture")
+#: The keys of a batch-map row's ``staging`` entry (:func:`.staging.export`, plus ``candidates`` and ``capture``). Which
+#: reader staged the files is not among them: that stays in the host-side records.
 STAGING_ROW_KEY = (
     "staging",
     "dict: `status`, `files`, `refused`, `path`, `summary` (the path of the episode's `summary.md`, or null when "
@@ -219,40 +216,29 @@ RELATED_ROW_KEY = (
     "`error` instead of a count when the links could not be computed",
 )
 
-#: The captured attempts in a store pass's inputs (:mod:`.captures`), named whenever staging is, in its bullet.
+#: The captured attempts in a store pass's inputs (:mod:`.captures`), named in the staging bullet.
 CAPTURES_TEXT = (
     "Beside it, /inputs/captures/<id>/ holds attempts the harness captured when their episode ended: `procedure.py` (the "
     "procedure that produced the result the episode handed back), `broke.md` (what broke), `signature.json` (the "
-    "structure of its input and result) and `record.json` (its uses and outcomes). When an episode's capture can be "
-    "landed, its procedure is here only, not in /inputs/staging/. The harness has already run each "
-    "procedure on its recorded request, confined; the episode's batch-map row `capture` says whether it gave the same "
-    "result, what signal the episode carried, and which stored captures give the same result there. "
-    "{land}A capture is not in the library: it becomes library items only as you write them. A failed capture is "
-    "knowledge too: a note of what broke, or a test marked as a known failure.\n"
+    "structure of its input and result) and `record.json` (its record: its outcome and status). When an episode's "
+    "capture can be landed, its procedure is here only, not in /inputs/staging/. The harness runs no capture: the "
+    "episode's batch-map row `capture` gives its id, the signal its episode carried and its status. "
+    "`tools.land_capture(capture_id, package, name)` turns one into library items you can change before you "
+    "finish; its row's `staging.capture.land` is that call. A capture is a library entry from the moment it is "
+    "stored, served as it is; the items you write sit beside it.\n"
 )
 
 
-#: The landing tool's sentence in :data:`CAPTURES_TEXT`, when the agent has the tool.
-LAND_TEXT = (
-    "`{tools}land_capture(capture_id, package, name)` turns one into library items you can change before you "
-    "finish; its row's `staging.capture.land` is that call. "
-)
-
-
-def captures_input(in_code: bool, land: bool = True) -> str:
-    """:data:`CAPTURES_TEXT`, with the landing tool's sentence when the agent has the tool (*land*), named as the
-    agent calls it (in code: ``tools.``)."""
-    sentence = LAND_TEXT.replace("{tools}", "tools." if in_code else "") if land else ""
-    return CAPTURES_TEXT.replace("{land}", sentence)
+def captures_input() -> str:
+    """:data:`CAPTURES_TEXT` (the writer always has ``land_capture``)."""
+    return CAPTURES_TEXT
 
 #: What each pool entry kind holds (only the kinds :data:`.pool.KINDS` defines are named).
 POOL_KIND_TEXT: dict[str, str] = {
     "candidate": "a function with its cases",
     "lesson": "notes",
-    "cluster": "code that recurs across episodes",
     "draft": "work the gate refused, with its result",
     "deferred": "episodes a pass kept open to revisit",
-    "unread": "episodes no pass has read",
     "capture": "a procedure the harness captured from a completed attempt, with its record",
     "failure": "an attempt that failed, with what broke",
 }
@@ -284,7 +270,7 @@ _HONESTY = (
 )
 
 #: The "when to use" section every stored function and note carries and the README every folder holds, as the writer
-#: and the curator are told them (:mod:`.when_to_use`: the gate checks the shape, never the words).
+#: is told them (:mod:`.when_to_use`: the gate checks the shape, never the words).
 WHEN_TO_USE_TEXT = (
     "- Every function and note carries a section saying when to use it, written for a reader who has a new "
     "request and must decide whether this item fits it. In a function's docstring it is a `When to use:` section; "
@@ -293,10 +279,10 @@ WHEN_TO_USE_TEXT = (
     "requests that look alike but need something else; `Example request:` one request it fits, in a requester's "
     "words. For example:\n"
     "  When to use:\n"
-    "      Saved for: totalling the amounts of a list of payment rows per currency.\n"
-    "      Recognise: the request gives rows with an amount and a currency and asks for totals.\n"
-    "      Not for: rows that must first be converted to one currency, or totals per date.\n"
-    "      Example request: Sum these payments per currency.\n"
+    "      Saved for: counting the lines of a text file that match a pattern.\n"
+    "      Recognise: the request gives a text file and a pattern and asks how many lines match.\n"
+    "      Not for: counting words or characters, or matches that span lines.\n"
+    "      Example request: How many lines of this file contain the word error?\n"
     "  A new or changed function or note without the section or one of its four lines is labelled so. Keep it "
     "true when you change what the item does.\n"
     "- Every folder, `memory/<package>/` and `notes/<topic>/`, holds a short `README.md` you keep: what the "
@@ -475,11 +461,10 @@ CANDIDATE_CONTRACT_IN_CODE = (
 )
 
 
-#: The example-evidence rule when tools are called from code: the same rule, with the wider evidence said once.
+#: The example-evidence rule when tools are called from code.
 EPISODES_RULE_IN_CODE = (
-    "the calls of a function that return take fixture values from a recorded episode: one episode is enough. Calls "
-    "on same-shaped values from other episodes, in this batch or not, are shown beside the function, never "
-    "required. A call that refuses or raises counts for nothing"
+    "the calls of a function that return take fixture values from a recorded episode: one episode is enough. A call "
+    "that refuses or raises counts for nothing"
 )
 
 _LIMITS_IN_CODE = (
@@ -535,16 +520,14 @@ _WHAT_TO_WRITE_IN_CODE = (
     "- A procedure is a function that takes the value a stored reader gives on a request and returns the result "
     "that was handed back.\n"
     "- A procedure comes with its recipe: one function in its module, named apply_ followed by the procedure's "
-    "name (apply_total for total), that is handed a new request as the harness hands it (its text, with .text and "
-    ".data), reads from it every value the job needs, calls the procedure and the helpers, and returns what the job "
-    "hands back. The "
+    "name (apply_total for total), that is handed a request as the harness hands it (its text, with .text and "
+    ".data), calls the reader and the procedure on it, and returns what the procedure returns. The "
     "procedure's manifest entry adds \"role\": \"procedure\", \"recipe\" (the recipe's id; the recipe is an item "
     "too) and \"cases\": its case files, each an input with its known output, made with `tools.fixture(...)` "
     "given expected: the source request with the value its episode handed back (source \"request:0\", expected "
-    "\"answer\"), and every input the request or the environment showed with the output it showed for it, a later "
-    "observation included. The gate runs no recipe: it records the procedure's cases on its label, and the "
-    "procedure lands either way; run the recipe on a case yourself with `tools.test` to see what it gives. "
-    "`tools.land_capture(...)` writes the recipe and the source case; add the shown cases.\n"
+    "\"answer\"), or an input the request or the environment showed with the output it showed for it (a later "
+    "observation included). <<cases_text>> `tools.test` runs an item on a recorded input. "
+    "`tools.land_capture(...)` writes the recipe, the source case and the cases its call names.\n"
     "- A function's docstring has a one-line summary; `Args:`, `Returns:` and `Raises:` sections "
     "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
     "the function's tests, `memory/<package>/tests/test_<module>.py::test_<case>`, with no doctest and no "
@@ -553,9 +536,10 @@ _WHAT_TO_WRITE_IN_CODE = (
     "with front matter `title`, `description` (one line, shown in the index) and `uses` (the ids of the functions "
     "it uses), and a `## Rule` section. `memory.get` serves a note's front matter and its `## Rule` section, at most "
     "<<note_rule_chars>> characters; the rest of the file (the cases it came from, under `## Evidence`, say) is read "
-    "at its path. A new or changed note without a `## Rule` section with text is labelled so. A link is written only in a note's `uses` or a function's `Notes:` line, and must name an "
-    "item that exists. A new item starts as `on-trial`; later passes revise or remove it. A function's linked "
-    "note says its preconditions and its known failures.\n"
+    "at its path. A new or changed note without a `## Rule` section with text is refused. A link is written only in "
+    "a note's `uses` or a function's `Notes:` line, and must name an item that exists. A new item starts as "
+    "`on-trial`; later passes revise or retire it. A function's linked note says its preconditions and its known "
+    "failures.\n"
     + WHEN_TO_USE_TEXT
     + "- Tests go in `memory/<package>/tests/test_<module>.py`: plain pytest, importing only the library and the "
     "standard library, with fixtures under `memory/<package>/tests/data/`. `tests/` takes no `__init__.py`: "
@@ -599,12 +583,13 @@ _WRITE_RULES_IN_CODE = (
     "checks.\n"
     "4. Prefer extending an existing item to adding a near-duplicate. When you change what an item returns on "
     "its recorded inputs, add a test that fails on the old version and passes on yours, and say why in `why`. "
-    "This pass never removes library items and never deletes or weakens a test: a candidate "
-    "with fewer items or tests is labelled so. If an existing test must change, name it in `tests_changed` with the reason. "
+    "A pass never removes library items: a candidate with fewer items than the library it started from, a deleted "
+    "item or a dropped alias is refused. Retiring an item is a decision, not a removal: decide `retire` on its entry, "
+    "and the item stays on record with its file. A test deleted or weakened without its reason in `tests_changed`, "
+    "or a candidate with fewer tests, is labelled so. "
     "A pass may also change only notes, only tests, or the expected values in the tests of a function you did not "
-    "change; such tests need only pass. Retiring an item is a decision, not a removal: decide `retire` on its entry "
-    "and its file stays. Retire an item whose recorded uses fail and that no change can repair; the usage table "
-    "counts every call, including calls made through `memory.get`.\n"
+    "change; such tests need only pass. Retire an item whose recorded uses fail and that no change can repair; the "
+    "usage table counts every call, including calls made through `memory.get`.\n"
     "5. Write the tests first, against trusted expected values, "
     + _TRUST
     + " At least one call returns on arguments loaded from fixtures made with `tools.fixture`, or computed in the "
@@ -630,13 +615,20 @@ _WRITE_RULES_IN_CODE = (
 )
 
 
-#: The attention pass's section of the brief.
+def _attention_text() -> str:
+    """The attention pass's section of the brief, with the relations as :mod:`.capture_groups` names them."""
+    from .capture_groups import HISTORY_TEXT, relations_text
+
+    return ATTENTION_TEXT.replace("<<relations>>", relations_text()).replace("<<history>>", HISTORY_TEXT)
+
+
+#: The attention pass's section of the brief (:func:`_attention_text` fills in the relations and the history).
 ATTENTION_TEXT = (
     "# Your entries\n"
     "You are given entries that need your attention; decide each with `tools.decide`. New captures come to you as a "
-    "group: captures whose records show they act through the same tools, use the same library items or read the "
-    "same shape of input, with the related captures earlier passes already decided and the library items the group "
-    "used or is linked to (/inputs/attention/group.json). Read them together with the library and decide what to keep. Open "
+    "group of related captures, each related pair for one or more of these reasons: <<relations>>. With them come "
+    "<<history>> and the library items the group used or is linked to (/inputs/attention/group.json). Read them "
+    "together with the library and decide what to keep. Open "
     "entries listed beside them may share a rule with yours; look with "
     "`tools.open_entries` and `tools.find`, and `tools.take` those that do; taking a closed entry shows its material "
     "and what was decided, read-only. /inputs/attention/index.json lists your entries, each with the material it "
@@ -657,37 +649,40 @@ IMPURE_MANIFEST_DOCS = (
     "  - Every item may state, and every item you land or change states: `situation`, the situation it is for; "
     "`inputs`, its values that are inputs (for example `state.data[0].lines`); `constants`, each value it "
     "holds fixed "
-    "with its source (`{\"value\": \"tax rate 0.2\", \"source\": \"<episode>/action:3\"}`); and for a function "
+    "with its source (`{\"value\": \"page size 50\", \"source\": \"<episode>/action:3\"}`); and for a function "
     "`effects`, `none`, `reads`, `writes` or `unknown` (what its calls do to the environment). A note that is a "
     "checklist says `\"form\": \"checklist\"`. They are kept on the item's label beside its evidence.\n"
 )
-#: The stated tests.
-TESTS_TEXT = "Running code is a test you state first: say what you expect, then run `tools.test`."
-
-#: Rev 2's gate (:mod:`.gate_policy`): what a finding does and what the gate runs.
-LABELS_ONLY_GATE = (
-    "# The gate\n"
-    "After `tools.finish(summary)` a deterministic gate checks the candidate. A finding about an item is recorded on "
-    "its label and the item lands with it; a finding about the whole pass is a note. Only these refuse: safety "
-    "(G6), a change outside `memory/` and `notes/` or to the generated files, a manifest that does not parse or "
-    "leaves a change undeclared, a fixture that did not come through `tools.fixture` unchanged, a cited episode that "
-    "is not recorded, code that does not parse, a listed item, test or case file missing from the candidate, and a "
-    "test that imports the gate's own test kit. The gate runs no code: no item, test or recipe is "
-    "run to check or rank it, so each label says what was not run and why. Running code is a test you state first "
-    "and run yourself with `tools.test`, on whatever item you choose; no test result, yours or one recorded on a "
-    "label, sets an item's level, status or rank: those come only from the outcomes of its uses and the episodes "
-    "it comes from. "
-    "Its labels name the check: G1, layout and provenance (the paths, the manifest, the links, the fixtures, each "
-    "new or changed function and note's `When to use` section, each note's `## Rule` section and each changed "
-    "folder's README.md); G2, evidence "
-    "(each function's listed tests name it; an item's support is the episodes it comes from and the uses whose "
-    "outcomes confirmed it, never a run of the gate's); G3, tests (plain pytest, and no test lost or weakened "
-    "without a reason; the gate runs none of them: they state what the item claims); G4, the index (a note when it has outgrown the view the working "
-    "model is shown); G5, items (no fewer items); G6, "
-    "safety (no links, executables, submodules, git, pytest or interpreter configuration files, bytecode or "
-    "key-shaped strings).\n"
+#: How code runs for the writer: in its cells, and two ways of running the library's code as a test, both allowed.
+TESTS_TEXT = (
+    "Your code runs in your cells. Two ways run the library's code as a test, and both are allowed: `tools.test` "
+    "runs one item on a recorded input against what you state you expect before it runs, confined, and records the "
+    "result; the pytest command under What to write runs a package's tests in your cell."
 )
-#: Rev 2's repair: only a hard check gives a repair round.
+
+def gate_text() -> str:
+    """The brief's gate section, from :data:`.gate_policy.GATE`: what refuses, what only labels, and that the gate
+    runs no code."""
+    from .gate_policy import GATE
+
+    labels = "; ".join(f"{check}, {what}" for check, what in GATE.labels)
+    return (
+        "# The gate\n"
+        "After `tools.finish(summary)` a deterministic gate checks the candidate. A finding about an item is recorded "
+        "on its label and the item lands with it; a finding about the whole pass is a note. Only these refuse: "
+        + _join(GATE.refusal_words())
+        + ". The gate runs no code: no item, test or recipe is run to check or rank it, so each label says what was "
+        "not run and why. Running code is yours to choose (`tools.test`, or pytest in your cells); no test result, "
+        "yours or one recorded on a label, sets an item's level, status or rank: those come only from the outcomes "
+        "of its uses and the episodes it comes from. Each finding names its check: "
+        + labels
+        + "; G5, items (no fewer items, no deleted item, no dropped alias: these refuse); G6, safety (no links, "
+        "executables, submodules, git, pytest or interpreter configuration files, bytecode or key-shaped strings: "
+        "these refuse).\n"
+    )
+
+
+#: The repair: only a check that refuses gives a repair round.
 LABELS_ONLY_REPAIR = (
     "# Repair\n"
     "If a check refuses anything, its full result (every check and every note) is "
@@ -709,8 +704,8 @@ def with_switches(body: str) -> str:
     """The WRITE brief *body* for an attention pass with items of any effect and stated tests: the attention pass's
     section after the role; items of any effect (rule 7's literal rule becomes the stated inputs and constants; rule 8
     keeps credentials and tokens, and no longer bars the results of calls with side effects); the stated tests. What
-    the gate checks is stated once, in the base text and :data:`LABELS_ONLY_GATE`, as :mod:`.gate_policy` decides it."""
-    body = _swap(body, "\n# Inputs\n", "\n" + ATTENTION_TEXT + "\n# Inputs\n")
+    the gate checks is stated once, in the base text and :func:`gate_text`, as :mod:`.gate_policy` decides it."""
+    body = _swap(body, "\n# Inputs\n", "\n" + _attention_text() + "\n# Inputs\n")
     body = _swap(
         body,
         "- /inputs/batch_map.json:",
@@ -733,6 +728,13 @@ def with_switches(body: str) -> str:
     )
     body = _swap(body, "\n# What to write\n", "\n" + TESTS_TEXT + "\n\n# What to write\n")
     return body
+
+
+def _cases_text() -> str:
+    """What the brief says the gate does with a procedure's cases (:data:`.gate_policy.CASES_TEXT`)."""
+    from .gate_policy import CASES_TEXT
+
+    return CASES_TEXT
 
 
 def _note_rule_chars() -> int:
@@ -769,7 +771,7 @@ def _write_brief_in_code(
     role = (
         "# Role\n"
         "You are the library writer. A working model handles requests, and its cells import a shared Python "
-        "library, `memory`. You build tested functions and linked notes in that library from the recorded episodes "
+        "library, `memory`. You build functions with their tests, and linked notes, in that library from the recorded episodes "
         "and from proposals. The proposals ("
         + _join(proposals_from)
         + ") are drafts by agents that each saw part of the evidence. Use, fix, merge, generalise or rewrite them, "
@@ -787,7 +789,7 @@ def _write_brief_in_code(
         "`staging`. "
         + STAGING_UNFINISHED
         + " None of it has been run: untrusted input. "
-        + captures_input(True, has("land_capture")),
+        + captures_input(),
     )
     if helpers:
         inputs.append(
@@ -814,7 +816,8 @@ def _write_brief_in_code(
     )
     inputs.append(
         "- /inputs/episodes/<episode>.json: each batch episode's full record (request, observations, cells, actions, "
-        'work-tree diff); a large value is {"__blob__": "<id>", "bytes": n}. For: the evidence.\n',
+        "work-tree diff), each value whole. For: the evidence. /inputs/blobs/<id> holds the bytes of a file a "
+        "work-tree action read or wrote (its response's `blob_before` and `blob_after`).\n",
     )
     inputs.append(
         "- /inputs/shared/<id>.txt: a block of the working model's instructions that recurs across requests, shown "
@@ -826,6 +829,9 @@ def _write_brief_in_code(
     )
     inputs.append(_LIBRARY_BULLET_IN_CODE)
     inputs.append("- /inputs/gate/previous.md: the last pass's full gate result.\n")
+    inputs.append(
+        "- /inputs/sitecustomize.py is the harness's own: it records which files your cells open.\n",
+    )
 
     look = ["staged candidates and their cases"]
     if helpers:
@@ -844,7 +850,7 @@ def _write_brief_in_code(
     )
     decide += " " + SUMMARY_NOT_EVIDENCE
     similar_line = (
-        " Where code looks reusable, `tools.similar` finds other recorded episodes with matching code."
+        " `tools.similar` finds other recorded episodes with the same code."
         if has("similar")
         else ""
     )
@@ -922,7 +928,7 @@ def _write_brief_in_code(
         + "\n"
         + _WRITE_RULES_IN_CODE
         + "\n"
-        + LABELS_ONLY_GATE
+        + gate_text()
         + "\n"
         + LABELS_ONLY_REPAIR
         + "\n"
@@ -946,6 +952,7 @@ def _write_brief_in_code(
             "lint_min": lint_min,
             "note_rule_chars": _note_rule_chars(),
             "pytest_env": _env(pytest_env),
+            "cases_text": _cases_text(),
         },
     )
 
@@ -990,33 +997,9 @@ def input_pointer_files() -> dict[str, str]:
 MAX_INLINE_LIST = 10
 
 
-#: Phrases (lower case) that only the WRITE brief may hold, only the CURATE brief, and only the two briefs.
-WRITE_ONLY = (
-    "batch_map.json",
-    "/inputs/staging",
-    "/inputs/pool",
-    "/inputs/helpers",
-    "`delegate`",
-    "`similar`",
-    "`pool`",
-)
-WRITER_ONLY = ("manifest", "the gate", "finish(")
-
 #: Each rule the prompts state: (rule, topic, owners, the phrase that states it). The phrase must be in every
 #: owner's text and in no other prompt (tests/memory/test_prompts_library_contradictions.py).
 RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
-    (
-        "status meanings",
-        "library item status",
-        ("guide",),
-        "`on-trial` items are candidates",
-    ),
-    (
-        "find matches structure only",
-        "how find matches",
-        ("guide",),
-        "It cannot match plain text",
-    ),
     (
         "fits compares structure only",
         "how an item's applicability check matches",
@@ -1036,12 +1019,6 @@ RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         "What you store is your decision",
     ),
     (
-        "procedures are replayed",
-        "procedure verification",
-        ("write",),
-        "A procedure is verified by replaying its episode",
-    ),
-    (
         "start from the actor's code",
         "where code comes from",
         ("write",),
@@ -1055,12 +1032,12 @@ RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ),
     ("failure-only work is a note", "notes", ("write",), "becomes a note"),
     (
-        "WRITE never removes",
+        "a pass never removes library items",
         "pass roles",
         ("write",),
-        "This pass never removes library items",
+        "A pass never removes library items",
     ),
-    ("trust order", "trusted sources", ("write", "curate"), "in this order of trust"),
+    ("trust order", "trusted sources", ("write",), "in this order of trust"),
     (
         "exact trusted assertion",
         "test assertions",
@@ -1073,42 +1050,11 @@ RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         ("write",),
         "Never compute an expected value with the function's own expression",
     ),
-    (
-        "drawn inputs appended",
-        "drawn test inputs",
-        ("write",),
-        "more recorded inputs of the same kind to a copy of that file",
-    ),
-    ("literal rule", "literals", ("write",), "make it a parameter"),
-    (
-        "deterministic tests",
-        "qa determinism",
-        ("write", "curate"),
-        "never assert on the clock",
-    ),
-    ("no credentials", "credentials", ("write", "curate"), "Never store credentials"),
-    ("why trailer", "commit trailer", ("write", "curate"), '"why"'),
-    ("repair rounds", "repair rounds", ("write", "curate"), "you get a repair round"),
-    ("drafts", "drafts", ("write", "curate"), "kept as a draft"),
-    (
-        "merge keeps aliases",
-        "aliases",
-        ("curate",),
-        "keeping each old name as an alias",
-    ),
-    (
-        "standing tests green",
-        "existing tests",
-        ("curate",),
-        "keeps the library's existing tests green",
-    ),
-    (
-        "retired fixtures stay used",
-        "retirement",
-        ("curate",),
-        "stay used by a remaining function's tests",
-    ),
-    ("two episodes decide", "evidence count", ("curate",), "one episode never decides"),
+    ("deterministic tests", "qa determinism", ("write",), "never assert on the clock"),
+    ("no credentials", "credentials", ("write",), "Never store credentials"),
+    ("why trailer", "commit trailer", ("write",), '"why"'),
+    ("repair rounds", "repair rounds", ("write",), "you get a repair round"),
+    ("drafts", "drafts", ("write",), "kept as a draft"),
 )
 
 #: Instructions and surfaces of the earlier memory design that are retired: none may appear in any text the actor or

@@ -4,7 +4,7 @@ Nothing a consolidation pass writes reaches the working model unless :meth:`Gate
 revisions are resolved to commit SHAs once, and the trees inspected are exactly the committed blobs
 (``ls-tree`` + ``cat-file``; no ``git archive``, so no ``.gitattributes`` can hide a file).
 
-The gate runs no code (rev 2.1, :mod:`.gate_policy`): no item, test, recipe, reader, suite or recorded episode is
+The gate runs no code (:mod:`.gate_policy`): no item, test, recipe, reader, suite or recorded episode is
 run to check, classify or rank anything. It reads files, the manifest and the evidence store. A check that would
 need a run records ``not run: <why>`` on the label of the items it concerns (:meth:`_Run.not_run`), or a note for
 the pass; running code is a test the writer states and runs itself (``tools.test``).
@@ -13,23 +13,23 @@ Threat model
 ------------------------------------
 The gate guards against a careless or mistaken consolidator, not a malicious one; what the writer's own code does is
 contained by the confinement of the writer's box. Its rules are structural: they pin what a pass may touch. A
-finding about an item's quality (G2 and G3) is recorded on its label and refuses nothing (:func:`.gate_policy.hard`,
-:meth:`_Run.fail`); only the hard checks refuse.
+finding about an item's quality is recorded on its label and refuses nothing (:data:`.gate_policy.GATE` says which
+findings refuse, :meth:`_Run.fail` applies it); only the hard checks refuse.
 
 The checks (library layout, :mod:`.library_checks`):
 
-* **G1 provenance and scope** (hard, except the forms below). The manifest is well formed and its ids strict (:mod:`.manifest`); the
+* **G1 provenance and scope** (hard, except the labels below). The manifest is well formed and its ids strict (:mod:`.manifest`); the
   candidate descends from the parent; every file has mode 100644 and sits where the layout admits it; every changed
   file is declared; every added, changed or removed item is listed; every item names source episodes that exist;
   no commit writes a path the harness reserves for its generated files. Every new or changed fixture re-derives from
   the recording's bytes (:func:`.fixtures.verify`); a parsed fixture (re-deriving it runs its reader) and a replay
   case file (verifying it replays recorded code) are not run and are labelled. The links, ``When to use`` sections,
-  notes' ``## Rule`` sections and folder README files are checked for presence and form, and an item that lacks one
-  is labelled (:func:`.gate_policy.hard`: only a finding no item owns, about a fixture's provenance, a cited episode or
-  a misplaced file refuses).
+  notes' ``## Rule`` sections and folder README files are checked for presence and form: an item that lacks its
+  ``When to use`` section or its folder's README is labelled, and a new or changed note without its ``## Rule``
+  section is refused (:data:`.gate_policy.GATE`). Every changed module and test parses.
 * **G2 evidence** (labels). A function's typed covers name a recorded cell or work-tree diff that defines a function;
   an ``episode`` cover is not re-run. A procedure names a recipe and the cases it is for, each read from its case
-  file (a failed source episode is a finding); the recipe is not run, and its record says so (``ran: false``). Each
+  file (a failed source episode is a label); the recipe is not run, and its record says so (``ran: false``). Each
   function's examples (the calls its listed tests make) are not run. Its effect is derived from its recorded covers
   (:func:`.library_checks.derive_effect`).
 * **G3 tests** (labels). An edited function needs a new or changed test listed under it, and every listed test must be
@@ -37,7 +37,8 @@ The checks (library layout, :mod:`.library_checks`):
   listed tests, each package's suite and every stored function whose module the pass changes (or that imports one)
   are not run, and each is labelled.
 * **G4 size.** Over its soft budget, the index gets a ``note: G4 hygiene due``; growth is never refused.
-* **G5 items** (labels). A pass that reduces the number of items, or drops an alias, is noted; it refuses nothing.
+* **G5 items** (hard). A pass that reduces the number of items, deletes an item or drops an alias is refused:
+  retiring an item is a state change that keeps it on record, so nothing deletes a library item.
 * **G6 safety** (hard). No links, executables, submodules, or git, pytest or interpreter configuration files; no
   bytecode or native code; no key-shaped string in a changed file or the manifest.
 
@@ -80,7 +81,7 @@ from .manifest import (
     parse_manifest,
     unsafe_path,
 )
-from .gate_policy import NOT_RUN_GATE
+from .gate_policy import NOT_RUN_GATE, hard
 from .shape_rows import shapes_at, snapshot_rows, static_shapes
 from .item_states import UNCHECKED as _LOWEST_LEVEL
 from .qa import QAChecks
@@ -186,33 +187,12 @@ def _owners(man: Manifest, test: str) -> list[str]:
     return [it.item for it in man.items if test in it.tests]
 
 
-#: The checks whose findings about an item are quality results: G2 (evidence: the
-#: recipe's cases, the unseen values, the grounding of its calls, its covers) and G3 (its tests, its red test, its
-#: behaviour, its examples). G1 (layout, provenance, the manifest, links), G5 (items and coverage kept) and G6
-#: (safety) stay hard, as do the library's other tests (a finding no item owns).
-LABELLED_CHECKS = frozenset({"G2", "G3"})
-#: What makes a G2 or G3 finding hard all the same: code that does not parse, a missing path, the gate's own kit, a
-#: key-shaped string. (The texts of failed imports and runs went with the runs: the gate runs no code.)
-_HARD_MARKS = (
-    "does not parse",
-    "is not in the candidate",
-    "[library_mode:plain]",
-    "key-shaped",
-)
-
-
 def _not_run(run: Any, item: str) -> str:
     """Why the gate did not run *item* (:func:`.gate_policy.not_run_reason`, from its candidate source)."""
     from .gate_policy import not_run_reason
 
     body = run.c_bodies.get(item)
     return not_run_reason(body[1] if body is not None and body[0] == "function" else None)
-
-
-def labelled(check: str, reason: str) -> bool:
-    """Whether a finding of *check* about an item is a quality result its label carries
-    rather than a refusal: G2 and G3, except syntax, imports that fail, missing paths and the gate's own kit."""
-    return check in LABELLED_CHECKS and not any(m in str(reason) for m in _HARD_MARKS)
 
 
 @dataclass
@@ -247,18 +227,10 @@ class _Run:
     # library mode: the fixture provenance entries G1 verified in this pass (path -> (sha256, entry)), persisted on
     # merge
     fixtures_verified: dict[str, tuple[str, dict]] = field(default_factory=dict)
-    # library mode: evidence findings set an item's evidence level instead of refusing it (:meth:`cap`)
-    levels_on: bool = False
-    # a quality finding about an item is recorded on its label and
-    # refuses nothing (:meth:`fail`, :func:`labelled`); the hard checks refuse as before
-    labels_on: bool = False
     # item -> the quality findings recorded on its label (in order, each once)
     label_findings: dict[str, list[str]] = field(default_factory=dict)
     # item -> the evidence findings that set its level (in order, each once)
     level_reasons: dict[str, list[str]] = field(default_factory=dict)
-    # (:mod:`.gate_policy`) every finding but the hard ones labels its item or notes the pass (:meth:`check`; a
-    # preview keeps its G2 and G3 labels only, :func:`labelled`)
-    labels_only: bool = False
 
     def cap(
         self,
@@ -267,12 +239,10 @@ class _Run:
         item: str | list[str] | None = None,
     ) -> None:
         """Record an evidence finding of *check* about *item*: it sets the item's evidence level to
-        :data:`.item_states.UNCHECKED` and refuses nothing (library mode).
-
-        Outside library mode, or for a finding no item owns, it is a failure (:meth:`fail`), as before levels.
+        :data:`.item_states.UNCHECKED` and refuses nothing. A finding no item owns goes to :meth:`fail`.
         """
         owners = [item] if isinstance(item, str) else list(item or [])
-        if not self.levels_on or not owners:
+        if not owners:
             self.fail(check, reason, item)
             return
         line = KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}")
@@ -289,33 +259,21 @@ class _Run:
         reason: str,
         item: str | list[str] | None = None,
     ) -> None:
-        """Record a failure of *check*; *item* names the manifest item(s) it belongs to (None: pass-wide).
+        """Record a finding of *check*; *item* names the manifest item(s) it belongs to (None: pass-wide).
 
-        Only a failure attributed to items can be resolved by refusing those items alone (per-item
-        admission, :meth:`Gate.merge`); an unattributed failure refuses the whole pass.
+        A finding that :data:`.gate_policy.GATE` does not list as a refusal labels its items (or notes the pass) and
+        refuses nothing. A refusal attributed to items can be resolved by refusing those items alone (per-item
+        admission, :meth:`Gate.merge`); an unattributed one refuses the whole pass.
         """
         owners = [item] if isinstance(item, str) else list(item or [])
-        if self.labels_only:
-            from .gate_policy import hard
-
-            if not hard(check, reason, owners):
-                # rev 2: a finding labels its items (or notes the pass) and refuses nothing
-                line = KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}")
-                for owner in owners:
-                    found = self.label_findings.setdefault(owner, [])
-                    if line not in found:
-                        found.append(line)
-                who = ", ".join(owners) if owners else "the pass"
-                self.note(f"label: {who}: {line.splitlines()[0][:300]}")
-                return
-        if self.labels_on and owners and labelled(check, reason):
-            # a quality finding about these items: their label carries it, and nothing is refused
+        if not hard(check, reason, owners):
             line = KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}")
             for owner in owners:
                 found = self.label_findings.setdefault(owner, [])
                 if line not in found:
                     found.append(line)
-            self.note(f"label: {', '.join(owners)}: {line.splitlines()[0][:300]}")
+            who = ", ".join(owners) if owners else "the pass"
+            self.note(f"label: {who}: {line.splitlines()[0][:300]}")
             return
         # reasons are stored in the evidence store; test output in them is model-controlled
         self.res.checks[check] = False
@@ -337,8 +295,8 @@ class _Run:
         self.notes.append(KEY_SHAPED.sub(_REDACTED, f"note: {reason}"))
 
     def not_run(self, item: str | list[str] | None, why: str) -> None:
-        """Rev 2 (:mod:`.gate_policy`): a check that did not run on *item*, recorded on its label (``not run: <why>``)
-        and noted; it refuses nothing."""
+        """A check that did not run on *item* (:mod:`.gate_policy`), recorded on its label (``not run: <why>``) and
+        noted; it refuses nothing."""
         owners = [item] if isinstance(item, str) else list(item or [])
         line = KEY_SHAPED.sub(_REDACTED, why if why.startswith("not run") else f"not run: {why}")
         for owner in owners:
@@ -371,7 +329,7 @@ class Gate:
         """*library_mode* is the library's checks' configuration (:class:`.library_checks.LibraryConfig`): G3's not-run
         labels and per-item reduction are scoped by the import graph, and the library gate checks
         (:mod:`.library_checks`) and stage 5's kit check run. Every finding but the hard ones is a label on its item,
-        and the gate runs no code (:mod:`.gate_policy`, rev 2.1). *segments_dir* (``UNIFY_MEMORY=in_episode``):
+        and the gate runs no code (:mod:`.gate_policy`). *segments_dir* (``UNIFY_MEMORY=in_episode``):
         the state dir whose segment records (``<episode>.s<n>``) an item may cite as its source while their episode
         is still open; None: only recorded episodes.
         """
@@ -413,7 +371,8 @@ class Gate:
         tree: Path,
         manifest: object,
     ) -> list[str]:
-        """The cheap, read-only checks of :meth:`check` on an uncommitted *tree*: failure reasons, [] if none.
+        """The cheap, read-only checks of :meth:`check` on an uncommitted *tree*: the reasons of the findings that
+        refuse, [] if none (what only labels is left to :meth:`check`, which decides the same way).
 
         For a consolidator's ``check`` tool before it finishes. *tree* holds the files the pass would commit
         (:func:`.snapshot.tree_listing` lists it without git; empty directories are no entries). *parent* is
@@ -425,8 +384,6 @@ class Gate:
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memory-preview-"))
         run = _Run(res, Manifest(), manifest, "", "", tmp)
-        run.levels_on = True
-        run.labels_on = True
         try:
             try:
                 run.man = self._parse_manifest(manifest)
@@ -483,8 +440,8 @@ class Gate:
         """Check, then fast-forward ``main``; evidence is recorded only for a landed candidate.
 
         Per-item admission (stage 7): when the candidate is refused and every failure belongs to manifest
-        items (an item's hard G1 checks, such as its fixtures' provenance; under the labels-only gate a G2 or G3
-        finding labels its item instead), those items are refused with
+        items (an item's hard G1 checks, such as its fixtures' provenance; every other finding labels its item
+        instead), those items are refused with
         everything that depends on them (:mod:`.reduction`). The candidate reduced to the other items is
         committed as a child of *parent* and the whole gate runs on it once more; it lands if it passes,
         and otherwise the pass is refused whole. A pass-wide failure (layout, unsafe or forbidden files,
@@ -705,12 +662,9 @@ class Gate:
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memory-gate-"))
         run = _Run(res, Manifest(), manifest, parent, candidate, tmp)
-        run.levels_on = True
-        run.labels_on = True
         reduced = None
         try:
             if self._prepare(run):
-                run.labels_only = True
                 v = self._library_mode(run)
                 self._g1(run)
                 v.g1()
@@ -749,7 +703,7 @@ class Gate:
     def _levels(run: _Run) -> None:
         """Library mode: each manifest function's evidence level, with the findings :meth:`_Run.cap` recorded.
 
-        The gate runs no code (rev 2.1), so it never finds that a function reproduces its case: every function it
+        The gate runs no code, so it never finds that a function reproduces its case: every function it
         checks is ``unchecked``, with its findings, or with :data:`.gate_policy.NOT_RUN_GATE` when it has none. Both
         go in the gate result and in the function's verification record (``level``, ``level_reasons``), from which the
         item records take them; outcomes after use, never the gate, give ``confirmed-by-outcomes``.
@@ -1067,7 +1021,7 @@ class Gate:
         """G3 on the candidate's library, from its files only: an edited function needs a new or changed test listed
         under it, and every listed test must be in the candidate.
 
-        The gate runs no code (rev 2.1, :data:`.gate_policy.NOT_RUN_GATE`): a listed test, a package's suite and a
+        The gate runs no code (:data:`.gate_policy.NOT_RUN_GATE`): a listed test, a package's suite and a
         stored function whose module the pass changes, or that imports one (:meth:`_call_scope`), are not run, and
         each is recorded on its owners' labels (``not run: <why>``); a suite is noted.
         """
@@ -1130,7 +1084,7 @@ class Gate:
 
     @staticmethod
     def _suites(run: _Run) -> None:
-        """The library's test suites (``memory/<package>/tests``) are not run (rev 2.1, the gate runs no code): each
+        """The library's test suites (``memory/<package>/tests``) are not run (the gate runs no code): each
         suite of the parent or the candidate that holds a test module is noted, when the pass changes anything."""
         if not run.changed:
             return

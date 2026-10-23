@@ -59,7 +59,9 @@ def test_the_hard_checks_stay_refusals():
     assert not gp.hard("G3", "memory/x/tests/test_y.py is not green on the candidate", ["i"])
     assert not gp.hard("G2", "i: its recipe does not give the expected output", ["i"])
     assert not gp.hard("G1", "i docstring has no When to use section", ["i"])
-    assert not gp.hard("G5", "no fewer items", [])
+    # G5: a pass never removes library items (retiring keeps an item on record), so fewer items refuse
+    assert gp.hard("G5", "a pass may not reduce the number of items (3 to 2)", [])
+    assert gp.hard("G1", "notes/a/b.md has no `## Rule` section", ["notes/a/b.md"])
 
 
 # --- the gate runs nothing for an impure item, and labels instead of refusing ----------------------------------------------

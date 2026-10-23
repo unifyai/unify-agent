@@ -180,13 +180,17 @@ def test_the_writer_brief_names_the_summaries_first():
     assert not guards.example_checks(brief) and not guards.benchmark_words(brief)
 
 
+#: The keys of a batch-map row's ``staging`` entry as the pass builds it, in the order the row key's text names them.
+STAGING_ROW_FIELDS = ("status", "files", "refused", "path", "summary", "blocks", "candidates", "capture")
+
+
 def test_the_staging_row_keys_are_the_built_rows_keys_with_the_summary_and_no_reader_name(tmp_path):
     from unify.memory.writer_pass import _staged_candidates
 
     doc = dict(lp.row_keys())["staging"]
     assert "no reader output" in doc and "`source`" not in doc
-    named = [k for k in lp.STAGING_ROW_FIELDS if f"`{k}`" in doc]
-    assert named == list(lp.STAGING_ROW_FIELDS) and "summary" in named and "source" not in named
+    named = [k for k in STAGING_ROW_FIELDS if f"`{k}`" in doc]
+    assert named == list(STAGING_ROW_FIELDS) and "summary" in named and "source" not in named
     # a row built as the pass builds it has exactly these keys, and never names the reader
     root = tmp_path / "staging-root"
     d = _stage(root, "e4", "ok", {"summary.md": SUMMARY, "candidates/f.py": "def f(x):\n    return x\n"})
@@ -196,7 +200,7 @@ def test_the_staging_row_keys_are_the_built_rows_keys_with_the_summary_and_no_re
     entry = staging.export(view, tmp_path / "out" / "e4")
     entry["candidates"] = _staged_candidates(entry)
     entry["capture"] = None  # the pass names the episode's capture here when it can be landed
-    assert set(entry) == set(lp.STAGING_ROW_FIELDS)
+    assert set(entry) == set(STAGING_ROW_FIELDS)
     assert "fork" not in json.dumps({k: v for k, v in entry.items() if k != "refused"})
 
 

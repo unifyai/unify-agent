@@ -1,8 +1,7 @@
 """Capture groups: which captures the writer reads together, and when a group is due.
 
-The writer's job is transfer: it reads related captures together with the library items they touch, and makes or
-reshapes items that hold beyond the episodes they came from. Transfer needs at least two instances of the same kind of
-work, so a pass is handed a new capture only together with its **history**: earlier captures related to it. A capture
+A writer pass reads related captures together with the library items they touch, and decides what the library keeps
+from them. A pass is handed a new capture only together with its **history**: earlier captures related to it. A capture
 with no related capture is never written up alone; it stays served for reuse (the library exports every capture as
 soon as it is stored) and waits until a related capture arrives. An entry whose episode left no capture is closed by
 the harness (:data:`NO_CAPTURE`) and never runs a pass.
@@ -78,6 +77,25 @@ USED_COUNTS = ("called", "refused", "errored", "refused_modified", "errored_modi
                "runtime_ok", "runtime_refused", "runtime_errored")
 #: The relation kinds, as :func:`related` names them.
 RELATION_KINDS = ("sequence", "subsequence", "items", "input", "judged")
+#: What each relation kind means, as the writer is told it (its brief and an attention pass's first message).
+RELATION_TEXT = {
+    "sequence": "their procedures make the same ordered sequence of tool calls",
+    "subsequence": "their procedures share a run of consecutive tool calls",
+    "items": "their episodes used a shared library item (or one of them used the other capture)",
+    "input": "they read the same input shape",
+    "judged": "a judge that read both procedures' code, calls, input shape and outcome named them the same kind of work",
+}
+#: How the history of a group is said: the related captures closed earlier, by a pass or by the harness.
+HISTORY_TEXT = (
+    "related captures closed earlier (each decided by a pass, or closed by the harness when no pass finished its "
+    "group)"
+)
+
+
+def relations_text() -> str:
+    """The relation kinds as the writer reads them, in :data:`RELATION_KINDS` order."""
+    parts = [f"`{k}` ({RELATION_TEXT[k]})" for k in RELATION_KINDS]
+    return "; ".join(parts[:-1]) + "; or " + parts[-1]
 @dataclass(frozen=True)
 class Profile:
     """What the harness's records say of one entry's capture (nothing run): its entry form, the ``env`` chains its

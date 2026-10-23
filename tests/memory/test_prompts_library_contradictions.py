@@ -53,20 +53,6 @@ def test_no_v2_rule_survives(tmp_path):
         assert guards.example_checks(text) == [], name
 
 
-#: Rules rev 2's in-code prompts do not state: CURATE's (no curator), the mechanisms rev 2 removed (recorded
-#: replays, drawn inputs, the literal rule) and ``memory.find`` (the library's calls are ask, items and get), and the
-#: status meanings, which the v2 guide stated and the in-code guide leaves to the library's own help.
-REV2_NOT_STATED = frozenset({
-    "status meanings",
-    "find matches structure only",
-    "procedures are replayed",
-    "drawn inputs appended",
-    "literal rule",
-    "merge keeps aliases",
-    "standing tests green",
-    "retired fixtures stay used",
-    "two episodes decide",
-})
 #: Rules the in-code guide leaves to the library's own help (``help(memory)``): stated there.
 IN_LIBRARY_HELP = frozenset({"fits compares structure only"})
 
@@ -78,9 +64,6 @@ def test_each_rule_lives_in_its_roles_prompts_only():
     help_text = lx.stub_source(librarian=True).decode() + lx.package_source(librarian=True).decode()
     assert len({r[0] for r in pv.RULES}) == len(pv.RULES)
     for rule, _spec, owners, phrase in pv.RULES:
-        if rule in REV2_NOT_STATED:
-            assert all(phrase not in text for text in texts.values()), rule
-            continue
         if rule in IN_LIBRARY_HELP:
             assert phrase in help_text and all(phrase not in text for text in texts.values()), rule
             continue

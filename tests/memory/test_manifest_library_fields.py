@@ -90,7 +90,7 @@ def test_field_types_keys_types_and_kinds_are_checked():
         ), key
     assert _refusal({"items": [_item(field_types={f"{DATA}#month": "weekday"})]}) == (
         "memory.acct.users:user_id: unknown semantic type 'weekday'; the fixed list is month, day_of_month, hour, "
-        "probability, percentage, nonneg_count, nonneg_money, currency_code"
+        "probability, percentage, nonneg_count, nonneg_number"
     )
     note = {"item": "notes/acct/users.md", "kind": "note", "field_types": {f"{DATA}#month": "month"}}
     assert _refusal({"items": [note]}) == "notes/acct/users.md: only functions declare field types"

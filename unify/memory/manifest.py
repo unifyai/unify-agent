@@ -33,12 +33,7 @@ SEMANTIC_TYPES: dict[str, tuple[str, int | None, int | None]] = {
     "probability": ("number", 0, 1),
     "percentage": ("number", 0, 100),
     "nonneg_count": ("int", 0, None),
-    "nonneg_money": ("decimal", 0, None),
-    "currency_code": (
-        "code3",
-        None,
-        None,
-    ),  # the ISO 4217 format: three uppercase letters, not a list
+    "nonneg_number": ("number", 0, None),
 }
 _FIELD_NAME_MAX = 200
 
@@ -47,9 +42,7 @@ def describe_semantic_types() -> str:
     """The fixed list with each type's domain, from SEMANTIC_TYPES (for the consolidator's brief)."""
     out = []
     for name, (kind, low, high) in SEMANTIC_TYPES.items():
-        if kind == "code3":
-            domain = "three uppercase letters, a format"
-        elif high is None:
+        if high is None:
             domain = f"{'integer' if kind == 'int' else kind} ≥ {low}"
         else:
             domain = f"{'integer' if kind == 'int' else kind} {low}–{high}"

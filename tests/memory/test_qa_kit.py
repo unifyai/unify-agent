@@ -30,7 +30,7 @@ def no_box(monkeypatch):
     monkeypatch.setattr(sandbox_run, "_spawn_box", refuse)
 
 
-def _run(tmp_path, files: dict[str, str], changed: list[str], *, labels_only: bool = True) -> _Run:
+def _run(tmp_path, files: dict[str, str], changed: list[str]) -> _Run:
     c = tmp_path / "c"
     for rel, text in files.items():
         (c / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -40,7 +40,6 @@ def _run(tmp_path, files: dict[str, str], changed: list[str], *, labels_only: bo
     run.c_tree = c
     run.c_files = {rel: ("100644", rel) for rel in files}
     run.changed = list(changed)
-    run.labels_only = labels_only
     return run
 
 
@@ -88,9 +87,3 @@ def test_a_test_helper_is_test_side_too(tmp_path, no_box):
 def test_an_unchanged_file_is_not_read(tmp_path, no_box):
     run = _kit(_run(tmp_path, {MODULE: "import memlab\n"}, []))
     assert run.notes == [] and run.label_findings == {}
-
-
-def test_outside_labels_only_library_use_of_the_kit_refuses(tmp_path, no_box):
-    run = _kit(_run(tmp_path, {MODULE: "import memlab\n"}, [MODULE], labels_only=False))
-    assert not run.res.passed
-    assert any(r.startswith(f"G3: [qa:kit] {MODULE} line 1 uses the test kit") for r in run.res.reasons), run.res.reasons

@@ -15,7 +15,8 @@ Public names:
   ``INPUTS_PATH`` (the recorded-inputs file), and the test ids ``EXAMPLE_TEST``, ``INPUTS_TEST``, ``REFUSAL_TEST``;
 * sources ``MODULE_SOURCE``, ``TEST_SOURCE`` (:func:`example_test_source` for other fixture episodes) and
   ``WEAK_TEST_SOURCE`` (the same calls with no exact assertion in any test);
-* builders :func:`make_fixtures`, :func:`files_and_fixtures`, :func:`item`, :func:`manifest`, :func:`candidate`;
+* builders :func:`make_fixtures`, :func:`files_and_fixtures`, :func:`item`, :func:`manifest`, :func:`candidate`
+  (exactly the files given) and :func:`written_candidate` (with the sections a writer adds);
 * the pytest fixture :func:`library_example_world` (a :class:`World`: memory repo, evidence store, blob store and a
   library-mode gate factory).
 """
@@ -218,9 +219,23 @@ def manifest(fixtures: dict[str, dict], *items: dict, **top: Any) -> dict:
 
 
 def candidate(mem: Repo, files: dict[str, str | None], base: str = "main") -> str:
-    """Commit *files* (``None`` deletes) on *base* and return the candidate commit. What they add or change is
-    committed as a writer leaves it: each function and note with its "when to use" section, each folder with its
-    README.md (:func:`tests.memory.writer_sections.as_written`); what they leave as *base* has it stays as it is."""
+    """Commit *files* (``None`` deletes) on *base*, exactly as given, and return the candidate commit. Nothing is
+    added: a function or note without its sections, or a folder without its README.md, is committed so, and the gate
+    sees it so (:func:`written_candidate` commits what a writer would leave)."""
+    with mem.temp_checkout(base) as wt:
+        for rel, text in files.items():
+            if text is None:
+                (wt / rel).unlink()
+                continue
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(text)
+        return mem.commit_all(wt, "pass", {"Pass": "p1"})
+
+
+def written_candidate(mem: Repo, files: dict[str, str | None], base: str = "main") -> str:
+    """:func:`candidate` of *files* as a writer leaves them: what they add or change gets its "when to use" section
+    (and a note its ``## Rule`` section), each folder its README.md (:func:`tests.memory.writer_sections.as_written`);
+    what they leave as *base* has it stays as it is. For tests about something else than those sections."""
     from tests.memory.writer_sections import as_written
 
     with mem.temp_checkout(base) as wt:
@@ -229,14 +244,9 @@ def candidate(mem: Repo, files: dict[str, str | None], base: str = "main") -> st
             for rel, text in files.items()
             if text is None or not (wt / rel).is_file() or (wt / rel).read_text() != text
         }
-        files = {**files, **as_written(written, _Present(wt))}
-        for rel, text in files.items():
-            if text is None:
-                (wt / rel).unlink()
-                continue
-            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
-            (wt / rel).write_text(text)
-        return mem.commit_all(wt, "pass", {"Pass": "p1"})
+        present = _Present(wt)
+        completed = {**files, **as_written(written, present)}
+    return candidate(mem, completed, base)
 
 
 class _Present:

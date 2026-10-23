@@ -46,7 +46,6 @@ def _store(root: Path, source: str = PROCEDURE, **record) -> str:
         "capture_id": cid,
         "episodes": ["e7"],
         "outcome": "none",
-        "same_as": [],
         **record,
     }
     (d / "record.json").write_text(json.dumps(rec), encoding="utf-8")
@@ -201,36 +200,6 @@ def test_a_landed_reader_that_is_the_same_code_is_reused(tmp_path):
     assert "from memory.text.readers import labelled_rows" in (
         tmp_path / "box" / "memory" / "readings" / "tests" / "test_row_sums.py"
     ).read_text()
-
-
-@needs_box
-@pytest.mark.timeout(900)
-def test_same_as_naming_a_landed_capture_adds_a_new_case_of_that_procedure(tmp_path):
-    first = recorded_episode("e7", rows=ROWS)
-    second = recorded_episode("e8", rows=((9, 1), (2, 2), (0, 5)))
-    episodes = {"e7": first, "e8": second}
-    cid = _store(tmp_path / "store")
-    assert _land(tmp_path, episodes, capture_id=cid).status == "ok"
-    # the same work, captured again with other code: its record names the landed capture
-    other = PROCEDURE + "\n\n# written again in another attempt\n"
-    cid2 = _store(tmp_path / "store", other, episodes=["e8"], same_as=[cid])
-    reply = _land(tmp_path, episodes, capture_id=f"capture:{cid2}", package="elsewhere", name="other_name")
-    assert reply.status == "ok", reply.text
-    assert "a new case of memory.readings.procedures:row_sums" in reply.text
-    mem = tmp_path / "box" / "memory" / "readings"
-    assert not (tmp_path / "box" / "memory" / "elsewhere").exists()
-    assert (mem / "procedures.py").read_text().count("# Landed from capture ") == 1
-    data = mem / "tests" / "data"
-    # the second request's text as its case's fixture (no parsed fixture: that would run the reader)
-    assert (data / "row_sums.case2.txt").read_text() == second.request[0]
-    assert not (data / "row_sums.case2.json").exists()
-    test = (mem / "tests" / "test_row_sums.py").read_text()
-    assert "def test_row_sums_case1_gives_the_recorded_result():" in test
-    assert "def test_row_sums_case2_gives_the_recorded_result():" in test
-    assert json.loads((data / "row_sums.case2.result.json").read_text()) == {"sums": [10, 4, 5]}
-    assert 'json.loads((DATA / "row_sums.case2.result.json").read_text(encoding="utf-8"))' in test
-    proc = {i["item"]: i for i in _manifest(tmp_path)["items"]}["memory.readings.procedures:row_sums"]
-    assert proc["source_episodes"] == ["e7", "e8"]
 
 
 # --- refusals, all before anything runs ---------------------------------------------------------------------------

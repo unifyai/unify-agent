@@ -18,24 +18,18 @@ a path the box names), checks it, and writes into the writer's ``/memory``:
   ``<name>.case<k>.shown<j>.case.json``);
 - a fixture of the request text, and a fixture of the handed-back value, a slice of the recorded arguments of the
   dialogue action that handed it back (``args:<i>``), both made by the fixture tool, so the gate re-derives them from
-  the recording (rev 2: no parsed fixture, which would run the reader);
+  the recording (no parsed fixture, which would run the reader);
 - a test, ``memory/<package>/tests/test_<name>.py``: the procedure on the reader's value of the recorded text against
   the handed-back value's fixture, and the reader on the recorded text. No refusal test is written: whether the reader
   refuses text it was not built for is known only by running it, and a landing runs nothing (a test calling it on
-  such text could raise anything, which the gate's example check refuses); the reply asks the writer to add one once
-  the reader states its refusal. Each reader call hands the request over as the harness does (``request(text)``:
+  such text could raise anything); the reply says so. Each reader call hands the request over as the harness does (``request(text)``:
   the text with ``.text`` and ``.data``, :mod:`.request_value`), so a reader of the request's data is tested as it is
   used. When the value was
-  handed back in the final reply, which no fixture source holds, the expected value is written in the test instead,
-  and the gate keeps the procedure ``unchecked``;
+  handed back in the final reply, which no fixture source holds, the expected value is written in the test instead;
 - the manifest entries: the procedure with ``role: "procedure"``, its ``reader``, its ``recipe`` and its ``cases``;
   the recipe; a new reader with ``role: "reader"``.
 
-When the capture's ``same_as`` names a capture already landed (its marker line is in a ``procedures.py`` of the
-library), this request becomes a new case of that procedure instead: its fixtures, its source case and its test
-functions (the procedure's recipe is written then if the earlier landing has none).
-
-Rev 2: nothing landed is run to decide whether it is listed. The landing records ``recognition`` as
+Nothing landed is run to decide whether it is listed. The landing records ``recognition`` as
 :data:`.recognition.NOT_RUN` (an explicit absence), and the procedure is listed by its structure: the librarian judges
 fit from its catalogue row.
 
@@ -44,8 +38,8 @@ files are read without following a link, only as regular files, size-bounded; ``
 the id; the capture is not failed and not retired; the gate's safety checks hold (:func:`.captures.safety`); nothing
 landed holds a key-shaped string or a URL with a password; *package* and *name* are plain module identifiers. Every
 file is written through :func:`.memory_files.write` (the same path checks as every host write, never through a link)
-and the fixture tool; the caller then measures the quota as after any write. A landing runs nothing (rev 2.1): the
-captured code is only parsed as data.
+and the fixture tool; the caller then measures the quota as after any write. A landing runs nothing: the captured
+code is only parsed as data. What the reply says the gate does is :mod:`.gate_policy`'s (:data:`REPLY_GATE`).
 
 Not in this build: the ``episode`` cover of the ``request`` runner (design I.3.5) on the procedure's entry.
 """
@@ -73,6 +67,7 @@ from . import memory_files
 from . import fixtures as _fx
 from . import safe_paths as _safe
 from . import writer_tools as _wt
+from .gate_policy import LAND_GATE_TEXT
 from .redact import KEY_SHAPED
 from .request_value import REQUEST_CLASS
 from .sandbox_run import PYTHON
@@ -82,14 +77,27 @@ TOOL = "land_capture"
 _ARG_ID = re.compile(r"(?:capture:)?([0-9a-f]{16})\Z")
 #: A package or procedure name: a plain module identifier.
 _IDENT = re.compile(r"[a-z][a-z0-9_]{0,47}\Z")
-#: The marker line a landed procedure carries in its module, naming the capture and the reader it was landed with.
-_MARK = re.compile(
-    r"^# Landed from capture ([0-9a-f]{16}): procedure (memory\.[a-z][a-z0-9_]*\.procedures:[a-z][a-z0-9_]*), "
-    r"reader (memory\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*:[A-Za-z][A-Za-z0-9_]*)$",
-    re.M,
-)
 _MAX_RECORD_BYTES = 4 * 1024 * 1024
 _MAX_MODULE_BYTES = 1024 * 1024
+
+
+#: The reply's line on the recipe and its cases, with what the gate does with them (:mod:`.gate_policy`).
+REPLY_RECIPE = (
+    "- recipe {recipe}: it is handed a request as the harness hands it, gives it to the reader, and calls the "
+    "procedure on the reader's value; its cases: {cases}. More cases are case files made with fixture(..., "
+    "expected=...) and listed in the procedure's cases. " + LAND_GATE_TEXT
+)
+#: The reply's line when no fixture source holds the handed-back value.
+REPLY_NO_RESULT_FIXTURE = (
+    "- no fixture source of the recording holds the handed-back value (a value handed back in the final reply has "
+    "none), so the recorded-result test states it"
+)
+#: The reply's line on the sections every new function carries and the folder's README (the gate labels them).
+REPLY_SECTIONS = (
+    "- the functions written here have no `When to use:` section in their docstrings, and the package folder may "
+    "have no README.md (what the request asked for, how to recognise it, what it is not for, one example request); "
+    "the gate labels the items that lack them"
+)
 
 
 class _NotLanded(Exception):
@@ -428,7 +436,7 @@ def case_tests(
     result: Any,
     from_fixture: bool = True,
 ) -> str:
-    """The test functions of case *k*: the reader on the recorded text (it gives a JSON value; rev 2 makes no parsed
+    """The test functions of case *k*: the reader on the recorded text (it gives a JSON value; a landing makes no parsed
     fixture, which would run it), the procedure on the reader's value of it against the handed-back value, and the
     recipe on the recorded request against the same value. *reader_mod* is the reader's module, dotted (``memory.<package>.<module>``).
     With *from_fixture*, the expected value is loaded from :func:`result_fixture`, a fixture of the recording; else
@@ -502,17 +510,6 @@ def _packages(box: Path) -> list[str]:
     finally:
         os.close(root)
     return [n for n in names if _IDENT.match(n)]
-
-
-def _landed(box: Path, cids: list[str]) -> tuple[str, str] | None:
-    """(procedure id, reader id) of the first of *cids* already landed in the library at *box*, by its marker."""
-    want = set(cids)
-    for pkg in _packages(box):
-        text = _box_text(box, f"memory/{pkg}/procedures.py")
-        for m in _MARK.finditer(text or ""):
-            if m.group(1) in want:
-                return m.group(2), m.group(3)
-    return None
 
 
 def _readers(box: Path) -> list[str]:
@@ -628,32 +625,24 @@ def _land(args, store, box, episode, blob, batch, python, parse, work, pass_id=N
     found, handed = _captures.handed_back(ep)
     if not found:
         raise _NotLanded("not_landed", reason=f"capture {cid}'s episode handed back no value to test against")
-    # rev 2: a capture is a record of possibly impure work; it is never replayed to verify it (its tests say)
+    # a capture is a record of possibly impure work; it is never replayed to verify it (its tests say)
     # where the recording holds the handed-back value: a slice of the answering action's arguments (a value the
     # episode used); a value handed back in the final reply has no fixture source, so its test states it instead
     answer = _captures.answered_action(ep)
     result_cut = None if answer is None else result_slice(ep, answer, handed, blob)
     written: list[str] = []
-    same = _landed(box, [c for c in record.get("same_as") or [] if isinstance(c, str)])
-    if same is not None:
-        proc_id, reader_id = same
-        package = proc_id.split(".")[1]
-        name = proc_id.rsplit(":", 1)[1]
-        reused, new_reader = True, False
-        _write_recipe(box, package, name, reader_id, _stated(box, proc_id, "applies") is not None, written)
-    else:
-        proc_id = f"memory.{package}.procedures:{name}"
-        # a reader the library holds is reused when it is the same code (its shape, from its syntax; nothing runs)
-        reader_id = _same_reader(box, source)
-        reused, new_reader = bool(reader_id), not reader_id
-        reader_id = reader_id or f"memory.{package}.readers:read_{name}"
-        _write_procedure(box, source, cid, package, name, reader_id, new_reader, written)
-        _write_recipe(box, package, name, reader_id, "applies" in top_names(source), written)
+    proc_id = f"memory.{package}.procedures:{name}"
+    # a reader the library holds is reused when it is the same code (its shape, from its syntax; nothing runs)
+    reader_id = _same_reader(box, source)
+    reused, new_reader = bool(reader_id), not reader_id
+    reader_id = reader_id or f"memory.{package}.readers:read_{name}"
+    _write_procedure(box, source, cid, package, name, reader_id, new_reader, written)
+    _write_recipe(box, package, name, reader_id, "applies" in top_names(source), written)
     recipe_id = f"memory.{package}.procedures:{recipe_name(name)}"
     reader_mod, reader_fn = reader_id.split(":")
     k = _free_case(box, package, name)
     data_dir = f"memory/{package}/tests/data"
-    # the request text as a fixture; rev 2 makes no parsed fixture (that would run the reader): the reader's test
+    # the request text as a fixture; no parsed fixture is made (that would run the reader): the reader's test
     # checks what it gives on the text when the tests run
     plan: list[dict] = [
         {"source": "request:0", "dest": f"{data_dir}/{name}.case{k}.txt"},
@@ -662,7 +651,7 @@ def _land(args, store, box, episode, blob, batch, python, parse, work, pass_id=N
         plan.append(
             {"source": f"args:{answer}", "slice": result_cut, "dest": f"{data_dir}/{result_fixture(name, k)}"},
         )
-    # the cases the gate runs the recipe on: the request with the value it handed back, and each one the call names
+    # the procedure's cases: the request with the value it handed back, and each one the call names
     cases = [f"{data_dir}/{name}.case{k}.source.case.json"]
     plan.append({"source": "request:0", "expected": _fx.ANSWER, "dest": cases[0]})
     for j, case in enumerate(shown, 1):
@@ -706,7 +695,7 @@ def _land(args, store, box, episode, blob, batch, python, parse, work, pass_id=N
             {"item": reader_id, "kind": "function", "source_episodes": [eid], "tests": [test_rel], "role": "reader"},
         )
     _manifest_add(box, entries)
-    # rev 2: nothing landed is run to decide its listing; the landing says so explicitly
+    # nothing landed is run to decide its listing; the landing says so explicitly
     from .recognition import not_run
 
     recognition = not_run()
@@ -722,24 +711,16 @@ def _land(args, store, box, episode, blob, batch, python, parse, work, pass_id=N
             "episode": eid,
             "pass": pass_id,
             "recognition": recognition,
-            # rev 2: nothing was run to verify the capture or to choose its tests
-            "verified": {"ran": False, "why": "rev2: a capture is never replayed to verify it; its tests are written "
-                                              "from its code"},
+            # nothing was run to verify the capture or to choose its tests
+            "verified": {"ran": False, "why": "a capture is never run to verify it; its tests are written from its "
+                                              "code"},
             "at": time.time(),
         },
     )
     lines = [f"Landed capture {cid} from episode {eid}:"]
-    if same is not None:
-        lines.append(f"- a new case of {proc_id}, which an earlier capture of the same work landed")
-    else:
-        lines.append(f"- procedure {proc_id}")
-        lines.append(f"- reader {reader_id}" + (" (reused: the library holds the same reader code)" if reused else ""))
-    lines.append(
-        f"- recipe {recipe_id}: the whole job on a request; the gate runs it, confined, on each of the "
-        f"procedure's cases ({', '.join(cases)}) and lands the procedure only if it gives every expected output. "
-        "Add a case for every input the request or the environment showed with its output (fixture(..., "
-        "expected=...), listed in the procedure's cases); derive every value the job needs from the request",
-    )
+    lines.append(f"- procedure {proc_id}")
+    lines.append(f"- reader {reader_id}" + (" (reused: the library holds the same reader code)" if reused else ""))
+    lines.append(REPLY_RECIPE.format(recipe=recipe_id, cases=", ".join(cases)))
     lines += [f"- wrote /memory/{p}" for p in written]
     from .recognition import LISTED_BY_STRUCTURE
 
@@ -751,31 +732,10 @@ def _land(args, store, box, episode, blob, batch, python, parse, work, pass_id=N
             "running it; once it raises MemoryInputError on such text, add a test that calls it on that text",
         )
     if result_cut is None:
-        lines.append(
-            "- no fixture source of the recording holds the handed-back value (a value handed back in the final "
-            "reply has none), so the recorded-result test states it, and the gate keeps the procedure unchecked "
-            "until a test asserts its result against a fixture of the recording",
-        )
-    if same is None:
-        lines.append(
-            "- the functions written here have no `When to use:` section in their docstrings yet, and the package "
-            "folder may have no README.md: write them (what the request asked for, how to "
-            "recognise it, what it is not for, one example request), or the gate refuses the items",
-        )
+        lines.append(REPLY_NO_RESULT_FIXTURE)
+    lines.append(REPLY_SECTIONS)
     lines.append("Change any of them before you finish; check judges them as any other change.")
     return _wt.Reply("\n".join(lines), paths=tuple(_wt.path_row(f"/memory/{p}", "write") for p in written))
-
-
-def _stated(box: Path, proc_id: str, fn: str) -> str | None:
-    """The item id of the landed procedure *proc_id*'s private *fn* (``applies``, ``holds``) when its module in the
-    box defines it (parsed as data, never run); None otherwise."""
-    module, _, name = proc_id.rpartition(":")
-    try:
-        names = top_names(_box_text(box, module.replace(".", "/") + ".py") or "")
-    except (SyntaxError, ValueError, _NotLanded):
-        return None
-    private = _private(name, fn)
-    return f"{module}:{private}" if private in names else None
 
 
 def _same_reader(box: Path, source: str) -> str:

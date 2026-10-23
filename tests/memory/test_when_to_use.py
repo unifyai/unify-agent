@@ -2,7 +2,8 @@
 
 The writer writes both; the library-mode gate (G1) checks their shape only: the section is there with its four
 labelled lines, each with some text, and each folder a pass changes holds a README.md with some text. The wording
-is never judged.
+is never judged. What a merge does with a missing section, ``## Rule`` or README (labels it, or refuses a note without
+its rule) is checked by real merges in ``test_gate_behaviour_table.py``.
 """
 
 import ast
@@ -143,81 +144,12 @@ def _function_run(tmp_path, source: str, files: dict[str, bytes], parent: str | 
     )
 
 
-def test_the_gate_refuses_a_new_function_without_the_section(tmp_path):
-    files = {"memory/calc/sums.py": b"", "memory/calc/README.md": b"Sums of rows.\n"}
-    bare = FUNCTION.split("When to use:")[0] + '"""\n    return {}\n'
-    v = _function_run(tmp_path, bare, files)
-    v._when_to_use()
-    assert v.run.fails == [
-        (
-            "G1",
-            f"memory.calc.sums:total has no `When to use:` section ({when_to_use.SHAPE})",
-            "memory.calc.sums:total",
-        ),
-    ]
-    ok = _function_run(tmp_path, FUNCTION, files)
-    ok.g1()
-    assert ok.run.fails == []
-
-
 def test_an_unchanged_function_is_not_judged(tmp_path):
     bare = FUNCTION.split("When to use:")[0] + '"""\n    return {}\n'
     body = ast.unparse(ast.parse(bare).body[0])
     v = _function_run(tmp_path, bare, {"memory/calc/sums.py": b""}, parent=body)
     v._when_to_use()
     assert v.run.fails == []
-
-
-def test_a_new_note_without_the_section_is_refused(tmp_path):
-    item = "notes/payments/totals.md"
-    text = NOTE.replace("## When to use", "## Use")
-    v = _checks(
-        tmp_path,
-        [_item(item=item, kind="note")],
-        c_bodies={item: ("note", text, True)},
-    )
-    v._when_to_use()
-    assert v.run.fails == [
-        ("G1", f"{item} has no `## When to use` section ({when_to_use.SHAPE})", item),
-    ]
-    v = _checks(tmp_path, [_item(item=item, kind="note")], c_bodies={item: ("note", NOTE, True)})
-    v._when_to_use()
-    assert v.run.fails == []
-
-
-def test_a_new_or_changed_note_without_a_rule_section_is_refused(tmp_path):
-    """``memory.get`` serves a note's front matter and its ``## Rule`` section: the gate requires one with text."""
-    assert when_to_use.rule_problems(NOTE) == []
-    item = "notes/payments/totals.md"
-    for text, why in (
-        (NOTE.replace("## Rule\n", ""), "has no `## Rule` section"),
-        (NOTE.replace("Group the rows first.\n", ""), "has an empty `## Rule` section"),
-    ):
-        v = _checks(tmp_path, [_item(item=item, kind="note")], c_bodies={item: ("note", text, True)})
-        v._when_to_use()
-        assert [(c, r.split(" (")[0], i) for c, r, i in v.run.fails] == [("G1", f"{item} {why}", item)]
-
-
-def test_a_changed_folder_without_a_readme_refuses_its_items(tmp_path):
-    files = {"memory/calc/sums.py": b"", "notes/payments/totals.md": NOTE.encode()}
-    v = _function_run(tmp_path, FUNCTION, files)
-    v.run.man.items.append(_item(item="notes/payments/totals.md", kind="note"))
-    v._readmes()
-    reasons = {(r, i) for _, r, i in v.run.fails}
-    assert {i for _, i in reasons} == {"memory.calc.sums:total", "notes/payments/totals.md"}
-    assert all("has no README.md" in r for r, _ in reasons)
-
-
-def test_a_readme_only_change_or_an_emptied_folder_needs_no_item(tmp_path):
-    files = {"memory/calc/README.md": b"   \n"}
-    v = _function_run(tmp_path, FUNCTION, files)
-    v.run.man.items.clear()
-    v._readmes()
-    assert [(c, i) for c, _, i in v.run.fails] == [("G1", None)]
-    assert "has an empty README.md" in v.run.fails[0][1]
-    gone = _checks(tmp_path, [], changed=["memory/old/sums.py"], c_files={})
-    gone._readmes()
-    assert gone.run.fails == []
 
 
 def test_the_writer_is_told_the_shape_the_gate_checks():
@@ -228,6 +160,15 @@ def test_the_writer_is_told_the_shape_the_gate_checks():
     from unify.memory.library_prompts import _WHAT_TO_WRITE_IN_CODE
 
     notes = " ".join(_WHAT_TO_WRITE_IN_CODE.split())
-    assert "and a `## Rule` section" in notes and "without a `## Rule` section with text" in notes
+    assert "and a `## Rule` section" in notes and "without a `## Rule` section with text is refused" in notes
     example = WHEN_TO_USE_TEXT.split("For example:\n", 1)[1].split("  A new or changed", 1)[0]
     assert when_to_use.function_problems("Summary.\n\n" + textwrap.dedent(example)) == []
+
+
+def test_a_note_without_a_rule_or_with_an_empty_one_has_a_problem_the_gate_refuses():
+    from unify.memory import gate_policy
+
+    assert when_to_use.rule_problems(NOTE) == []
+    for text in (NOTE.replace("## Rule\n", ""), NOTE.replace("Group the rows first.\n", "")):
+        [problem] = when_to_use.rule_problems(text)
+        assert gate_policy.hard("G1", f"notes/payments/totals.md {problem}", ["notes/payments/totals.md"]), problem

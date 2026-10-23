@@ -1,11 +1,14 @@
 """The library-mode gate checks, run by :class:`.gate.Gate` with a :class:`LibraryConfig`. Nothing here runs code
-(rev 2.1, :mod:`.gate_policy`): a check that would need a run labels the items it concerns ``not run: <why>``.
+(:mod:`.gate_policy`): a check that would need a run labels the items it concerns ``not run: <why>``. Which findings
+refuse and which only label is :data:`.gate_policy.GATE`'s to say.
 
 * **G1:**
   - scope: only ``memory/`` and ``notes/``, never the harness-generated paths;
   - when to use: every new or changed function and note carries its writer-written ``When to use`` section, with
     its four parts (:mod:`.when_to_use`; shape only, never wording), and every folder the pass changes holds a
-    ``README.md`` with some text; every new or changed note holds a ``## Rule`` section with text;
+    ``README.md`` with some text (labels); every new or changed note holds a ``## Rule`` section with text (a
+    refusal);
+  - syntax: every changed module and test file under ``memory/`` parses (a refusal);
   - links: no dangling ``uses:``/``Notes:`` target;
   - fixture provenance: every new or changed file under ``tests/data/`` came through ``fixture()`` and re-derives
     from the recording's bytes (:mod:`.fixtures`); a parsed fixture (its reader would run) and a replay case file
@@ -14,8 +17,8 @@
   - typed covers: an actor cell or work-tree diff that defines a function; an ``episode`` cover is labelled, not
     re-run;
   - a procedure (``role: procedure``) carries its recipe and the cases it lists, each read from the recording; a
-    source case counts only from an episode that did not fail, and no procedure lands from a failed episode. The
-    recipe is not run: its verification record says so (``recipe``: ``ran: false`` and why);
+    source case counts only from an episode that did not fail, and a procedure from a failed episode is labelled so
+    (it lands with the label). The recipe is not run: its verification record says so (``recipe``: ``ran: false`` and why);
   - each function's examples (the calls its listed tests make) are labelled, not run.
 * **G3:**
   - plain pytest: no test-kit import;
@@ -24,7 +27,7 @@
   - no test deleted or weakened without a reason in the manifest's ``tests_changed``;
   - for WRITE, no fewer tests.
 * **G4** never refuses growth: over the index view budget it notes the index's size.
-* **G5:** no fewer items, and no alias dropped.
+* **G5:** no fewer items, no item deleted, and no alias dropped (refusals: retiring an item keeps it on record).
 
 Measures go to the item verification record (``GateResult.verification``). The merge also appends that record to the
 pass row as one ``library_mode-verification`` line, for the item records.
@@ -43,7 +46,7 @@ from .batch_map import actor_functions
 from .episodes import Episode
 from .fixtures import DATA_PATH, DRAWN_DIR, HashIndex, module_path, package_dir, readers_of, verify
 from .fixed_answer import returns_a_value
-from .gate_policy import NOT_RUN_GATE, not_run_reason
+from .gate_policy import FAILED_SOURCE_LABEL, FIXTURE_MARK, NO_PARSE_MARK, NO_RECIPE_LABEL, NOT_RUN_GATE, not_run_reason
 from .catalogue import estimate_tokens
 from . import layout
 from . import when_to_use
@@ -78,7 +81,7 @@ def derive_effect(
     typed_covers: list[Any],
     episode: Callable[[str], Episode | None],
 ) -> str | None:
-    """A library function's effect, derived from the procedures it reproduces: ``write``, ``read`` or ``unknown``.
+    """A library function's effect, derived from its recorded ``episode`` covers: ``write``, ``read`` or ``unknown``.
 
     Structural, from the recording only; the writer declares nothing (no docstring line):
     - an ``episode`` cover run by the ``tool`` runner repeats the episode's tool calls, so it writes when the
@@ -219,10 +222,31 @@ class LibraryChecks:
         for p in run.changed:
             if p in run.c_files and (why := misplaced(p)) is not None:
                 run.fail("G1", f"file {p}: {why}")
+        self._parses()
         self._links()
         self._fixtures()
         self._when_to_use()
         self._readmes()
+
+    def _parses(self) -> None:
+        """Every changed Python file under ``memory/`` parses (read as data, never run)."""
+        run = self.run
+        for p in sorted(set(run.changed) & set(run.c_files)):
+            if not (p.startswith("memory/") and p.endswith(".py")):
+                continue
+            try:
+                ast.parse((Path(run.c_tree) / p).read_bytes())
+            except (SyntaxError, ValueError) as exc:
+                where = f" (line {exc.lineno})" if getattr(exc, "lineno", None) else ""
+                owners = self._owners(p) if "/tests/" in p else self._module_owners(p)
+                run.fail("G1", f"{p} {NO_PARSE_MARK}{where}", owners)
+            except OSError:
+                continue
+
+    def _module_owners(self, path: str) -> list[str] | None:
+        """The manifest items a library module *path* defines (None: none, so its finding is the pass's)."""
+        found = [it.item for it in self.run.man.items if it.kind == "function" and layout.item_path(it.item) == path]
+        return found or None
 
     def _when_to_use(self) -> None:
         """Every new or changed function and note carries its "when to use" section, its four parts present, and every
@@ -271,7 +295,10 @@ class LibraryChecks:
                 "holds and how its items relate"
             )
             items = [it.item for it in run.man.items if when_to_use.folder(layout.item_path(it.item)) == folder]
-            for item in items or [None]:
+            if not items:
+                # no item of the folder is in the pass: a note for the pass, never a refusal
+                run.note(f"label: the pass: G1: {reason}")
+            for item in items:
                 run.fail("G1", reason, item)
 
     def _links(self) -> None:
@@ -307,7 +334,7 @@ class LibraryChecks:
             ):
                 run.fail(
                     "G1",
-                    f"fixture {p} is not a plain file name under tests/data/",
+                    f"{FIXTURE_MARK}: fixture {p} is not a plain file name under tests/data/",
                     owners,
                 )
                 continue
@@ -334,7 +361,7 @@ class LibraryChecks:
                 hits = index.find(data)
                 if hits:
                     problem += f" (its bytes equal source {hits[0][1]} of {hits[0][0]}: make it with fixture())"
-            run.fail("G1", f"fixture provenance: {problem}", owners)
+            run.fail("G1", f"{FIXTURE_MARK}: {problem}", owners)
 
     # -- G2 -------------------------------------------------------------------------------------------------
     def effects(self) -> None:
@@ -397,24 +424,14 @@ class LibraryChecks:
             recipe = getattr(it, "recipe", None)
             owners = [it.item] + ([recipe] if recipe and recipe != it.item and recipe in listed else [])
             if not recipe:
-                run.fail(
-                    "G2",
-                    f"{it.item} is a procedure without a recipe: add apply(request) to its module, the whole job on "
-                    "the request it is handed with every parameter read from it, and name it in the entry's recipe",
-                    it.item,
-                )
+                run.fail("G2", NO_RECIPE_LABEL.format(item=it.item), it.item)
                 continue
             if run.c_bodies.get(recipe, ("",))[0] != "function":
                 run.fail("G2", f"{it.item}: its recipe {recipe} is not a function of the candidate's library", owners)
                 continue
             failed = sorted(e for e in set(it.source_episodes) if self._episode_failed(e))
             if failed:
-                run.fail(
-                    "G2",
-                    f"{it.item}: its source episode {', '.join(failed)} failed; a failed episode never lands a "
-                    "procedure (land a note of what was tried and what broke)",
-                    owners,
-                )
+                run.fail("G2", FAILED_SOURCE_LABEL.format(item=it.item, episodes=", ".join(failed)), owners)
             cases: list[tuple[str, dict]] = []
             for path in it.cases:
                 if path not in run.c_files:
@@ -436,12 +453,12 @@ class LibraryChecks:
             if not it.cases:
                 run.fail(
                     "G2",
-                    f"{it.item}: its recipe has no case to run on: list in cases the source case (its request with "
-                    "the value it handed back) and every input the request or the environment showed with its "
-                    "output, each made with fixture(..., expected=...)",
+                    f"{it.item}: its entry lists no case: cases are case files made with fixture(..., expected=...), "
+                    "such as the source case (its request with the value it handed back) and an input the request or "
+                    "the environment showed with its output",
                     owners,
                 )
-            # the gate runs no recipe (rev 2.1: no code at all), so its label says why
+            # the gate runs no recipe (no code at all), so its label says why
             why = self._not_run(it.item)
             run.not_run(owners, f"G2 recipe {recipe}: {why}")
             self._record(it.item)["recipe"] = {"item": recipe, "cases": len(it.cases), "ran": False, "why": why}
@@ -552,7 +569,7 @@ class LibraryChecks:
         if len(after) < len(before):
             run.fail(
                 "G3",
-                f"a pass may not reduce the number of tests ({len(before)} to {len(after)})",
+                f"the pass has fewer tests than its parent ({len(before)} to {len(after)})",
             )
         is_item = lambda p: (
             p.startswith("memory/") and p.endswith(".py")
@@ -564,8 +581,10 @@ class LibraryChecks:
         if n_c < n_p:
             run.fail(
                 "G5",
-                f"a pass may not reduce the number of items ({n_p} to {n_c})",
+                f"a pass may not reduce the number of items ({n_p} to {n_c}); retire an item instead: it stays on record",
             )
+        for eid in run.man.deleted:
+            run.fail("G5", f"a pass may not delete an item ({eid}); retire it instead: it stays on record")
 
     def _exact(self, it: Any) -> None:
         run = self.run

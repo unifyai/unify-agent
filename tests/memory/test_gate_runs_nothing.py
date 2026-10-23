@@ -55,7 +55,6 @@ def _run(tmp_path, *, tests: list[str], changed_test: bool) -> _Run:
     run.changed = [MODULE] + ([TEST] if changed_test else [])
     run.p_bodies = {ITEM: ("function", FILL, True), OTHER: ("function", OTHER_P, True)}
     run.c_bodies = {ITEM: ("function", FILL, True), OTHER: ("function", OTHER_C, True)}
-    run.labels_only = True
     return run
 
 

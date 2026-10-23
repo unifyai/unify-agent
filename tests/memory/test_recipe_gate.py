@@ -151,7 +151,7 @@ def test_a_procedure_from_a_failed_episode_is_labelled(tmp_path):
     res = built.result
     # rev 2: the failed episode is a label on the procedure, never a refusal
     assert res.passed and PROC not in res.items_refused, res.reasons
-    assert any("failed; a failed episode never lands a procedure" in r for r in _labels(res, PROC))
+    assert any("failed; the procedure lands with this label" in r for r in _labels(res, PROC))
     assert any(f"{SOURCE_FILE} is the source case of p1, which failed" in r for r in _labels(res, PROC))
 
 

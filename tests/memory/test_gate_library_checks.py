@@ -169,7 +169,7 @@ def test_test_loss_needs_a_reason_and_write_may_not_remove(tmp_path):
         ["memory.calc.sums:total"],
     ) in got
     assert any(
-        c == "G3" and "may not reduce the number of tests (2 to 1)" in r
+        c == "G3" and "fewer tests than its parent (2 to 1)" in r
         for c, r, _ in v.run.fails
     )
     assert any(

@@ -122,12 +122,14 @@ def build(
     edit_manifest: Any = None,
     gate_kwargs: Mapping[str, Any] | None = None,
     config_kwargs: Mapping[str, Any] | None = None,
+    merge: bool = False,
 ) -> Built:
     """The world under *root* (module docstring): *base* is committed first; the pass lands *landings*, then writes
     *files* (path -> text), makes *fixtures* (fixture tool arguments) and lists *items* beside the landings' manifest
     entries. *signals* are indexed for the gate to read; with *require_pass* off a refused check is returned too;
     *edit_manifest* (manifest -> manifest) changes the draft manifest as a writer would before the check; *gate_kwargs*
-    and *config_kwargs* are more fields of the gate and its library configuration."""
+    and *config_kwargs* are more fields of the gate and its library configuration; with *merge* the gate merges the
+    candidate (``Gate.merge``, as a pass's end does) instead of only checking it."""
     root = Path(root)
     episodes = dict(episodes)
     batch = sorted(episodes)
@@ -211,7 +213,10 @@ def build(
         library_mode=LibraryConfig(episodes=episodes.get, **dict(config_kwargs or {})),
         **dict(gate_kwargs or {}),
     )
-    result = gate.check(mem.head(), commit, checked)
+    if merge:
+        result = gate.merge(mem.head(), commit, checked, "pass-under-test", "write", None, "0")
+    else:
+        result = gate.check(mem.head(), commit, checked)
     assert result.passed or not require_pass, result.reasons
 
     with mem.temp_checkout(commit) as wt:
