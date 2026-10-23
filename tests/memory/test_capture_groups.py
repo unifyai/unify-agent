@@ -62,6 +62,16 @@ def test_captures_are_related_by_a_shared_call_sequence_items_or_input_shape_and
     assert cg.related(_p("x", outcome="positive"), _p("y", outcome="positive")) == []
 
 
+def test_an_episode_that_called_a_capture_is_related_to_that_capture_both_ways():
+    x = _p("capturexxxxxxxxxx1", sequence=("env.mail.read",))
+    user = _p("user", items={"capture:capturexxxxxxxxx"})  # its episode called x's capture (x's id is its first 16)
+    assert x.captures == ("capturexxxxxxxxx",)
+    assert cg.related(x, user) == ["items: capture:capturexxxxxxxxx"]
+    assert cg.related(user, x) == ["items: capture:capturexxxxxxxxx"]
+    # served, shown or at the pin only (not in items): no relation
+    assert cg.related(x, _p("other")) == []
+
+
 # --- when a group is due ------------------------------------------------------------------------------------------------
 
 

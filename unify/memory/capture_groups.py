@@ -15,7 +15,7 @@ nothing is run. Two captures are related when their records show at least one of
   :func:`.capture_shape.call_sequence`), so they do the same steps through the world;
 * ``subsequence``: their procedures share a run of :data:`SEQUENCE_MIN` consecutive calls;
 * ``items``: their episodes used a shared library item: called it, or it refused or errored when called (the
-  evidence store's use rows with an observed call). An item that was only at the episode's pin, shown or served
+  evidence store's use rows with an observed call); an episode that used the other capture itself counts the same. An item that was only at the episode's pin, shown or served
   relates nothing: the same few general items are served to nearly every episode;
 * ``input``: they have the same entry form and the same non-empty input shape below the shared envelope: the key
   paths, named or not, and leaf types of the recorded data the capture's signature describes, less the key paths
@@ -137,7 +137,9 @@ def related(a: Profile, b: Profile, common: frozenset = frozenset()) -> list[str
         runs = [r for r in runs if len(r) == SEQUENCE_MIN]
         if runs:
             out.append("subsequence: " + " > ".join(runs[0]))
-    items = sorted(a.items & b.items)
+    # an episode that called a capture is related to it by the same relation as a shared used item
+    called = ({"capture:" + c for c in a.captures} & b.items) | ({"capture:" + c for c in b.captures} & a.items)
+    items = sorted((a.items & b.items) | called)
     if items:
         out.append("items: " + ", ".join(items[:5]))
     if a.form is not None and a.form == b.form and a.input and a.input == b.input:
