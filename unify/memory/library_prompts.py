@@ -82,7 +82,7 @@ STATUS_LINES_IN_CODE = (
     "- `on-trial` items passed the library's checks and have had little use; `adopted` items have also been "
     "used without errors. "
     "Every item's brackets also say what it rests on: its kind (a curated item the library's writer made, a "
-    "recorded procedure that re-runs work an earlier request accepted, or a fixed answer to read), how many "
+    "recorded procedure that re-runs the work of an earlier request, or a fixed answer to read), how many "
     "episodes it comes from and in how many the work was accepted, and how many later uses had an outcome that "
     "confirmed it.\n"
 )

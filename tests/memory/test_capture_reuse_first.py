@@ -56,7 +56,9 @@ def test_a_capture_card_and_run_report_carry_no_discouraging_wording(tmp_path):
     assert not [w for w in DISCOURAGING if w in head.lower()], head
     # every run report says a result is unchecked against the request, for any item; nothing else is said of a capture
     assert not [w for w in DISCOURAGING if w != "unchecked" and w in got["run"].lower()], got["run"]
-    assert "re-runs work an earlier request accepted" in head
+    # the fixture's episode recorded no outcome: the card claims no acceptance
+    assert "re-runs the work of an earlier request (no outcome of that request is on record)" in head
+    assert "Calling it with no arguments runs it on the current request" in head or "Calling it runs it" in head
     assert "rests on: recorded procedure" in got["run"]
 
 

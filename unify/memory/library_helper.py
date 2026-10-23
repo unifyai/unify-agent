@@ -1288,6 +1288,10 @@ import asyncio, inspect, json, sys
 MARK = sys.argv[2]
 out = {}
 ''' + _REQUEST_CLASS + r'''
+class State:
+    """The episode's state as a recorded procedure reads it: .request, .messages, .last and .data."""
+    def __init__(self, request, messages, last, data):
+        self.request, self.messages, self.last, self.data = request, messages, last, data
 def settle(x):
     # an async def (run, read_input, applies or holds) gives a coroutine: it is awaited here, in the child, and its
     # value is what the call gave (never the coroutine's text)
@@ -1305,8 +1309,14 @@ try:
     if not callable(run):
         raise LookupError("the captured procedure defines no run(value)")
     read = ns.get("read_input")
-    if callable(read) and len(args) == 1 and not kwargs and isinstance(args[0], str):
+    text_only = len(args) == 1 and not kwargs and isinstance(args[0], str)
+    if callable(read) and text_only:
         value = settle(read(Request(args[0], payload.get("data"))))
+        call = lambda: settle(run(value))
+    elif payload.get("form") == "state" and text_only:
+        # a procedure of the episode's state, handed a request's text: the state of a request that has just begun
+        req = Request(args[0], payload.get("data"))
+        value = State(req, [req], req, list(payload.get("data") or []))
         call = lambda: settle(run(value))
     else:
         value = args[0] if len(args) == 1 and not kwargs else None
@@ -1369,7 +1379,7 @@ def _confined(capture_id: str, args: tuple, kwargs: dict) -> dict:
                 "detail": "no captured procedure has this id; memory.items('captures') lists them"}
     try:
         data = _json_values(args[0]) if len(args) == 1 and not kwargs and isinstance(args[0], str) else None
-        payload = json.dumps({"args": list(args), "kwargs": kwargs, "data": data})
+        payload = json.dumps({"args": list(args), "kwargs": kwargs, "data": data, "form": _capture_form(capture_id)})
     except (TypeError, ValueError) as exc:
         return {"outcome": "error", "error": type(exc).__name__,
                 "detail": "a captured procedure takes text or JSON values"}
@@ -1495,6 +1505,9 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
     if rec.get("outcome") in _NEGATIVE:
         return RunReport(target, outcome="error", error="LookupError",
                          detail="this captured attempt failed; it is listed to show what broke, not to run", **base)
+    if _capture_form(capture_id) == "state_env" and len(args) == 1 and not kwargs and isinstance(args[0], str):
+        # nothing is run and no use is recorded: the call cannot hand it the tools it acts through
+        return RunReport(target, outcome="error", error="WrongCall", detail=BY_HAND.format(cid=target), **base)
     rep = _confined(capture_id, args, kwargs)
     if rep.get("error") != "LookupError" or rep["outcome"] != "error":
         _emit(target, args_digest(args, kwargs), "ok" if rep["outcome"] == "returned" else
@@ -1698,6 +1711,46 @@ def _note_rule(text: str, iid: str) -> str:
     return served + "\n"
 
 
+def _capture_form(capture_id: str) -> str:
+    """A recorded procedure's entry form, from its record: ``value`` (``read_input`` and ``run(value)``), ``state``
+    (``run(state)``) or ``state_env`` (``run(state, env)``: it acts through the episode's tools); '' when unknown."""
+    rec = _read_json(os.path.join(_capture_dir(capture_id), "record.json"))
+    entry = rec.get("entry_point") if isinstance(rec, dict) else None
+    form = entry.get("form") if isinstance(entry, dict) else None
+    return form if isinstance(form, str) else ""
+
+
+#: How a recorded procedure that acts through tools is run, as its card and a call's refusal say it.
+BY_HAND = (
+    "it acts through the tools of the episode it came from (run(state, env)), which a call from here cannot hand "
+    "it; run it in a cell with your own tools: ns = {{}}; exec(memory.get({cid!r}).text, ns); "
+    "ns['run'](state, tools), where state has .request (memory.request()), .messages, .last and .data"
+)
+
+
+def _capture_lines(iid: str, rec: dict) -> list[str]:
+    """What a recorded procedure's card says it is and how it runs, from its record only: accepted work only when its
+    record shows an accepted episode (``support.accepted``); a no-argument call only for the forms that take the
+    request (``value``, ``state``); how to run it by hand for one that acts through tools."""
+    if rec.get("outcome") in _NEGATIVE:
+        return ["A recorded attempt; its episode failed."]
+    support = rec.get("support") if isinstance(rec.get("support"), dict) else {}
+    accepted = support.get("accepted") if isinstance(support.get("accepted"), int) else 0
+    what = (
+        "A recorded procedure: it re-runs work an earlier request accepted."
+        if accepted
+        else "A recorded procedure: it re-runs the work of an earlier request (no outcome of that request is on record)."
+    )
+    form = _capture_form(iid[len(CAPTURE_PREFIX) :])
+    if form in ("value", "state"):
+        how = "Calling it with no arguments runs it on the current request, in a separate confined process."
+    elif form == "state_env":
+        how = "To run it: " + BY_HAND.format(cid=iid) + "."
+    else:
+        how = "Calling it runs it in a separate confined process on text or JSON values."
+    return [what, how]
+
+
 def _capture_ids() -> list[str]:
     """The captured procedures' ids, in id order: those exported into the copy, and those handed to a writer pass
     (:data:`HANDED_CAPTURES`)."""
@@ -1870,6 +1923,18 @@ class Item:
             target = self._on_request()
             if target is not None:
                 return target(request())
+        if (
+            self.id.startswith(CAPTURE_PREFIX)
+            and len(args) == 1
+            and not kwargs
+            and isinstance(args[0], str)
+            and _capture_form(self.id[len(CAPTURE_PREFIX) :]) == "state_env"
+        ):
+            # a fact of the harness, not a failure of the procedure: nothing is run and no use is recorded
+            raise WrongCall(
+                call_text(f"memory.get({self.id!r})", args, kwargs),
+                "nothing was run: " + BY_HAND.format(cid=self.id) + ".",
+            )
         report = _RUN_TARGET(self.id, *args, **kwargs)
         if report.outcome == "returned":
             return report.result
@@ -1898,8 +1963,8 @@ class Item:
             raise ArgumentError(
                 call,
                 f"it {what} ({detail}).",
-                expected="text or a JSON value like the input it was recorded on",
-                example=f"memory.get({self.id!r})(text)",
+                expected="no arguments (the current request), or a request's text",
+                example=f"memory.get({self.id!r})()",
                 hint=f"Its card shows what it was built for: print(memory.get({self.id!r})).",
             )
         raise NotFound(
@@ -2438,11 +2503,7 @@ class _Catalog:
         example = rec.get(EXAMPLE_KEY) if isinstance(rec.get(EXAMPLE_KEY), dict) else None
         if example is not None:
             return self._example(iid, built, example, rec, asked, text)
-        out = [
-            f"{iid}  [{built.support or 'recorded procedure'}]",
-            "A recorded procedure: it re-runs work an earlier request accepted. Calling it runs it in a separate "
-            "confined process on text or JSON values.",
-        ]
+        out = [f"{iid}  [{built.support or 'recorded procedure'}]", *_capture_lines(iid, rec)]
         out += _evidence_lines(_evidence(), iid)
         if rec.get("outcome") in _NEGATIVE:
             out.append("Tried and failed: it is listed to show what broke, never run.")
@@ -2458,7 +2519,7 @@ class _Catalog:
         text = _example_text(example, rec, asked, source)
         support = _support_line("fixed answer", rec.get("support"))
         item = dataclasses.replace(built, kind="note", evidence="unchecked", text=text, support=support)
-        return item, f"{iid}  [{built.status}" + (f", {support}" if support else "") + "]\n" + text
+        return item, f"{iid}  [{support or 'fixed answer'}]\n" + text
 
 
 def _example_text(example: dict, rec: dict, asked: str, source: str | None) -> str:

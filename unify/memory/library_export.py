@@ -791,7 +791,7 @@ def catalogue_text(
         kind = "fixed answer" if example else "recorded procedure"
         lines.append(
             f"Evidence: {support_text(kind, support(rec))}; "
-            + ("reader none (a worked example)" if example else "reader read_input")
+            + ("reader none (a worked example)" if example else _capture_reader(rec, doc.get("procedure")))
             + f"; applies: {'yes' if _applies_stated(sig) and not example else 'no'}"
             + ("; tried and failed: never offered to run" if failed else "")
             + (f"; a worked example, never called: {example.get('why')}" if example else "")
@@ -810,6 +810,31 @@ def catalogue_text(
                     lines.append(f"Broke: {line}\n")
         out.append("".join(lines))
     return "".join(out)
+
+
+def _capture_reader(rec: Mapping, source: Any) -> str:
+    """How a recorded procedure takes a request, as its catalogue line says it (from its record's entry form and its
+    code's own definitions; nothing is run)."""
+    entry = rec.get("entry_point") if isinstance(rec.get("entry_point"), Mapping) else {}
+    form = entry.get("form")
+    reads = False
+    if isinstance(source, str):
+        import ast
+
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            tree = None
+        reads = tree is not None and any(
+            isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "read_input" for n in tree.body
+        )
+    if form == "state_env":
+        return "acts through the episode's tools (run(state, env)): no call runs it; run by hand in a cell"
+    if form == "state":
+        return "reader: the request's state (.request, .messages, .last, .data); a no-argument call runs it on the request"
+    if reads:
+        return "reader read_input; a no-argument call runs it on the request"
+    return "no reader: it is called on a value"
 
 
 def _code_facts(source: str | None, applies_source: str | None) -> dict:

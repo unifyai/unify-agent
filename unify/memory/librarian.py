@@ -102,7 +102,8 @@ BRIEF = (
     "## The library\n"
     "- It is under /memory, read-only. The stored functions are the Python package `memory`: one folder per package "
     "under /memory/memory, each module a file of functions. The notes are Markdown files under /memory/notes, one "
-    "folder per topic. Recorded procedures (`capture:<id>`), each re-running work an earlier request accepted, are "
+    "folder per topic. Recorded procedures (`capture:<id>`), each re-running the work of an earlier request (its card "
+    "says whether that work was accepted), are "
     "under /memory/.memory/captures, one "
     "folder each with its procedure.py.\n"
     "- Every package and topic folder has a README.md: what the folder holds and how its items relate.\n"
@@ -440,10 +441,10 @@ def _call_problem(call: str) -> str:
     try:
         tree = ast.parse(call.strip(), mode="exec")
     except SyntaxError:
-        return "is not Python the agent can run; give the memory call, e.g. memory.get('<id>')(memory.request())"
+        return "is not Python the agent can run; give the memory call, e.g. memory.get('<id>')() for a recorded procedure (it runs on the current request), memory.get('<id>')(<input>) for a function"
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
     if not calls:
-        return "makes no call; give the memory call, e.g. memory.get('<id>')(memory.request())"
+        return "makes no call; give the memory call, e.g. memory.get('<id>')() for a recorded procedure (it runs on the current request), memory.get('<id>')(<input>) for a function"
     for node in calls:
         root = node.func
         while isinstance(root, (ast.Attribute, ast.Call, ast.Subscript)):
@@ -453,7 +454,7 @@ def _call_problem(call: str) -> str:
         if not (isinstance(root, ast.Name) and root.id == "memory") and not _returned_by_memory(node, tree):
             return (
                 "is not through memory: the agent reaches the library only with memory.get(<id>) and "
-                "memory.request(), e.g. memory.get('<id>')(memory.request())"
+                "memory.request(), e.g. memory.get('<id>')() for a recorded procedure (it runs on the current request), memory.get('<id>')(<input>) for a function"
             )
     return ""
 
