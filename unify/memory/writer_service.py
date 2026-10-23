@@ -115,6 +115,7 @@ NOT_REACHED_BY = {
     "cap": "spend_cap",
 }
 EVENTS = (
+    "kin",
     "start",
     "stop",
     "idle-exit",
@@ -1678,6 +1679,9 @@ async def _iteration(
 
     sources = HomeSources(home, state_dir=ledger.state_dir)
     resolve = sources.resolver()
+    # a capture the harness's own relations relate to no other is put to the judge of behaviour once (one call per
+    # turn), so its kin can relate it before the hand below
+    await _judge_kin(service, ledger, _profiles(service, sources), worst)
     handed = ledger.hand(
         pass_id, K, ready=lambda e: entry_ready(e, resolve), grouping=_grouping(service, sources, clock)
     )
@@ -1688,10 +1692,10 @@ async def _iteration(
     return _passed(out, ledger, pass_id, handed, report, resumed=False)
 
 
-def _grouping(service: Any, sources: Any, clock: Callable[[], datetime]) -> Callable[[dict], list]:
-    """The capture grouping the pass hands with (:func:`.capture_groups.groups`, at *clock*'s time): the profiles of a
-    home's captures, kept on *service* across its turns (a capture's files never change once written)."""
-    from .capture_groups import HomeProfiles, groups
+def _profiles(service: Any, sources: Any) -> Any:
+    """The profiles of a home's captures (:class:`.capture_groups.HomeProfiles`), kept on *service* across its turns
+    (a capture's files never change once written)."""
+    from .capture_groups import HomeProfiles
 
     profiles = getattr(service, "profiles", None)
     if profiles is None:
@@ -1704,6 +1708,116 @@ def _grouping(service: Any, sources: Any, clock: Callable[[], datetime]) -> Call
             service.profiles = profiles
         except AttributeError:
             pass
+    return profiles
+
+
+async def _judge_kin(service: Any, ledger: Any, profiles: Any, worst: Decimal) -> bool:
+    """Ask the judge of behaviour (:mod:`.kinship`) about one open capture that no relation of the harness's own
+    relates to another capture and that was never asked about, the oldest first; record its answer (a ``kin`` row,
+    with or without kin). The call is booked in ``spend.jsonl`` like a pass (its worst case reserved, then settled),
+    carries its own id and the entry (``X-Unify-Pass-Id`` / ``-Entries``), and its row in ``pass-results.jsonl``
+    (kind ``kin``) gives its USD to the entry. No call starts when the room under memory's cap is below one call's
+    worst case. Returns whether a judge was asked."""
+    from unify.common.llm_client import attribution
+
+    from . import capture_groups as cg
+    from . import kinship
+    from .captures import store_dir
+
+    home, settings = service.home, service.settings
+    entries = ledger.entries()
+    live = ("open", "handed", "read", "closed")
+    caps = [e for e in entries.values() if e.kind in cg.GROUPED_KINDS and e.state in live and e.refs.captures]
+    if len(caps) < 2:
+        return False
+    try:
+        profs = {e.entry: profiles(e) for e in caps}
+    except Exception:  # noqa: BLE001 - unreadable captures: the harness's own relations alone
+        return False
+    common = cg.common_features(profs.values())
+    target = None
+    for e in sorted((e for e in caps if e.state == "open" and not e.kin_judged), key=lambda e: (e.created_at, e.entry)):
+        if not any(cg.related(profs[e.entry], profs[o.entry], common) for o in caps if o.entry != e.entry):
+            target = e
+            break
+    if target is None:
+        return False
+    committed, _settled = spend_totals(home)
+    if service.capped or service.cap - committed < worst:
+        return False
+    store = store_dir(ledger.state_dir)
+    others = sorted((o for o in caps if o.entry != target.entry), key=lambda o: (o.created_at, o.entry), reverse=True)
+    messages, labels = kinship.question(
+        (profs[target.entry], store / target.refs.captures[0]),
+        [(o.entry, profs[o.entry], store / o.refs.captures[0]) for o in others[: kinship.CANDIDATES]],
+    )
+    kin_id = secrets.token_hex(8)
+    spend = service_dir(home) / SPEND_FILE
+    _append(spend, {"v": 1, "op": "reserve", "pass_id": kin_id, "usd": _format(worst), "at": stamp(_now())})
+    usd: Decimal | None = None
+    try:
+        turn = _kin_turn(service, kin_id)
+        with attribution(kin_id, [target.entry]):
+            message, cost = await turn(messages, kinship.tools())
+        usd = _decimal(cost)
+        named, why = kinship.answer(message if isinstance(message, dict) else {}, labels)
+    except Exception as exc:  # noqa: BLE001 - a failed call: asked once, nothing named, booked at its worst case
+        named, why = [], f"the judge's call failed ({type(exc).__name__})"
+    booked = usd if usd is not None else worst
+    _append(spend, {"v": 1, "op": "settle", "pass_id": kin_id, "usd": _format(booked), "at": stamp(_now())})
+    ledger.record_kin(target.entry, named, why)
+    _kin_row(home, kin_id, target.entry, usd, worst)
+    event(home, "kin", pass_id=kin_id, entry=target.entry, named=len(named))
+    return True
+
+
+def _kin_turn(service: Any, kin_id: str) -> Any:
+    """The judge's model turn: the writer's model on the writer's lane (*service*'s ``kin_turn`` factory in a test)."""
+    factory = getattr(service, "kin_turn", None)
+    if factory is not None:
+        return factory()
+    from .integration import consolidate
+    from .integration.request import actor_effort
+
+    cfg = consolidate.writer_settings(service.settings)
+    if cfg.route is not None:
+        return consolidate.unillm_turn(cfg.model, actor_effort(), route=cfg.route, session=f"kinship.{kin_id}")
+    return consolidate.unillm_turn(cfg.model, actor_effort())
+
+
+def _kin_row(home: Path | str, kin_id: str, entry: str, usd: Decimal | None, worst: Decimal) -> None:
+    """The judge's ``pass-results.jsonl`` row (kind ``kin``): the entry it was asked about, read, and its USD (an
+    unpriced call counted as unknown, with its worst case booked), so metering gives the call's cost to that entry."""
+    from . import metering
+
+    row = {
+        "pass_id": kin_id,
+        "kind": "kin",
+        "ended": "kin",
+        "entries": {"handed": [entry], "taken": [], "read": [entry], "closed": [], "returned": []},
+        "items": {},
+        "usd": {
+            "known": _format(usd) if usd is not None else "0",
+            "unknown_calls": 0 if usd is not None else 1,
+            "worst_case_booked": "0" if usd is not None else _format(worst),
+            "killed_turns": 0,
+            "helper_known": "0",
+            "helper_unknown_calls": 0,
+        },
+        "ended_at": stamp(_now()),
+    }
+    path = metering.results_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _append(path, row)
+    metering.rebuild_views(home)
+
+
+def _grouping(service: Any, sources: Any, clock: Callable[[], datetime]) -> Callable[[dict], list]:
+    """The capture grouping the pass hands with (:func:`.capture_groups.groups`, at *clock*'s time), over the
+    home's capture profiles (:func:`_profiles`)."""
+    from .capture_groups import groups
+
+    profiles = _profiles(service, sources)
 
     def grouping(entries: dict) -> list:
         return groups(entries, profiles, now=clock())

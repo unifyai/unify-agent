@@ -916,6 +916,68 @@ def test_a_step_runs_one_pass_over_the_open_entries_and_then_finds_nothing_open(
     assert sorted(again["handed"]) == sorted(ids) and len(runner.passes) == 2
 
 
+def _unrelated_captures(home: Path) -> list[str]:
+    """Two open capture entries whose records relate them in no way the harness reads (no calls, no used item, no
+    input shape), each with a fork-written description; returns their entry ids, oldest first."""
+    import json as _json
+
+    from unify.memory.captures import store_dir
+
+    ledger = attention.Ledger(home)
+    store = store_dir(ledger.state_dir)
+    ids = []
+    for n, body in enumerate(("return sorted(value)", "return sorted(value, reverse=True)")):
+        cid = f"{n + 1}" * 16
+        (store / cid).mkdir(parents=True)
+        (store / cid / "procedure.py").write_text(f"def run(value):\n    {body}\n")
+        (store / cid / "saved.json").write_text(
+            _json.dumps({"docstring": "Order the values.", "asked": "ASKED-TEXT-NEVER-SHOWN", "approach": ""}),
+        )
+        ids.append(ledger.create("new_experience", attention.Refs(captures=(cid,)), f"fork-{n}"))
+    return ids
+
+
+def test_a_capture_nothing_relates_is_put_to_the_judge_once_and_its_kin_is_handed_with_it(svc, monkeypatch):
+    """A capture the harness's own relations relate to no other goes to the judge of behaviour once; the capture it
+    names is its kin, so the two are handed together. The question shows behaviour only (never what was asked), the
+    call is booked under memory's cap like a pass and metered to the entry, and nothing is asked twice."""
+    from unify.memory import kinship
+    from unify.memory import metering
+
+    ids = _unrelated_captures(svc.home)
+    asked: list = []
+
+    async def turn(messages, tools):
+        asked.append((messages, tools))
+        kin = {"kin": [{"number": 1, "why": "both order their input"}, {"number": 9, "why": "x"}]}
+        return {"role": "assistant", "content": "They match.\n" + json.dumps(kin)}, "0.002"
+
+    monkeypatch.setattr(ws, "_kin_turn", lambda service, kin_id: turn)
+    runner = Recording()
+    got = _step(svc.home, runner, monkeypatch)
+    assert len(asked) == 1
+    messages, tools = asked[0]
+    text = json.dumps(messages)
+    assert "ASKED-TEXT-NEVER-SHOWN" not in text and "Order the values." in text and tools == kinship.tools()
+    entries = attention.Ledger(svc.home).entries()
+    assert entries[ids[0]].kin_judged and entries[ids[0]].kin == (ids[1],)  # number 9 was never shown: left out
+    assert sorted(got["handed"]) == sorted(ids)
+    assert attention.Ledger(svc.home).group_of(got["pass_id"])["reasons"]["judged"] == 1
+    (row,) = [r for r in metering.metered_passes(svc.home) if r.get("kind") == "kin"]
+    assert row["entries"]["read"] == [ids[0]] and row["usd"]["known"] == "0.002"
+    spend = [r for r in ws._rows(ws.service_dir(svc.home) / ws.SPEND_FILE) if r.get("pass_id") == row["pass_id"]]
+    assert [r["op"] for r in spend] == ["reserve", "settle"] and spend[1]["usd"] == "0.002"
+    _step(svc.home, runner, monkeypatch)
+    assert len(asked) == 1  # asked once
+
+
+def test_the_judges_brief_names_no_identifier_alias_or_task():
+    from unify.memory import kinship
+
+    for word in ("task", "alias", " id ", " ids", "identifier"):
+        assert word not in kinship.BRIEF.lower(), word
+
+
 def test_a_step_with_nothing_open_runs_no_pass(svc, monkeypatch):
     got = _step(svc.home, _no_pass, monkeypatch)
     assert got["pass_id"] is None and got["why_idle"] == "nothing_open" and got["stop"] is None
