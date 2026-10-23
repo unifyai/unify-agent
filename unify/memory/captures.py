@@ -105,7 +105,6 @@ OCCURRENCES_DIR = "occurrences"
 MAX_RESULT_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_BYTES = 1024 * 1024
 GOAL_CHARS = 600
-REPRODUCES, DIFFERS, UNKNOWN = "reproduces", "differs", "unknown"
 FAILED = "failed"
 #: What a record of an earlier build kept of the capture's uses and the status they gave it. Nothing writes these any
 #: more (a capture's uses are the evidence store's): :func:`refresh` drops them from a record it rewrites.
@@ -461,30 +460,20 @@ def empty_record(cid: str) -> dict:
         "capture_id": cid,
         "episodes": [],
         "cases": [],
-        "recurrence": [],
-        "reproduces": UNKNOWN,
         "deterministic": None,
         "applies": None,
         "holds": None,
         "outcome": "none",
-        "same_as": [],
     }
 
 
 def refresh(record: dict) -> dict:
-    """*record* with its derived fields recomputed from its cases: ``reproduces`` (a record of the earlier contract
-    only: ``differs`` when any case differs, ``reproduces`` when every case with a value reproduces, else
-    ``unknown``), ``deterministic``, ``applies``, ``holds`` and ``outcome`` (``failed`` when any case failed,
-    ``contrary`` when a signal contradicted one, else the last signal's). Nothing here reads or keeps the capture's
+    """*record* with its derived fields recomputed from its cases: ``deterministic``, ``applies``, ``holds`` and
+    ``outcome`` (``failed`` when any case failed, ``contrary`` when a signal contradicted one, else the last signal's).
+    Nothing runs a capture, so nothing records whether it reproduces its case; and nothing here reads or keeps its
     uses: they are the evidence store's (:func:`.serving.item_evidence`, which gives its status and what it rests on
     from them)."""
     cases = [c for c in record.get("cases") or [] if isinstance(c, dict)]
-    if record.get("v") != TRACE_VERSION:
-        # a trace record carries no reproduction: what its own check gave is evidence on each case
-        known = [c.get("reproduces") for c in cases if c.get("reproduces") in (REPRODUCES, DIFFERS)]
-        record["reproduces"] = (
-            DIFFERS if DIFFERS in known else REPRODUCES if known else UNKNOWN
-        )
     dets = [c.get("deterministic") for c in cases if isinstance(c.get("deterministic"), bool)]
     record["deterministic"] = all(dets) if dets else None
     for key in ("applies", "holds"):
@@ -568,8 +557,7 @@ def rejudge_episode(
                 continue
             before = _json(rec)
             for case in cases:
-                differs = case.get("reproduces") == DIFFERS
-                case["outcome"] = FAILED if (out["contrary"] or differs) else ("positive" if out["positive"] else "none")
+                case["outcome"] = FAILED if out["contrary"] else ("positive" if out["positive"] else "none")
             refresh(rec)
             if _json(rec) != before:
                 _write(d / RECORD_FILE, _json(rec))
@@ -680,12 +668,9 @@ def _broke_lines(text: str) -> list[str]:
 
 
 def trace_record(cid: str) -> dict:
-    """An empty trace record (``v`` 2): the record of :func:`empty_record` without what the trace contract removes
-    (``same_as``, ``recurrence`` and ``reproduces``: reproduction is neither a gate nor a verdict here)."""
-    rec = empty_record(cid)
-    for key in ("same_as", "recurrence", "reproduces"):
-        rec.pop(key, None)
-    return {"v": TRACE_VERSION, **rec}
+    """An empty trace record (``v`` 2): :func:`empty_record` with its version (nothing records a reproduction: a
+    capture is never run)."""
+    return {"v": TRACE_VERSION, **empty_record(cid)}
 
 
 def capture_trace_step(

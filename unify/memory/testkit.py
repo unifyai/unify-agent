@@ -6,8 +6,9 @@ recorded payloads by blob id (``memlab.inputs.blob``). :func:`stage` writes the 
 :data:`MODULES` at :data:`KIT_VERSION`, the pin plugin, the referenced blobs) under a root directory, and every place
 a library's tests can run gets it (the gate runs none, rev 2.1):
 
-* **the writer's box**: ``/inputs`` (beside the pass's episodes), always, with the blobs the parent library's tests
-  name (:func:`stage_for_tree`). The actor's export holds no tests, so it needs no kit.
+* **a fixture parser's box** (:mod:`.procedures`): the kit's package, for the confined reader run. The writer's box
+  gets no kit: a library's tests are plain pytest, and the gate refuses a test that imports the kit. The actor's export
+  holds no tests, so it needs no kit.
 
 Each root holds ``memlab/`` (the modules, a git stub and an ``__init__`` carrying :data:`KIT_VERSION`),
 ``_memory_pin.py`` (the determinism plugin, inert unless loaded with ``-p``) and ``blobs/<id>`` (the recorded

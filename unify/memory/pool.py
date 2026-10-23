@@ -35,18 +35,15 @@ from pathlib import Path
 from typing import Iterable
 
 POOL_REF = "pool"
-# ``cluster`` entries came from a recurrence miner that no longer feeds the pool; old ones still load, and
-# :meth:`Pool.close_cluster_entries` closes them
 # ``capture`` and ``failure`` entries come from the capture store (:mod:`.captures`): a captured attempt's procedure,
 # and a captured attempt that failed (negative knowledge), with what broke
-KINDS = ("candidate", "lesson", "cluster", "draft", "deferred", "unread", "capture", "failure")
+KINDS = ("candidate", "lesson", "draft", "deferred", "capture", "failure")
 # the order the writer sees: proposals first (candidates, captures, lessons, failures, deferrals), then everything
 # else (information only: the writer decides)
-ORDER = ("candidate", "capture", "lesson", "failure", "deferred", "draft", "unread", "cluster")
+ORDER = ("candidate", "capture", "lesson", "failure", "deferred", "draft")
 STATUSES = ("open", "merged", "superseded", "retired")
 BLOCK_KEYS = ("merged", "superseded", "retired", "reopened")
 TITLE_CHARS = 160
-MINER_RETIRED = "miner retired"
 _ID = re.compile(r"[0-9a-f]{16}")
 #: The related closed entries a batch-map row or ``pool show`` lists at once; ``pool`` pages through the rest.
 RELATED_PAGE = 20
@@ -552,17 +549,6 @@ class Pool:
             added += e.id not in self.entries
             held.add(self.upsert(e, pass_id).id)
         return {"entries": len(held), "added": added}
-
-    def close_cluster_entries(self, pass_id: str) -> list[str]:
-        """Close every open ``cluster`` entry as superseded (the miner that fed them is retired); returns their ids.
-        A cleanup that runs when a pass loads the pool, so a pool with no cluster entries is unchanged.
-        """
-        out = []
-        for e in self.open_entries():
-            if e.kind == "cluster":
-                self.set_status(e.id, "superseded", {"reason": MINER_RETIRED}, pass_id)
-                out.append(e.id)
-        return out
 
     # -- write -----------------------------------------------------------------------------------------------
     def _blob(self, text: str) -> str:
@@ -1208,18 +1194,6 @@ def deferred(eid: str, reason: str) -> Entry:
         kind="deferred",
         title=_clip(reason),
         data={"reason": reason},
-    )
-    e.add_provenance([eid], [], ["writer"])
-    return e
-
-
-def unread(eid: str, parts_read: int, parts_required: int) -> Entry:
-    """An episode a store pass left neither read nor dismissed; kept, never dropped, until a writer closes it."""
-    e = Entry(
-        id=entry_id("unread", eid),
-        kind="unread",
-        title=f"episode unread ({parts_read} of {parts_required} parts read)",
-        data={"parts_read": parts_read, "parts_required": parts_required},
     )
     e.add_provenance([eid], [], ["writer"])
     return e

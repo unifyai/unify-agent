@@ -58,7 +58,6 @@ from . import safe_paths as _safe
 from . import views as _views
 from . import writer_tools as _wt
 from .tool_spec import form_of as _form_of
-from . import testkit as _testkit
 from .redact import Redactor, redact_error
 from . import sandbox_run as _sandbox
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
@@ -1845,7 +1844,8 @@ class WriterPass:
         inputs: Path,
         tree: Path | None = None,
     ) -> None:
-        """The pass's read-only ``/inputs``; *tree* is the parent library (its tests decide the test kit)."""
+        """The pass's read-only ``/inputs``; *tree* is the parent library (read by nothing here now; kept for the
+        callers)."""
         inputs.mkdir()
         _sandbox.stage_open_hook(
             inputs,
@@ -1872,16 +1872,6 @@ class WriterPass:
             record_bytes=True,
         )
         self._exported_bytes = exported.get("exported_bytes")
-        (inputs / "request.json").write_text(
-            json.dumps(
-                {
-                    "kind": req.kind,
-                    "channel": req.channel,
-                    "episodes": list(req.episodes),
-                    "lift": req.lift,
-                },
-            ),
-        )
         from . import shared_text as _shared_text
         from .batch_map import build_batch_map
 
@@ -1919,14 +1909,8 @@ class WriterPass:
 
         for name, text in input_pointer_files().items():
             (inputs / name).write_text(text)
-        # the library test kit for the writer's own tests (memlab, the pin plugin, and the blobs the parent library's
-        # tests name)
-        if tree is not None and isinstance(store, BlobStore):
-            _testkit.stage_for_tree(
-                tree, inputs, has_blob=store.has, read_blob=store.get, blob_size=store.size, force=True
-            )
-        else:
-            _testkit.stage(inputs, [], has_blob=lambda s: False, read_blob=lambda s: b"", blob_size=lambda s: 0)
+        # no test kit is staged: a library's tests are plain pytest (the gate refuses a test that imports the kit), and
+        # nothing the writer is told names it
         self._drafts = []
         from .drafts import stage_drafts
 
@@ -3654,8 +3638,6 @@ class WriterPass:
 
             try:
                 self._pool = _pool_mod.Pool(self.mem).load()
-                # the recurrence miner no longer feeds the pool: its old entries close once
-                self._pool.close_cluster_entries(pass_id)
             except (
                 Exception
             ) as exc:  # noqa: BLE001 - the pool never stops a pass

@@ -455,59 +455,6 @@ def test_a_closed_entry_with_new_evidence_is_surfaced_and_can_be_reopened(tmp_pa
     assert p.closed_with_new_evidence() == []
 
 
-# --- 6. the retired miner's entries -----------------------------------------------------------------------------
-
-
-def _old_cluster_entry() -> pool.Entry:
-    """An entry the retired recurrence miner left in a pool (no code makes these now)."""
-    e = pool.Entry(
-        id=pool.entry_id("cluster", "a:" + "k" * 64),
-        kind="cluster",
-        title="code shape kkkkkkkk (function, 9 nodes)",
-        data={"key": "k" * 64, "template": "", "instances": []},
-    )
-    e.add_provenance([], [], ["s0"])
-    return e
-
-
-def test_cluster_entries_close_once_and_a_pool_without_them_is_unchanged(tmp_path):
-    repo = Repo.init_bare(tmp_path / "mem.git")
-    p = pool.Pool(repo).load()
-    c = _old_cluster_entry()
-    p.upsert(c, "p0")
-    p.upsert(pool.deferred("e1", "later"), "p0")
-    p.save("p0")
-    p = pool.Pool(repo).load()
-    assert p.close_cluster_entries("p1") == [c.id]
-    assert p.entries[c.id].status == "superseded"
-    assert p.entries[c.id].status_detail == {"reason": pool.MINER_RETIRED, "pass": "p1"}
-    p.save("p1")
-    p = pool.Pool(repo).load()
-    assert p.close_cluster_entries("p2") == [] and p.save("p2") is None
-    assert [e.kind for e in p.open_entries()] == ["deferred"]
-
-
-def test_a_pass_closes_the_old_cluster_entries_when_it_loads_the_pool(
-    tmp_path,
-    monkeypatch,
-):
-    st = _Stores(tmp_path)
-    p = st.pool()
-    c = _old_cluster_entry()
-    p.upsert(c, "p0")
-    p.save("p0")
-    _finish_with(monkeypatch, EMPTY)
-    _, model = st.run(
-        [
-            _call("r", "read", {"path": INDEX}),
-            _open("e2"),
-        ],
-        "p1",
-    )
-    assert c.id not in model.outputs["r"]
-    assert st.pool().entries[c.id].status == "superseded"
-
-
 # --- 7. the hop counts ------------------------------------------------------------------------------------------
 
 

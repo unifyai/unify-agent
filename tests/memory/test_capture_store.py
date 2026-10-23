@@ -54,7 +54,6 @@ FORK_BROKE_KIND = "broke"
 SIGNATURE_FIELDS = ("input", "output", "relations", "constraints", "goal")
 #: The older reproduction outcome and failed outcome (a record the pool still reads), the trace contract's negative
 #: outcome, and the renamed starting level and status.
-REPRODUCES, DIFFERS = "reproduces", "differs"
 FAILED = "failed"
 CONTRARY = "contrary"
 LEVELS = ("unchecked", "reproduces-its-case", "confirmed-by-outcomes")
@@ -548,7 +547,6 @@ def _write_record(store: Path, source: str, record: dict, broke: str = "none\n")
     )
     base = {
         "episodes": ["ep-0001"],
-        "reproduces": REPRODUCES,
         "deterministic": True,
         "applies": None,
         "holds": None,
@@ -556,7 +554,6 @@ def _write_record(store: Path, source: str, record: dict, broke: str = "none\n")
         "level": LEVELS[0],
         "status": START_STATUS,
         "track": {},
-        "same_as": [],
     }
     base.update(record)
     (d / RECORD_FILE).write_text(json.dumps(base))
@@ -572,7 +569,7 @@ def test_the_writer_reads_each_capture_as_a_pool_entry(tmp_path):
     bad = _write_record(
         store,
         WRONG_PROCEDURE,
-        {"reproduces": DIFFERS, "outcome": FAILED, "episodes": ["ep-0002"]},
+        {"outcome": FAILED, "episodes": ["ep-0002"]},
         broke="- run: sorted descending; the record shows the ascending list was asked for\n",
     )
     entries = _from_captures(store)
