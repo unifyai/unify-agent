@@ -51,8 +51,8 @@ def _account_home() -> Path:
     return Path(pwd.getpwuid(os.getuid()).pw_dir)
 
 
-# The box's interpreter: ``MEMORY_PYTHON``, else the controller's own (a fixed host path would not exist elsewhere).
-PYTHON = Path(os.environ.get("MEMORY_PYTHON") or sys.executable)
+# The box's interpreter: the controller's own (a fixed host path would not exist elsewhere).
+PYTHON = Path(sys.executable)
 
 # The host paths the box sees (read-only), besides the interpreter roots and the caller's binds.
 SYSTEM_DIRS = ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32")
