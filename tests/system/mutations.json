@@ -341,5 +341,78 @@
   "tests": [
    "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_started_after_the_last_heartbeat_lives"
   ]
+ },
+ {
+  "id": "M33",
+  "what": "(re-anchored M10 for the GatePolicy tip) a finding no item owns only labels",
+  "file": "unify/memory/gate_policy.py",
+  "old": "            \"G1\",\n            unowned=True,",
+  "new": "            \"G1-mutated\",  # MUTATION M33\n            unowned=True,",
+  "tests": [
+   "tests/system/test_s09_gate_raw_candidates.py::test_gate_refuses_an_undeclared_removal_of_a_library_item"
+  ]
+ },
+ {
+  "id": "M34",
+  "what": "a note without a Rule section only labels",
+  "file": "unify/memory/gate_policy.py",
+  "old": "        Refusal(f\"a new or changed note without a `## {RULE}` section with text\", \"G1\", (RULE_MARK,)),\n",
+  "new": "",
+  "tests": [
+   "tests/system/test_s09_gate_raw_candidates.py::test_gate_refuses_a_note_without_a_rule_section_on_a_raw_candidate",
+   "tests/system/test_s09_gate_raw_candidates.py::test_a_writer_pass_cannot_land_a_note_without_a_rule_section[on]"
+  ]
+ },
+ {
+  "id": "M35",
+  "what": "G5 (fewer items) only labels",
+  "file": "unify/memory/gate_policy.py",
+  "old": "        Refusal(\"a pass with fewer items than the library it started from, or a dropped alias (G5)\", \"G5\"),\n",
+  "new": "",
+  "tests": [
+   "tests/system/test_s09_gate_raw_candidates.py::test_gate_refuses_a_declared_deletion_of_a_library_item",
+   "tests/system/test_s09_gate_raw_candidates.py::test_a_writer_pass_cannot_remove_a_library_item[on]"
+  ]
+ },
+ {
+  "id": "M36",
+  "what": "(re-anchored M23) the pass limits table states 12 reader calls while 16 are enforced",
+  "file": "unify/memory/agent_profiles.py",
+  "old": "{\"limit\": \"reader calls per model turn\", \"value\": R.READERS_PER_TURN, \"unit\": \"calls\"},",
+  "new": "{\"limit\": \"reader calls per model turn\", \"value\": 12, \"unit\": \"calls\"},  # MUTATION M36",
+  "tests": [
+   "tests/system/test_j3_constants.py::test_the_pass_limits_table_is_the_enforced_constants",
+   "tests/system/test_j3_constants.py::test_each_stated_number_is_its_constant[0]"
+  ]
+ },
+ {
+  "id": "M37",
+  "what": "(re-anchored M29) the helper's read refusal names roots it cannot read",
+  "file": "unify/common/tool_registry.py",
+  "old": "        \"outside_box\": \"{path} is outside /inputs, /task, /memory and /work\",\n        \"not_found\": \"{path} does not exist; /inputs",
+  "new": "        \"outside_box\": \"{path} is outside /inputs, /memory and /outputs\",  # MUTATION M37\n        \"not_found\": \"{path} does not exist; /inputs",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_each_roles_refusals_name_only_roots_it_can_open[on]"
+  ]
+ },
+ {
+  "id": "M38",
+  "what": "(reverts the drain fix, window 1) the stopped-service early return ignores the group",
+  "file": "unify/memory/writer_service.py",
+  "old": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE) and not left():\n",
+  "new": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE):  # MUTATION M38\n",
+  "tests": [
+   "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_of_a_stopped_service_lives"
+  ]
+ },
+ {
+  "id": "M39",
+  "what": "(reverts the drain fix, window 2) unrecorded members count only up to the last sign of life",
+  "file": "unify/memory/writer_service.py",
+  "old": "    limit = alive + timedelta(seconds=HEARTBEAT_S + MEMBERS_S)\n",
+  "new": "    limit = alive  # MUTATION M39\n",
+  "tests": [
+   "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_started_after_the_last_heartbeat_lives"
+  ]
  }
 ]
