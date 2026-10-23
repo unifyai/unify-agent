@@ -16,7 +16,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
-#: Modules whose strings an agent reads: briefs, guides, cards, tool texts and help topics.
+#: Modules whose strings an agent reads: briefs, guides, cards, catalogue texts, serving and trust labels, gate
+#: messages, tool texts and help topics.
 MODULES = (
     "unify/memory/library_prompts.py",
     "unify/memory/librarian.py",
@@ -29,6 +30,11 @@ MODULES = (
     "unify/memory/attention_tools.py",
     "unify/memory/manifest.py",
     "unify/memory/when_to_use.py",
+    "unify/memory/library_export.py",
+    "unify/memory/serving.py",
+    "unify/memory/trust.py",
+    "unify/memory/library_checks.py",
+    "unify/memory/writer_pass.py",
     "unify/common/tool_registry.py",
     "unify/agents/run_record.py",
 )
