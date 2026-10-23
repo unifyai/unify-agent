@@ -1,0 +1,182 @@
+[
+ {
+  "id": "M1",
+  "what": "stop recording a request's runtime calls (uses are never written)",
+  "file": "unify/memory/integration/request.py",
+  "old": "        add_runtime_calls(self.runtime_calls, drained, self.export_roots)\n",
+  "new": "        pass  # MUTATION M1\n",
+  "tests": [
+   "tests/system/test_s01_capture_reuse.py::test_a_capture_is_served_at_once_reused_with_no_arguments_and_its_use_is_recorded[on]"
+  ]
+ },
+ {
+  "id": "M2",
+  "what": "captures are no longer listed or opened from the copy (not servable at once)",
+  "file": "unify/memory/library_helper.py",
+  "old": "    names: set[str] = set()\n    for base in (os.path.join(_ROOT, CAPTURES_DIR), HANDED_CAPTURES):",
+  "new": "    return []  # MUTATION M2\n    names: set[str] = set()\n    for base in (os.path.join(_ROOT, CAPTURES_DIR), HANDED_CAPTURES):",
+  "tests": [
+   "tests/system/test_s03_lone_capture.py::test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped[on]"
+  ]
+ },
+ {
+  "id": "M3",
+  "what": "a capture's card no longer links back to the item that generalises it",
+  "file": "unify/memory/library_helper.py",
+  "old": "        return [i for i, row in self.rows.items() if eps & set(row.get(\"episodes\") or ())] if eps else []",
+  "new": "        return []  # MUTATION M3",
+  "tests": [
+   "tests/system/test_s02_group_and_writer_pass.py::test_a_related_capture_forms_a_group_the_pass_lands_an_item_linked_both_ways[on]"
+  ]
+ },
+ {
+  "id": "M4",
+  "what": "a lone capture is due on its own (written up alone)",
+  "file": "unify/memory/capture_groups.py",
+  "old": "        elif g.context:\n            g.due = \"history\"",
+  "new": "        else:  # MUTATION M4\n            g.due = \"history\"",
+  "tests": [
+   "tests/system/test_s03_lone_capture.py::test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped[on]"
+  ]
+ },
+ {
+  "id": "M5",
+  "what": "a failed use opens no writer attention entry",
+  "file": "unify/memory/attention.py",
+  "old": "            for u in sources.use_failures():",
+  "new": "            for u in []:  # MUTATION M5",
+  "tests": [
+   "tests/system/test_s04_failed_use.py::test_a_failed_use_is_recorded_not_reoffered_opens_an_entry_and_reaches_the_card[on]"
+  ]
+ },
+ {
+  "id": "M6",
+  "what": "the writer's missing-path refusal names no next step",
+  "file": "unify/common/tool_registry.py",
+  "old": "        \"not_found\": \"{path} does not exist; /inputs/attention/index.json lists your entries' material, and \"\n        \"memory.items() the library's items\",",
+  "new": "        \"not_found\": \"{path} does not exist\",  # MUTATION M6",
+  "tests": [
+   "tests/system/test_s05_paths_open.py::test_every_path_and_handle_shown_opens_and_refusals_name_a_working_call[on]"
+  ]
+ },
+ {
+  "id": "M7",
+  "what": "with memory off the common section still names the librarian, the fork and the writer",
+  "file": "unify/common/tool_registry.py",
+  "old": "COMMON_SECTION_NO_MEMORY = COMMON_SECTION.replace(\n    _COMMON_ROLES_ALL, \"the actor doing each request and the helpers it starts.\"\n).replace(_COMMON_ADDRESSES_ALL, \"a role: @actor (every running actor); @helpers (every running helper).\")",
+  "new": "COMMON_SECTION_NO_MEMORY = COMMON_SECTION  # MUTATION M7",
+  "tests": [
+   "tests/system/test_s06_memory_off.py::test_memory_off_has_no_memory_text_no_memory_agents_and_the_same_tools_but_memory[off]"
+  ]
+ },
+ {
+  "id": "M8",
+  "what": "the librarian may answer with a menu of three",
+  "file": "unify/memory/librarian.py",
+  "old": "MAX_FITS = 2\n",
+  "new": "MAX_FITS = 3  # MUTATION M8\n",
+  "tests": [
+   "tests/system/test_s07_start_block_and_ask.py::test_the_block_and_the_ask_answer_are_one_primary_and_one_fallback_bounded[on]"
+  ]
+ },
+ {
+  "id": "M9",
+  "what": "teammates no longer reach the request's librarian",
+  "file": "unify/actor/in_code_tools.py",
+  "old": "        asks = agent in (\"actor\", \"teammate\") and _librarian_on()",
+  "new": "        asks = agent in (\"actor\",) and _librarian_on()  # MUTATION M9",
+  "tests": [
+   "tests/system/test_s08_helpers_use_the_request.py::test_a_teammate_uses_the_actors_request[on]"
+  ]
+ },
+ {
+  "id": "M10",
+  "what": "the gate only labels a finding no item owns (an undeclared removal lands)",
+  "file": "unify/memory/gate_policy.py",
+  "old": "            return True  # the pass's declared change set and its manifest",
+  "new": "            return False  # MUTATION M10",
+  "tests": [
+   "tests/system/test_s09_gate_raw_candidates.py::test_gate_refuses_an_undeclared_removal_of_a_library_item"
+  ]
+ },
+ {
+  "id": "M11",
+  "what": "the judge's call is settled at its worst case, not at the cost the model declared",
+  "file": "unify/memory/writer_service.py",
+  "old": "    booked = known + unknown * worst\n",
+  "new": "    booked = worst  # MUTATION M11\n",
+  "tests": [
+   "tests/system/test_s10_spend.py::test_the_judge_the_passes_and_the_start_block_are_booked_from_declared_costs_under_the_cap[on]"
+  ]
+ },
+ {
+  "id": "M12",
+  "what": "the suite's guard no longer refuses a connection off the machine",
+  "file": "tests/conftest.py",
+  "old": "    monkeypatch.setattr(socket.socket, \"connect\", connect)\n",
+  "new": "    pass  # MUTATION M12\n",
+  "tests": [
+   "tests/system/test_s00_no_real_model.py::test_the_test_process_cannot_reach_a_provider_or_the_network"
+  ]
+ },
+ {
+  "id": "M13",
+  "what": "memory.get on a note serves the whole note, its evidence appendix included",
+  "file": "unify/memory/library_helper.py",
+  "old": "    start = next((i for i, line in enumerate(body) if line.strip().lower() == \"## rule\"), None)\n",
+  "new": "    start = None  # MUTATION M13\n",
+  "tests": [
+   "tests/system/test_s11_bounds_and_kinds.py::test_one_listing_two_labelled_kinds_and_a_note_served_as_its_rule[on]"
+  ]
+ },
+ {
+  "id": "M14",
+  "what": "a call of a capture no longer relates the calling episode's capture to it",
+  "file": "unify/memory/capture_groups.py",
+  "old": "    called = ({\"capture:\" + c for c in a.captures} & b.items) | ({\"capture:\" + c for c in b.captures} & a.items)\n",
+  "new": "    called = set()  # MUTATION M14\n",
+  "tests": [
+   "tests/system/test_s02b_relations_and_history_bound.py::test_a_call_of_a_capture_relates_the_calling_episodes_capture_to_it[on]"
+  ]
+ },
+ {
+  "id": "M15",
+  "what": "the history handed with a new capture is bounded at 20, not 8",
+  "file": "unify/memory/capture_groups.py",
+  "old": "HISTORY_MAX = 8\n",
+  "new": "HISTORY_MAX = 20  # MUTATION M15\n",
+  "tests": [
+   "tests/system/test_s02b_relations_and_history_bound.py::test_the_history_handed_with_a_new_capture_is_at_most_eight[on]"
+  ]
+ },
+ {
+  "id": "M16",
+  "what": "the run's end counts no capture as never grouped",
+  "file": "unify/memory/attention.py",
+  "old": "        they were never written up. Each as ``{\"entry\", \"captures\", \"state\"}``.\"\"\"\n        return [\n",
+  "new": "        they were never written up. Each as ``{\"entry\", \"captures\", \"state\"}``.\"\"\"\n        return []  # MUTATION M16\n        return [\n",
+  "tests": [
+   "tests/system/test_s03_lone_capture.py::test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped[on]"
+  ]
+ },
+ {
+  "id": "M17",
+  "what": "every capture card claims accepted work, whatever its record shows",
+  "file": "unify/memory/library_helper.py",
+  "old": "    accepted = support.get(\"accepted\") if isinstance(support.get(\"accepted\"), int) else 0\n",
+  "new": "    accepted = 1  # MUTATION M17\n",
+  "tests": [
+   "tests/system/test_s01_capture_reuse.py::test_a_capture_whose_episode_has_no_verdict_never_claims_acceptance[on]"
+  ]
+ },
+ {
+  "id": "M18",
+  "what": "every use row counts as a use, served-only rows included (history joined through served items)",
+  "file": "unify/memory/capture_groups.py",
+  "old": "        used_sql = (\"(\" + \" + \".join(f\"COALESCE({c}, 0)\" for c in cols) + \") > 0\") if cols else \"0\"\n",
+  "new": "        used_sql = \"1\"  # MUTATION M18\n",
+  "tests": [
+   "tests/system/test_s02b_relations_and_history_bound.py::test_an_item_only_served_relates_nothing[on]"
+  ]
+ }
+]
