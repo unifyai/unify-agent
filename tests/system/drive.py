@@ -66,7 +66,10 @@ class System:
             if self.mode != "off" and (self.home / "memory-state").exists():
                 report = H.drain(self.home)
                 self.drain_report = report
-                H.check_terminated(report, self.home)
+                try:
+                    H.check_terminated(report, self.home)
+                except AssertionError as exc:
+                    raise AssertionError(f"{exc}\n{json.dumps(lingering(self.home, report), default=str)}") from exc
         finally:
             self.server.shutdown()
 
@@ -204,3 +207,56 @@ class System:
     @staticmethod
     def usd(value: Any) -> Decimal:
         return Decimal(str(value))
+
+
+def lingering(home: Path, report: dict, watch_s: float = 15.0) -> dict:
+    """What a verified drain left in the writer service's process group: each process's argv, age, state, parent, what
+    it waits on (``wchan``) and whether the service had recorded it as a member; then whether each exits within
+    *watch_s* seconds (a race) or stays (a leak). Appended to ``logs/drain-lingering.jsonl`` in the tree as well."""
+    import os
+    import time
+
+    from unify.memory import writer_service as ws
+
+    doc = ws.read_state(home) or {}
+    pgid, since = doc.get("pgid"), doc.get("proc_start")
+    members = ws.read_members(home) or {}
+    recorded = {row[0] for row in (doc.get("members") or []) + (members.get("members") or []) if isinstance(row, list)}
+    ticks = os.sysconf("SC_CLK_TCK")
+    uptime = float(Path("/proc/uptime").read_text().split()[0])
+
+    def info(pid: int) -> dict:
+        def read(name: str) -> str:
+            try:
+                return Path(f"/proc/{pid}/{name}").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
+            except OSError:
+                return ""
+        fields = (ws._stat_fields(pid) or [])
+        age = uptime - int(fields[19]) / ticks if len(fields) > 19 else None
+        return {"pid": pid, "argv": read("cmdline")[:400], "state": fields[0] if fields else None,
+                "ppid": fields[1] if len(fields) > 1 else None, "age_s": round(age, 2) if age is not None else None,
+                "wchan": read("wchan"), "recorded_member": pid in recorded,
+                "started_after_last_alive": None}
+
+    pids = ws.group_pids(int(pgid), since=str(since)) if isinstance(pgid, int) else []
+    last = ws.last_alive(doc, members)
+    out = {"report": {k: report.get(k) for k in ("terminated", "ended", "service", "_exit")},
+           "service": {k: doc.get(k) for k in ("pid", "pgid", "state", "heartbeat_at", "proc_start")},
+           "last_alive": str(last), "leftover": []}
+    for pid in pids:
+        row = info(pid)
+        at = ws.started_at(ws.proc_start(pid) or "")
+        row["started_after_last_alive"] = bool(at and last and at > last)
+        out["leftover"].append(row)
+    end = time.monotonic() + watch_s
+    while time.monotonic() < end and ws.group_pids(int(pgid), since=str(since)) if isinstance(pgid, int) else False:
+        time.sleep(0.25)
+    out["still_alive_after_s"] = {watch_s: ws.group_pids(int(pgid), since=str(since)) if isinstance(pgid, int) else []}
+    try:
+        log = Path(__file__).resolve().parents[2] / "logs" / "drain-lingering.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as fh:
+            fh.write(json.dumps(out, default=str) + "\n")
+    except OSError:
+        pass
+    return out

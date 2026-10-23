@@ -319,5 +319,27 @@
   "tests": [
    "tests/system/test_j2b_first_requests.py::test_each_roles_first_request_reads_as_its_golden[off]"
   ]
+ },
+ {
+  "id": "F1",
+  "kind": "fix (the test must pass with it)",
+  "what": "stop_service's early 'nothing is left' return also requires no process of the service left",
+  "file": "unify/memory/writer_service.py",
+  "old": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE):\n",
+  "new": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE) and not service_group(doc, read_members(home)):  # FIX F1\n",
+  "tests": [
+   "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_of_a_stopped_service_lives"
+  ]
+ },
+ {
+  "id": "F2",
+  "kind": "fix (the test must pass with it)",
+  "what": "a dead leader's group members count whenever they started after it (a live member keeps the group number from being reused)",
+  "file": "unify/memory/writer_service.py",
+  "old": "        if at is not None and at <= alive:\n",
+  "new": "        if at is not None:  # FIX F2\n",
+  "tests": [
+   "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_started_after_the_last_heartbeat_lives"
+  ]
  }
 ]
