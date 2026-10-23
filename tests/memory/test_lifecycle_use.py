@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from tests.memory.test_episodes import _ep
+from tests.memory.lifecycle_facts import facts_from_use
 from unify.memory import lifecycle as lc
 from unify.memory.evidence import EvidenceStore
 from unify.memory.signals import Signal
@@ -72,7 +73,7 @@ def test_reading_the_use_record_and_the_evidence_index_agree(tmp_path):
     )
     sig = Signal("s1", "e1", "checker", "fail", "t", regime="dense", visible_to_actor=True)
     ev.add_signal(sig)
-    direct = lc.facts_from_use("e1", A, "dense", rec, [sig])
+    direct = facts_from_use("e1", A, "dense", rec, [sig])
     (indexed,) = lc.facts_from_evidence(ev)
     assert direct == indexed
     assert direct.items == {
@@ -150,7 +151,7 @@ def test_use_records_are_kept_per_library_commit():
 
 
 def test_a_lookup_alone_is_not_a_use():
-    f = lc.facts_from_use(
+    f = facts_from_use(
         "e1",
         A,
         "dense",
@@ -186,7 +187,7 @@ def test_a_call_that_returned_is_a_use_and_an_import_alone_is_only_seen():
             TOK: {"called": 1, "errored": 1},  # its only call raised
         },
     )
-    f = lc.facts_from_use("e1", A, "dense", rec, [])
+    f = facts_from_use("e1", A, "dense", rec, [])
     assert f.items == {
         PD: lc.ItemUse(False, 0, False, False, False, seen=True),
         WEEK: lc.ItemUse(True, 2, True, False, False),

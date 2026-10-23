@@ -149,12 +149,6 @@ def test_each_kind_fires_from_its_record_and_not_without_one(tmp_path):
     assert led2.sync(Fake(forks=[_fork("e9")])) == []
     [n] = led2.sync(Fake(forks=[_fork("e9")], captures={"e9": _cap("e9", "d" * 16)}))
     assert n.kind == "new_experience" and n.refs.captures == ("d" * 16,)
-    # the row test still reads an older row's own check (an older ledger's entries fold); it makes no entry any more
-    for bad in ({"refused": True}, {"deterministic": False}, {"value_match": "differed"},
-                {"calls": {"mode": "replay", "differed": 1}}, {"calls": {"mode": "replay", "missing": 1}}):  # fmt: skip
-        assert at.own_check_failed(_cap("x", "e" * 16, **bad))
-    assert not at.own_check_failed(_cap("x", "e" * 16))
-    assert not at.own_check_failed(_cap("x", "e" * 16, value_match="not_applicable"))
     # a message by the writer itself, or one addressed to nobody it reads, makes nothing
     led3 = _ledger(tmp_path / "d")
     assert led3.sync(Fake(record=[{"seq": 1, "author": "writer", "role": "writer", "mentions": ["writer"]},

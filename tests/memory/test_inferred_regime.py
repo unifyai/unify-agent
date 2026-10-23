@@ -77,7 +77,7 @@ def test_four_shapes_infer_the_four_regimes():
     assert infer_regime([], implicit_evidence=True) == (
         "implicit",
         "signals",
-    )  # only an error or a holds result
+    )  # only an error
     assert infer_regime([]) == ("none", "nothing")
 
 

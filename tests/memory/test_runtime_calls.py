@@ -5,6 +5,7 @@ the request's use record, indexed by the evidence store and preferred by the lif
 from __future__ import annotations
 
 from tests.memory.test_episodes import _ep
+from tests.memory.lifecycle_facts import facts_from_use
 from unify.memory import lifecycle as lc
 from unify.memory.evidence import EvidenceStore, runtime_counts
 from unify.memory.item_states import ADOPTED, ON_TRIAL, RETIRED
@@ -174,7 +175,7 @@ def test_lifecycle_prefers_runtime_counts_and_marks_the_basis():
         },
         {WEEK: {"ok": 1, "refused": 2}, TOK: {"error": 1}},
     )
-    f = lc.facts_from_use("e1", A, "implicit", rec, [])
+    f = facts_from_use("e1", A, "implicit", rec, [])
     assert f.items == {
         PD: lc.ItemUse(
             False,
@@ -205,7 +206,7 @@ def test_lifecycle_prefers_runtime_counts_and_marks_the_basis():
 
 
 def test_lifecycle_falls_back_to_static_counts_for_records_without_runtime_evidence():
-    f = lc.facts_from_use(
+    f = facts_from_use(
         "e1",
         A,
         "implicit",
@@ -219,7 +220,7 @@ def test_lifecycle_falls_back_to_static_counts_for_records_without_runtime_evide
 
 def test_refusals_alone_never_demote_and_runtime_errors_do():
     refused = [
-        lc.facts_from_use(
+        facts_from_use(
             f"e{i}",
             A,
             "implicit",
@@ -231,7 +232,7 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
     status, rule, reason, _ = lc.decide_status(PD, ON_TRIAL, refused)
     assert (status, rule) == (ON_TRIAL, None) and "refused" in reason
     erred = [
-        lc.facts_from_use(
+        facts_from_use(
             f"e{i}",
             A,
             "implicit",
@@ -242,7 +243,7 @@ def test_refusals_alone_never_demote_and_runtime_errors_do():
     ]
     assert lc.decide_status(PD, ON_TRIAL, erred)[:2] == (RETIRED, "errors")
     clean = [
-        lc.facts_from_use(
+        facts_from_use(
             f"e{i}",
             A,
             "implicit",
@@ -272,7 +273,7 @@ def test_the_evidence_index_and_the_record_agree_on_runtime_facts(tmp_path):
     indexed = {
         f.episode_id: f for f in lc.facts_from_evidence(ev)
     }
-    direct = lc.facts_from_use("e1", A, "implicit", rec, [])
+    direct = facts_from_use("e1", A, "implicit", rec, [])
     assert indexed["e1"].items == direct.items
     assert indexed["e2"].items == {PD: lc.ItemUse(True, 2, False, False, False)}
     row = ev.item_use(["e1"])[WEEK]

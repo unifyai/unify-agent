@@ -215,12 +215,9 @@ def test_a_store_from_before_the_index_is_indexed_from_its_procedures_and_keeps_
 
 
 def test_d1_no_own_check_runs_and_no_entry_comes_from_one(tmp_path, nothing_runs):
-    from unify.memory import attention as at
-
     store = cp.store_dir(tmp_path)
     row = cp.capture_trace_step(_staging(tmp_path, "e1", {"procedure.py": WORLDS["shell"][0]}), _episode("shell", "e1"), store)  # fmt: skip
     assert row["own_check"] == {"ran": False, "why": "a capture is never run to classify it"}
-    assert not at.own_check_failed(row)
     # even a row from before rev 2 whose own check failed makes no entry now
     old = {"capture_id": "c" * 16, "episode": "e2", "segment": None, "outcome": "none",
            "own_check": {"ran": True, "error": "ValueError"}}  # fmt: skip

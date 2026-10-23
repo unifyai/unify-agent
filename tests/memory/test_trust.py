@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import re
 
-from unify.memory import lifecycle as lc
 from unify.memory import trust as tr
-from unify.memory.analysis.use import attribute_outcomes, result_digest
 from unify.memory.signals import Signal
 
 ITEM = "memory.text.tables:totals"
@@ -53,19 +51,6 @@ def test_a_rejection_counts_against_the_procedure_even_when_the_episode_later_su
     assert tr.judge(u)[:2] == (tr.FAILED, "rejected")
     out = tr.apply_outcome(None, None, [u, _use("e2", "dense", answered=True, verdict="rejected")])
     assert out.status == tr.RETIRED
-
-
-def test_a_use_whose_result_was_not_handed_back_gets_no_verdict():
-    record = {"items": {}}
-    results = {ITEM: [{"outcome": "ok", "result": result_digest([1, 2])}]}
-    attribute_outcomes(record, results, [[3]], verdict="rejected", end_outcome="contrary", corrected=True)
-    [row] = record["items"][ITEM]["outcomes"]
-    assert row["answered"] is False and row["verdict"] is None and row["end_outcome"] is None
-    assert row["corrected"] is False and row["conditions"] == "none"
-    record = {"items": {}}
-    attribute_outcomes(record, results, [[1, 2]], verdict="rejected")
-    [row] = record["items"][ITEM]["outcomes"]
-    assert row["answered"] is True and row["verdict"] == "rejected"
 
 
 # --- sparse: the end outcome plus intermediate signals ------------------------------------------------------------
@@ -151,30 +136,3 @@ def test_signal_outcome_reads_only_what_the_regime_and_the_actor_could_see():
 
 
 # --- the lifecycle delegates to the one decider -------------------------------------------------------------------
-
-
-def test_the_lifecycle_counts_attributed_outcomes_from_the_use_record():
-    def record(verdict_digest):
-        rec = {"items": {ITEM: {"called": 1}}, "runtime_calls": {"cells": 1}, "outcomes_known": True}
-        rec["items"][ITEM]["runtime"] = {"ok": 1, "refused": 0, "error": 0}
-        return attribute_outcomes(
-            rec,
-            {ITEM: [{"outcome": "ok", "result": verdict_digest}]},
-            [[1]],
-            verdict="rejected",
-        )
-
-    facts = [
-        lc.facts_from_use(f"e{i}", "a" * 40, "dense", record(result_digest([1])), [])
-        for i in range(2)
-    ]
-    assert facts[0].items[ITEM].outcomes[0].verdict == "rejected"
-    assert lc.decide_status(ITEM, None, facts)[:2] == ("retired", "rejected")
-    # the same calls whose results were never handed back carry no verdict: nothing counts against the item
-    unanswered = [
-        lc.facts_from_use(f"e{i}", "a" * 40, "dense", record(result_digest([2])), [])
-        for i in range(2)
-    ]
-    assert lc.decide_status(ITEM, None, unanswered)[0] == "on-trial"
-
-

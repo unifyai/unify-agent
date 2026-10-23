@@ -36,7 +36,6 @@ from .integration.fork_worker import (
     RECORD_FILES,
     allowed,
     parse_reply,
-    write_files,
 )
 
 __all__ = [
@@ -49,7 +48,6 @@ __all__ = [
     "export",
     "parse_reply",
     "read",
-    "write_files",
 ]
 
 #: The batch-map row's status prefix when the reader did not finish: nothing of the episode's staging is handed on.

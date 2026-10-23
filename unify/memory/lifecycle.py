@@ -3,8 +3,7 @@ calls; run only at consolidation, so the prompt prefix changes only when a commi
 
 Use records come from each request's ``memory_use.json`` (:func:`.analysis.use.request_use`), keyed by the
 library commit the request was pinned to (``memory_main`` in its ``meta.json``). The evidence store indexes both
-when the episode is recorded (``episodes`` and ``item_use``), and :func:`facts_from_evidence` reads that index;
-:func:`facts_from_use` reads one record directly, and a test keeps the two equal.
+when the episode is recorded (``episodes`` and ``item_use``), and :func:`facts_from_evidence` reads that index.
 
 What counts:
 - an item is *used* in an episode when a call to it returned. The evidence is the runtime record of the calls
@@ -32,7 +31,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .evidence import EvidenceStore, _unknown_items, runtime_counts
+from .evidence import EvidenceStore
 from .item_states import (
     ADOPTED,
     CURATE_RULE,
@@ -77,9 +76,6 @@ class ItemUse:
     calls: tuple[int, int, int] | None = (
         None  # observed calls (ok, refused, error) on the runtime basis
     )
-    # per-call outcome rows (:class:`.trust.Use`: answered, verdict, end outcome, conditions, correction) when the
-    # use record attributes its calls (``items[<id>].outcomes``); empty: the facts above, attributed as always
-    outcomes: tuple = ()
     # what the use record says of a returned call: whether its result was handed back (None: not recorded), the
     # visible verdict after it, the episode's end outcome, its stated conditions (held, failed or none) and whether
     # a correction followed (:mod:`.trust`)
@@ -182,66 +178,6 @@ def _n(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def facts_from_use(
-    eid: str,
-    memory_main: str,
-    regime: str,
-    memory_use: Any,
-    signals: Iterable[Signal]
-) -> EpisodeUse:
-    """One episode's facts from its use record (``memory_use.json``) and its signals. An item with neither a
-    use nor an error (a lookup or a bare reference) is left out."""
-    use = memory_use if isinstance(memory_use, dict) else {}
-    rows = use.get("items") if isinstance(use.get("items"), dict) else {}
-    unknown = _unknown_items(use, {k for k in rows if isinstance(k, str)})
-    items: dict[str, ItemUse] = {}
-    for item, r in rows.items():
-        if not isinstance(item, str) or not isinstance(r, dict):
-            continue
-        u = _item_use(
-            _n(r.get("imported")),
-            _n(r.get("called")),
-            _n(r.get("refused")),
-            _n(r.get("errored")),
-            item in unknown,
-            runtime_counts(use, item),
-        )
-        attributed = _outcome_rows(eid, regime, r.get("outcomes"))
-        if u is not None and attributed:
-            u = replace(u, outcomes=attributed)
-        if u is not None:
-            items[item] = u
-    positive, negative = counted_signals(
-        signals,
-        regime,
-    )
-    return EpisodeUse(
-        eid,
-        memory_main,
-        regime,
-        positive,
-        negative,
-        dict(sorted(items.items())),
-    )
-
-
-def _outcome_rows(eid: str, regime: str, rows: Any) -> tuple:
-    """A use record row's per-call ``outcomes`` (:func:`.analysis.use.attribute_outcomes`) as :class:`.trust.Use`
-    values of episode *eid* in *regime*; () when it has none."""
-    from . import trust
-
-    if not isinstance(rows, list):
-        return ()
-    reg = regime if regime in trust.REGIMES else NO_SIGNAL_REGIME
-    out = []
-    for row in rows:
-        if isinstance(row, dict):
-            u = trust.use_from_row({**row, "episode": eid, "regime": reg})
-            if u is not None:
-                out.append(u)
-    return tuple(out)
-
-
 def facts_from_evidence(
     ev: EvidenceStore,
     *,
@@ -342,13 +278,11 @@ def _negative(f: EpisodeUse) -> bool:
 
 
 def trust_uses(f: EpisodeUse, u: ItemUse) -> list:
-    """*u*'s uses in episode *f* as :class:`.trust.Use` values: its attributed per-call outcomes when the use record
-    has them, else one use per kind of call it saw (returned, error, refused), not attributed: a contrary signal in
-    its episode counts against a returned call, as the lifecycle always counted it."""
+    """*u*'s uses in episode *f* as :class:`.trust.Use` values: one use per kind of call it saw (returned, error,
+    refused), not attributed: a contrary signal in its episode counts against a returned call, as the lifecycle always
+    counted it."""
     from . import trust
 
-    if u.outcomes:
-        return list(u.outcomes)
     regime = f.regime if f.regime in trust.REGIMES else NO_SIGNAL_REGIME
     out = []
     if u.used and u.answered is not None:
@@ -414,8 +348,7 @@ def version_use(f: EpisodeUse, item: str, versions: set[str], pins: Mapping[tupl
     """*f* with *item*'s use restricted to the calls served under the version whose commits are *versions*, when its
     calls were served under more than one pin and some of them are another version's (memory changed during the
     episode, ``UNIFY_MEMORY=in_episode``): its observed calls (ok, refused, error) are those under that version's pins,
-    and per-call outcomes the use record attributed are left out (they are not kept per pin), so the episode's other
-    version's calls never count for this one. Otherwise *f* unchanged."""
+    so the episode's other version's calls never count for this one. Otherwise *f* unchanged."""
     rows = (pins or {}).get((f.episode_id, item))
     u = f.items.get(item)
     if not rows or u is None or all(r[0] in versions for r in rows):
@@ -431,7 +364,6 @@ def version_use(f: EpisodeUse, item: str, versions: set[str], pins: Mapping[tupl
         seen=u.seen or bool(ok + refused + error),
         basis=RUNTIME,
         calls=(ok, refused, error),
-        outcomes=(),
     )
     return replace(f, items={**f.items, item: mine})
 
@@ -500,25 +432,6 @@ def status_basis(item: str, facts: Iterable[EpisodeUse]) -> str | None:
 
     out, _ = item_outcome(item, None, facts)
     return out.basis if out.status == trust.ADOPTED else None
-
-
-def failed_uses(facts: Iterable[EpisodeUse]) -> list[dict]:
-    """Every failed use in *facts*, one row per item, episode and failing signal: ``{item, episode, regime,
-    signal}``, the signal as :func:`.trust.judge` names it (``rejected``, ``contrary_end``, ``holds_false``,
-    ``corrected``, ``disagreed``, ``error``, ``negative``). A refusal is never one."""
-    from . import trust
-
-    out: list[dict] = []
-    seen: set[tuple] = set()
-    for f in facts:
-        for item, u in sorted(f.items.items()):
-            for x in trust_uses(f, u):
-                kind, why, _ = trust.judge(x)
-                key = (item, f.episode_id, why)
-                if kind == trust.FAILED and key not in seen:
-                    seen.add(key)
-                    out.append({"item": item, "episode": f.episode_id, "regime": x.regime, "signal": why})
-    return out
 
 
 def decide_status(

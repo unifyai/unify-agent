@@ -44,7 +44,7 @@ the lifecycle's statuses is :data:`FROM_LIFECYCLE`.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 # --- names ----------------------------------------------------------------------------------------------------
@@ -113,36 +113,6 @@ class Use:
     agreed: bool | None = None
     episode_negative: bool = False
     unknown: bool = False
-
-    def row(self) -> dict:
-        return asdict(self)
-
-
-def use_from_row(row: Mapping[str, Any]) -> Use | None:
-    """A :class:`Use` from its JSON row (:meth:`Use.row`), or None for a malformed row."""
-    if not isinstance(row, Mapping):
-        return None
-    episode, regime = row.get("episode"), row.get("regime")
-    outcome = row.get("outcome", "returned")
-    if not isinstance(episode, str) or regime not in REGIMES or outcome not in OUTCOMES:
-        return None
-    verdict = row.get("verdict") if row.get("verdict") in VERDICTS else None
-    end = row.get("end_outcome") if row.get("end_outcome") in END_OUTCOMES else None
-    holds = row.get("holds") if isinstance(row.get("holds"), bool) else None
-    agreed = row.get("agreed") if isinstance(row.get("agreed"), bool) else None
-    return Use(
-        episode,
-        regime,
-        outcome,
-        answered=row.get("answered") if isinstance(row.get("answered"), bool) else None,
-        verdict=verdict,
-        end_outcome=end,
-        holds=holds,
-        corrected=row.get("corrected") is True,
-        agreed=agreed,
-        episode_negative=row.get("episode_negative") is True,
-        unknown=row.get("unknown") is True,
-    )
 
 
 def judge(use: Use) -> tuple[str, str | None, bool]:

@@ -57,8 +57,7 @@ def _n(value: Any) -> int:
 
 
 def implicit_evidence(memory_use: Any) -> bool:
-    """Whether an episode's use record holds implicit evidence: a library call that raised (an error), or a
-    stated result condition's result (``holds`` true or false) or a correction on a call. Counts and flags only."""
+    """Whether an episode's use record holds implicit evidence: a library call that raised (an error). Counts only."""
     use = memory_use if isinstance(memory_use, dict) else {}
     rows = use.get("items") if isinstance(use.get("items"), dict) else {}
     for row in rows.values():
@@ -67,11 +66,6 @@ def implicit_evidence(memory_use: Any) -> bool:
         runtime = row.get("runtime") if isinstance(row.get("runtime"), dict) else {}
         if _n(row.get("errored")) or _n(runtime.get("error")):
             return True
-        for o in row.get("outcomes") or []:
-            if isinstance(o, dict) and (
-                isinstance(o.get("holds"), bool) or o.get("outcome") == "error" or o.get("corrected") is True
-            ):
-                return True
     return False
 
 

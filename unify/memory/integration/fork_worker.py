@@ -628,35 +628,6 @@ def write_blocks(staging: Path, blocks: list[dict]) -> tuple[list, list, bool]:
     return files, refused, over
 
 
-def write_files(
-    staging: Path,
-    found: list[tuple[str, str, str]],
-) -> tuple[list, list, bool]:
-    """Write ``(path, content, source)`` triples under *staging* within the operational quota (writer-side analysts
-    stage through this); a later triple for the same path replaces an earlier one. ``(files, refused, quota
-    reached)``."""
-    latest: dict[str, tuple[str, str]] = {}
-    refused = []
-    for rel, body, source in found:
-        why = allowed(rel)
-        if why:
-            refused.append({"path": rel[:200], "why": why, "from": source})
-        else:
-            latest[rel] = (body, source)
-    blocks = [
-        {
-            "path": rel,
-            "status": "parsed",
-            "reason": None,
-            "source": source,
-            "content": body,
-        }
-        for rel, (body, source) in latest.items()
-    ]
-    files, more, over = write_blocks(staging, blocks)
-    return files, refused + more, over
-
-
 def atomic_json(path: Path, doc: dict) -> None:
     """Write *doc* to *path* through a temporary file and a rename, so a reader never sees half of it."""
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)

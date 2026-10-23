@@ -1138,34 +1138,6 @@ def withdrawn_captures(repo) -> dict[str, dict]:
     return out
 
 
-def failure(
-    item: str,
-    episode: str,
-    signal: str,
-    result_digest: str | None = None,
-    request: str | None = None,
-) -> Entry:
-    """A failed use of a stored procedure (:func:`.lifecycle.failed_uses`) as a ``failure`` entry for the next writer
-    pass: the item, the episode, the signal that failed and the result's digest, with the episode's request as the
-    fixture source (``request:0``) a repair's red test, or a known-failure test alone, is built on. Keyed by the
-    item, the episode and the signal."""
-    files = {"request.txt": request} if request else {}
-    e = Entry(
-        id=entry_id("failure", f"{item}\0{episode}\0{signal}"),
-        kind="failure",
-        title=_clip(f"{item} failed in {episode}: {signal}"),
-        data={
-            "item": item,
-            "signal": signal,
-            "result_digest": result_digest,
-            "fixture_source": "request:0",
-        },
-        files=files,
-    )
-    e.add_provenance([episode], [], ["outcomes"])
-    return e
-
-
 def failure_from_staging(eid: str, view) -> Entry | None:
     """A staged ``broke.md`` without a staged procedure, as a ``failure`` entry (what broke, as negative knowledge);
     None when it says nothing broke or a procedure was staged (its capture holds it then)."""

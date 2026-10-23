@@ -158,8 +158,8 @@ def infer_regime(
       action: one that names the action it judged, or two or more within the episode;
     * ``sparse``: an outcome came for the episode as a whole and no per-action verdict did: one visible verdict
       within it, or a visible verdict after it ended;
-    * ``implicit``: only errors or stated conditions arrived (*implicit_evidence*: the episode's use record shows
-      an error or a ``holds`` result);
+    * ``implicit``: only errors arrived (*implicit_evidence*: the episode's use record shows a library call that
+      raised);
     * otherwise nothing arrived: the run's history (*prior*, :func:`run_prior`) when it has one, else ``none``.
 
     A verdict the actor never saw (a hidden grader's) decides nothing, as it is never evidence. *basis* says which

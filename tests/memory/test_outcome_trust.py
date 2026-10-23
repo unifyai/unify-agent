@@ -9,22 +9,19 @@ procedure only for a use whose result was handed back (``answered``). What count
 - ``implicit`` and ``none``: implicit signals only (it ran without error, its conditions held, nothing corrected it).
   The record never claims correctness: it says "used without problems in N episodes", on an ``implicit`` basis.
 
-A refusal is never a failure. A failed use becomes a ``failure`` pool entry that carries the request as a fixture
-source, so a repair (or a known-failure test alone) turns the failure into a test.
+A refusal is never a failure.
 
 Every name this file assumes for code that does not exist yet is in the block of constants below.
 """
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import re
 
 import pytest
 
 from unify.memory import lifecycle as lc
-from unify.memory.fixtures import canonical
 
 # ---------------------------------------------------------------------------------------------------------------
 # Assumed names (the spec leaves these open; adapt them here)
@@ -48,10 +45,6 @@ TRACK_GROUPS = {
     "intermediate": ("errors", "refusals", "holds_true", "holds_false"),
     "implicit": ("ran_ok", "agreed", "disagreed", "corrected", "reused_episodes"),
 }
-#: Which signal failed, as a failed-use row names it, for a rejected verdict.
-FAILED_BY_VERDICT = "rejected"
-#: The pool kind for a failed use.
-POOL_FAILURE_KIND = "failure"
 
 
 def _track(item: str, facts: list) -> dict:
@@ -63,22 +56,6 @@ def _track(item: str, facts: list) -> dict:
 
 def _basis(item: str, facts: list) -> str | None:
     return lc.status_basis(item, facts)
-
-
-def _failed_uses(facts: list) -> list[dict]:
-    return lc.failed_uses(facts)
-
-
-def _result_digest(value) -> str | None:
-    from unify.memory.analysis.use import result_digest
-
-    return result_digest(value)
-
-
-def _failure_entry(**kw):
-    from unify.memory import pool
-
-    return pool.failure(**kw)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -169,9 +146,6 @@ def test_dense_a_rejection_counts_even_when_the_episode_later_succeeded():
     ]
     assert status(later_won) == RETIRED
     assert _track(ITEM, later_won)["verdicts"]["rejected"] == 2
-    rows = [r for r in _failed_uses(later_won) if r["item"] == ITEM]
-    assert sorted(r["episode"] for r in rows) == ["e0", "e1"]
-    assert all(r["signal"] == FAILED_BY_VERDICT for r in rows)
 
 
 def test_dense_one_rejection_blocks_adoption():
@@ -353,72 +327,9 @@ def test_a_refusal_changes_nothing():
     t = _track(ITEM, refused)
     assert t["verdicts"] == {"accepted": 0, "rejected": 0}
     assert t["implicit"]["ran_ok"] == 0
-    assert _failed_uses(refused) == []
 
 
-def test_the_result_digest_is_the_canonical_json_digest():
-    value = {"b": [3, 1], "a": "x"}
-    want = hashlib.sha256(canonical(value).encode("utf-8")).hexdigest()[:16]
-    assert _result_digest(value) == want
-    assert _result_digest({"a": "x", "b": [3, 1]}) == want  # key order never matters
-    assert _result_digest([1, 3]) != _result_digest([3, 1])
-
-
-# --- repair and re-save: the failure becomes a test ----------------------------------------------------------
-
-
-REQUEST = "Sort the numbers below in ascending order and reply with the list.\n5 3 9 1\n"
-
-
-def test_a_failed_use_becomes_a_failure_entry_carrying_the_request_as_a_fixture_source():
-    from unify.memory import pool
-
-    assert POOL_FAILURE_KIND in pool.KINDS
-    digest = _result_digest([9, 5, 3, 1])
-    e = _failure_entry(
-        item=ITEM,
-        episode="e7",
-        signal=FAILED_BY_VERDICT,
-        result_digest=digest,
-        request=REQUEST,
-    )
-    assert e.kind == POOL_FAILURE_KIND
-    assert e.status == "open"
-    assert e.provenance["episodes"] == ["e7"]
-    assert e.data["item"] == ITEM
-    assert e.data["signal"] == FAILED_BY_VERDICT
-    assert e.data["result_digest"] == digest
-    assert REQUEST in e.files.values()  # the input a repair's red test, or a known-failure test, is built on
-    again = _failure_entry(
-        item=ITEM,
-        episode="e7",
-        signal=FAILED_BY_VERDICT,
-        result_digest=digest,
-        request=REQUEST,
-    )
-    assert again.id == e.id
-    other = _failure_entry(
-        item=ITEM,
-        episode="e8",
-        signal=FAILED_BY_VERDICT,
-        result_digest=digest,
-        request=REQUEST,
-    )
-    assert other.id != e.id
-
-
-def test_every_failed_use_is_listed_for_the_writer_with_the_signal_that_failed():
-    facts = [
-        ep("e1", use(answered=True, verdict=REJECTED), "dense", pos=True),
-        ep("e2", use(answered=True, end_outcome=CONTRARY), "sparse", neg=True),
-        ep("e3", use(answered=True, conditions=FAILED_CONDITIONS), "implicit"),
-        ep("e4", use(answered=True, corrected=True), "implicit", neg=True),
-        ep("e5", use(answered=True, verdict=ACCEPTED), "dense", pos=True),
-        ep("e6", use(answered=False), "dense", neg=True),
-    ]
-    rows = {r["episode"]: r for r in _failed_uses(facts) if r["item"] == ITEM}
-    assert sorted(rows) == ["e1", "e2", "e3", "e4"]
-    assert len({r["signal"] for r in rows.values()}) == 4  # each names its own signal
+# --- repair and re-save ---------------------------------------------------------------------------------------------
 
 
 def test_a_repaired_item_starts_again_on_trial():

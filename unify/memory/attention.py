@@ -809,22 +809,6 @@ class Sources(Protocol):
     # optional: seq -> the pass the writer was delivered it in (record_deliveries); a source without it delivers nothing
 
 
-#: The capture-row checks that make ``own_check_failed`` (:mod:`.captures` ``own_check``).
-def own_check_failed(row: Mapping[str, Any]) -> bool:
-    oc = row.get("own_check")
-    if not isinstance(oc, Mapping) or oc.get("ran") is not True:
-        return False
-    calls = oc.get("calls") if isinstance(oc.get("calls"), Mapping) else {}
-    return bool(
-        oc.get("error")
-        or oc.get("refused") is True
-        or oc.get("deterministic") is False
-        or oc.get("value_match") == "differed"
-        or int(calls.get("differed") or 0) > 0
-        or int(calls.get("missing") or 0) > 0,
-    )
-
-
 # --- the ledger ---------------------------------------------------------------------------------------------------------
 
 
