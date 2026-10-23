@@ -941,7 +941,6 @@ def test_a_capture_nothing_relates_is_put_to_the_judge_once_and_its_kin_is_hande
     """A capture the harness's own relations relate to no other goes to the judge of behaviour once; the capture it
     names is its kin, so the two are handed together. The question shows behaviour only (never what was asked), the
     call is booked under memory's cap like a pass and metered to the entry, and nothing is asked twice."""
-    from unify.memory import kinship
     from unify.memory import metering
 
     ids = _unrelated_captures(svc.home)
@@ -958,7 +957,7 @@ def test_a_capture_nothing_relates_is_put_to_the_judge_once_and_its_kin_is_hande
     assert len(asked) == 1
     messages, tools = asked[0]
     text = json.dumps(messages)
-    assert "ASKED-TEXT-NEVER-SHOWN" not in text and "Order the values." in text and tools == kinship.tools()
+    assert "ASKED-TEXT-NEVER-SHOWN" not in text and "Order the values." in text and tools == []  # no tools sent
     entries = attention.Ledger(svc.home).entries()
     assert entries[ids[0]].kin_judged and entries[ids[0]].kin == (ids[1],)  # number 9 was never shown: left out
     assert sorted(got["handed"]) == sorted(ids)
@@ -969,6 +968,96 @@ def test_a_capture_nothing_relates_is_put_to_the_judge_once_and_its_kin_is_hande
     assert [r["op"] for r in spend] == ["reserve", "settle"] and spend[1]["usd"] == "0.002"
     _step(svc.home, runner, monkeypatch)
     assert len(asked) == 1  # asked once
+
+
+def _judge_service(home, settings=None):
+    ledger = attention.Ledger(home)
+    service = SimpleNamespace(home=home, settings=settings or _settings(), capped=False, cap=Decimal("100"),
+                              stop_flag=None)  # fmt: skip
+    from unify.memory.capture_groups import HomeProfiles
+
+    return service, ledger, HomeProfiles(ledger.state_dir, None)
+
+
+def test_the_judge_is_never_asked_once_the_service_is_asked_to_stop(svc, monkeypatch):
+    """A drain, a suspend or an operator's stop (the stop marker), or SIGTERM: no judge's call starts."""
+    import asyncio
+    import threading
+
+    _unrelated_captures(svc.home)
+    asked: list = []
+
+    async def turn(messages, tools):
+        asked.append(1)
+        return {"role": "assistant", "content": "{}"}, "0.001"
+
+    monkeypatch.setattr(ws, "_kin_turn", lambda service, kin_id: turn)
+    service, ledger, profiles = _judge_service(svc.home)
+    service.stop_flag = threading.Event()
+    service.stop_flag.set()
+    assert asyncio.run(ws._judge_kin(service, ledger, profiles, Decimal("1"))) is False
+    service.stop_flag = None
+    ws._atomic_json(ws.service_dir(svc.home) / ws.STOP_FILE, {"v": 1, "by": "drain", "at": "x", "reason": "end"})
+    assert asyncio.run(ws._judge_kin(service, ledger, profiles, Decimal("1"))) is False
+    assert asked == [] and not ws._rows(ws.service_dir(svc.home) / ws.SPEND_FILE)
+
+
+def test_a_judges_call_in_flight_is_cancelled_at_the_stop_marker_and_booked(svc, monkeypatch):
+    """The stop marker cancels a judge's call in flight at once; the call is settled (no journal: at its worst case),
+    and the capture is not marked as asked, so a later service asks again."""
+    import asyncio
+
+    ids = _unrelated_captures(svc.home)
+    monkeypatch.setattr(ws, "KIN_POLL_S", 0.01)
+    cancelled: list = []
+
+    async def turn(messages, tools):
+        ws._atomic_json(ws.service_dir(svc.home) / ws.STOP_FILE, {"v": 1, "by": "drain", "at": "x", "reason": "end"})
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.append(1)
+            raise
+        return {"role": "assistant", "content": "{}"}, "0.001"
+
+    monkeypatch.setattr(ws, "_kin_turn", lambda service, kin_id: turn)
+    service, ledger, profiles = _judge_service(svc.home)
+    assert asyncio.run(ws._judge_kin(service, ledger, profiles, Decimal("1.5"))) is True
+    assert cancelled == [1]
+    assert not attention.Ledger(svc.home).entries()[ids[0]].kin_judged
+    spend = ws._rows(ws.service_dir(svc.home) / ws.SPEND_FILE)
+    assert [r["op"] for r in spend] == ["reserve", "settle"] and spend[1]["usd"] == "1.5"
+    (ev,) = [r for r in ws.events(svc.home) if r.get("event") == "kin"]
+    assert ev["cut"] == "stopping"
+
+
+def test_the_judges_call_is_settled_from_the_writer_lanes_journal(svc, monkeypatch, tmp_path):
+    """With the writer lane's journal, the judge's call settles at what the journal charged in the window around it
+    (as a pass does), not at the call's own figure."""
+    import asyncio
+
+    _unrelated_captures(svc.home)
+    journal = tmp_path / "writer-journal.jsonl"
+    journal.write_text(json.dumps({"origin": "request_started", "request_attempt_id": "old",
+                                   "requested_model": "openai/gpt-5.6-sol"}) + "\n")  # fmt: skip
+
+    async def turn(messages, tools):
+        with journal.open("a") as fh:
+            fh.write(json.dumps({"origin": "request_started", "request_attempt_id": "a1",
+                                 "requested_model": "openai/gpt-5.6-sol"}) + "\n")  # fmt: skip
+            fh.write(json.dumps({"request_attempt_id": "a1", "status": "completed", "account_charge": "0.0042"}) + "\n")
+        return {"role": "assistant", "content": "{}"}, "0.001"
+
+    monkeypatch.setattr(ws, "_kin_turn", lambda service, kin_id: turn)
+    service, ledger, profiles = _judge_service(svc.home, _settings(UNIFY_MEMORY_WRITER_JOURNAL=str(journal)))
+    assert ws._writer_lane(service.settings)[:2] == (str(journal), ("openai/gpt-5.6-sol",))
+    assert asyncio.run(ws._judge_kin(service, ledger, profiles, Decimal("1.5"))) is True
+    spend = ws._rows(ws.service_dir(svc.home) / ws.SPEND_FILE)
+    assert spend[-1]["op"] == "settle" and spend[-1]["usd"] == "0.0042"
+    from unify.memory import metering
+
+    (row,) = [r for r in metering.metered_passes(svc.home) if r.get("kind") == "kin"]
+    assert row["usd"]["known"] == "0.0042" and row["usd"]["unknown_calls"] == 0
 
 
 def test_the_judges_brief_names_no_identifier_alias_or_task():

@@ -1711,20 +1711,84 @@ def _profiles(service: Any, sources: Any) -> Any:
     return profiles
 
 
+#: The judge's call's wall clock: a call still running then is cancelled (booked from the writer lane's journal, else
+#: at its worst case), as a stop marker or SIGTERM cancels it at once.
+KIN_WALL_S = 300.0
+#: How often a judge's call in flight checks for the stop marker.
+KIN_POLL_S = 1.0
+
+
+class _KinCut(Exception):
+    """The judge's call was cancelled: the service is stopping (``stopping``) or its wall clock ran out (``wall``)."""
+
+
+def _stopping(service: Any) -> bool:
+    """Whether *service* is asked to stop: the stop marker (a drain, a suspend, an operator) or SIGTERM."""
+    flag = getattr(service, "stop_flag", None)
+    return stopping_marker(service.home) is not None or (flag is not None and flag.is_set())
+
+
+async def _bounded_call(call: Awaitable[Any], service: Any, wall_s: float) -> Any:
+    """*call*'s result; cancelled (raising :class:`_KinCut`) as soon as *service* is asked to stop, or after *wall_s*."""
+    task = asyncio.ensure_future(call)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + float(wall_s)
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=max(0.0, min(KIN_POLL_S, deadline - loop.time())))
+        if task in done:
+            return task.result()
+        why = "stopping" if _stopping(service) else "wall" if loop.time() >= deadline else None
+        if why is not None:
+            task.cancel()
+            try:
+                await task
+            except BaseException:  # noqa: BLE001 - the cancelled call's own end is not ours
+                pass
+            raise _KinCut(why)
+
+
+def _writer_lane(settings: Any) -> tuple[str | None, tuple[str, ...], Any]:
+    """The writer lane's journal, the writer's model as the journal names it, and the pinned writer prices (each
+    None or empty when the settings do not give it)."""
+    from .integration import consolidate
+    from .integration.switch import writer_journal, writer_prices
+
+    try:
+        journal = writer_journal(settings)
+    except Exception:  # noqa: BLE001 - no journal: the call's own figures settle it
+        journal = None
+    try:
+        models: tuple[str, ...] = (consolidate.writer_settings(settings).model.split("@", 1)[0],)
+    except Exception:  # noqa: BLE001
+        models = ()
+    try:
+        prices = writer_prices(settings)
+    except Exception:  # noqa: BLE001
+        prices = None
+    return journal, models, prices
+
+
 async def _judge_kin(service: Any, ledger: Any, profiles: Any, worst: Decimal) -> bool:
     """Ask the judge of behaviour (:mod:`.kinship`) about one open capture that no relation of the harness's own
     relates to another capture and that was never asked about, the oldest first; record its answer (a ``kin`` row,
-    with or without kin). The call is booked in ``spend.jsonl`` like a pass (its worst case reserved, then settled),
-    carries its own id and the entry (``X-Unify-Pass-Id`` / ``-Entries``), and its row in ``pass-results.jsonl``
-    (kind ``kin``) gives its USD to the entry. No call starts when the room under memory's cap is below one call's
-    worst case. Returns whether a judge was asked."""
+    with or without kin). The call is booked in ``spend.jsonl`` like a pass (its worst case reserved, then settled
+    from the writer lane's journal window around the call, as a pass is; with no readable journal, from the call's
+    own figures, an unpriced call at its worst case), carries its own id and the entry (``X-Unify-Pass-Id`` /
+    ``-Entries``), and its row in ``pass-results.jsonl`` (kind ``kin``) gives its USD to the entry. It sends no tools.
+    No call starts once the service is asked to stop (the stop marker of a drain, a suspend or an operator, or
+    SIGTERM), or when the room under memory's cap is below one call's worst case; a call in flight is cancelled as
+    soon as the service is asked to stop, or after :data:`KIN_WALL_S` (a call cut by a stop is asked again by a later
+    service). Returns whether a judge was asked."""
     from unify.common.llm_client import attribution
 
     from . import capture_groups as cg
     from . import kinship
     from .captures import store_dir
+    from .reconcile import journal_offset, reconcile_window
 
     home, settings = service.home, service.settings
+    if _stopping(service):
+        return False
     entries = ledger.entries()
     live = ("open", "handed", "read", "closed")
     caps = [e for e in entries.values() if e.kind in cg.GROUPED_KINDS and e.state in live and e.refs.captures]
@@ -1752,22 +1816,48 @@ async def _judge_kin(service: Any, ledger: Any, profiles: Any, worst: Decimal) -
         [(o.entry, profs[o.entry], store / o.refs.captures[0]) for o in others[: kinship.CANDIDATES]],
     )
     kin_id = secrets.token_hex(8)
+    journal, models, prices = _writer_lane(settings)
+    start = journal_offset(journal)
     spend = service_dir(home) / SPEND_FILE
     _append(spend, {"v": 1, "op": "reserve", "pass_id": kin_id, "usd": _format(worst), "at": stamp(_now())})
+    setter = getattr(service, "set", None)
+    if callable(setter):
+        # a stop waits for a call in flight until its deadline, as for a pass (the call itself ends at the marker)
+        setter("idle", pass_deadline=_now() + timedelta(seconds=KIN_WALL_S))
     usd: Decimal | None = None
+    cut: str | None = None
     try:
         turn = _kin_turn(service, kin_id)
         with attribution(kin_id, [target.entry]):
-            message, cost = await turn(messages, kinship.tools())
+            message, cost = await _bounded_call(turn(messages, []), service, KIN_WALL_S)
         usd = _decimal(cost)
         named, why = kinship.answer(message if isinstance(message, dict) else {}, labels)
+    except _KinCut as exc:
+        cut = str(exc)
+        named, why = [], f"the judge's call was cancelled ({cut})"
     except Exception as exc:  # noqa: BLE001 - a failed call: asked once, nothing named, booked at its worst case
         named, why = [], f"the judge's call failed ({type(exc).__name__})"
-    booked = usd if usd is not None else worst
+    finally:
+        if callable(setter):
+            setter("idle", pass_deadline=None)
+    recon = None
+    if journal and models and start is not None:
+        try:
+            recon = await reconcile_window(
+                journal, start, journal_offset(journal), models=models, worst_case_usd=worst, prices=prices
+            )
+        except Exception:  # noqa: BLE001 - an unreadable journal: the call's own figures
+            recon = None
+    if recon is not None and recon.get("journal") == "read":
+        known, unknown = Decimal(recon["usd"]), int(recon["unknown"] or 0)
+    else:
+        known, unknown = (usd, 0) if usd is not None else (Decimal(0), 1)
+    booked = known + unknown * worst
     _append(spend, {"v": 1, "op": "settle", "pass_id": kin_id, "usd": _format(booked), "at": stamp(_now())})
-    ledger.record_kin(target.entry, named, why)
-    _kin_row(home, kin_id, target.entry, usd, worst)
-    event(home, "kin", pass_id=kin_id, entry=target.entry, named=len(named))
+    if cut != "stopping":
+        ledger.record_kin(target.entry, named, why)
+    _kin_row(home, kin_id, target.entry, known, unknown, worst)
+    event(home, "kin", pass_id=kin_id, entry=target.entry, named=len(named), **({"cut": cut} if cut else {}))
     return True
 
 
@@ -1785,9 +1875,9 @@ def _kin_turn(service: Any, kin_id: str) -> Any:
     return consolidate.unillm_turn(cfg.model, actor_effort())
 
 
-def _kin_row(home: Path | str, kin_id: str, entry: str, usd: Decimal | None, worst: Decimal) -> None:
-    """The judge's ``pass-results.jsonl`` row (kind ``kin``): the entry it was asked about, read, and its USD (an
-    unpriced call counted as unknown, with its worst case booked), so metering gives the call's cost to that entry."""
+def _kin_row(home: Path | str, kin_id: str, entry: str, known: Decimal, unknown: int, worst: Decimal) -> None:
+    """The judge's ``pass-results.jsonl`` row (kind ``kin``): the entry it was asked about, read, and its USD (*known*,
+    and its *unknown* unpriced calls with their worst case booked), so metering gives the call's cost to that entry."""
     from . import metering
 
     row = {
@@ -1797,9 +1887,9 @@ def _kin_row(home: Path | str, kin_id: str, entry: str, usd: Decimal | None, wor
         "entries": {"handed": [entry], "taken": [], "read": [entry], "closed": [], "returned": []},
         "items": {},
         "usd": {
-            "known": _format(usd) if usd is not None else "0",
-            "unknown_calls": 0 if usd is not None else 1,
-            "worst_case_booked": "0" if usd is not None else _format(worst),
+            "known": _format(known),
+            "unknown_calls": unknown,
+            "worst_case_booked": _format(unknown * worst),
             "killed_turns": 0,
             "helper_known": "0",
             "helper_unknown_calls": 0,

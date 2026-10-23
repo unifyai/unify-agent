@@ -44,13 +44,6 @@ BRIEF = (
 )
 
 
-def tools() -> list[dict]:
-    """The model-API tools of the judge's call: the one every agent's call carries (it is never needed here)."""
-    from unify.common.tool_registry import json_tools
-
-    return json_tools("writer")
-
-
 def _read(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace")

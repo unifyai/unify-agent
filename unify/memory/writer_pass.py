@@ -4976,8 +4976,8 @@ def unillm_turn(
                     _check_route_in_effect(route)
                 await client.generate(
                     messages=copy.deepcopy(messages),
-                    tools=tools,
-                    tool_choice="auto",
+                    # a call with no tools (the judge of behaviour's) sends neither tools nor a tool choice
+                    **({"tools": tools, "tool_choice": "auto"} if tools else {}),
                     stateful=True,
                     **routed,
                 )
