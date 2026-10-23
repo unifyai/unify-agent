@@ -53,7 +53,7 @@ ASK_EVENT = "memory.ask_result"
 #: How an answer labels the item it names first and the one it names for when that one fails, as the request-start
 #: block shows them (the harness's ``librarian.BEST_FIT_LABEL`` and ``FALLBACK_LABEL``, the same words).
 BEST_FIT_LABEL = "Best fit"
-FALLBACK_LABEL = "Only if the first fails"
+FALLBACK_LABEL = "Fallback, only if the first fails"
 #: The tool the question goes through (the host's librarian session for this request).
 ASK_TOOL = "ask_library"
 #: The field of a reply that is an answer the librarian already gave in this request (the host's
@@ -216,6 +216,22 @@ def _schema_of(schema: Any, call: str) -> tuple[dict, Any]:
 
 
 
+#: The most characters of a reason an answer prints: the best fit's, the fallback's and each nearest item's (the whole
+#: answer stays within the bound on what one answer may take, the host's ``librarian.ANSWER_CHARS``).
+_REASON_CHARS = (600, 400, 300)
+
+
+def _short(text: Any, n: int) -> str:
+    """*text* on one line, at most *n* characters (cut with "…")."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _kind_label(item: Any) -> str:
+    """What an answer calls an item: a recorded procedure (``capture:<id>``) by that name, else its kind."""
+    return "recorded procedure" if str(getattr(item, "id", "")).startswith(CAPTURE_PREFIX) else item.kind
+
+
 class Answer(list):
     """What ``memory.ask`` returns: a list of :class:`Item`, the best fit the librarian named first and at most one
     fallback for when it fails, each with its ``reason``. When nothing applies the list is empty and ``nearest`` holds
@@ -248,14 +264,14 @@ class Answer(list):
         if not self.asked:
             out.append(self.note)
         elif self:
-            for label, i in zip((BEST_FIT_LABEL, FALLBACK_LABEL), self):
-                out.append(f"{label}: {i.id} ({i.kind}): {i.reason}")
+            for (label, room), i in zip(((BEST_FIT_LABEL, _REASON_CHARS[0]), (FALLBACK_LABEL, _REASON_CHARS[1])), self):
+                out.append(f"{label}: {i.id} ({_kind_label(i)}): {_short(i.reason, room)}")
                 if self.calls.get(i.id):
                     out.append(f"  call: {self.calls[i.id]}")
             out.append("Each is an Item: print(item) shows its card; item(...) calls a function item. Nothing has run.")
         else:
             out.append("Nothing in the library applies.")
-            out += [f"- nearest {i.id} ({i.kind}): {i.reason}" for i in self.nearest]
+            out += [f"- nearest {i.id} ({_kind_label(i)}): {_short(i.reason, _REASON_CHARS[2])}" for i in self.nearest]
         if self.note and self.asked:
             out.append(self.note)
         return "\n".join(out) + "\n"
@@ -323,7 +339,7 @@ def ask(question: Annotated[str, MinLen(1)] | None = None, schema: Any = None) -
 
     Returns:
         Without a schema, the best fit the librarian named and at most one fallback for when it fails, in that
-        order, each an Item with ``.reason`` (printed as "Best fit: ..." and "Only if the first fails: ..."); []
+        order, each an Item with ``.reason`` (printed as "Best fit: ..." and "Fallback, only if the first fails: ..."); []
         when nothing applies (the list's ``.nearest`` then holds the nearest items, each with what differs as its
         ``.reason``); ``.already_given`` is True when it is the answer already given in this request. With a
         schema, the answer in its shape.

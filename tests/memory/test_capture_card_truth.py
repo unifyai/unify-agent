@@ -101,10 +101,10 @@ def test_ask_prints_one_best_fit_and_one_fallback_with_the_blocks_words():
     shown = repr(library_ask.Answer([item(a, "it parses dates"), item(b, "it re-runs the work")],
                                     calls={a: f"memory.get({a!r})(x)", b: f"memory.get({b!r})()"}))  # fmt: skip
     assert f"Best fit: {a} (function): it parses dates" in shown
-    assert f"Only if the first fails: {b} (function): it re-runs the work" in shown
+    assert f"Fallback, only if the first fails: {b} (recorded procedure): it re-runs the work" in shown
     assert "apply:" not in shown and "item(s)" not in shown
     block = librarian.start_block({"fits": [{"id": a, "call": "c1", "why": "w1"}, {"id": b, "call": "c2", "why": "w2"}]})
-    assert f"- Best fit: {a}: w1" in block and f"- Only if the first fails: {b}: w2" in block
+    assert f"- Best fit: {a}: w1" in block and f"- Fallback, only if the first fails: {b}: w2" in block
     doc = inspect.getdoc(library_ask.ask)
     assert "every item" not in doc and "at most one fallback" in doc
     assert "every item" not in (inspect.getdoc(library_ask.Answer) or "")

@@ -1522,7 +1522,7 @@ START_HEAD = "What the library holds for this request (its librarian's answer; a
 #: one fallback: never a menu), in the request-start block and as ``memory.ask()`` prints it (the package's
 #: ``memory.ask`` section holds the same words).
 BEST_FIT_LABEL = "Best fit"
-FALLBACK_LABEL = "Only if the first fails"
+FALLBACK_LABEL = "Fallback, only if the first fails"
 
 
 def start_block(answer: Mapping[str, Any]) -> str:

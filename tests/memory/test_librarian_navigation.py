@@ -423,7 +423,7 @@ def test_memory_ask_shows_each_fits_call_beside_its_reason(tmp_path):
     out = _py(T._copy(tmp_path), fake + "import memory\na = memory.ask()\nprint(a)\nprint(json.dumps(a.calls))\n")
     # the one fit is named as the best fit, with its call; no list of everything that applies
     assert f"Best fit: {T.TOTAL} (function): its reader parsed it\n  call: {entry}" in out, out
-    assert "apply:" not in out and "Only if the first fails:" not in out, out
+    assert "apply:" not in out and "Fallback, only if the first fails:" not in out, out
     assert "Nothing has run." in out and json.loads(out.splitlines()[-1]) == {T.TOTAL: entry}
 
 
