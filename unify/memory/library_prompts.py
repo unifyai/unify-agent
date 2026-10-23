@@ -52,8 +52,8 @@ MEMORY_HELP_LINE = "`help(memory)` shows the library's calls and types."
 #: librarian, and :data:`ASK_LINE_IN_CODE` says when to ask and that an answer is a lead, not proof. The switch is
 #: fixed for a run, so each guide's bytes are too.
 LOOK_LINE_IN_CODE = (
-    "- At the start of a request, and before you work a step out yourself, look for an item that applies in the "
-    "index at the end of this prompt or with `memory.items`; the index lists every function and note.\n"
+    "- At the start of a request, look for an item that applies in the index at the end of this prompt or with "
+    "`memory.items`; the index lists every function and note.\n"
 )
 ASK_LINE_IN_CODE = (
     "- At the start of a request, `memory.ask` names the stored procedure or note of the library that fits it best: "
@@ -70,11 +70,11 @@ ASK_SCHEMA_LINE_IN_CODE = (
     "librarian once, then raises `AskSchemaError`. A dataclass `Plan` with `steps: list[str]` and `risky: bool`, "
     "passed as the schema, gives back a `Plan` whose `steps` your code can loop over.\n"
 )
-#: The in-code try-first bullet, first under "Using items": open what you will use, then call it.
+#: The in-code bullet on using an item, first under "Using items": what opening and calling one do (mechanics only:
+#: when to use an item, and in which order to work, is the actor's to decide).
 USE_LINE_IN_CODE = (
-    "- When an item applies, open it with `memory.get` and call it before you work the step out yourself. Trying "
-    "a fitting item costs one call, and working it out again usually costs many. Its result is unchecked unless "
-    "its record says otherwise.\n"
+    "- `memory.get` opens an item (print it for its card); calling the item runs it on what you pass. Its result is "
+    "unchecked unless its record says otherwise.\n"
 )
 #: The in-code refusal and status bullets, after the try-first bullet.
 STATUS_LINES_IN_CODE = (

@@ -1,8 +1,9 @@
 """What the actor reads about finding and trying stored procedures: the guide's nudge, the pointer form of the
 memory section, and the index line that shows an item's applicability signature.
 
-The guide informs and never forces: it says to look for stored procedures at the start of a request and that
-trying a matching one is cheaper than working it out again; it says nothing about checking a task's examples.
+The guide informs and never forces: it says to look for stored procedures at the start of a request and what
+opening and calling an item do; it neither prescribes when to call one nor claims what that saves, and it says
+nothing about checking a task's examples.
 
 The index line's item records are what production writes (:mod:`tests.memory.gate_records`): a pass lands a captured
 procedure, the library gate checks it, and the records are ``lifecycle.next_records`` with the gate's verification and
@@ -156,14 +157,14 @@ def test_the_guide_nudges_to_look_for_stored_procedures_at_the_start_of_a_reques
 
 
 @pytest.mark.parametrize("name", GUIDES)
-def test_the_guide_says_trying_a_matching_procedure_is_cheaper_than_working_it_out_again(name):
+def test_the_guide_states_what_calling_an_item_does_and_never_when_to(name):
+    """When to call a fitting item, and in which order to work, is the actor's to decide: the guide states what the
+    calls do, and makes no claim about what trying an item saves (nothing measures it)."""
     text = _guide(name)
-    hits = [
-        s
-        for s in _sentences(text)
-        if re.search(r"\bcheaper\b|\bcosts?\b", s, re.I) and re.search(r"\bagain\b|\brediscover", s, re.I)
-    ]
-    assert hits, "no sentence compares the cost of trying a stored procedure with working it out again"
+    for s in _sentences(text):
+        assert not (re.search(r"\bcheaper\b|\bcosts?\b", s, re.I) and re.search(r"\bagain\b|\brediscover", s, re.I)), s
+        assert not re.search(r"before you work", s, re.I), s
+    assert "calling the item runs it on what you pass" in text
 
 
 @pytest.mark.parametrize("name", GUIDES)
