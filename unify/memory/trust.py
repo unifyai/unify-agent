@@ -361,6 +361,26 @@ def apply_outcome(level: str | None, prior: str | None, uses: Iterable[Use]) -> 
     return Outcome(d.status, new, d.basis, d.rule, d.reason, d.episodes)
 
 
+def record_line(t: Mapping[str, Any]) -> str:
+    """One line saying what the track record holds, never claiming more: verdicts when there are any, otherwise the
+    episodes it ran in without errors; never the word for correctness."""
+    v = t.get("verdicts") or {}
+    acc, rej = int(v.get("accepted") or 0), int(v.get("rejected") or 0)
+    if acc or rej:
+        return f"its record has verdicts: {acc} accepted, {rej} rejected"
+    ran = int((t.get("implicit") or {}).get("reused_episodes") or 0)
+    if ran:
+        return f"its record has no verdicts; it ran without errors in {ran} episodes"
+    return "no later use recorded yet"
+
+
+def status_text(status: str, basis: str | None) -> str:
+    """The status as the index shows it: ``adopted (implicit)`` for an adoption without verdicts."""
+    if status == ADOPTED and basis == BASIS_IMPLICIT:
+        return f"{ADOPTED} (implicit)"
+    return status
+
+
 # --- what a status rests on ---------------------------------------------------
 
 #: What an item's status rests on, by the signals its uses carry: verdicts after its answered calls, outcomes at the
