@@ -568,7 +568,7 @@ _WHAT_TO_WRITE_IN_CODE = (
 _WRITE_RULES_IN_CODE = (
     "# Rules\n"
     "1. What you store is your decision, in any domain: readers, calculations, call sequences, and whole-job "
-    "procedures built from smaller tested functions. A procedure's label lists its tests and its recipe's cases; "
+    "procedures built from smaller functions. A procedure's label lists its tests and its recipe's cases; "
     "the gate runs neither. Every item is kept with the evidence it has, stated on its label.\n"
     "2. Start from the working model's own code when it already wrote it (its cells and its work-tree diff). "
     "A function raises "
