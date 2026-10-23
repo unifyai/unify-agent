@@ -162,3 +162,37 @@ def test_the_first_message_names_the_entries():
     e = at.AttentionEntry("a" * 16, "message", "handed", "2026-10-20T00:00:00.000Z", at.Refs(record_seq=3))
     text = tools.first_message(att, SimpleNamespace(attention=[e]), "900")
     assert text.startswith("Pass p9: 1 entry needs your attention") and f"{'a' * 16} (message)" in text and "900 s" in text
+
+
+def test_a_retire_takes_effect_on_what_it_names_or_is_refused_with_why(tmp_path):
+    """A retire naming an item the library does not hold (no function or note of the pass's copy, no capture of the
+    store) is refused naming that item, and nothing is decided; a retire naming a capture of the store closes the
+    entry, and the capture is then one the request's copy leaves out, with the writer's reason."""
+    home = _home(tmp_path)
+    led = Ledger(home)
+    led.sync(_Src(_forks()))
+    handed = led.hand("p1", 1)
+    ctx, att, writer = _ctx(tmp_path, home, handed)
+    tools.export_entries(writer, att, handed)
+    name = led.get(handed[0].entry).refs.episodes[0]
+    writer.tool_events.append({"status": "ok", "paths": [{"path": f"/inputs/staging/{name}/summary.md", "mode": "read"}]})
+    box = writer._live[0]
+    (box / "notes" / "text").mkdir(parents=True)
+    (box / "notes" / "text" / "rows.md").write_text("---\ntitle: rows\ndescription: rows\nuses: []\n---\n## Rule\n- x\n")
+    held, other = "a" * 16, "b" * 16
+    store = home / "memory-state" / "memory-captures" / held
+    store.mkdir(parents=True)
+    (store / "record.json").write_text(json.dumps({"outcome": "positive"}))
+    entry = handed[0].entry
+    for missing in ("notes/none/nothing.md", f"capture:{other}", "memory.none.mod:fn"):
+        got = tools.decide(ctx, {"entry_ids": [entry], "decision": "retire", "items": [missing], "reason": "broke"})
+        assert got.status == "refused" and missing in got.text and "nothing was decided" in got.text, got.text
+    assert led.get(entry).state != "closed" and not (att.record_dir / "decisions.jsonl").exists()
+    # an item the copy holds may be retired; other decisions are not checked against the copy
+    ok = json.loads(tools.decide(ctx, {"entry_ids": [entry], "decision": "retire",
+                                       "items": [f"capture:{held}", "notes/text/rows.md"],
+                                       "reason": "its use failed in two requests"}).text)  # fmt: skip
+    assert ok["closed"] == [entry] and led.get(entry).decision == "retire"
+    assert at.retired_captures(home / "memory-state") == {
+        held: {"status": "retired", "by": None, "reason": "its use failed in two requests"}}
+    assert at.item_decisions(home)["notes/text/rows.md"]["status"] == "retired"
