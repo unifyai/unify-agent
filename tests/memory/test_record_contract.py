@@ -44,7 +44,7 @@ from unify.memory.integration import hooks
 from unify.memory.integration.adapters.audit import CellAudit
 from unify.memory.integration.consolidate import open_stores
 from unify.memory.integration.paths import Paths
-from unify.memory.integration.request import add_runtime_calls, runtime_calls_empty, with_runtime_calls
+from unify.memory.integration.request import add_runtime_calls, runtime_calls_empty, with_pins, with_runtime_calls
 from unify.memory.layout import discover
 from unify.memory.redact import Redactor
 from unify.memory.signals import Signal, post_signal
@@ -114,7 +114,8 @@ REGISTRY: dict[str, dict] = {
         "readers": ["unify.memory.lifecycle:facts_from_evidence"],
     },
     "memory_use.json": {
-        "writer": "unify.memory.analysis.use:request_use, unify.memory.integration.request:with_runtime_calls",
+        "writer": "unify.memory.analysis.use:request_use, unify.memory.integration.request:with_runtime_calls and "
+        "with_pins",
         "readers": [
             "unify.memory.evidence:EvidenceStore.index_episode",
             "unify.memory.integration.outcomes:implicit_evidence",
@@ -435,6 +436,8 @@ def test_every_field_a_use_record_reader_asks_for_is_written(tmp_path, library_r
     acc = runtime_calls_empty()
     add_runtime_calls(acc, {"calls": {"counts": {item: {"ok": 1, "refused": 0, "error": 1}}}})
     record = with_runtime_calls(record, acc)
+    # UNIFY_MEMORY=in_episode: the pin each call was served under
+    record = with_pins(record, {"c0ffee" * 6 + "abcd": {item: {"ok": 1, "refused": 0, "error": 1}}}, ["c0ffee" * 6 + "abcd"])
     rows = record["items"]
     assert item in rows and "runtime" in rows[item]
     written = {"record": set(record), "item": {k for row in rows.values() for k in row}}
