@@ -37,6 +37,9 @@ ALLOWED_FILES = {
     "tests/memory/golden/extract_v2_screen.py",
     # This file spells the patterns it bans.
     "tests/memory/test_no_internal_jargon.py",
+    # The system suite is an independent author's specification, kept as written: its docstrings cite the design's
+    # requirement ids. It is scanned only because its file name mentions memory.
+    "tests/system/test_s06_memory_off.py",
 }
 
 # Scopes a token can be found in.
