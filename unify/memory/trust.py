@@ -11,9 +11,10 @@ depends on the regime the episode declared (:data:`.signals.REGIME_SOURCES`):
 * ``sparse`` (an outcome at the end): the episode-end outcome plus the intermediate signals (errors, refusals, the
   procedure's own ``holds`` condition). A use in an episode that ended positive is a clean use that carries a positive
   end; an answered use in an episode that ended contrary is a failed use.
-* ``implicit``: implicit signals only. A use that returned without error, whose ``holds`` was not false, with no
-  correction after it and no disagreement, is clean; an error, ``holds`` false, a correction after an answered use, or
-  disagreement with the actor's own final result is a failed use.
+* ``implicit``: implicit signals only. A use that returned without error and whose ``holds`` was not false is
+  clean; an error or ``holds`` false is a failed use. A correction after an answered use, or disagreement with the
+  actor's own final result, would fail it too, but no part of the harness records either signal, so in practice an
+  ``implicit`` use is judged by its errors and its stated result condition alone.
 * ``none``: as ``implicit``, without corrections, which that regime cannot observe.
 
 In every regime an error and a false ``holds`` are failed uses, and a refusal (``MemoryInputError``: an input the
@@ -381,7 +382,7 @@ def status_text(status: str, basis: str | None) -> str:
 # --- what a status rests on ---------------------------------------------------
 
 #: What an item's status rests on, by the signals its uses carry: verdicts after its answered calls, outcomes at the
-#: end of its episodes, implicit signals only (stated conditions, corrections), or no outcome signal at all.
+#: end of its episodes, implicit signals only (its stated result condition), or no outcome signal at all.
 BASIS_END_OUTCOMES = "end_outcomes"
 BASIS_NO_OUTCOME_SIGNALS = "no_outcome_signals"
 STATUS_BASES = (BASIS_VERDICTS, BASIS_END_OUTCOMES, BASIS_IMPLICIT, BASIS_NO_OUTCOME_SIGNALS)
@@ -425,7 +426,8 @@ def basis_text(status: str, basis: str, counts: Mapping[str, int]) -> str:
     how = {
         BASIS_VERDICTS: "judged by the verdict after each answered call",
         BASIS_END_OUTCOMES: "all judged at episode end",
-        BASIS_IMPLICIT: "judged by implicit signals only (errors, stated conditions, corrections), never by an outcome",
+        BASIS_IMPLICIT: "judged by implicit signals only (its errors and its stated result condition), never by an "
+        "outcome",
     }[basis]
     return f"{status}: {clean} clean use{'s' if clean != 1 else ''}, {failed} failed, {how}"
 

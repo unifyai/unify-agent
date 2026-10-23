@@ -20,50 +20,27 @@ from typing import Mapping
 
 # --- the actor's guide -----------------------------------------------------------------------
 
-#: The bullet optional pull helpers are inserted before. Constant bytes.
-FILES_LINE = "- The library is also plain files at the location below, so `grep` and file reads work on it.\n"
-#: :data:`FILES_LINE` when tools are called from code (the bare ``grep`` is ``tools.grep`` there).
+#: The bullet that says the library is also plain files, which the actor's and a teammate's ``tools.read`` and
+#: ``tools.grep`` open (the location line after the guide names where).
 FILES_LINE_IN_CODE = (
     "- The library is also plain files at the location below, so `tools.grep` and `tools.read` work on it.\n"
 )
-
-def guide_library_mode(extra_lines: tuple[str, ...] = ()) -> str:
-    """The guide, with *extra_lines* (optional pull helpers, constant per run) before :data:`FILES_LINE`; with tools
-    called from code, :data:`GUIDE_LIBRARY_IN_CODE`."""
-    guide = guide_library()
-    if not extra_lines:
-        return guide
-    line = FILES_LINE_IN_CODE if FILES_LINE_IN_CODE in guide else FILES_LINE
-    return guide.replace(line, "".join(extra_lines) + line, 1)
-
-
-def guide_library() -> str:
-    """The inline-index guide the actor reads: :data:`GUIDE_LIBRARY`, or :data:`GUIDE_LIBRARY_IN_CODE` when tools are
-    called from code."""
-    return GUIDE_LIBRARY_IN_CODE
-
 
 #: The one line that points the in-code texts to the library's own documentation: each call's arguments, results
 #: and errors are in its help, never in a prompt.
 MEMORY_HELP_LINE = "`help(memory)` shows the library's calls and types."
 
-#: The in-code look-first bullets, first under "Finding items": when to look, and where. With the librarian off the
-#: actor looks with ``memory.items`` (in the index, when the prompt carries it); with it on, ``memory.ask`` is the
-#: librarian, and :data:`ASK_LINE_IN_CODE` says when to ask and that an answer is a lead, not proof. The switch is
-#: fixed for a run, so each guide's bytes are too.
-LOOK_LINE_IN_CODE = (
-    "- At the start of a request, look for an item that applies in the index at the end of this prompt or with "
-    "`memory.items`; the index lists every function and note.\n"
-)
+#: The in-code ask bullet, first under "Finding items": what ``memory.ask`` answers and where the request's first answer
+#: already is (the request-start block, which the first user message holds before the request's text).
 ASK_LINE_IN_CODE = (
     "- At the start of a request, `memory.ask` names the stored procedure or note of the library that fits it best: "
     "with no question it asks about the request itself (the latest message included), and its answer gives the best "
-    "fit with its call, and a fallback only for when the first fails. A request's first message may already end with "
-    "that answer. Ask again after a new message arrives, or with a question of your own. What it names can still be "
-    "wrong for your case.\n"
+    "fit with its call, and a fallback only for when the first fails. A request's first message may already hold "
+    "that answer, above the request's text. Ask again after a new message arrives, or with a question of your own. "
+    "What it names can still be wrong for your case.\n"
 )
-#: The in-code paragraph on structured answers (rev 2.1, PLAN-REV2 item 7): ``memory.ask(..., schema=...)``, with one
-#: general instance of a schema (a plain dataclass) and no world vocabulary.
+#: The in-code paragraph on structured answers (``memory.ask(..., schema=...)``), with one general instance of a
+#: schema (a plain dataclass) and no world vocabulary.
 ASK_SCHEMA_LINE_IN_CODE = (
     "- When your code will use the answer, pass `schema=` (a dataclass, a TypedDict, a pydantic model or a JSON "
     "Schema dict) and the answer comes back in that shape instead of as text; a mismatch is sent back to the "
@@ -76,17 +53,19 @@ USE_LINE_IN_CODE = (
     "- `memory.get` opens an item (print it for its card); calling the item runs it on what you pass. Its result is "
     "unchecked unless its record says otherwise.\n"
 )
-#: The in-code refusal and status bullets, after the try-first bullet.
+#: The in-code refusal and status bullets, after the use bullet: what a function's refusal is, and what an item's
+#: status and brackets say (the statuses as :mod:`.trust` decides them from uses).
 STATUS_LINES_IN_CODE = (
-    "- A function raises `MemoryInputError` on an input it was not built for. Then do that step with your own "
-    "code.\n"
-    "- `on-trial` items have had little use; `adopted` items have been used without errors. "
-    "Every item's brackets also say what it rests on: its kind (a curated item the library's writer made, a "
-    "recorded procedure that re-runs the work of an earlier request), how many "
-    "episodes it comes from and in how many the work was accepted, and how many later uses had an outcome that "
-    "confirmed it.\n"
+    "- A function should raise `MemoryInputError` on an input it was not built for. Then do that step with your own "
+    "code. Any other exception it raises is the function's own failure.\n"
+    "- An item is `on-trial` until its uses decide otherwise: `adopted` after clean uses in several episodes and no "
+    "failed one (where the world gives outcomes, at least one of them confirmed), `retired` after failed uses in "
+    "several episodes. Every item's brackets also say what it rests on: its kind (a curated item the library's "
+    "writer made, a recorded procedure that re-runs the work of an earlier request), how many episodes it comes "
+    "from and in how many the work was accepted, and how many later uses had an outcome that confirmed it, or that "
+    "no record of it is kept.\n"
 )
-#: The opening of every in-code guide: the bound name, the help pointer and that using the library is optional.
+#: The opening of the in-code guide: the bound name, the help pointer and that using the library is optional.
 _OPENING_IN_CODE = (
     "### Memory Library\n"
     "\n"
@@ -96,30 +75,17 @@ _OPENING_IN_CODE = (
     "\n"
 )
 
-#: The inline-index guide when tools are called from code (the librarian off): it says when to use which library call
-#: and how they combine (look for what applies, open what you will use, call it) and names each call without its
-#: arguments; the calls' own help holds their arguments, results and errors. The index head says what each line holds.
-GUIDE_LIBRARY_IN_CODE = (
-    _OPENING_IN_CODE
-    + "Finding items:\n"
-    + LOOK_LINE_IN_CODE
-    + FILES_LINE_IN_CODE
-    + "\n"
-    "Using items:\n"
-    + USE_LINE_IN_CODE
-    + STATUS_LINES_IN_CODE
-)
-
 #: The constant pointer to the librarian: the same bytes for every library, in place
 #: of the index. It says who answers ``memory.ask``; the answer's form is in the call's help.
 LIBRARIAN_POINTER = (
     "Your library of procedures and notes from earlier work is the `memory` package in your cells. A librarian, "
-    "who searches the library by what each item was saved for and reads each item it names, answers `memory.ask`."
+    "who searches the library by what each item was saved for and is asked to read each item it names, answers "
+    "`memory.ask`."
 )
 
-#: The actor's memory section with the librarian on (the librarian requires the tools in code): the in-code guide
-#: with the index bullet replaced by :data:`LIBRARIAN_POINTER`, and nothing after it: no index view, whatever the
-#: size of the library, so the library never changes the actor's cached prefix.
+#: The actor's memory section (the librarian runs whenever memory does, and the tools are called from code): the
+#: opening, :data:`LIBRARIAN_POINTER` and how to find and use items, and nothing after it: no index view, whatever
+#: the size of the library, so the library never changes the actor's cached prefix.
 GUIDE_LIBRARIAN = (
     _OPENING_IN_CODE
     + "Finding items:\n"
@@ -128,7 +94,7 @@ GUIDE_LIBRARIAN = (
     + "\n"
     + ASK_LINE_IN_CODE
     + ASK_SCHEMA_LINE_IN_CODE
-    + "- `memory.items` browses every function and note in the library.\n"
+    + "- `memory.items` browses every function, note and recorded procedure in the library.\n"
     + FILES_LINE_IN_CODE
     + "\n"
     "Using items:\n"
@@ -237,9 +203,7 @@ STAGING_ROW_KEY = (
 )
 CAPTURE_ROW_KEY = (
     "capture",
-    "dict or null: `id`, `reproduces` (`reproduces`, `differs` or `unknown`: whether the captured procedure gave "
-    "the result the episode handed back), `outcome` (the signal the episode carried, or `failed`), `level`, "
-    "`status`, `same_as` (stored captures that gave the same result on this request) and `path`: the attempt the "
+    "dict or null: `id`, `outcome` (the signal the episode carried, or `failed`) and `path`: the attempt the "
     "harness captured from the episode, under /inputs/captures/<id>/",
 )
 POOL_ROW_KEY = (
@@ -1054,10 +1018,10 @@ RULES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         "It cannot match plain text",
     ),
     (
-        "match compares structure only",
-        "how match matches",
+        "fits compares structure only",
+        "how an item's applicability check matches",
         ("guide",),
-        "It compares structure only",
+        "It compares the structure of what you",
     ),
     (
         "an input refusal means do the step yourself",

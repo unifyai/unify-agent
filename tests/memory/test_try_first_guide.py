@@ -33,9 +33,9 @@ from unify.memory.episodes import Action
 from tests.memory import prompt_guards as guards
 
 # ==== ASSUMED NAMES (the integrator adapts these to the code, here only) ======================================
-#: The guide texts the actor reads (``library_prompts``). Rev 2 has tools in code only, so these are the in-code
-#: guides (which name the library's calls without their arguments); the guides for tools off are gone.
-IN_CODE_GUIDES = ("GUIDE_LIBRARY_IN_CODE", "GUIDE_LIBRARIAN")
+#: The guide text the actor reads (``library_prompts``): the librarian runs whenever memory does and the tools are in
+#: code, so there is one guide (it names the library's calls without their arguments).
+IN_CODE_GUIDES = ("GUIDE_LIBRARIAN",)
 GUIDES = IN_CODE_GUIDES
 #: How the guides for tools off named the two helpers (an in-code guide names neither).
 MATCH_CALL = "memory.match("
@@ -137,7 +137,7 @@ def _sentences(text: str) -> list[str]:
 def test_the_in_code_guide_names_its_calls_without_arguments(name):
     text = _guide(name)
     assert GET_NAME in text and ITEMS_NAME in text
-    assert (ASK_NAME in text) is (name == "GUIDE_LIBRARIAN"), "memory.ask is named only where the librarian answers"
+    assert ASK_NAME in text, "the guide names memory.ask, which the librarian answers"
     assert not re.search(r"memory\.[a-z_]+\(", text), "a library call shown with its arguments"
     assert MATCH_CALL not in text and RUN_CALL not in text
     assert lp.MEMORY_HELP_LINE in text

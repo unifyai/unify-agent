@@ -214,7 +214,6 @@ def _rendered(monkeypatch) -> dict[str, str]:
         out[f"rendered:helper:{similar}"] = helpers.helper_brief(similar)
     out["rendered:fork"] = fork.fork_message("`request`: (a request)") + "\n" + fork.fork_instruction()
     out["rendered:segment_instruction"] = fork.segment_instruction(2, 5) + "\n" + fork.segment_instruction(None, None)
-    out["rendered:guide"] = lp.guide_library_mode() + "\n" + lp.guide_library() + "\n" + lp.GUIDE_LIBRARY_IN_CODE
     out["rendered:librarian"] = librarian.system_prompt() + "\n" + lp.GUIDE_LIBRARIAN
     out["rendered:librarian_evidence"] = (
         librarian.system_prompt(evidence=True) + "\n" + librarian.evidence_question_message("q", "m", 1)

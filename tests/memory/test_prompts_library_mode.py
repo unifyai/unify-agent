@@ -59,7 +59,7 @@ def _write(limits=None, **over):
 
 
 def _texts():
-    return {"guide": pv.guide_library(), "librarian guide": pv.GUIDE_LIBRARIAN, "write": _write()}
+    return {"librarian guide": pv.GUIDE_LIBRARIAN, "write": _write()}
 
 
 def _headings(text):
@@ -134,7 +134,6 @@ def _contract_texts():
         "fork format": fork.FORMAT_EXAMPLE,
         "helper": helpers.helper_brief(False),
         "helper with similar": helpers.helper_brief(True),
-        "guide": pv.guide_library(),
         "librarian guide": pv.GUIDE_LIBRARIAN,
     }
 

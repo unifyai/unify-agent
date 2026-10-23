@@ -110,7 +110,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
     {
         "agent": "actor",
         "mode": "consumer",
-        "instructions": "unify.memory.library_prompts:guide_library_mode",
+        "instructions": "unify.memory.integration.prompt:render_memory_section",
         # memory.ask / memory.items / memory.get are library functions called in cells, not tools
         "json_tools": list(_JSON_TOOLS),
         "in_code": list(_ACTOR_IN_CODE),

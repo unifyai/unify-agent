@@ -12,7 +12,7 @@ from tests.memory import prompt_guards as guards
 
 def _prompts():
     return {
-        "guide": pv.guide_library(),
+        "guide": pv.GUIDE_LIBRARIAN,
         "write": pv.write_brief_now(),
     }
 
@@ -68,7 +68,7 @@ REV2_NOT_STATED = frozenset({
     "two episodes decide",
 })
 #: Rules the in-code guide leaves to the library's own help (``help(memory)``): stated there.
-IN_LIBRARY_HELP = frozenset({"match compares structure only"})
+IN_LIBRARY_HELP = frozenset({"fits compares structure only"})
 
 
 def test_each_rule_lives_in_its_roles_prompts_only():
