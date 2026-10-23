@@ -84,7 +84,9 @@ CHECKS = (
     '    """The caller\'s input is not usable."""\n\n\n'
     "def explode(value):\n"
     '    """Raise with the argument in the message."""\n'
-    f"    raise ValueError('cannot use {PLANTED_KEY} here\\n{SECOND_LINE} ' + repr(value))\n\n\n"
+    # the key value is put together when the function runs: a library file holding one is hidden from cells (the
+    # sandbox's masks apply to the library copy), so only a value made at run time can reach a failure message
+    f"    raise ValueError('cannot use ' + {PLANTED_KEY[:3]!r} + {PLANTED_KEY[3:]!r} + ' here\\n{SECOND_LINE} ' + repr(value))\n\n\n"
     "def picky(value):\n"
     '    """Refuse every input."""\n'
     f"    raise MemoryInputError('refused: api_key={PLANTED_API_VALUE}\\n{SECOND_LINE} ' + repr(value))\n"
