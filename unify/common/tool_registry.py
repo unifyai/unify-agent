@@ -53,6 +53,30 @@ _ALL = (_A, _T, _W, _H)
 #: The line in ``help`` after which a role's own arguments are described (the shared text above it is identical for
 #: every agent).
 ROLE_MARKER = "For you:"
+#: The texts :attr:`RegisteredTool.role_text` and :attr:`RegisteredTool.off_text` may give an agent or a run of its own.
+TEXT_FIELDS = ("summary", "description", "help_description", "refusals", "examples", "when")
+
+
+def memory_is_on() -> bool:
+    """Whether this run has memory (``UNIFY_MEMORY`` on or in_episode), so its writer, forks and librarian can exist.
+    Read when a text is built, never cached; a setting that cannot be read counts as on (the full texts)."""
+    try:
+        from unify.memory.integration.switch import memory_on
+        from unify.settings import SETTINGS
+
+        return bool(memory_on(SETTINGS))
+    except Exception:  # noqa: BLE001 - the full texts are the safe default
+        return True
+
+
+def _own_text(spec: "RegisteredTool", key: str, agent: Optional[str], memory: Optional[bool]) -> tuple[bool, Any]:
+    """(given, text): the text of *key* that *agent* reads in a run with or without memory: the run's off text
+    first (a run without memory), then the agent's own, else the shared one (given False)."""
+    if not (memory_is_on() if memory is None else memory) and key in spec.off_text:
+        return True, spec.off_text[key]
+    if agent is not None and key in (spec.role_text.get(agent) or {}):
+        return True, spec.role_text[agent][key]
+    return False, getattr(spec, key)
 
 
 @dataclass(frozen=True)
@@ -90,6 +114,12 @@ class RegisteredTool:
     #: the body of ``tools.help(name)`` where it is shorter than ``description`` (which the model-API tool keeps
     #: byte for byte while the tools are not in code)
     help_description: str = ""
+    #: an agent's own texts where its tool differs from the shared texts (its roots, its defaults): agent ->
+    #: {field: text} for fields of :data:`TEXT_FIELDS`; ``tools.list()`` and ``tools.help()`` show each agent its own
+    role_text: dict = field(default_factory=dict)
+    #: the texts a run without memory (``UNIFY_MEMORY=off``: no writer, fork or librarian) shows instead, {field:
+    #: text}; a run without memory never names an agent it does not have
+    off_text: dict = field(default_factory=dict)
 
     def as_tool(self) -> dict:
         return {
@@ -1330,12 +1360,81 @@ def _mem(name: str) -> str:
     return f"unify.memory.tool_handlers:{name}"
 
 
+# The actor's and a teammate's read and grep run in the workspace sandbox: their one root is /workspace
+# (unify.actor.tool_handlers); the librarian's are inside the library, /memory. Each reads its own roots in its texts.
+_WORKSPACE_READ = {
+    "type": "object",
+    "properties": {"path": {"type": "string", "description": "A file or folder under /workspace."}, "offset": _OFFSET},
+    "required": ["path"],
+    "additionalProperties": False,
+}
+_WORKSPACE_GREP = {
+    "type": "object",
+    "properties": {
+        "pattern": {"type": "string", "description": "A Python regular expression."},
+        "path": {"type": "string", "description": "A file or folder under /workspace to search; default /workspace."},
+        "offset": {"type": "integer", "description": "hit number to start the page at"},
+    },
+    "required": ["pattern"],
+    "additionalProperties": False,
+}
+_READ_PAGE = (
+    "Returns at most 8000 bytes from offset; a marker gives the next offset. Nothing is ever cut silently."
+)
+_WORKSPACE_READ_TEXT = {
+    "summary": "read a file or list a directory under /workspace, 8000 bytes a page.",
+    "description": "Read a file or list a directory under /workspace. " + _READ_PAGE,
+    "refusals": {
+        "outside_roots": "{path} is outside /workspace",
+        "not_found": "{path} does not exist",
+        "unreadable": "{error} for {path!r}",
+    },
+    "examples": ('page = tools.read("/workspace")\nprint(page[:2000])',),
+}
+_LIBRARY_READ_TEXT = {
+    "summary": "read a file or list a directory of the library, under /memory, 8000 bytes a page.",
+    "description": "Read a file or list a directory of the library, under /memory. " + _READ_PAGE,
+    "refusals": {
+        "outside_library": "{path} is outside the library, /memory",
+        "not_found": "{path} does not exist",
+        "unreadable": "{error} for {path!r}",
+    },
+    "examples": ('page = tools.read("/memory")\nprint(page[:2000])',),
+}
+_GREP_PAGE = "returns path:line: text hits, one bounded page at a time (a marker gives the next offset)."
+_WORKSPACE_GREP_TEXT = {
+    "summary": "search files with a regular expression (default under /workspace).",
+    "description": "Search files under a /workspace path (default /workspace) with a Python regular expression; "
+    + _GREP_PAGE,
+    "refusals": {
+        "outside_roots": "{path} is outside /workspace",
+        "not_found": "{path} does not exist",
+        "bad_pattern": "{reason}",
+        "unreadable": "{error} for {path!r}",
+    },
+    "examples": ('hits = tools.grep(r"def \\w+_total", "/workspace")',),
+}
+_LIBRARY_GREP_TEXT = {
+    "summary": "search the library's files with a regular expression (default under /memory).",
+    "description": "Search files of the library under a /memory path (default /memory) with a Python regular "
+    "expression; " + _GREP_PAGE,
+    "refusals": {
+        "outside_library": "{path} is outside the library, /memory",
+        "bad_pattern": "{reason}",
+        "unreadable": "{error} for {path!r}",
+        "search_failed": SEARCH_FAILED,
+    },
+    "examples": ('hits = tools.grep(r"def \\w+_total", "/memory")',),
+}
+
+
 #: name -> the fields the in-code surface adds to a moved spec (its description, parameters and refusal texts are
 #: unchanged; a refusal form is only ever added).
 _IN_CODE: dict[str, dict] = {
     "read": dict(
         roles=(*_ALL, _L),
-        role_args={_L: _LIBRARY_READ},
+        role_args={_L: _LIBRARY_READ, _A: _WORKSPACE_READ, _T: _WORKSPACE_READ},
+        role_text={_A: _WORKSPACE_READ_TEXT, _T: _WORKSPACE_READ_TEXT, _L: _LIBRARY_READ_TEXT},
         # the librarian's read is inside the library only
         add_refusals={"outside_library": "{path} is outside the library, /memory"},
         returns="the file's text from offset (or the directory's listing), at most 8000 bytes, with `.next`: the "
@@ -1351,7 +1450,8 @@ _IN_CODE: dict[str, dict] = {
     ),
     "grep": dict(
         roles=(*_ALL, _L),
-        role_args={_L: _LIBRARY_GREP},
+        role_args={_L: _LIBRARY_GREP, _A: _WORKSPACE_GREP, _T: _WORKSPACE_GREP},
+        role_text={_A: _WORKSPACE_GREP_TEXT, _T: _WORKSPACE_GREP_TEXT, _L: _LIBRARY_GREP_TEXT},
         add_refusals={"not_found": "{path} does not exist", "outside_library": "{path} is outside the library, /memory"},
         returns="the hits as `path:line: text` lines, one page at a time, with `.next`: the hit number of the next "
         "page, or None.",
@@ -1814,6 +1914,10 @@ def _check(specs: tuple[RegisteredTool, ...]) -> None:
     for s in specs:
         if s.kind not in KINDS or not set(s.roles) <= set(AGENTS) or not set(s.role_args) <= set(s.roles):
             raise ValueError(f"{s.name}: bad kind, roles or role_args")
+        if not set(s.role_text) <= set(s.roles) or any(not set(v) <= set(TEXT_FIELDS) for v in s.role_text.values()):
+            raise ValueError(f"{s.name}: role_text names an agent the tool does not have, or an unknown field")
+        if not set(s.off_text) <= set(TEXT_FIELDS):
+            raise ValueError(f"{s.name}: off_text names an unknown field")
 
 
 _check(_REGISTRY)
@@ -2134,14 +2238,15 @@ def role_example(name: str, agent: Optional[str] = None) -> str:
     return example_call(name, schema, spec.examples, base=spec.parameters)
 
 
-def list_text(names: Iterable[str], agent: Optional[str] = None) -> str:
+def list_text(names: Iterable[str], agent: Optional[str] = None, *, memory: Optional[bool] = None) -> str:
     """``tools.list()``: one line per tool, ``name(signature) - summary``, in registry order (with *agent*, its
-    own arguments where they differ)."""
+    own arguments and texts where they differ; *memory*: whether the run has memory, default the run's setting)."""
     wanted = set(names)
     lines = []
     for s in _specs():
         if s.name in wanted:
-            summary = (s.summary or s.description.split(". ")[0]).rstrip(".")
+            summary = _own_text(s, "summary", agent, memory)[1] or _own_text(s, "description", agent, memory)[1].split(". ")[0]
+            summary = summary.rstrip(".")
             lines.append(f"{signature_text(s.name, agent)} - {summary}.")
     return "\n".join(lines)
 
@@ -2170,25 +2275,33 @@ def _slots(template: str) -> str:
     return _FIELD.sub(r"<\1>", template).replace("{{", "{").replace("}}", "}")
 
 
-def help_text(name: str, agent: Optional[str] = None) -> str:
+def help_text(name: str, agent: Optional[str] = None, *, memory: Optional[bool] = None) -> str:
     """``tools.help(name)``: the description, the arguments, what it returns, its refusal forms, examples and when
-    to use it. With *agent*, an agent whose arguments differ reads them after :data:`ROLE_MARKER`; the text above
-    the marker is the same for every agent."""
+    to use it. With *agent*, an agent whose arguments differ reads them after :data:`ROLE_MARKER`, and an agent with
+    texts of its own (:attr:`RegisteredTool.role_text`: its roots, its defaults) reads those; *memory*: whether the
+    run has memory (default the run's setting; without it the :attr:`RegisteredTool.off_text` texts)."""
     s = registry()[name]
-    parts = [signature_text(name), "", s.help_description or s.description]
-    args = _argument_lines(s.parameters)
+    own_desc, desc = _own_text(s, "description", agent, memory)
+    own_help, short = _own_text(s, "help_description", agent, memory)
+    body = short if (own_help or not own_desc) and short else desc
+    refusals = _own_text(s, "refusals", agent, memory)[1]
+    examples = _own_text(s, "examples", agent, memory)[1]
+    when = _own_text(s, "when", agent, memory)[1]
+    own = agent is not None and agent in s.role_text   # an agent with texts of its own reads its own arguments in place
+    parts = [signature_text(name, agent) if own else signature_text(name), "", body]
+    args = _argument_lines(s.params_for(agent) if own else s.parameters)
     if args:
         parts += ["", "Arguments:", *args]
     if s.returns:
         parts += ["", f"Returns: {s.returns}"]
-    if s.refusals:
+    if refusals:
         parts += ["", "Refusals (raised as tools.Refused, with the form code):"]
-        parts += [f"  {form}: {_slots(text)}" for form, text in s.refusals.items()]
-    if s.examples:
-        parts += ["", "Examples:", *[f"  {line}" for ex in s.examples for line in ex.splitlines()]]
-    if s.when:
-        parts += ["", f"When: {s.when}"]
-    if agent is not None and agent in s.role_args:
+        parts += [f"  {form}: {_slots(text)}" for form, text in refusals.items()]
+    if examples:
+        parts += ["", "Examples:", *[f"  {line}" for ex in examples for line in ex.splitlines()]]
+    if when:
+        parts += ["", f"When: {when}"]
+    if agent is not None and agent in s.role_args and not own:
         parts += ["", ROLE_MARKER, f"  you call {signature_text(name, agent)}", *_argument_lines(s.role_args[agent])]
     return "\n".join(parts)
 

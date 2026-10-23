@@ -1,7 +1,8 @@
 """The shared tool registry renders one definition per tool for every agent.
 
 * Every pair of agents that can call a tool reads the same ``help`` text, the same ``list`` line and the same stub
-  function for it (an agent whose arguments differ reads them after one marker line).
+  function for it (an agent whose arguments differ reads them after one marker line; an agent whose tool has roots of
+  its own, ``role_text``, reads its own texts).
 * Every agent's model-API tools are ``execute_code`` alone, the same bytes for all.
 * Every ``tools.<name>`` a rendered text names is a registered tool.
 * No module outside the registry defines a tool (an AST scan).
@@ -92,9 +93,11 @@ def test_every_pair_of_agents_reads_each_shared_tool_the_same(stand_ins):
             for name in set(_allowed(a)) & set(_allowed(b)):
                 spec = R.registry()[name]
                 own = {a, b} & set(spec.role_args)
+                texts = {a, b} & set(spec.role_text)   # an agent with texts of its own (its roots) reads them
                 ha, hb = R.help_text(name, a), R.help_text(name, b)
-                assert _above_marker(ha) == _above_marker(hb), (name, a, b)
-                if own:
+                if not texts:
+                    assert _above_marker(ha) == _above_marker(hb), (name, a, b)
+                if own or texts:
                     continue
                 pairs += 1
                 assert ha == hb, (name, a, b)
