@@ -31,37 +31,24 @@ def _refuse(*a, **k):
     raise AssertionError("code was run")
 
 
-# --- purity, from the syntax -----------------------------------------------------------------------------------------------
+# --- no purity judgement ---------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "src, pure",
+    "src",
     [
-        ("def double(value):\n    return value * 2\n", True),
-        ("def total(rows):\n    from memory.t.m import add\n    return add(rows)\n", True),
-        ("def send(state, env):\n    env.mail.send(state.last)\n", False),
-        ("def last(state):\n    return state.last\n", False),
-        ("def answer(value):\n    return [6, 9]\n", False),  # a constant
-        ("def read(path):\n    return open(path).read()\n", False),
-        ("def run(text):\n    import subprocess\n    return subprocess.run(text)\n", False),
-        ("def run(code):\n    return eval(code)\n", False),
-        ("async def run(value):\n    return value\n", False),
-        ("def call(value):\n    return tools.thing(value)\n", False),
+        "def double(value):\n    return value * 2\n",
+        "def send(state, env):\n    env.mail.send(state.last)\n",
+        "def answer(value):\n    return [6, 9]\n",
+        "def run(code):\n    return eval(code)\n",
+        None,
     ],
 )
-def test_purity_is_read_from_the_syntax(src, pure):
-    ok, why = gp.purity(src)
-    assert ok is pure, why
-    assert (why == "") is pure
-
-
-def test_the_not_run_reason_keeps_purity_as_a_fact_and_runs_nothing():
-    """Rev 2.1, fix 9: no capture or function is executed to classify, rank or test it, a statically pure one
-    included; whether an item is pure stays a fact on its label (the gate's not-run labels: test_gate_runs_nothing)."""
-    assert gp.not_run_reason("def double(value):\n    return value * 2\n") == gp.NOT_RUN_GATE
-    why = gp.not_run_reason("def send(state, env):\n    env.mail.send(state.last)\n")
-    assert why.startswith(gp.NOT_RUN_GATE + "; it is not pure: ") and "state form" in why
-    assert not hasattr(gp, "Policy")
+def test_the_not_run_reason_is_the_same_for_every_item_and_classifies_nothing(src):
+    """Whether code is pure cannot be told reliably, so nothing classifies it: the gate's not-run label
+    is the same words for every item, and no purity judgement exists to feed a label, level, status or rank."""
+    assert gp.not_run_reason(src) == gp.NOT_RUN_GATE
+    assert not hasattr(gp, "purity") and not hasattr(gp, "Policy")
 
 
 def test_the_hard_checks_stay_refusals():

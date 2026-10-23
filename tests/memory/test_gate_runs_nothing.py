@@ -88,10 +88,9 @@ def test_a_listed_test_missing_from_the_candidate_still_refuses(tmp_path, no_box
     assert "G3: listed test memory/grid/tests/test_gone.py is not in the candidate" in run.res.reasons
 
 
-def test_the_not_run_reason_states_whether_the_item_is_statically_pure():
+def test_the_not_run_reason_says_nothing_of_purity():
     assert not_run_reason("def f(x):\n    return x + 1\n") == NOT_RUN_GATE
-    impure = not_run_reason("def f(state, env):\n    return env.mail.read()\n")
-    assert impure.startswith(NOT_RUN_GATE + "; it is not pure: ") and "state form" in impure
+    assert not_run_reason("def f(state, env):\n    return env.mail.read()\n") == NOT_RUN_GATE
 
 
 def test_a_whole_check_and_merge_start_no_confined_run(library_example_world, no_box):  # noqa: F811
