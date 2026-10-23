@@ -74,17 +74,10 @@ def test_four_shapes_infer_the_four_regimes():
         "sparse",
         "signals",
     )
-    assert infer_regime(
-        [_sig("e2", 1, "support", source="provenance", visible=False)]
-    ) == ("sparse", "signals")
     assert infer_regime([], implicit_evidence=True) == (
         "implicit",
         "signals",
     )  # only an error or a holds result
-    assert infer_regime([_sig("e3", 1, "correct", source="reader", visible=False)]) == (
-        "implicit",
-        "signals",
-    )
     assert infer_regime([]) == ("none", "nothing")
 
 
@@ -272,13 +265,11 @@ def test_episodes_with_different_regimes_in_one_run_are_each_judged_in_their_own
             _sig("dense0", 2, "fail", refers="dense0/actions/0"),
         ],
         "sparse0": [_sig("sparse0", 1, "fail")],
-        "implicit0": [_sig("implicit0", 1, "correct", source="reader", visible=False)],
         "none0": [],
     }
     expected = {
         "dense0": "dense",
         "sparse0": "sparse",
-        "implicit0": "implicit",
         "none0": "none",
     }
     for minute, (eid, sigs) in enumerate(shapes.items()):
@@ -298,17 +289,15 @@ def test_episodes_with_different_regimes_in_one_run_are_each_judged_in_their_own
         e: [trust.judge(u)[:2] for u in lifecycle.trust_uses(f, f.items[ITEM])]
         for e, f in facts.items()
     }
-    # a verdict judges the use where verdicts are given, an end outcome where outcomes are, a correction where the
-    # regime observes corrections; with nothing, the use is clean and no outcome claims anything
+    # a verdict judges the use where verdicts are given, an end outcome where outcomes are; with nothing, the use is
+    # clean and no outcome claims anything
     assert judged["dense0"] == [(trust.FAILED, "negative")]
     assert judged["sparse0"] == [(trust.FAILED, "negative")]
-    assert judged["implicit0"] == [(trust.FAILED, "negative")]
     assert judged["none0"] == [(trust.CLEAN, None)]
     by = {e: lifecycle.evidence_basis(ITEM, [f])[0] for e, f in facts.items()}
     assert by == {
         "dense0": trust.BASIS_VERDICTS,
         "sparse0": trust.BASIS_END_OUTCOMES,
-        "implicit0": trust.BASIS_IMPLICIT,
         "none0": trust.BASIS_NO_OUTCOME_SIGNALS,
     }
 

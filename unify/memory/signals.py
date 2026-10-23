@@ -22,24 +22,16 @@ from dataclasses import asdict, dataclass
 from .evidence import EvidenceStore
 from .gitio import Repo
 
+#: The signal sources each regime observes. The harness posts one source, the ``checker`` (an episode's verdict and
+#: the verdicts that arrive later); the ``implicit`` and ``none`` regimes observe none of them.
 REGIME_SOURCES: dict[str, frozenset[str]] = {
-    "dense": frozenset(
-        {"checker", "environment", "provenance", "recurrence", "reader"},
-    ),
-    "sparse": frozenset(
-        {"checker", "environment", "provenance", "recurrence", "reader"},
-    ),
-    "implicit": frozenset({"environment", "provenance", "recurrence", "reader"}),
-    "none": frozenset({"environment"}),
+    "dense": frozenset({"checker"}),
+    "sparse": frozenset({"checker"}),
+    "implicit": frozenset(),
+    "none": frozenset(),
 }
-_SUPPORT = {("checker", "pass"), ("provenance", "support")}
-_CONTRARY = {
-    ("checker", "fail"),
-    ("provenance", "correct"),
-    ("reader", "correct"),
-    ("reader", "re_ask"),
-    ("recurrence", "re_ask"),
-}
+_SUPPORT = {("checker", "pass")}
+_CONTRARY = {("checker", "fail")}
 
 
 class SignalMasked(ValueError):
@@ -143,14 +135,11 @@ def tainted_items(eid: str, evidence: EvidenceStore) -> list[str]:
 
 #: The regimes, in the order a tie in the run's history is broken (the one that observes more first).
 REGIMES = ("dense", "sparse", "implicit", "none")
-#: Signals that correct the actor after the fact: the implicit regime's own evidence.
-CORRECTIONS = frozenset({("reader", "correct"), ("reader", "re_ask"), ("recurrence", "re_ask")})
 #: How an episode's regime was inferred: from its own signals or implicit evidence, from the run's history (nothing
 #: of its own arrived yet), or from nothing at all.
 BASIS_SIGNALS = "signals"
 BASIS_PRIOR = "prior"
 BASIS_NOTHING = "nothing"
-REGIME_BASES = (BASIS_SIGNALS, BASIS_PRIOR, BASIS_NOTHING)
 
 
 def _per_action(s: Signal) -> bool:
@@ -168,21 +157,21 @@ def infer_regime(
     * ``dense``: a verdict the actor saw (a visible ``checker`` signal) came within the episode after an answered
       action: one that names the action it judged, or two or more within the episode;
     * ``sparse``: an outcome came for the episode as a whole and no per-action verdict did: one visible verdict
-      within it, a visible verdict after it ended, or a ``provenance`` support or correction;
-    * ``implicit``: only errors, stated conditions (*implicit_evidence*: the episode's use record shows an error
-      or a ``holds`` result) or corrections (:data:`CORRECTIONS`) arrived;
+      within it, or a visible verdict after it ended;
+    * ``implicit``: only errors or stated conditions arrived (*implicit_evidence*: the episode's use record shows
+      an error or a ``holds`` result);
     * otherwise nothing arrived: the run's history (*prior*, :func:`run_prior`) when it has one, else ``none``.
 
     A verdict the actor never saw (a hidden grader's) decides nothing, as it is never evidence. *basis* says which
-    rule gave the regime (:data:`REGIME_BASES`)."""
+    rule gave the regime (``signals``, ``prior`` or ``nothing``)."""
     sigs = list(signals)
     seen = [s for s in sigs if s.source == "checker" and s.visible_to_actor is True]
     within = [s for s in seen if s.timing != AFTER_EPISODE]
     if any(_per_action(s) for s in within) or len(within) >= 2:
         return "dense", BASIS_SIGNALS
-    if seen or any(s.source == "provenance" for s in sigs):
+    if seen:
         return "sparse", BASIS_SIGNALS
-    if implicit_evidence or any((s.source, s.label) in CORRECTIONS for s in sigs):
+    if implicit_evidence:
         return "implicit", BASIS_SIGNALS
     if prior in REGIMES and prior != "none":
         return prior, BASIS_PRIOR

@@ -87,9 +87,6 @@ def test_only_the_verdicts_on_the_final_value_judge_it():
     # no verdict names an action: the last one given stands for the final value
     unnamed = [_verdict(1, "fail", action=None), _verdict(3, "pass", action=None), _verdict(2, "fail", action=None)]
     assert captures.final_value_signals(unnamed, ep) == [unnamed[1]]
-    # signals about the episode itself are kept
-    provenance = Signal(f"{EID}.provenance", EID, "provenance", "support", "2026-10-13T01:06:00Z", regime="dense")
-    assert captures.final_value_signals([provenance, *rejected, accepted], ep) == [provenance, accepted]
 
 
 @needs_bwrap
@@ -119,39 +116,6 @@ def test_accepted_then_a_rejected_final_value_is_captured_as_contrary(tmp_path):
         [_verdict(1, "pass", action=0), _verdict(2, "pass", action=1), _verdict(3, "fail", action=2)],
     )
     assert rec["outcome"] == captures.CONTRARY and captures.negative(rec)
-
-
-def _correction(source: str, label: str, ts: str) -> Signal:
-    return Signal(f"{EID}.{source}.{label}.{ts}", EID, source, label, ts, refers_to=EID, regime="dense")
-
-
-def test_an_implicit_correction_judges_the_final_value_only_once_it_was_handed_back():
-    """The episode ended at 01:05: a correction before then was about an earlier value, one after about the answer."""
-    ep = _episode()
-    before = _correction("reader", "correct", "2026-10-13T01:04:00Z")
-    after = [
-        _correction("reader", "re_ask", "2026-10-13T02:00:00Z"),
-        _correction("recurrence", "re_ask", "2026-10-14T00:00:00+00:00"),
-    ]
-    unknown = _correction("reader", "correct", "not a time")
-    provenance = Signal(f"{EID}.provenance", EID, "provenance", "correct", "2026-10-13T01:01:00Z", regime="dense")
-    assert captures.final_value_signals([before, *after, unknown, provenance], ep) == [*after, provenance]
-
-
-@needs_bwrap
-def test_a_correction_after_the_answer_captures_it_as_contrary(tmp_path):
-    accepted = _verdict(3, "pass", action=2)
-    rec = _captured(tmp_path, [accepted, _correction("reader", "re_ask", "2026-10-13T02:00:00Z")])
-    assert rec["own_check"]["ran"] is False
-    assert rec["outcome"] == captures.CONTRARY and captures.negative(rec)
-
-
-@needs_bwrap
-def test_a_correction_before_the_final_answer_leaves_it_positive(tmp_path):
-    accepted = _verdict(3, "pass", action=2)
-    rec = _captured(tmp_path, [_correction("reader", "correct", "2026-10-13T01:04:00Z"), accepted])
-    assert rec["own_check"]["ran"] is False
-    assert rec["outcome"] == "positive"
 
 
 def test_without_an_answered_value_a_verdict_on_any_action_judges_the_work():

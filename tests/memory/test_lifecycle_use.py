@@ -53,13 +53,7 @@ def test_hidden_checker_and_no_signal_regime_count_nothing():
         False,
         False,
     )
-    re_ask = [Signal("s", "e1", "recurrence", "re_ask", "t", regime="implicit")]
-    assert lc.counted_signals(re_ask, "implicit") == (
-        False,
-        True,
-    )
-    env = [Signal("s", "e1", "environment", "error", "t", regime="none")]
-    assert lc.counted_signals(env, "none") == (False, False)
+    assert lc.counted_signals([_visible("checker", "fail", "none")], "none") == (False, False)
 
 
 def test_reading_the_use_record_and_the_evidence_index_agree(tmp_path):
@@ -73,12 +67,12 @@ def test_reading_the_use_record_and_the_evidence_index_agree(tmp_path):
         unknown=[WEEK],
     )
     ev.index_episode(
-        _ep(episode_id="e1", regime="implicit", memory_main=A, memory_use=rec),
+        _ep(episode_id="e1", regime="dense", memory_main=A, memory_use=rec),
         "1" * 40,
     )
-    sig = Signal("s1", "e1", "reader", "correct", "t", regime="implicit")
+    sig = Signal("s1", "e1", "checker", "fail", "t", regime="dense", visible_to_actor=True)
     ev.add_signal(sig)
-    direct = lc.facts_from_use("e1", A, "implicit", rec, [sig])
+    direct = lc.facts_from_use("e1", A, "dense", rec, [sig])
     (indexed,) = lc.facts_from_evidence(ev)
     assert direct == indexed
     assert direct.items == {

@@ -146,7 +146,7 @@ def test_with_no_reward_signal_and_no_shown_case_the_source_case_alone_is_listed
 
 
 def test_a_procedure_from_a_failed_episode_is_labelled(tmp_path):
-    contrary = Signal("p1.provenance.1", "p1", "provenance", "correct", "2026-10-08T01:02:00Z", regime="dense")
+    contrary = Signal("p1.checker", "p1", "checker", "fail", "2026-10-08T01:02:00Z", regime="dense", visible_to_actor=True)
     built = _pricing(DERIVES, signals=[contrary], tmp_path=tmp_path)
     res = built.result
     # rev 2: the failed episode is a label on the procedure, never a refusal

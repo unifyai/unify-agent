@@ -19,9 +19,8 @@ What counts:
 - a *refusal* (``MemoryInputError`` left it: it declined an input it was not built for) is the input contract
   working. Refusals are counted and reported in the use record and the status reason, and are never a failure;
 - a *positive* or *negative* signal is an episode-level signal the episode's regime can observe
-  (``signals.REGIME_SOURCES``): checker ``pass``/``fail`` (only when the bed declares the verdict
-  agent-visible), provenance ``support``/``correct``, reader ``correct``/``re_ask``, recurrence ``re_ask``;
-  it counts for an item only in an episode that used it;
+  (``signals.REGIME_SOURCES``): checker ``pass``/``fail``, only when the bed declares the verdict
+  agent-visible; it counts for an item only in an episode that used it;
 - in the regime with no signal (``none``) nothing but errors counts.
 
 Environment text is never read here.

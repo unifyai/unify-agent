@@ -18,7 +18,7 @@ def store(tmp_path):
     return ev
 
 
-def test_regime_masks_checker_in_implicit(tmp_path, store):
+def test_regime_masks_checker_in_implicit_and_none(tmp_path, store):
     repo = Repo.init_bare(tmp_path / "ep.git")
     store.index_episode(_ep(episode_id="imp", regime="implicit"), "5" * 40)
     store.index_episode(_ep(episode_id="non", regime="none"), "6" * 40)
@@ -29,13 +29,14 @@ def test_regime_masks_checker_in_implicit(tmp_path, store):
             repo.head(),
             store,
         )
-    post_signal(
-        Signal("s2", "non", "environment", "error", "t", regime="none"),
-        repo,
-        repo.head(),
-        store,
-    )
-    assert repo.notes(repo.head()) and store.signals_for("non")[0].label == "error"
+    with pytest.raises(SignalMasked):
+        post_signal(
+            Signal("s2", "non", "checker", "fail", "t", regime="none"),
+            repo,
+            repo.head(),
+            store,
+        )
+    assert store.signals_for("imp") == [] and store.signals_for("non") == []
 
 
 def test_regime_mismatch_unknown_regime_and_unknown_episode_refused(tmp_path):
@@ -62,8 +63,8 @@ def test_regime_mismatch_unknown_regime_and_unknown_episode_refused(tmp_path):
     assert ev.signals_for("i") == [] and ev.signals_for("w") == []
 
 
-def test_a_correction_taints_the_items_of_its_episode(store):
+def test_a_contrary_verdict_taints_the_items_of_its_episode(store):
     store.add_item_evidence("w", "e0", "source")
     store.add_item_evidence("w", "e1", "source")
-    store.add_signal(Signal("c", "e1", "provenance", "correct", "t", regime="implicit"))
+    store.add_signal(Signal("c", "e1", "checker", "fail", "t", regime="dense", visible_to_actor=True))
     assert tainted_items("e1", store) == ["w"]

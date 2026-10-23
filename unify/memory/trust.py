@@ -439,42 +439,24 @@ def signal_outcome(
     signals: Iterable[Any],
     regime: str
 ) -> dict:
-    """``{verdict, end_outcome, corrected}`` from an episode's signals, as the regime may observe them
-    (:data:`.signals.REGIME_SOURCES`): a ``checker`` verdict only when the run allows visible verdicts and the
-    signal itself was visible to the actor; a contrary signal wins over a positive one. In ``dense`` the checker
-    gives the verdict; in ``sparse`` it gives the end outcome, as does provenance; corrections are the reader's
-    ``correct`` and ``re_ask``, the recurrence's ``re_ask`` and the provenance's ``correct``."""
+    """``{verdict, end_outcome}`` from an episode's signals, as the regime may observe them
+    (:data:`.signals.REGIME_SOURCES`): a ``checker`` verdict only when the signal itself was visible to the actor; a
+    contrary signal wins over a positive one. In ``dense`` the checker gives the verdict; in ``sparse`` it gives the
+    end outcome."""
     from .signals import REGIME_SOURCES
 
     allowed = REGIME_SOURCES.get(regime, frozenset())
     verdict = end = None
-    corrected = False
     for s in signals:
-        source, label = getattr(s, "source", None), getattr(s, "label", None)
-        if source not in allowed:
+        if getattr(s, "source", None) not in allowed or getattr(s, "visible_to_actor", False) is not True:
             continue
-        if source == "checker":
-            if not ((getattr(s, "visible_to_actor", False) is True)):
-                continue
-            if regime == "dense":
-                verdict = "rejected" if label == "fail" or verdict == "rejected" else (
-                    "accepted" if label == "pass" else verdict
-                )
-            elif regime == "sparse":
-                end = "contrary" if label == "fail" or end == "contrary" else (
-                    "positive" if label == "pass" else end
-                )
-        elif source == "provenance" and regime in ("dense", "sparse"):
-            end = "contrary" if label == "correct" or end == "contrary" else (
-                "positive" if label == "support" else end
+        label = getattr(s, "label", None)
+        if regime == "dense":
+            verdict = "rejected" if label == "fail" or verdict == "rejected" else (
+                "accepted" if label == "pass" else verdict
             )
-        if (source, label) in (
-            ("reader", "correct"),
-            ("reader", "re_ask"),
-            ("recurrence", "re_ask"),
-            ("provenance", "correct"),
-        ):
-            corrected = True
-    if regime == "none":
-        verdict, end, corrected = None, None, False
-    return {"verdict": verdict, "end_outcome": end, "corrected": corrected}
+        elif regime == "sparse":
+            end = "contrary" if label == "fail" or end == "contrary" else (
+                "positive" if label == "pass" else end
+            )
+    return {"verdict": verdict, "end_outcome": end}

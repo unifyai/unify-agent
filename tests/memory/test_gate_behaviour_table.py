@@ -209,7 +209,7 @@ def _procedure(tmp_path, *, signals=(), edit_manifest=None):
 def test_a_procedure_from_a_failed_source_episode_lands_with_its_label(tmp_path):
     from unify.memory.signals import Signal
 
-    contrary = Signal("p1.provenance.1", "p1", "provenance", "correct", "2026-10-08T01:02:00Z", regime="dense")
+    contrary = Signal("p1.checker", "p1", "checker", "fail", "2026-10-08T01:02:00Z", regime="dense", visible_to_actor=True)
     res = _procedure(tmp_path, signals=[contrary])
     assert res.passed and PROC in res.items_merged, res.reasons
     want = gp.FAILED_SOURCE_LABEL.format(item=PROC, episodes="p1")

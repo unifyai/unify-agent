@@ -185,7 +185,7 @@ def test_a_side_effect_only_episode_is_captured_with_no_value_and_its_calls(tmp_
     calls = {"matched": 1, "differed": 0, "missing": 0, "unrecorded": 0, "repeats": 0}
     runner, _ = _box(None, form="state_env", calls=calls)
     ep = _ep(actions=[_write_action()], replies=["done"], worktree=("a", "b"), regime="sparse")
-    end = Signal("s1", "e1", "provenance", "support", "2026-10-20T00:00:30Z", regime="sparse")
+    end = Signal("s1", "e1", "checker", "pass", "2026-10-20T00:00:30Z", regime="sparse", visible_to_actor=True)
     row = cp.capture_trace_step(staging, ep, store, signals=[end])
     assert row["value"] == {"present": False}
     assert row["own_check"] == ct.NOT_RUN

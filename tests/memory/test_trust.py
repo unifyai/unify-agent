@@ -147,12 +147,12 @@ def test_signal_outcome_reads_only_what_the_regime_and_the_actor_could_see():
     # line kept): a visible pass in dense is the verdict
     assert tr.signal_outcome([sig("checker", "pass")], "dense")["verdict"] == "accepted"
     assert tr.signal_outcome([sig("checker", "pass")], "sparse")["end_outcome"] == "positive"
-    assert tr.signal_outcome([sig("reader", "re_ask")], "implicit")["corrected"]
-    assert tr.signal_outcome([sig("reader", "re_ask")], "none") == {
-        "verdict": None,
-        "end_outcome": None,
-        "corrected": False,
-    }
+    # the implicit and none regimes observe no signal source
+    for regime in ("implicit", "none"):
+        assert tr.signal_outcome([sig("checker", "fail", regime=regime)], regime) == {
+            "verdict": None,
+            "end_outcome": None,
+        }
 
 
 # --- the lifecycle delegates to the one decider -------------------------------------------------------------------

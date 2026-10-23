@@ -73,7 +73,6 @@ from typing import Any
 from . import trust
 from .fixtures import canonical
 from .redact import KEY_SHAPED
-from .signals import REGIME_SOURCES
 
 STORE_DIR = "memory-captures"
 EVENTS_FILE = "captures-events.jsonl"
@@ -328,11 +327,6 @@ def handed_back(ep: Any) -> tuple[bool, Any]:
     return False, None
 
 
-#: The implicit corrections: a reader that corrected the answer or asked again, and the same request asked again.
-#: Each says the episode's answer was wrong only when it came after the answer was handed back.
-IMPLICIT_CORRECTIONS = frozenset({("reader", "correct"), ("reader", "re_ask"), ("recurrence", "re_ask")})
-
-
 def _instant(ts: Any) -> dt.datetime | None:
     """An ISO time as an aware datetime (``Z`` read as UTC), or None when it is not one."""
     if not isinstance(ts, str) or not ts:
@@ -342,14 +336,6 @@ def _instant(ts: Any) -> dt.datetime | None:
     except ValueError:
         return None
     return at if at.tzinfo is not None else at.replace(tzinfo=dt.UTC)
-
-
-def came_after(sig: Any, ep: Any) -> bool:
-    """Whether *sig* came after episode *ep* handed back its value: after the episode ended (no action carries a
-    time of its own, and the value is final when the episode ends). Unknown when either time is missing or not a
-    time, and then False."""
-    at, ended = _instant(getattr(sig, "ts", None)), _instant(getattr(ep, "ended_at", None))
-    return at is not None and ended is not None and at > ended
 
 
 def _given_order(sig: Any) -> tuple:
@@ -369,18 +355,10 @@ def final_value_signals(signals: Iterable[Any], ep: Any) -> list:
     rejected and then accepted is judged by its acceptance), and when verdicts name actions but none names this one,
     no verdict judges it. When it handed back no such value (rev 2.1: in tool and action worlds the work is its
     actions), the last verdict on any of its actions stands for the work. When none names an action, the last
-    verdict given stands for the final value. An implicit correction (:data:`IMPLICIT_CORRECTIONS`) judges it only when it
-    came after the value was handed back (:func:`came_after`); one that came before was about an earlier value. Every
-    other signal (provenance) is about the episode and is kept."""
-    sigs = [
-        s
-        for s in signals
-        if (getattr(s, "source", None), getattr(s, "label", None)) not in IMPLICIT_CORRECTIONS or came_after(s, ep)
-    ]
-    checker = [s for s in sigs if getattr(s, "source", None) == "checker"]
+    verdict given stands for the final value. Checker verdicts are the only signals the harness posts."""
+    checker = [s for s in signals if getattr(s, "source", None) == "checker"]
     if not checker:
-        return sigs
-    others = [s for s in sigs if getattr(s, "source", None) != "checker"]
+        return []
     eid = str(getattr(ep, "episode_id", ""))
     named = [s for s in checker if str(getattr(s, "refers_to", "")).startswith(f"{eid}/actions/")]
     i = answered_action(ep)
@@ -390,7 +368,7 @@ def final_value_signals(signals: Iterable[Any], ep: Any) -> list:
         kept = [max(named, key=_given_order)]  # no answered value: a verdict on any of its actions judges the work
     else:
         kept = [max(checker, key=_given_order)]
-    return others + kept
+    return kept
 
 
 def completed(ep: Any) -> bool:
@@ -545,9 +523,8 @@ def record_uses(store: Path | str, cid: str, uses: Iterable[Any]) -> bool:
 def judged_outcome(signals: Iterable[Any], ep: Any, regime: str) -> dict:
     """What the episode's signals say of the value it handed back, as the capture step reads them: the signals that
     judge that value (:func:`final_value_signals`) under the episode's *regime*, ``{"regime", "verdict",
-    "end_outcome", "corrected"}`` (:func:`.trust.signal_outcome`), with ``contrary`` (a rejected verdict, a contrary
-    end, or a correction after the answer that the regime observes) and ``positive``. Under
-    a hidden grader's verdict (never shown to the actor) judges nothing."""
+    "end_outcome"}`` (:func:`.trust.signal_outcome`), with ``contrary`` (a rejected verdict or a contrary end) and
+    ``positive``. A hidden grader's verdict (never shown to the actor) judges nothing."""
     regime = regime if regime in trust.REGIMES else "none"
     signals = list(signals)
     if any(getattr(s, "timing", "") for s in signals):
@@ -560,12 +537,7 @@ def judged_outcome(signals: Iterable[Any], ep: Any, regime: str) -> dict:
         ]
     judged = final_value_signals(signals, ep)
     sig_out = trust.signal_outcome(judged, regime)
-    corrected = any(
-        (getattr(s, "source", None), getattr(s, "label", None)) in IMPLICIT_CORRECTIONS
-        and getattr(s, "source", None) in REGIME_SOURCES.get(regime, frozenset())
-        for s in judged
-    )
-    contrary = sig_out["verdict"] == "rejected" or sig_out["end_outcome"] == "contrary" or corrected
+    contrary = sig_out["verdict"] == "rejected" or sig_out["end_outcome"] == "contrary"
     positive = sig_out["verdict"] == "accepted" or sig_out["end_outcome"] == "positive"
     return {"regime": regime, **sig_out, "contrary": contrary, "positive": positive}
 
@@ -1044,7 +1016,6 @@ def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str
       answered action (its actions are numbered from the episode's start), whenever it came; when the segment
       answered no dialogue action (rev 2.1: its work is its actions), it judges the segment as any other signal
       does (below), by when it came;
-    * an implicit correction judges it when it came after the segment's checkpoint and before its episode ended;
     * every other signal judges it only when it came while the segment's cells ran (at or before its checkpoint).
 
     So a mid-episode segment is never labelled by the verdict on the episode's final value."""
@@ -1053,7 +1024,7 @@ def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str
     from . import capture_trace as ct
 
     base = str(getattr(ep, "episode_id", "") or "")
-    seg_end, ep_end = _instant(getattr(seg_ep, "ended_at", None)), _instant(getattr(ep, "ended_at", None))
+    seg_end = _instant(getattr(seg_ep, "ended_at", None))
     view = dataclasses.replace(seg_ep, episode_id=base)
     i = answered_action(view)
     mine = []
@@ -1062,9 +1033,6 @@ def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str
         named = str(getattr(s, "refers_to", "") or "")
         if getattr(s, "source", None) == "checker" and named.startswith(f"{base}/actions/") and i is not None:
             if named == f"{base}/actions/{i}":
-                mine.append(s)
-        elif (getattr(s, "source", None), getattr(s, "label", None)) in IMPLICIT_CORRECTIONS:
-            if at is not None and ep_end is not None and at <= ep_end:
                 mine.append(s)
         elif at is not None and seg_end is not None and at <= seg_end:
             mine.append(s)
