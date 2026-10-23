@@ -386,11 +386,15 @@ def _closures(home: Path | str) -> dict[str, list[str]]:
 def _later_uses(
     home: Path | str, item: str, after_seq: Optional[int]
 ) -> tuple[Optional[int], Optional[int]]:
-    """(requests after *after_seq* that called *item*, of those the ones with no error or refusal), or unknown."""
+    """(requests after *after_seq* that used *item*, of those the clean ones), or unknown. A request used it when its
+    cells had a call site of it or were observed calling it (:data:`.evidence.USED_SQL`); clean as
+    :data:`.evidence.CLEAN_SQL` says."""
     if after_seq is None:
         return None, None
     try:
         import sqlite3
+
+        from .evidence import CLEAN_SQL, USED_SQL
 
         db = sqlite3.connect(
             f"file:{state_dir(home).parent / 'memory-evidence.sqlite'}?mode=ro",
@@ -399,9 +403,9 @@ def _later_uses(
         )
         try:
             row = db.execute(
-                "SELECT COUNT(*), SUM(CASE WHEN u.errored = 0 AND u.refused = 0 AND u.outcome_unknown = 0 THEN 1 "
-                "ELSE 0 END) FROM item_use u JOIN episodes e ON e.episode_id = u.episode_id "
-                "WHERE u.item = ? AND e.seq > ? AND u.called > 0",
+                f"SELECT COUNT(*), SUM(CASE WHEN {CLEAN_SQL} THEN 1 ELSE 0 END) "
+                "FROM item_use JOIN episodes e ON e.episode_id = item_use.episode_id "
+                f"WHERE item_use.item = ? AND e.seq > ? AND {USED_SQL}",
                 (item, int(after_seq)),
             ).fetchone()
         finally:

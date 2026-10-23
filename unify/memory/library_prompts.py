@@ -652,7 +652,9 @@ _WRITE_RULES_IN_CODE = (
     "This pass never removes library items and never deletes or weakens a test: the gate refuses a candidate "
     "with fewer items or tests. If an existing test must change, name it in `tests_changed` with the reason. "
     "A pass may also change only notes, only tests, or the expected values in the tests of a function you did not "
-    "change; such tests need only pass.\n"
+    "change; such tests need only pass. Retiring an item is a decision, not a removal: decide `retire` on its entry "
+    "and its file stays. Retire an item whose recorded uses fail and that no change can repair; the usage table "
+    "counts every call, including calls made through `memory.get`.\n"
     "5. Write the tests first, against trusted expected values, "
     + _TRUST
     + " At least one call returns on arguments loaded from fixtures made with `tools.fixture`, or computed in the "

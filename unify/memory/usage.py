@@ -49,7 +49,8 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
     rendered), ``legacy_text`` (a recording without that record, read from the prompt's text by the v2
     index's wording) or ``unknown`` (neither; such a request counts as showing nothing).
 
-    * ``used``: some request has a call site of it;
+    * ``used``: some request used it: a call site in its cells or a call observed at run time;
+    * ``calls``: call sites plus observed calls (``runtime_calls`` the observed ones alone);
     * ``never_used``: requests were shown it, or its channel when ``never_used_basis`` is ``"channel"``,
       and none imported, called or referenced it, and it never refused or failed;
     * ``refusing_accepted_inputs``: some refusal of it was followed, later in the same request, by an
@@ -77,7 +78,8 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
     def n(key: str) -> int:
         return int(use.get(key, 0) or 0)
 
-    touched = n("imported") + n("called") + n("referenced")
+    runtime = n("runtime_ok") + n("runtime_refused") + n("runtime_errored")
+    touched = n("imported") + n("called") + n("referenced") + runtime
     failed = n("refused") + n("errored")
     unknown = n("outcome_unknown")
     known = unknown == 0
@@ -100,7 +102,8 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
         },
         "used_requests": n("used_requests"),
         "imported": n("imported"),
-        "calls": n("called"),
+        "calls": n("called") + runtime,
+        "runtime_calls": runtime,
         "referenced": n("referenced"),
         "guarded_calls": n("guarded"),
         "refusals": n("refused") if known else None,
@@ -130,7 +133,7 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
         "refused_accepted_at_least": n("refused_accepted"),
         "unknown_calls": n("unknown_calls"),
         "last_call_seq": evidence.last_call_seq(item),
-        "used": n("called") > 0,
+        "used": n("used_requests") > 0,
         "never_used": basis is not None and touched == 0 and failed == 0 and known,
         "never_used_basis": basis,
         "refusing_accepted_inputs": n("refused_accepted") > 0,
@@ -153,7 +156,7 @@ def usage_table(
     the requests whose outcome for the item was known, and the requests whose outcome for it was not (a
     cell with an unknown outcome could reach it). ``then accepted`` is marked ``+?`` (at least) when
     some request's outcome for the item was unknown. ``last call`` is how many requests ago the latest
-    call site was recorded, over every indexed request (``never`` when none).
+    request that used it was recorded, over every indexed request (``never`` when none).
     """
     eids = sorted({e for e in eids if isinstance(e, str)})
     ids = sorted({i for i in items if isinstance(i, str)})
@@ -161,7 +164,8 @@ def usage_table(
     latest = evidence.latest_seq()
     lines = [
         f"{USAGE_HEADING} ({len(eids)} requests; harness counts from cell code and tracebacks: "
-        "static call sites, refusals are MemoryInputError raised out of the item, "
+        "a request calls an item when its cells have a call site of it or were seen calling it at run time; "
+        "calls are call sites plus calls seen at run time; refusals are MemoryInputError raised out of the item, "
         "'then accepted' means a later action on its channel succeeded; refusals and errors are "
         "requests with one, of the requests whose outcome for the item was known, plus those whose "
         "outcome for it was unknown; requests that edited the item's channel are left out of "
@@ -183,7 +187,8 @@ def usage_table(
         lines.append(
             f"{item} | {u.get('requests', 0)} | {u.get('shown', 0)} | "
             f"{u.get('channel_shown', 0)} | {u.get('used_requests', 0)} | "
-            f"{u.get('called', 0)} | {refusals} | "
+            f"{u.get('called', 0) + u.get('runtime_ok', 0) + u.get('runtime_refused', 0) + u.get('runtime_errored', 0)}"
+            f" | {refusals} | "
             f"{u.get('refused_accepted', 0)}{more} | "
             f"{errors} | {u.get('unknown_calls', 0)} | {last}",
         )

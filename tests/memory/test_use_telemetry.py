@@ -407,6 +407,31 @@ def test_the_evidence_table_aggregates_per_item(tmp_path):
     )  # records without shown lists show nothing
 
 
+def test_a_call_seen_at_run_time_counts_as_use_without_a_call_site(tmp_path):
+    """Items are mostly called through ``memory.get(id)(...)``, which leaves no static call site: the calls the
+    worker's audit hook observed count as use in ``used_requests``, ``last_call_seq`` and the item's signals."""
+    from unify.memory import usage
+
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    seen = _record({"env/x:parse": {"runtime": {"ok": 1, "refused": 0, "error": 0}}})
+    seen["runtime_calls"] = {"cells": 1}
+    _index(ev, "e1", seen, "2026-10-08T01:00:00Z")
+    failed = _record({"env/x:parse": {"runtime": {"ok": 0, "refused": 0, "error": 2}}})
+    failed["runtime_calls"] = {"cells": 1}
+    _index(ev, "e2", failed, "2026-10-08T02:00:00Z")
+    _index(ev, "e3", _record({}), "2026-10-08T03:00:00Z")
+    p = ev.item_use()["env/x:parse"]
+    assert (p["requests"], p["used_requests"], p["called"]) == (3, 2, 0)
+    assert (p["runtime_ok"], p["runtime_errored"]) == (1, 2)
+    assert ev.last_call_seq("env/x:parse") == store_reads.seq_of(ev, "e2")
+    sig = usage.item_signals("env/x:parse", ev)
+    assert sig["used"] is True and sig["calls"] == 3 and sig["runtime_calls"] == 3
+    table = usage.usage_table(ev, ["e1", "e2", "e3"], ["env/x:parse"])
+    row = next(line for line in table.splitlines() if line.startswith("env/x:parse |"))
+    assert row.split(" | ")[4:6] == ["2", "3"]  # requests calling, calls
+    assert row.endswith("1 requests ago")
+
+
 def test_the_evidence_counts_where_each_requests_shown_lists_came_from(tmp_path):
     ev = EvidenceStore(tmp_path / "e.sqlite")
     sources = {

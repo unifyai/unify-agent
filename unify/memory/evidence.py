@@ -154,6 +154,17 @@ _KNOWN_SUMS = (
     ),
 )
 _IN_CHUNK = 500
+#: A request *used* an item when its cells had a call site of it or were observed calling it at run time. Items are
+#: mostly called through ``memory.get(id)(...)``, which leaves no static call site, so the static count alone reads
+#: most real calls as none.
+USED_SQL = "(called + runtime_ok + runtime_refused + runtime_errored) > 0"
+#: A used request whose calls all went cleanly: observed calls that neither refused nor raised, or, with no observed
+#: calls (no runtime evidence), a call site with no refusal or error and a known outcome.
+CLEAN_SQL = (
+    "(CASE WHEN runtime_ok + runtime_refused + runtime_errored > 0 "
+    "THEN runtime_ok > 0 AND runtime_refused = 0 AND runtime_errored = 0 "
+    "ELSE called > 0 AND refused = 0 AND errored = 0 AND outcome_unknown = 0 END)"
+)
 
 
 def _migrate_item_use(db: sqlite3.Connection) -> None:
@@ -449,7 +460,7 @@ class EvidenceStore:
         episode when None).
 
         Each entry: ``requests`` (episodes whose pin held the item), ``used_requests`` (of those, the ones
-        with a call site), the sums of :data:`_USE_COUNTS` (``shown`` and ``channel_shown`` are then
+        that used it: a call site or a call observed at run time, :data:`USED_SQL`), the sums of :data:`_USE_COUNTS` (``shown`` and ``channel_shown`` are then
         the requests whose memory section showed the item's line and its channel; ``outcome_unknown`` the
         requests in which a cell with an unknown outcome could reach the item), and the sums of
         :data:`_KNOWN_SUMS` over the requests whose outcome for the item was known. Items are in id order.
@@ -459,7 +470,7 @@ class EvidenceStore:
         )
         known_keys = [k for k, _ in _KNOWN_SUMS]
         base = (
-            f"SELECT item, COUNT(*), SUM(CASE WHEN called > 0 THEN 1 ELSE 0 END), {cols} "
+            f"SELECT item, COUNT(*), SUM(CASE WHEN {USED_SQL} THEN 1 ELSE 0 END), {cols} "
             "FROM item_use"
         )
         out: dict[str, dict] = {}
@@ -521,10 +532,10 @@ class EvidenceStore:
         return out
 
     def last_call_seq(self, item: str) -> int | None:
-        """The ``seq`` of the latest indexed episode with a call site of *item*, or None."""
+        """The ``seq`` of the latest indexed episode that used *item* (a call site or an observed call), or None."""
         row = self.db.execute(
-            "SELECT MAX(e.seq) FROM item_use u JOIN episodes e ON e.episode_id=u.episode_id "
-            "WHERE u.item=? AND u.called > 0",
+            "SELECT MAX(e.seq) FROM item_use JOIN episodes e ON e.episode_id=item_use.episode_id "
+            f"WHERE item_use.item=? AND {USED_SQL}",
             (item,),
         ).fetchone()
         return int(row[0]) if row and row[0] is not None else None

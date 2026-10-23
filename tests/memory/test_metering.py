@@ -121,6 +121,43 @@ def test_the_items_take_the_closing_entries_shares_and_the_rest_is_no_yield(tmp_
     )
 
 
+def _evidence(home: Path, rows: list[tuple]) -> None:
+    """A minimal evidence store beside *home*'s state: episodes by seq and their item_use rows, with the columns the
+    later-use count reads: (episode, seq, item, called, refused, errored, outcome_unknown, ok, runtime refused,
+    runtime errored)."""
+    import sqlite3
+
+    db = sqlite3.connect(home / "memory-evidence.sqlite")
+    db.execute("CREATE TABLE episodes (seq INTEGER, episode_id TEXT)")
+    db.execute(
+        "CREATE TABLE item_use (item TEXT, episode_id TEXT, called INTEGER, refused INTEGER, errored INTEGER, "
+        "outcome_unknown INTEGER, runtime_ok INTEGER, runtime_refused INTEGER, runtime_errored INTEGER)",
+    )
+    for eid, seq, *use in rows:
+        db.execute("INSERT INTO episodes VALUES (?, ?)", (seq, eid))
+        db.execute("INSERT INTO item_use VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (use[0], eid, *use[1:]))
+    db.commit()
+    db.close()
+
+
+def test_later_calls_count_calls_seen_at_run_time(tmp_path):
+    """An item called through ``memory.get(id)(...)`` has no static call site; its observed calls are its later uses.
+    A clean use has observed calls that neither refused nor raised; a static-only use keeps the old reading."""
+    home = _home(tmp_path)
+    _evidence(
+        home,
+        [
+            ("v0", 0, "fn:a", 0, 0, 0, 0, 1, 0, 0),  # before the item was written: not later
+            ("v5", 5, "fn:a", 0, 0, 0, 0, 1, 0, 0),  # observed, clean
+            ("v6", 6, "fn:a", 0, 0, 0, 0, 0, 0, 1),  # observed, raised
+            ("v7", 7, "fn:a", 1, 0, 0, 0, 0, 0, 0),  # a call site only, known outcome: clean
+            ("v8", 8, "fn:a", 0, 0, 0, 0, 0, 0, 0),  # served, not used
+        ],
+    )
+    assert M._later_uses(home, "fn:a", 1) == (3, 2)
+    assert M._later_uses(home, "fn:a", None) == (None, None)
+
+
 def _journal(path: Path, rows: list[dict]) -> Path:
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
     return path
