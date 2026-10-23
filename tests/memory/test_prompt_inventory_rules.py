@@ -118,7 +118,7 @@ RULES: tuple[tuple[str, str, str], ...] = (
     ("B109", "writer", "`pool` records decisions on pool entries"),
     ("B115", "writer", 'raises `MemoryInputError("<what was expected>")` on an input it was not built for'),
     ("B127", "writer", "add a test that fails on the old version and passes on yours"),
-    ("B128", "writer", "This pass never removes library items and never deletes or weakens a test"),
+    ("B128", "writer", "A pass never removes library items"),
     ("B129", "writer", "name it in `tests_changed` with the reason"),
     ("B130", "writer", "in this order of trust"),
     ("B131", "writer", "At least one call returns on arguments loaded from fixtures made with `tools.fixture`"),
@@ -130,7 +130,8 @@ RULES: tuple[tuple[str, str, str], ...] = (
     ("B138", "writer", "recorded-inputs file"),
     # B140 ("values that vary become parameters") is gone: the harness never steers what is stored, either way
     ("B141", "writer", "Never store credentials or session tokens"),
-    ("B145", "writer", "a candidate with fewer items or tests is labelled so"),
+    ("B145", "writer", "a candidate with fewer items than the library it started from, a deleted item or a dropped alias is refused"),
+    ("B145", "writer", "or a candidate with fewer tests, is labelled"),
     ("B147", "writer", "G1, layout and provenance"),
     ("B148", "writer", "G2, evidence"),
     ("B149", "writer", "G3, tests"),

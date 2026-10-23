@@ -105,6 +105,7 @@ def test_rule_four_and_the_note_rule_say_what_the_gate_does():
         in flat
     )
     assert "or a candidate with fewer tests, is labelled so" in flat
+    assert "name it in `tests_changed` with the reason" in flat
     assert "the item stays on record with its file" in flat
     # the When to use and README findings only label, as the gate decides
     assert "without the section or one of its four lines is labelled so" in flat

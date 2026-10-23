@@ -435,8 +435,8 @@ def test_a_repaired_item_starts_again_on_trial():
     assert status(new) == ON_TRIAL
 
 
-def test_the_writer_brief_offers_a_known_failure_test():
+def test_the_writer_brief_does_not_steer_what_is_kept_of_a_failure():
     from unify.memory import library_prompts as lp
 
     brief = lp.write_brief_now()
-    assert "a test marked as a known failure" in brief
+    assert "a test marked as a known failure" not in brief and "is knowledge too" not in brief

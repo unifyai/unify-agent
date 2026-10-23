@@ -64,8 +64,8 @@ def test_a_landing_is_recorded_in_the_store_and_carried_into_its_item_record(tmp
     assert reply.status == "ok", reply.text
     # the test's landing names no pass; a writer pass's names its own (test_capture_one_route)
     landing = {"item": PROC, "reader": READER, "applies": APPLIES, "episode": "e7", "pass": None,
-               "verified": {"ran": False, "why": "rev2: a capture is never replayed to verify it; its tests are written "
-                                                 "from its code"}}  # fmt: skip
+               "verified": {"ran": False, "why": "a capture is never run to verify it; its tests are written from its "
+                                                 "code"}}  # fmt: skip
     got = captures.landings(store)
     assert set(got) == {cid} and isinstance(got[cid].pop("at"), float)
     # rev 2: nothing landed runs to decide its listing; the landing says so explicitly

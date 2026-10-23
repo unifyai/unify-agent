@@ -15,7 +15,11 @@ from unify.memory.integration import fork
 
 def test_the_fork_is_told_what_a_no_argument_call_does_and_nothing_about_what_to_keep():
     text = " ".join(fork.CAPTURE_BULLETS.split())
-    assert "Calling a stored procedure with no arguments runs it on the current request" in text
+    assert (
+        "Called later with no arguments, a stored procedure of the `read_input` and `run(value)` form or of the "
+        "`run(state)` form runs on the current request" in text
+    )
+    assert "one of the `run(state, env)` form is not run that way" in text
     assert "read it from `state` or the request instead" not in text and "default" not in text
 
 

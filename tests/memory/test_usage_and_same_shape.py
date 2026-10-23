@@ -22,7 +22,7 @@ def test_write_asks_for_each_items_when_to_use_section_and_a_linked_note_of_prec
     assert "linked note says its preconditions and its known failures" in text
     # rev 2 (labels only): the section and its four lines as written, and a missing one is labelled, not refused
     shared = pv.WHEN_TO_USE_TEXT.split("  A new or changed")[0]
-    assert shared.endswith("Example request: Sum these payments per currency.\n") and shared in text
+    assert shared.endswith("Example request: How many lines of this file contain the word error?\n") and shared in text
     assert "A new or changed function or note without the section or one of its four lines is labelled so." in text
     assert "The items of a folder the pass changes are labelled when the folder has no README.md" in text
     assert "The gate refuses" not in text.split("- Every function and note carries")[1].split("- Tests go")[0]
