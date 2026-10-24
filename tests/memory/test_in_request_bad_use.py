@@ -152,8 +152,8 @@ def test_a_rejected_answer_equal_to_what_a_call_returned_is_a_bad_use_of_that_it
 def test_an_accepted_answer_is_attributed_and_opens_no_bad_use(mv2):  # noqa: F811
     run = _begin(mv2, "hi")
     try:
-        run.note_calls(_cell(**{A: "done"}))
-        _say(run, "done")
+        run.note_calls(_cell(**{A: "all done here"}))
+        _say(run, "all done here")
         run.take_checker({"label": "pass"})
         assert run.answer_attributions[0]["items"] == [A] and run.bad_uses() == {}
     finally:
@@ -209,11 +209,12 @@ def test_keyword_values_of_the_answer_are_compared_each_whole(mv2):  # noqa: F81
 @pytest.mark.parametrize(
     "value, reply",
     [
-        ([[7, 7]], "[[7, 7]]"),  # an answer handed back as JSON text (tools.answer of a list)
-        (42, "42"),
-        ("done", "done"),
-        ({"a": 1}, 'Here it is:\n{"a": 1}'),
-        ([1, 2], "[\n  1,\n  2\n]"),  # the whole reply is the JSON value
+        # each value is longer than a short match, which gates nothing
+        ([[7, 7], [7, 7]], "[[7, 7], [7, 7]]"),  # an answer handed back as JSON text (tools.answer of a list)
+        (123456789, "123456789"),
+        ("all done here", "all done here"),
+        ({"a": 12345}, 'Here it is:\n{"a": 12345}'),
+        ([1, 2, 3, 4], "[\n  1,\n  2,\n  3,\n  4\n]"),  # the whole reply is the JSON value
     ],
 )
 def test_an_answer_handed_back_as_json_text_is_compared_as_its_value(mv2, value, reply):  # noqa: F811
@@ -255,8 +256,8 @@ def test_the_ask_tool_sends_every_bad_use_with_when_it_was_found(mv2, monkeypatc
 
     run = _begin(mv2, "hi")
     try:
-        run.note_calls(_cell(**{A: [[1]]}))
-        _say(run, '{"action": "submit", "grid": [[1]]}')
+        run.note_calls(_cell(**{A: [[1, 2], [3, 4]]}))
+        _say(run, '{"action": "submit", "grid": [[1, 2], [3, 4]]}')
         run.take_checker({"label": "fail"})
         monkeypatch.setattr(request_mod, "current", lambda: run)
         monkeypatch.setattr(run, "_observations_now", lambda: 3)
