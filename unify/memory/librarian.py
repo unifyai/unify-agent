@@ -485,6 +485,8 @@ class LibrarianCalls:
     #: rev 2.3: per item of :attr:`failed_here`, the request's message count when its use failed, and the count now
     failed_at: dict[str, int] = field(default_factory=dict)
     messages_now: int | None = None
+    #: rev 2.3: the current request's structure profile (``library_search.request_profile``), which orders the search
+    request_profile: str | None = None
     answer: dict | None = None
     finish_text: str | None = None
     finished: bool = False
@@ -1016,11 +1018,12 @@ def search(ctx: Any, args: dict) -> Any:
     """The librarian's ``tools.search(query, offset=None)``: every item of the library ranked by its "When to use"
     text against *query* (:func:`.library_search.search_text`, over the copy's index), by meaning with the run's
     embedding backend (each request it sends booked: ``integration.cost.book_embedding``), else not ranked (every
-    item listed in the library's order), and the result says which. Runs in the worker pool."""
+    item listed in the library's order), and the result says which; the recorded procedures whose recorded input has
+    the current request's structure profile come first (rev 2.3). Runs in the worker pool."""
     from unify.memory import writer_tools as _wt
 
     from .integration.cost import book_embedding
-    from .library_search import INDEX_FILE, backend, read_index, search_text
+    from .library_search import INDEX_FILE, backend, capture_profiles, read_index, search_text
 
     state: LibrarianCalls = ctx.state
     query = args.get("query")
@@ -1028,7 +1031,11 @@ def search(ctx: Any, args: dict) -> Any:
         return _refused("search", "no_query")
     where = ({"path": f"{LIBRARY_ROOT}/{INDEX_FILE}", "mode": "search"},)
     data = read_index(state.copy) if state.copy is not None else None
-    return _wt.Reply(search_text(data, str(query), backend(on_call=book_embedding), _offset(args)), paths=where)
+    profiles = capture_profiles(state.copy, data) if data is not None and state.request_profile is not None else {}
+    text = search_text(
+        data, str(query), backend(on_call=book_embedding), _offset(args), profiles=profiles, wanted=state.request_profile
+    )
+    return _wt.Reply(text, paths=where)
 
 
 def _library_path(tool: str, args: dict, default: str = "") -> tuple[str, str | None, Any]:
@@ -1267,7 +1274,7 @@ class LibrarianSession:
         reader)."""
         got = await self.answer(
             question, schema=schema, last_message=last_message, failed=failed, failed_at=failed_at,
-            messages_now=messages_now,
+            messages_now=messages_now, request=request,
         )
         return json.dumps(got, ensure_ascii=False, sort_keys=True)
 
@@ -1280,6 +1287,7 @@ class LibrarianSession:
         failed: Any = (),
         failed_at: Mapping[str, Any] | None = None,
         messages_now: int | None = None,
+        request: str | None = None,
     ) -> dict:
         """One question about the current request. When the librarian was already sent the same
         (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave it, with :data:`ALREADY_GIVEN`, and
@@ -1303,6 +1311,10 @@ class LibrarianSession:
             self.state.failed_here = here
             self.state.failed_at = _failed_at(failed_at, here)
             self.state.messages_now = messages_now if isinstance(messages_now, int) else None
+            # the request's structure orders the search; it is not sent to the librarian, so it is not in the key
+            from .library_search import request_profile
+
+            self.state.request_profile = request_profile(request)
             self.questions += 1
             library = {"commit": self.library, "dispatch": _digest_of(self.dispatch)}
             if self.evidence is not None:

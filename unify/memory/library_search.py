@@ -15,6 +15,11 @@ the reader of the cards (rev 2.1: no word matching ranks anything). Each request
 told to *on_call* (:func:`backend`), which books it (``integration.cost``).
 
 Nothing here caps what is returned: every row is listed, and a long result is paged.
+
+Rev 2.3 (structure in the search): a search for a request puts first the recorded procedures whose recorded input has
+the same structure profile as the request's (:func:`request_profile`, :func:`shape_profile`): the type tree, the length
+class of the lists at each level and each object's key count, never a key's text. It is a sort order only: nothing is
+left out, nothing is keyed on it, and with no equal profile the result is as before.
 """
 
 from __future__ import annotations
@@ -267,22 +272,118 @@ def ranking(data: dict, query: str, use: Backend = NO_BACKEND) -> tuple[list[tup
     return [(None, r) for r in items], how
 
 
+# --- structure profiles ------------------------------------------------------------------------------------------
+
+
+def shape_profile(desc: Any) -> str | None:
+    """The structure profile of a recorded input shape (``captures.shape``: a value's key tree and list length
+    classes, a text's length class, a scalar's type) as canonical JSON, or None when it has none: an object as its key
+    count and the profiles of its values, a list as its length class and the profiles of its elements, a leaf as its
+    type; a text as its line-count and length classes (only when the shape records both). No key text is kept."""
+    if not isinstance(desc, Mapping):
+        return None
+    kind = desc.get("kind")
+    if kind == "value":
+        lengths = desc.get("lengths") if isinstance(desc.get("lengths"), Mapping) else {}
+
+        def reduced(tree: Any, path: str) -> Any:
+            if isinstance(tree, Mapping):
+                kids = {json.dumps(reduced(v, f"{path}.{k}" if path else str(k)), sort_keys=True) for k, v in tree.items()}
+                return {"keys": len(tree), "values": sorted(kids)}
+            if isinstance(tree, list):
+                kids = {json.dumps(reduced(v, path + "[]"), sort_keys=True) for v in tree}
+                return {"length": str(lengths.get(path, "")), "elements": sorted(kids)}
+            return str(tree)
+
+        tree = desc.get("tree")
+        if not isinstance(tree, (Mapping, list)):
+            return None
+        return json.dumps(reduced(tree, ""), sort_keys=True, separators=(",", ":"))
+    if kind == "text" and isinstance(desc.get("length"), str) and isinstance(desc.get("lines"), str):
+        return json.dumps({"text": desc["length"], "lines": desc["lines"]}, sort_keys=True, separators=(",", ":"))
+    if kind == "scalar" and isinstance(desc.get("type"), str):
+        return json.dumps({"scalar": desc["type"]}, separators=(",", ":"))
+    return None
+
+
+def request_profile(text: Any) -> str | None:
+    """The structure profile of the current request (:func:`shape_profile`): of the request text when the whole text
+    parses as JSON, else of the text itself (its line-count and length classes); None without a request."""
+    from .captures import _length_class, shape
+
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        value = None
+    if isinstance(value, (dict, list)) or (value is not None and not isinstance(value, str)):
+        return shape_profile(shape(value))
+    lines = len(text.splitlines()) or 1
+    return shape_profile({"kind": "text", "length": _length_class(len(text)), "lines": _length_class(lines)})
+
+
+def capture_profiles(copy: Path, data: Mapping[str, Any]) -> dict[str, str]:
+    """The structure profile of each recorded procedure of the index *data*, from its ``signature.json`` input in the
+    copy (read only; an unreadable one has none)."""
+    out: dict[str, str] = {}
+    for r in data.get("items") or []:
+        if not isinstance(r, dict) or r.get("kind") != "captured procedure" or not isinstance(r.get("path"), str):
+            continue
+        sig_path = (Path(copy) / r["path"]).parent / "signature.json"
+        try:
+            sig = json.loads(sig_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        prof = shape_profile(sig.get("input")) if isinstance(sig, dict) else None
+        if prof is not None:
+            out[str(r.get("id"))] = prof
+    return out
+
+
+def _structure_first(ranked: list, profiles: Mapping[str, str], wanted: str | None) -> tuple[list, int]:
+    """*ranked* with the rows whose profile equals *wanted* first, each part in its own order; and how many came
+    first. Unchanged when none does."""
+    if wanted is None:
+        return ranked, 0
+    first = [x for x in ranked if profiles.get(str(x[1].get("id"))) == wanted]
+    if not first:
+        return ranked, 0
+    rest = [x for x in ranked if profiles.get(str(x[1].get("id"))) != wanted]
+    return first + rest, len(first)
+
+
 def _sorted(scored: list[tuple[float, dict]]) -> list[tuple[float, dict]]:
     order = sorted(range(len(scored)), key=lambda i: (-scored[i][0], i))
     return [scored[i] for i in order]
 
 
-def search_text(data: dict | None, query: str, use: Backend = NO_BACKEND, offset: int = 0) -> str:
+def search_text(
+    data: dict | None,
+    query: str,
+    use: Backend = NO_BACKEND,
+    offset: int = 0,
+    *,
+    profiles: Mapping[str, str] | None = None,
+    wanted: str | None = None,
+) -> str:
     """The result of ``search(query)``: how the items were ranked (or why they were not), then one line per item from
     *offset*, best first (its rank, its path in the box, its id, kind and score when there is one, and its card), one
-    page of :data:`PAGE_BYTES`; a last line says where the next page starts."""
+    page of :data:`PAGE_BYTES`; a last line says where the next page starts. With *wanted* (the request's structure
+    profile) and *profiles* (the items'), the items with an equal profile come first, and the first line says so."""
     if data is None:
         return "search: the library's search index cannot be read; use tools.grep and tools.read instead."
     ranked, how = ranking(data, query, use)
+    ranked, same = _structure_first(ranked, profiles or {}, wanted)
     total = len(ranked)
     if not total:
         return "search: the library holds no items."
     offset = max(0, min(int(offset), total))
+    if same:
+        how = (
+            f"the first {same} recorded the same input structure as the current request (its type tree, list lengths "
+            f"and key counts), then {how}"
+        )
     lines = [f"search: {total} item(s), {how}."]
     size = len(lines[0]) + 1
     end = offset
@@ -310,11 +411,14 @@ __all__ = [
     "NOT_CONFIGURED",
     "OTHER_MODEL",
     "backend",
+    "capture_profiles",
     "index_bytes",
     "index_data",
     "index_files",
     "ranking",
     "read_index",
+    "request_profile",
     "rows",
     "search_text",
+    "shape_profile",
 ]
