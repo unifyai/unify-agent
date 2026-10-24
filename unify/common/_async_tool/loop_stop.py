@@ -2,7 +2,7 @@
 
 The loop census of 7 October 2026 (87,147 recorded requests) found that
 most loops inside one request are no-op narration. The model runs a cell
-such as ``print('Request another demo.')``, ``print('')`` or ``pass`` instead
+that only prints a status line, ``print('')`` or ``pass`` instead
 of replying. A rule that looks only for exact repeats misses it.
 
 A model call makes *no progress* when every tool call it makes either
