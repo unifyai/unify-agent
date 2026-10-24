@@ -240,3 +240,22 @@ def test_the_cli_marks_the_first_request_final_only_with_the_flag(monkeypatch, c
                          b'{"quit": true}\n', None)  # fmt: skip
     seen.append(declared_input.first_final())
     assert (code, code2) == (0, 0) and seen == [True, False]
+
+
+# --- declarations belong to their request ----------------------------------------------------------------------
+
+
+def test_a_new_request_starts_with_nothing_declared_and_its_own_declarations_are_kept(clean_declared):
+    from unify.cli import Act, _parse_args
+
+    act = Act(_parse_args(["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "Say hi"]))
+    act._progress = lambda text: None
+    act._take_declarations({"message": "m1", "input": [1], "examples": PAIRS[:1]})
+    act._take_declarations({"message": "m2", "examples": PAIRS[1:]})  # the same request: added to
+    assert declared_input.current()["value"] == [1] and declared_input.examples() == PAIRS
+    act._turn_answered = True  # the session answered: the next message starts a new request
+    act._take_declarations({"message": "next request"})
+    assert declared_input.current() is None and declared_input.examples() == []
+    act._turn_answered = True
+    act._take_declarations({"message": "and another", "input": [2]})
+    assert declared_input.current()["value"] == [2] and act._turn_answered is False

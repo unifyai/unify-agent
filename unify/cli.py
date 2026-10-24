@@ -59,9 +59,9 @@ showed the actor, sent just before the message that shows it. A message
 line may also carry, as data, "input" (the request's declared input),
 "examples" (a list of {"input": ..., "output": ...} pairs the request was
 given) and "final": true (the episode is over or its verdict final: the
-library's librarian is not asked again on it). --declared FILE and
---final do the same for the first request, which comes from the command
-line. A message is posted to the run's shared agent
+library's librarian is not asked again on it); each new request starts
+with nothing declared. --declared FILE and --final do the same for the
+first request, which comes from the command line. A message is posted to the run's shared agent
 record and reaches the actor at its next step instead of interrupting it,
 and each record entry that mentions @user is written out as
 {"type": "record", ...} (a "record>" line without --jsonl).
@@ -303,6 +303,8 @@ class Act:
 
     def __init__(self, args: argparse.Namespace) -> None:
         self._args = args
+        # rev 2.3: whether the session answered since the last message (the next message starts a new request)
+        self._turn_answered = False
         self._actor = None
         self._handle = None
         # Routes lines into the shared agent record.
@@ -376,6 +378,7 @@ class Act:
                 continue
             kind = notif.get("type", "")
             if kind == "response":
+                self._turn_answered = True
                 # A persist-mode turn finished; its answer is the result of the
                 # follow-up the user typed.
                 if self._args.jsonl:
@@ -465,20 +468,7 @@ class Act:
                         message = item.get("message")
                         if not isinstance(message, str) or not message:
                             continue
-                        if "input" in item:
-                            # rev 2.3: the request's input as the world declares it beside the message (data, never
-                            # parsed from text); tools.answer_from answers on it
-                            from unify.common import declared_input
-
-                            if not declared_input.declare(item.get("input")):
-                                self._progress("the declared input was not kept: it has no JSON form or is too large")
-                        if "examples" in item:
-                            # rev 2.3: example pairs the world declares beside the message (data); tools.examples()
-                            from unify.common import declared_input
-
-                            if not declared_input.add_examples(item.get("examples")):
-                                self._progress("the declared examples were not kept: not a list of input/output pairs, "
-                                               "or too large")  # fmt: skip
+                        self._take_declarations(item)
                         line = message
                         # rev 2.3: the world declares the episode over or its verdict final (a field, never text)
                         final = item.get("final") is True
@@ -501,6 +491,20 @@ class Act:
                     await self._bridge.user_message(line)
                     continue
                 await self._handle.submit(line)
+
+    def _take_declarations(self, item: dict) -> None:
+        """Keep what a message line declares as data (rev 2.3): ``input``, the request's input, and ``examples``, the
+        pairs it was given (never parsed from text). A message after the session answered starts a new request, which
+        starts with nothing declared: what an earlier request declared is never carried over."""
+        from unify.common import declared_input
+
+        if self._turn_answered:
+            declared_input.clear()
+            self._turn_answered = False
+        if "input" in item and not declared_input.declare(item.get("input")):
+            self._progress("the declared input was not kept: it has no JSON form or is too large")
+        if "examples" in item and not declared_input.add_examples(item.get("examples")):
+            self._progress("the declared examples were not kept: not a list of input/output pairs, or too large")
 
     def _post_checker(self, raw: object, **where: object) -> None:
         """Hand a ``{"checker": ...}`` line to the memory run and answer it (memory v2.1 P9: a verdict the
