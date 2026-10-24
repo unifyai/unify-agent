@@ -223,6 +223,8 @@ FAILURE_HELPERS = HELPER_ITEMS
 #: went (ids and outcomes only).
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
+#: A tracked call that returned: (id, a digest of its result's canonical JSON); never the value (rev 2.3).
+RESULT_EVENT = "memory.call_result"
 #: What ``memory.ask`` got back: the ids the answer listed as fitting, whether it said
 #: nothing fits, and the recognisers' outcomes as ``(id, read, applies)`` labels, with a fixed short reason after
 #: them when the reader gave no outcome (``not-started``, ``failed``); never text or values.
@@ -241,6 +243,7 @@ AUDITED = PATH_EVENTS | SPAWN_EVENTS | {
     MATCH_EVENT,
     RUN_EVENT,
     ASK_EVENT,
+    RESULT_EVENT,
 }
 #: The callers whose opens are marked ``via``: the import system, traceback formatting, the library package.
 _VIA_IMPORT = ("importlib", "_frozen_importlib", "zipimport")
@@ -408,6 +411,7 @@ class CellAudit:
         self.run_records: list = []
         self.ask_records: list = []
         self.pin_counts: dict = {}
+        self.result_records: list = []
 
     @staticmethod
     def prefixes(roots: Iterable[str]) -> tuple:
@@ -445,6 +449,9 @@ class CellAudit:
                 return
             if event == ASK_EVENT:
                 self._ask_result(args)
+                return
+            if event == RESULT_EVENT:
+                self._call_result(args)
                 return
             if len(self.records) >= MAX_RECORDS:
                 self.dropped += 1
@@ -652,6 +659,20 @@ class CellAudit:
             record["no_outcome"] = missing
         self.match_records.append(record)
 
+    def _call_result(self, args: tuple) -> None:
+        """Keep one ``memory.call_result`` event: the item and its result's digest (exact ``str`` shapes only)."""
+        if type(args) is not tuple or len(args) != 2:
+            self.calls_malformed += 1
+            return
+        item, digest = args
+        if self._id(item) is None or type(digest) is not str or _HEX_DIGEST.fullmatch(digest) is None:
+            self.calls_malformed += 1
+            return
+        if len(self.result_records) >= MAX_CALL_RECORDS:
+            self.call_records_dropped += 1
+            return
+        self.result_records.append({"item": item, "digest": digest})
+
     def _run_result(self, args: tuple) -> None:
         """Keep one ``memory.run_result`` event: its target, outcome, level and conditions."""
         if type(args) is not tuple or len(args) != 4:
@@ -744,7 +765,8 @@ class CellAudit:
             or self.call_failures_dropped
             or self.match_records
             or self.run_records
-            or self.ask_records,
+            or self.ask_records
+            or self.result_records,
         )
 
     def _inside(self, path: Optional[str]) -> bool:
@@ -925,6 +947,8 @@ class CellAudit:
                 out["calls"]["asks"] = self.ask_records
             if self.pin_counts:
                 out["calls"]["pins"] = self.pin_counts
+            if self.result_records:
+                out["calls"]["results"] = self.result_records
         self.records, self.dropped, self.failed, self.bytes = [], 0, 0, 0
         self._reset_calls()
         return out

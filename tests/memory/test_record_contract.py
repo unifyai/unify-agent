@@ -44,7 +44,13 @@ from unify.memory.integration import hooks
 from unify.memory.integration.adapters.audit import CellAudit
 from unify.memory.integration.consolidate import open_stores
 from unify.memory.integration.paths import Paths
-from unify.memory.integration.request import add_runtime_calls, runtime_calls_empty, with_pins, with_runtime_calls
+from unify.memory.integration.request import (
+    add_runtime_calls,
+    runtime_calls_empty,
+    with_answer_attributions,
+    with_pins,
+    with_runtime_calls,
+)
 from unify.memory.layout import discover
 from unify.memory.redact import Redactor
 from unify.memory.signals import Signal, post_signal
@@ -114,8 +120,8 @@ REGISTRY: dict[str, dict] = {
         "readers": ["unify.memory.lifecycle:facts_from_evidence"],
     },
     "memory_use.json": {
-        "writer": "unify.memory.analysis.use:request_use, unify.memory.integration.request:with_runtime_calls and "
-        "with_pins",
+        "writer": "unify.memory.analysis.use:request_use, unify.memory.integration.request:with_runtime_calls, "
+        "with_pins and with_answer_attributions",
         "readers": [
             "unify.memory.evidence:EvidenceStore.index_episode",
             "unify.memory.integration.outcomes:implicit_evidence",
@@ -286,7 +292,9 @@ def test_a_captures_uses_reach_its_card_the_catalogue_the_search_rows_the_librar
     _index_use(stores, "e2", got["events"])
     found = serving.item_evidence(stores, captures=cp.load(store), home=None)
     row = found[f"capture:{cid}"]
-    assert row["later_uses"] == {"episodes": 1, "returned": 1, "refused": 0, "raised": 1}
+    assert row["later_uses"] == {
+        "episodes": 1, "returned": 1, "refused": 0, "raised": 1, "accepted": 0, "rejected": 0, "unknown": 1
+    }
     assert [(r["episode"], r["why"]) for r in row["failure_record"]] == [("e2", "error")]
     # trust and status come from those uses (with the capture's own episodes), never from its record
     assert row["counts"] == {trust.CLEAN: 1, trust.FAILED: 1, trust.NEUTRAL: 0}
@@ -301,7 +309,8 @@ def test_a_captures_uses_reach_its_card_the_catalogue_the_search_rows_the_librar
     assert (rec["status"], rec["level"]) == (row["status"], row["level"])
 
     root, files = _export(tmp_path / "second", store, _served(stores, store, tmp_path / "second"))
-    later = "2 calls in 1 episode: 1 returned, 1 raised"
+    # rev 2.3: then the uses whose call returned, by outcome (no verdict was attributed to this one)
+    later = "2 calls in 1 episode: 1 returned, 1 raised; uses: 0 accepted, 0 rejected, 1 unknown"
     card = _cell(root, f"print(json.dumps(str(memory.get({'capture:' + cid!r}))))\n")
     assert f"Later uses: {later}" in card and "Recorded failures: 1: error in episode e2" in card
     assert card.startswith(f"capture:{cid}  [recorded procedure from 1 episode]")
@@ -369,7 +378,9 @@ def test_capture_use_is_metered(tmp_path):
     _index_use(stores, "e3", refused["events"])
 
     found = serving.item_evidence(stores, captures=cp.load(store), home=None)[item]
-    assert found["later_uses"] == {"episodes": 2, "returned": 1, "refused": 1, "raised": 0}
+    assert found["later_uses"] == {
+        "episodes": 2, "returned": 1, "refused": 1, "raised": 0, "accepted": 0, "rejected": 0, "unknown": 1
+    }
     assert serving.record_capture_uses(stores, store, [item]) == [item]
     rec = json.loads((store / row["capture_id"] / cp.RECORD_FILE).read_text())
     assert sorted((u["episode"], u["outcome"]) for u in rec["uses"]) == [("e2", "returned"), ("e3", "refused")]
@@ -514,6 +525,8 @@ def test_every_field_a_use_record_reader_asks_for_is_written(tmp_path, library_r
     record = with_runtime_calls(record, acc)
     # UNIFY_MEMORY=in_episode: the pin each call was served under
     record = with_pins(record, {"c0ffee" * 6 + "abcd": {item: {"ok": 1, "refused": 0, "error": 1}}}, ["c0ffee" * 6 + "abcd"])
+    # rev 2.3: the verdicts taken within the request, with the items whose returned value the judged answer was
+    record = with_answer_attributions(record, [{"label": "fail", "obs": 1, "items": [item], "short": False}])
     rows = record["items"]
     assert item in rows and "runtime" in rows[item]
     written = {"record": set(record), "item": {k for row in rows.values() for k in row}}

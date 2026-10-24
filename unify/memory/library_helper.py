@@ -123,6 +123,9 @@ FAILED_EVENT = "memory.call_failed"
 FAILURE_TEXT = 200
 REFUSAL = "MemoryInputError"
 DIGEST_CHARS = 16
+#: The audit event of a tracked call that returned: the id and a digest of its result's canonical JSON (never the
+#: value), so the harness can tell, value for value, whether an answer the world then judged was this result.
+RESULT_EVENT = "memory.call_result"
 # The status and evidence-level names (``item_states``'s; this file imports only the standard library, so it
 # keeps its own copy, which a test holds equal): the status a row without one has, the statuses the index leaves
 # out, and the old stored names each now means.
@@ -429,6 +432,8 @@ def _evidence_lines(evidence: dict | None, iid: str) -> list[str]:
         "Recorded failures: " + _failure_text(_failures(evidence, iid)),
         "Later uses: " + _str(row.get("later_uses_text"), "none yet"),
     ]
+    if iid in failed_here():
+        out.append("In this request: a call of it failed")
     if _str(row.get("conditions")):
         out.append("States that it applies when: " + _str(row.get("conditions")))
     return out
@@ -689,6 +694,8 @@ def _match_row(c: Candidate, matched: str) -> MatchRow:
 
 
 def _emit_event(event: str, *args: Any) -> None:
+    if _checking():
+        return
     try:
         sys.audit(event, *args)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
@@ -1189,6 +1196,8 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
     if rep.get("error") != "LookupError" or rep["outcome"] != "error":
         _emit(target, args_digest(args, kwargs), "ok" if rep["outcome"] == "returned" else
               ("refused" if rep["outcome"] == "refused" else "error"))
+        if rep["outcome"] == "returned":
+            _emit_result(target, rep.get("result"))
     conditions, code = _capture_conditions(rep)
     return RunReport(
         target,
@@ -2601,7 +2610,47 @@ def call_outcome(exc: BaseException) -> str:
     )
 
 
+def result_digest(value: Any) -> str:
+    """A digest of *value*'s canonical JSON: sorted keys, separators ``(",", ":")``, non-ASCII kept, anything else
+    as its ``str``; the same text the harness's ``fixtures.canonical`` makes, so equal values give equal digests."""
+    text = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:DIGEST_CHARS]
+
+
+#: Set while a check runs a candidate on examples (``tools.check_examples``): a check run is not a use, so no call
+#: inside it raises an audit event or is kept as failed here (it is not metered, and never a bad use).
+_CHECKING = threading.local()
+
+
+def _checking() -> bool:
+    return bool(getattr(_CHECKING, "on", False))
+
+
+class _check_run:
+    """While inside, the calls of this thread are check runs: none raises an audit event (``tools.check_examples``
+    enters it around the candidate's runs)."""
+
+    def __enter__(self) -> None:
+        self._before = _checking()
+        _CHECKING.on = True
+
+    def __exit__(self, *exc: Any) -> None:
+        _CHECKING.on = self._before
+
+
+def _emit_result(item: str, value: Any) -> None:
+    """Raise :data:`RESULT_EVENT` for a tracked call of *item* that returned *value* (not inside a check run)."""
+    if _checking():
+        return
+    try:
+        sys.audit(RESULT_EVENT, item, result_digest(value))
+    except Exception:  # noqa: BLE001 - an audit hook never changes the call
+        pass
+
+
 def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None:
+    if _checking():
+        return
     try:
         sys.audit(event, item, digest, outcome)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
@@ -2640,6 +2689,8 @@ def failed_here() -> list[str]:
 
 
 def _emit_failed(item: str, exc: BaseException, args: tuple, kwargs: dict, event: str) -> None:
+    if _checking():
+        return
     try:
         shape = args_shape(args, kwargs) if event == HELPER_EVENT else ""
         sys.audit(FAILED_EVENT, item, type(exc).__name__, _first_line(exc), shape)
@@ -2665,6 +2716,8 @@ def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
                 _emit_failed(item, exc, args, kwargs, event)
                 raise
             _emit(item, digest, "ok", event)
+            if event == CALL_EVENT:
+                _emit_result(item, result)
             return result
 
     else:
@@ -2679,6 +2732,8 @@ def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
                 _emit_failed(item, exc, args, kwargs, event)
                 raise
             _emit(item, digest, "ok", event)
+            if event == CALL_EVENT:
+                _emit_result(item, result)
             return result
 
     call.__memory_item__ = item  # type: ignore[attr-defined]

@@ -24,6 +24,7 @@ SOURCE = r'''
 # --- check_examples(): run a candidate on each example's input in this interpreter and compare --------------------
 import copy as _ck_copy
 import inspect as _ck_inspect
+import sys as _ck_sys
 import traceback as _ck_traceback
 
 _CK_SHOWN_CHARS = __SHOWN_CHARS__
@@ -150,6 +151,24 @@ def _ck_text(results):
     return "\n".join(lines)
 
 
+class _CkNoMark:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _ck_check_marker():
+    """The library package's check-run marker when the package is loaded here: a call of one of its items inside a
+    check is not a use (it is not metered and never counts against the item). Else one that marks nothing."""
+    try:
+        mark = getattr(_ck_sys.modules.get("memory"), "_check_run", None)
+    except Exception:
+        mark = None
+    return mark if isinstance(mark, type) else _CkNoMark
+
+
 def check_examples(candidate, examples):
     """Run *candidate* on each example's input here, in your session, and compare what it returns with the
     example's expected output (tools.help("check_examples") has the whole text)."""
@@ -159,6 +178,7 @@ def check_examples(candidate, examples):
         )
     pairs = _ck_pairs(candidate, examples)
     spread = _ck_spreads(candidate)
+    mark = _ck_check_marker()
     results = []
     for given, expected in pairs:
         row = {"input": given, "expected": expected, "actual": None, "error": None, "passed": False}
@@ -170,7 +190,8 @@ def check_examples(candidate, examples):
             value = given
         args = tuple(value) if spread and isinstance(value, (tuple, list)) else (value,)
         try:
-            actual = candidate(*args)
+            with mark():
+                actual = candidate(*args)
         except Exception as exc:
             row["error"] = _ck_raised(exc)
         else:

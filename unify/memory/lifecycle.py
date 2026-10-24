@@ -188,6 +188,7 @@ def facts_from_evidence(
     """
     want = set(eids) if eids is not None else None
     by_episode: dict[str, dict[str, ItemUse]] = {}
+    answered: dict[tuple[str, str], str] = {}
     for (
         item,
         eid,
@@ -200,9 +201,12 @@ def facts_from_evidence(
         r_ok,
         r_refused,
         r_errored,
+        accepted,
+        rejected,
     ) in ev.db.execute(
         "SELECT item, episode_id, imported, called, refused, errored, outcome_unknown, runtime_basis, "
-        "runtime_ok, runtime_refused, runtime_errored FROM item_use ORDER BY episode_id, item",
+        "runtime_ok, runtime_refused, runtime_errored, answered_accepted, answered_rejected FROM item_use "
+        "ORDER BY episode_id, item",
     ):
         u = _item_use(
             int(imported or 0),
@@ -218,6 +222,8 @@ def facts_from_evidence(
         )
         if u is not None:
             by_episode.setdefault(eid, {})[item] = u
+            if u.used and (accepted or rejected):
+                answered[(eid, item)] = "rejected" if rejected else "accepted"
     out: list[EpisodeUse] = []
     for eid, main, regime in ev.db.execute(
         "SELECT episode_id, memory_main, regime FROM episodes ORDER BY seq",
@@ -229,6 +235,14 @@ def facts_from_evidence(
             regime or "",
         )
         items = by_episode.get(eid, {})
+        if regime == "dense":
+            # rev 2.3: a verdict within the request on an answer equal to what a call of the item returned fills the
+            # field the post-episode attribution fills (answered), the rejection standing over an acceptance; only
+            # where verdicts count (``dense``), so no other regime loses its episode-level attribution
+            items = {
+                k: replace(u, answered=True, verdict=answered[(eid, k)]) if (eid, k) in answered else u
+                for k, u in items.items()
+            }
         out.append(
             EpisodeUse(
                 eid,

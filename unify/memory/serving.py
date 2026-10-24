@@ -155,8 +155,10 @@ def later_uses(item: str, facts: Any) -> dict:
     """*item*'s later uses over *facts* (:func:`.lifecycle.facts_from_evidence`): ``{"episodes", "returned",
     "refused", "raised"}``, the episodes in which it was called and its calls by how they ended, from the calls
     observed at run time (``item_use``'s runtime columns); an episode recorded without them counts one call of each
-    kind its static counts show. An episode that only imported it or named it is no use."""
-    out = {"episodes": 0, "returned": 0, "refused": 0, "raised": 0}
+    kind its static counts show. An episode that only imported it or named it is no use. Rev 2.3: of the episodes in
+    which a call of it returned, ``accepted`` and ``rejected`` count those with a verdict on an answer equal to what it
+    returned (the use's ``answered`` and ``verdict``), ``unknown`` the rest."""
+    out = {"episodes": 0, "returned": 0, "refused": 0, "raised": 0, "accepted": 0, "rejected": 0, "unknown": 0}
     for f in facts:
         u = f.items.get(item)
         if u is None:
@@ -168,11 +170,15 @@ def later_uses(item: str, facts: Any) -> dict:
         out["returned"] += ok
         out["refused"] += refused
         out["raised"] += raised
+        if ok:
+            verdict = u.verdict if u.answered else None
+            out[verdict if verdict in ("accepted", "rejected") else "unknown"] += 1
     return out
 
 
 def later_uses_text(uses: Mapping[str, Any] | None) -> str:
-    """A card's later-use line: ``none yet``, or how many calls in how many episodes and how they ended."""
+    """A card's later-use line: ``none yet``, or how many calls in how many episodes and how they ended, then the uses
+    whose call returned by outcome (``uses: a accepted, r rejected, u unknown``)."""
     rows = uses if isinstance(uses, Mapping) else {}
 
     def n(key: str) -> int:
@@ -185,8 +191,11 @@ def later_uses_text(uses: Mapping[str, Any] | None) -> str:
     eps = n("episodes")
     parts = [f"{n(k)} {w}" for k, w in (("returned", "returned"), ("refused", "refused its input"),
                                           ("raised", "raised")) if n(k)]  # fmt: skip
-    return (f"{calls} call{'s' if calls != 1 else ''} in {eps} episode{'s' if eps != 1 else ''}: "
+    text = (f"{calls} call{'s' if calls != 1 else ''} in {eps} episode{'s' if eps != 1 else ''}: "
             + ", ".join(parts))  # fmt: skip
+    if n("accepted") + n("rejected") + n("unknown"):
+        text += f"; uses: {n('accepted')} accepted, {n('rejected')} rejected, {n('unknown')} unknown"
+    return text
 
 
 def capture_support(record: Mapping[str, Any] | None, uses: list) -> dict:

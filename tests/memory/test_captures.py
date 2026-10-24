@@ -125,7 +125,9 @@ def test_a_completed_attempt_is_captured_with_its_signature_keys_as_written(tmp_
     stores = open_stores(Paths.under(tmp_path / "home"))
     served = serving.item_evidence(stores, captures=cp.load(store), home=None)[f"capture:{cid}"]
     assert (served["status"], served["level"]) == (tr.ON_TRIAL, tr.UNCHECKED)
-    assert served["later_uses"] == {"episodes": 0, "returned": 0, "refused": 0, "raised": 0}
+    assert served["later_uses"] == {
+        "episodes": 0, "returned": 0, "refused": 0, "raised": 0, "accepted": 0, "rejected": 0, "unknown": 0
+    }
     assert served["support"] == {"episodes": 1, "accepted": 1, "confirmed_uses": 0}
     events = [json.loads(x) for x in (store / cp.EVENTS_FILE).read_text().splitlines()]
     assert [e["capture_id"] for e in events] == [cid]

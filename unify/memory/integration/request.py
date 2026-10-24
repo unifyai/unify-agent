@@ -807,6 +807,15 @@ class _Undrained:
         return getattr(self._run, name)
 
 
+def with_answer_attributions(record: Any, attributions: list[dict]) -> Any:
+    """*record* (a use record) with ``answer_attributions`` (rev 2.3): one row per verdict taken within the
+    request, ``{"label", "obs", "items", "short"}``, the items whose tracked call returned exactly the value the judged
+    answer gave (``RequestRun._attribute``). Unchanged when it is not a use record."""
+    if not isinstance(record, dict) or "error" in record:
+        return record
+    return {**record, "answer_attributions": [dict(a) for a in attributions]}
+
+
 def with_pins(record: Any, pin_counts: Mapping[str, Mapping[str, Mapping[str, int]]], cell_pins: list[str]) -> Any:
     """*record* (a use record) with the pin each use was served under (``UNIFY_MEMORY=in_episode``): each item row gains
     ``pins`` (pin -> its observed calls, {ok, refused, error}), each tracked call, ``Item.fits`` and
@@ -940,6 +949,31 @@ def _plain(value: Any) -> Any:
     return value
 
 
+#: The longest canonical JSON of an answer value whose match with a call's result is marked ``short`` (a scalar
+#: or a short value such as ``0``, ``true``, ``"yes"`` or ``[]`` can equal a result by coincidence).
+SHORT_VALUE_CHARS = 8
+
+
+_NOT_JSON = object()
+
+
+def _json_value(text: Any) -> Any:
+    """The JSON value *text* parses to as a whole, or :data:`_NOT_JSON` (not text, or not JSON)."""
+    if not isinstance(text, str) or not text.strip():
+        return _NOT_JSON
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError):
+        return _NOT_JSON
+
+
+def _result_digest_of(text: str) -> str:
+    """The digest the library package's ``result_digest`` gives a value whose canonical JSON is *text*."""
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
 class RequestRun:
     """One request's memory run; create it with :meth:`begin`."""
 
@@ -999,6 +1033,14 @@ class RequestRun:
         # with its arrival row's fields.
         self.late_checkers: list[dict] = []
         self.signal_listeners: list[Callable[[dict], None]] = []
+        # Rev 2.3 (a bad use counts inside the request): per item, the digests of what its tracked calls returned
+        # in this request (the audit hook's ``results``; check runs raise none); per item with a bad use in this
+        # request, how it was found (``failed``: a tracked call raised or refused; ``value``: a rejected answer equal
+        # to what a call of it returned) and the observation count when it was found (None: not known); and per
+        # verdict taken within the request, which items' results the answer it judged equals (:meth:`_attribute`).
+        self.returned_here: dict[str, set[str]] = {}
+        self.bad_here: dict[str, dict] = {}
+        self.answer_attributions: list[dict] = []
         #: this request's role dispatcher (:func:`start_role_dispatcher`), running on the loop; None when none runs
         self.role_task: Any = None
         self._lock: int | None = None
@@ -1409,6 +1451,7 @@ class RequestRun:
         the cell's result then settles (:func:`add_library_failures`)."""
         add_runtime_calls(self.runtime_calls, drained, self.export_roots)
         add_library_failures(self.failures, drained)
+        self._note_results(drained)
         ie = self.in_episode
         if ie is not None and isinstance(drained, dict):
             # UNIFY_MEMORY=in_episode: each observed call under the pin whose code it ran (the audit hook's
@@ -1438,6 +1481,89 @@ class RequestRun:
             for item, row in left.items():
                 for k in RUNTIME_OUTCOMES:
                     self._add_pin_count(pin, item, k, row[k])
+
+    def _note_results(self, drained: Any) -> None:
+        """Keep the result digests of one cell's tracked calls, and open a bad use for each item whose tracked
+        call raised or refused its input in it (a check run raises no event, so it never opens one)."""
+        calls = drained.get("calls") if isinstance(drained, dict) else None
+        if not isinstance(calls, dict):
+            return
+        results = calls.get("results")
+        for r in results if isinstance(results, list) else []:
+            if isinstance(r, dict) and isinstance(r.get("item"), str) and isinstance(r.get("digest"), str):
+                self.returned_here.setdefault(r["item"], set()).add(r["digest"])
+        counts = calls.get("counts")
+        failed = [
+            item
+            for item, row in (counts if isinstance(counts, dict) else {}).items()
+            if isinstance(item, str) and isinstance(row, dict) and (_count(row.get("refused")) or _count(row.get("error")))
+        ]
+        if failed and any(item not in self.bad_here for item in failed):
+            at = self._observations_now()
+            for item in sorted(failed):
+                self.bad_here.setdefault(item, {"how": "failed", "at": at})
+
+    def bad_uses(self) -> dict[str, int | None]:
+        """The items with a bad use in this request, each with the observation count when it was found."""
+        return {item: row.get("at") for item, row in sorted(self.bad_here.items())}
+
+    def _attribute(self, entry: dict) -> None:
+        """Tie a verdict taken within the request to the items whose tracked call, earlier in this request,
+        returned exactly the value the judged answer gave: the canonical JSON (``fixtures.canonical``) of the latest
+        reply's action (:func:`.adapters.dialogue.action_payload`), of each of its arguments, or of each of its
+        keyword values, against the digests of what the calls returned. Equality of whole values only; no word of
+        either is read. A rejection ties a bad use to each matched item. A verdict after calls whose results the answer
+        does not equal is kept as not attributed, for display only. ``short`` marks a match that rests only on a short
+        or scalar value (at most :data:`SHORT_VALUE_CHARS` characters of JSON), which may equal by coincidence."""
+        if not self.returned_here:
+            return
+        values = self._answer_values()
+        if values is None:
+            return
+        matched: dict[str, bool] = {}
+        for text in values:
+            digest = _result_digest_of(text)
+            for item, digests in self.returned_here.items():
+                if digest in digests:
+                    matched[item] = matched.get(item, True) and len(text) <= SHORT_VALUE_CHARS
+        row = {
+            "label": entry["label"],
+            "obs": entry.get("obs"),
+            "items": sorted(matched),
+            "short": bool(matched) and all(matched.values()),
+        }
+        self.answer_attributions.append(row)
+        if entry["label"] == "fail":
+            for item in row["items"]:
+                self.bad_here.setdefault(item, {"how": "value", "at": entry.get("obs")})
+
+    def _answer_values(self) -> list[str] | None:
+        """The canonical JSON texts of the latest reply's action, its arguments and its keyword values, and of the
+        JSON value the action's text or the whole reply parses to when it is one (an answer handed back as JSON text),
+        each once; None when the transcript holds no reply or cannot be read."""
+        from unify import transcripts
+
+        from ..fixtures import canonical
+        from . import trajectory
+        from .adapters import dialogue
+
+        try:
+            lines = trajectory.read_jsonl(transcripts.transcripts_dir() / f"{self.episode_id}.jsonl")
+        except (OSError, ValueError):
+            return None
+        replies = [m for m in dialogue._messages(lines) if dialogue._is_reply(m)]
+        if not replies:
+            return None
+        text = dialogue._text(replies[-1].get("content"))
+        payload = dialogue.action_payload(text)
+        _, args, kwargs = dialogue.split_action(payload)
+        parsed = [v for v in (_json_value(payload), _json_value(text)) if v is not _NOT_JSON]
+        out: list[str] = []
+        for value in (payload, *args, *kwargs.values(), *parsed):
+            text = canonical(value)
+            if text not in out:
+                out.append(text)
+        return out
 
     def _add_pin_count(self, pin: str, item: str, outcome: str, n: int) -> None:
         if n <= 0:
@@ -1530,6 +1656,10 @@ class RequestRun:
             }
         entry = {"label": raw["label"], "obs": self._observations_now(), "at": _now(), "about": about}
         self.checker_seen.append(entry)
+        try:
+            self._attribute(entry)
+        except Exception as exc:  # noqa: BLE001 - an attribution never costs the verdict its line
+            logger.warning("memory: an answer attribution failed (%s)", type(exc).__name__)
         self._tell_listeners(entry)
         if self.in_episode is not None:
             # UNIFY_MEMORY=in_episode: an in-episode signal is a pause; its segment fork starts at the next turn
@@ -1824,6 +1954,8 @@ class RequestRun:
             failures=self.failures,
             librarian=self.librarian_sessions,
         )
+        # Each verdict taken within the request, with the items whose returned value the judged answer was
+        ep.memory_use = with_answer_attributions(ep.memory_use, self.answer_attributions)
         if self.in_episode is not None:
             # UNIFY_MEMORY=in_episode: the episode's pins, and every use under the pin served when it was called
             ep.memory_pins = self.in_episode.pin_rows()

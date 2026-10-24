@@ -118,6 +118,8 @@ _USE_COUNTS = (
     "runtime_ok",
     "runtime_refused",
     "runtime_errored",
+    "answered_accepted",
+    "answered_rejected",
 )
 # Added with ``DEFAULT 1``: a row indexed before the column existed reads as unknown (its outcomes and
 # where its shown lists came from), never as known. Every insert sets every column, so the default only
@@ -286,7 +288,8 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     and that row's refusal and error columns are then lower bounds. ``runtime_basis`` is 1 when the record
     carries runtime call evidence for the item (:func:`runtime_counts`), with its observed calls in
     ``runtime_ok``, ``runtime_refused`` and ``runtime_errored``; 0 (and zeros) when only the static counts
-    exist.
+    exist. ``answered_accepted`` and ``answered_rejected`` count the verdicts taken within the request on an answer
+    equal to what a call of the item returned (the record's ``answer_attributions``, rev 2.3).
     """
 
     def listed(key: str) -> set[str]:
@@ -336,7 +339,8 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     def n(value: object) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
-    every = pinned | {k for k in rows if isinstance(k, str)}
+    verdicts = _answer_verdicts(use)
+    every = pinned | {k for k in rows if isinstance(k, str)} | set(verdicts)
     unknown_items = _unknown_items(use, every)
     out = []
     for item in sorted(every):
@@ -364,9 +368,24 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
                 int(item in unknown_items),
                 unconfirmed,
                 *((1, *runtime) if runtime is not None else (0, 0, 0, 0)),
+                *verdicts.get(item, (0, 0)),
             ),
         )
     return out
+
+
+def _answer_verdicts(use: dict) -> dict[str, tuple[int, int]]:
+    """Per item, how many verdicts taken within the request accepted and rejected an answer equal to what a call of it
+    returned (the record's ``answer_attributions``; malformed rows are skipped)."""
+    rows = use.get("answer_attributions")
+    out: dict[str, list[int]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or row.get("label") not in ("pass", "fail"):
+            continue
+        items = row.get("items")
+        for item in {i for i in (items if isinstance(items, list) else []) if isinstance(i, str) and i}:
+            out.setdefault(item, [0, 0])[0 if row["label"] == "pass" else 1] += 1
+    return {k: (v[0], v[1]) for k, v in out.items()}
 
 
 # A pass row's columns. Per-item admission (stage 7) added the last three: the commit that landed (the

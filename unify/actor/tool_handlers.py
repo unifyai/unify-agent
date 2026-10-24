@@ -685,6 +685,9 @@ async def ask_library(ctx: Any, args: dict) -> Any:
     # the items whose call failed in this request: those the asking cell's package saw, and those the request's earlier
     # cells recorded; none is offered again in this request (a use outcome, never stored as one)
     failed = sorted(set(failed) | set(_memory_run_failed()))
+    # when each failed (the request's message count then) and the count now: an item may be offered again only on a
+    # later message (the librarian's ``reconsider``)
+    failed_at, messages_now = _memory_run_failed_at() if failed else ({}, None)
     state = ctx.state
     session = getattr(state, "librarian", None)
     if session is None:
@@ -708,6 +711,8 @@ async def ask_library(ctx: Any, args: dict) -> Any:
         extra = {"schema": schema} if schema is not None else {}
         if failed:
             extra["failed"] = failed
+            if failed_at and messages_now is not None:
+                extra["failed_at"], extra["messages_now"] = failed_at, messages_now
         if getattr(session, "evidence", None) is not None:
             # the harness's evidence serving on: the situation's latest message goes with the question
             text = await session.ask(question, request=request, last_message=_memory_run_last_message(), **extra)
@@ -756,22 +761,42 @@ MAX_FAILED_ITEMS = 200
 
 
 def _memory_run_failed() -> list[str]:
-    """The items whose calls raised or refused their input in the memory run's cells so far (its runtime call
-    counts), in id order; [] when no run is open."""
+    """The items with a bad use in the memory run so far, in id order: their calls raised or refused their input in
+    its cells (its runtime call counts), or an answer equal to what a call of one returned was rejected
+    (``RequestRun.bad_uses``); [] when no run is open."""
     try:
         from unify.memory.integration import request as _request
 
         run = _request.current()
         counts = (getattr(run, "runtime_calls", None) or {}).get("counts") or {}
+        bad = run.bad_uses() if run is not None and hasattr(run, "bad_uses") else {}
     except Exception:  # noqa: BLE001 - no memory run here
         return []
     return sorted(
-        item
-        for item, row in counts.items()
-        if isinstance(item, str) and isinstance(row, dict) and any(
-            isinstance(row.get(k), int) and row[k] > 0 for k in ("refused", "error")
-        )
+        {
+            item
+            for item, row in counts.items()
+            if isinstance(item, str) and isinstance(row, dict) and any(
+                isinstance(row.get(k), int) and row[k] > 0 for k in ("refused", "error")
+            )
+        }
+        | {item for item in bad if isinstance(item, str)}
     )
+
+
+def _memory_run_failed_at() -> tuple[dict[str, int], Optional[int]]:
+    """Per item with a bad use in the memory run, the request's message count when it was found (where known), and
+    the count now; ({}, None) when no run is open or the transcript cannot be read."""
+    try:
+        from unify.memory.integration import request as _request
+
+        run = _request.current()
+        if run is None:
+            return {}, None
+        at = {i: n for i, n in run.bad_uses().items() if isinstance(n, int)}
+        return at, run._observations_now()
+    except Exception:  # noqa: BLE001 - nothing known: no item is offered again
+        return {}, None
 
 
 def _memory_run_last_message() -> Optional[str]:
