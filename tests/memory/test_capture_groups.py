@@ -185,6 +185,31 @@ def test_an_entry_whose_episode_left_no_capture_is_closed_by_the_harness_and_run
     assert led.group_of("p1") is None
 
 
+def test_an_entry_whose_fork_left_a_summary_rides_along_with_the_next_pass_and_never_makes_one_due(tmp_path):
+    clock = Clock()
+    led = Ledger(tmp_path / "home", clock=clock)
+    staging = led.state_dir / "memory-staging" / "e1"
+    staging.mkdir(parents=True)
+    (staging / "summary.md").write_text("## Asked\nA conversation.\n")
+    led.sync(Fake(forks=[SettledFork("e1", "e1", None, True, False, None)]))
+    (ride,) = led.entries().values()
+
+    def grouping(entries):
+        return cg.groups(entries, lambda x: _p(x.entry, items={"memory.t.m:f"} if x.refs.captures else ()),
+                         now=clock())  # fmt: skip
+
+    # alone it makes no pass due, and it is not closed: the writer still gets to read it
+    assert led.hand("p1", 4, grouping=grouping) == []
+    assert led.get(ride.entry).state == "open" and led.group_of("p1") is None
+    # a pass that runs anyway (two related captures) takes it along, as data
+    names, cids = ("e2", "e3"), {"e2": "2" * 16, "e3": "3" * 16}
+    led.sync(Fake(forks=[_fork(n) for n in names], captures={n: _cap(n, cids[n]) for n in names}))
+    got = led.hand("p2", 4, grouping=grouping)
+    assert ride.entry in [e.entry for e in got] and len(got) == 3
+    (row,) = [r for r in led.rows() if r.get("op") == "hand" and r.get("entry") == ride.entry]
+    assert row["by"] == "ride_along" and led.group_of("p2")["members"] == [e.entry for e in got if e.entry != ride.entry]
+
+
 def test_a_group_with_a_member_in_a_running_pass_is_not_due():
     es = [_e("a" * 16, state="handed"), _e("b" * 16), _e("c" * 16)]
     profiles = {e.entry: _p(e.entry, items={"memory.x.y:z"}) for e in es}

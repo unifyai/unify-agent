@@ -3,8 +3,9 @@
 A writer pass reads related captures together with the library items they touch, and decides what the library keeps
 from them. A pass is handed a new capture only together with its **history**: earlier captures related to it. A capture
 with no related capture is never written up alone; it stays served (the library exports every capture as soon as it
-is stored) and waits until a related capture arrives. An entry whose episode left no capture is closed by
-the harness (:data:`NO_CAPTURE`) and never runs a pass.
+is stored) and waits until a related capture arrives. An entry whose episode left no capture never runs a pass: when
+its fork left a summary it rides along, handed with the next pass that runs anyway so the writer reads that summary
+as data (the fork's view, with no message and no extra pass); without one the harness closes it (:data:`NO_CAPTURE`).
 
 **Membership** comes from the harness's records, never from an id, a word, a request's text or a stream position, and
 nothing is run. Two captures are related when their records show at least one of:

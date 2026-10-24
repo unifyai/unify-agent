@@ -218,12 +218,13 @@ def owed(home: Path) -> list[Any]:
 
 
 def waiting_for_kin(home: Path) -> bool:
-    """Whether everything still owed is a capture waiting for a related capture: an open ``new_experience`` entry with
-    a capture. Such an entry is never handed alone (:mod:`unify.memory.capture_groups`), so a run can settle with it
-    owed; the drain then marks it not reached."""
+    """Whether everything still owed is waiting for a pass to come anyway: an open ``new_experience`` entry with a
+    capture, waiting for a related capture, or without one, riding along with the next pass (its fork's summary).
+    Neither is ever handed alone (:mod:`unify.memory.capture_groups`), so a run can settle with them owed; the drain then
+    marks them not reached."""
     from unify.memory import capture_groups as cg
 
-    return all(e.kind in cg.GROUPED_KINDS and e.state == "open" and e.refs.captures for e in owed(home))
+    return all(e.kind in cg.GROUPED_KINDS and e.state == "open" for e in owed(home))
 
 
 def wait_until_settled(home: Path, timeout_s: float = SETTLE_S, poll_s: float = 0.25, quiet_s: float = 8.0) -> None:

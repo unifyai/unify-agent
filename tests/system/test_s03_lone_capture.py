@@ -41,10 +41,12 @@ async def test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped(
     await s.request(SW.words_request(["oak"]), ScriptedModel(
         actor=SW.probe_turns(code, sink), librarian=Always(lambda c: SW.librarian_answer([SW.fit(item)]))))
     assert item in sink["out"]["items"] and sink["out"]["call"] == ["KAO"], sink["out"]
-    # an entry with no capture (a segment's, a summary-only fork's) runs no pass: the harness closes it (R1.4, 0.5)
+    # an entry with no capture (a segment's, a summary-only fork's) runs no pass: it rides along, open, when its fork
+    # left a summary (handed with the next pass that runs anyway), else the harness closes it
     for e in s.entries():
         if e.kind == "new_experience" and not e.refs.captures:
-            assert e.state == "closed" and e.reason_ref == "no_capture", (e.kind, e.state, e.reason_ref)
+            assert e.state == "open" or (e.state == "closed" and e.reason_ref == "no_capture"), (
+                e.kind, e.state, e.reason_ref)
     s.settle()
     # the run's end: the drain hands no lone capture and the coverage report counts it never grouped
     report = H.drain(s.home)

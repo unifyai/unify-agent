@@ -1217,20 +1217,26 @@ class Ledger:
             if not pending:
                 return []
             group_row: dict | None = None
+            ride: list[AttentionEntry] = []
             if grouping is not None:
                 from .capture_groups import GROUPED_KINDS, NO_CAPTURE
 
-                # an episode that left no capture has nothing to write up with others: the harness closes its entry,
-                # and no pass runs on it
+                # an episode that left no capture has nothing to write up with others and never makes a pass due. Its
+                # fork's summary is the writer's view of it: an entry with one rides along, handed with the next pass
+                # that runs anyway, as data (no message, no extra pass); one without is closed by the harness
                 bare = [e for e in pending if e.kind in GROUPED_KINDS and not e.refs.captures]
-                if bare:
+                ride = [e for e in bare if any(self._has_summary(staging_name(x, e.refs.segment))
+                                               for x in e.refs.episodes)]  # fmt: skip
+                gone = [e for e in bare if e not in ride]
+                if gone:
                     at = self.now()
                     self._write([{"op": "close", "entry": e.entry, "pass_id": None, "decision": "nothing_to_keep",
                                   "items": [], "reason_ref": NO_CAPTURE, "by": "harness", "at": at}
-                                 for e in bare])  # fmt: skip
-                    for e in bare:
+                                 for e in gone])  # fmt: skip
+                    for e in gone:
                         state[e.entry] = replace(e, state="closed", decision="nothing_to_keep",
                                                  reason_ref=NO_CAPTURE, closed_at=at)  # fmt: skip
+                if bare:
                     pending = [e for e in pending if e not in bare]
                     if not pending:
                         return []
@@ -1259,8 +1265,10 @@ class Ledger:
                 else:
                     pending = immediate
             alone = [e for e in pending if e.misses >= ALONE_AFTER_MISSES or e.undecided >= ALONE_AFTER_MISSES]
+            riding: list[AttentionEntry] = []
             if group_row is not None:
                 chosen = list(pending)
+                riding = sorted(ride, key=lambda e: (e.created_at, e.entry))
             elif alone:
                 chosen = self._order(alone)[:1]
             else:
@@ -1277,11 +1285,18 @@ class Ledger:
                         break
                     if e not in chosen:
                         chosen.append(e)
+                riding = sorted(ride, key=lambda e: (e.created_at, e.entry))
             at = self.now()
             handed = [
                 {"op": "hand", "entry": e.entry, "pass_id": pass_id, "at": at, "hand_count": e.hand_count + 1}
                 for e in chosen
+            ] + [
+                # handed with the pass, as data: never what made it due
+                {"op": "hand", "entry": e.entry, "pass_id": pass_id, "at": at, "hand_count": e.hand_count + 1,
+                 "by": "ride_along"}
+                for e in riding
             ]
+            chosen = chosen + riding
             self._write(handed + ([group_row] if group_row is not None else []))
             got = fold([*rows, *handed])
         return [got[e.entry] for e in chosen]

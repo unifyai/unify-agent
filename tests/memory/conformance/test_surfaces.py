@@ -187,9 +187,12 @@ async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world
     segs = sorted(e.refs.segment for e in entries if e.kind == "new_experience" and e.refs.segment)
     ends = [e for e in entries if e.kind == "new_experience" and not e.refs.segment]
     assert segs == [1] and len(ends) == 1, [(e.kind, e.refs.row()) for e in entries]
-    # a conversation leaves no procedure: the harness closes each entry, and no writer pass runs on nothing
-    assert all(e.state == "closed" and e.decision == "nothing_to_keep" for e in entries)
-    assert all(e.reason_ref == "no_capture" for e in entries)
+    # a conversation leaves no procedure: no writer pass runs on nothing; an entry whose fork left a summary rides
+    # along (open, never what makes a pass due; not reached when no pass came by the run's end), one without is
+    # closed by the harness
+    assert all((e.state in ("open", "not_reached") and not e.refs.captures) or
+               (e.state == "closed" and e.decision == "nothing_to_keep" and e.reason_ref == "no_capture")
+               for e in entries), [(e.state, e.reason_ref) for e in entries]  # fmt: skip
     _check_ids_on_calls(lanes, writer_ran=False)
 
 
