@@ -1107,6 +1107,10 @@ class RequestRun:
         self._reask_seen = (0, 0)
         self.reask_state: Any = None
         self.reasks: list[dict] = []
+        # at most one re-ask pending: after one is delivered, the next waits until a cell of the actor has run (a tool
+        # call after the answer); the events seen meanwhile wait with it
+        self.reask_pending = False
+        self._deferred_events: list[str] = []
         # Rev 2.3: one row per answer made with ``tools.answer_from``.
         self.answered_from: list[dict] = []
         # Rev 2.3: whether this request's accepted answer's function was stored as its procedure
@@ -1522,6 +1526,8 @@ class RequestRun:
         add_runtime_calls(self.runtime_calls, drained, self.export_roots)
         add_library_failures(self.failures, drained)
         self._note_results(drained)
+        # a cell ran: the actor made a tool call after the last re-ask's answer, so the next re-ask may run
+        self.reask_pending = False
         ie = self.in_episode
         if ie is not None and isinstance(drained, dict):
             # UNIFY_MEMORY=in_episode: each observed call under the pin whose code it ran (the audit hook's
@@ -1676,6 +1682,12 @@ class RequestRun:
         if bad > self._reask_seen[1]:
             events.append("failed_use")
         self._reask_seen = (verdicts, bad)
+        if self.reask_pending:
+            # coalesced: the events wait until the actor has made a tool call after the last re-ask's answer
+            self._deferred_events += [e for e in events if e not in self._deferred_events]
+            return []
+        events = [*self._deferred_events, *(e for e in events if e not in self._deferred_events)]
+        self._deferred_events = []
         if not events:
             return []
         standing = self.standing_fit

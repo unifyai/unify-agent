@@ -395,6 +395,7 @@ class Act:
                         await self._handle.stop(SESSION_ENDED)
                     return
                 line = raw.decode(errors="replace").strip()
+                final = False
                 if not line:
                     continue
                 if self._args.jsonl:
@@ -465,6 +466,8 @@ class Act:
                                 self._progress("the declared examples were not kept: not a list of input/output pairs, "
                                                "or too large")  # fmt: skip
                         line = message
+                        # rev 2.3: the world declares the episode over or its verdict final (a field, never text)
+                        final = item.get("final") is True
                 if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED
 
@@ -476,7 +479,7 @@ class Act:
                     # UNIFY_MEMORY (rev 2.3): the librarian asked again on new evidence; its answer goes above
                     from unify.memory.integration import hooks as _mv2
 
-                    above = await _mv2.reask_line(self._mv2, line)
+                    above = await _mv2.reask_line(self._mv2, line, final)
                     if above:
                         line = f"{above}\n\n{line}"
                 if self._bridge is not None:

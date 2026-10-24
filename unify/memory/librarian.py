@@ -1918,11 +1918,13 @@ def reask_line(answer: Mapping[str, Any], answer_from: Any = ()) -> str:
     return text if len(text) <= REASK_CHARS else text[: REASK_CHARS - 1] + "…"
 
 
-async def request_reask_line(run: Any, message: str) -> str:
+async def request_reask_line(run: Any, message: str, final: bool = False) -> str:
     """Rev 2.3: as *message* arrives, ask the request's librarian again, in its live session, when new evidence
     came and the gate is open (``RequestRun.reask_events``), and return :func:`reask_line` of its answer to go above
     the message; '' otherwise, and when no answer came in :data:`START_ASK_S`. The question is the request itself, as at
-    the start, with the new message as its situation."""
+    the start, with the new message as its situation. On a message the world declares *final* (the episode is over,
+    or its verdict final: a structured field, never read from the text) nothing is asked; its events are taken. After
+    a line is delivered, the next re-ask waits until the actor has made a tool call (``RequestRun.reask_pending``)."""
     import asyncio
 
     from unify.actor import tool_handlers as _handlers
@@ -1932,7 +1934,7 @@ async def request_reask_line(run: Any, message: str) -> str:
     if state is None or getattr(state, "open_librarian", None) is None or not isinstance(request, str):
         return ""
     events = run.reask_events(message)
-    if not events:
+    if final or not events:
         return ""
     row = {"obs": run._observations_now(), "events": events, "fit": None}
     run.reasks.append(row)
@@ -1951,6 +1953,7 @@ async def request_reask_line(run: Any, message: str) -> str:
     ids = answer_from_ids(run, [f.get("id") for f in fits if isinstance(f, Mapping)])
     if ids:
         row["answer_from"] = sorted(ids)
+    run.reask_pending = True
     return reask_line(got, ids)
 
 

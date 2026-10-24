@@ -38,6 +38,8 @@ def _run(**kw):
         held_here={},
         reasks=[],
         reask_state=None,
+        reask_pending=False,
+        _deferred_events=[],
         _observations_now=lambda: 2,
     )
     run.__dict__.update(kw)
@@ -200,3 +202,61 @@ def test_the_librarian_reads_a_message_without_the_line_the_harness_put_above_it
 def test_the_guide_no_longer_says_to_ask_again_after_a_new_message():
     assert "after a new message arrives" not in library_prompts.ASK_LINE_IN_CODE
     assert "Ask again with a question of your own." in library_prompts.ASK_LINE_IN_CODE
+
+
+# --- width: a final message asks nothing; at most one re-ask pending ---------------------------------------------
+
+
+def test_on_a_message_the_world_declares_final_nothing_is_asked_and_its_events_are_taken(monkeypatch):
+    asked: list = []
+    _ask_stub(monkeypatch, FIT_A, asked)
+    run = _run(reask_state=SimpleNamespace(request_text="r", open_librarian=object()))
+    run.checker_seen.append({"label": "fail"})
+    assert asyncio.run(L.request_reask_line(run, "The episode is over.", final=True)) == ""
+    assert asked == [] and run.reasks == [] and run.reask_events("r") == []
+
+
+def test_after_a_reask_the_next_waits_for_a_tool_call_and_keeps_the_events_meanwhile(monkeypatch):
+    asked: list = []
+    _ask_stub(monkeypatch, NONE, asked)
+    run = _run(reask_state=SimpleNamespace(request_text="Sort the rows by id.", open_librarian=object()))
+    run.checker_seen.append({"label": "fail"})
+    assert asyncio.run(L.request_reask_line(run, "Wrong.")) and run.reask_pending is True
+    run.checker_seen.append({"label": "fail"})
+    assert asyncio.run(L.request_reask_line(run, '{"new": "shape"}')) == "" and len(asked) == 1  # coalesced
+    run.reask_pending = False  # a cell of the actor ran (RequestRun.note_calls clears it)
+    run.checker_seen.append({"label": "fail"})
+    assert asyncio.run(L.request_reask_line(run, "Wrong again."))
+    assert len(asked) == 2 and run.reasks[-1]["events"] == ["message", "outcome"]
+
+
+def test_a_cell_clears_the_pending_reask(mv2):  # noqa: F811
+    run = _begin(mv2, "hi")
+    try:
+        run.reask_pending = True
+        run.note_calls({"calls": {"counts": {}}})
+        assert run.reask_pending is False
+    finally:
+        _abort(mv2, run)
+
+
+def test_the_cli_passes_the_final_field_and_only_a_true_one(monkeypatch):
+    from tests.memory.integration import test_request as T
+    from unify.memory.integration import hooks
+
+    seen: list = []
+
+    async def reask(run, message, final=False):
+        seen.append((message, final))
+        return ""
+
+    async def submit(self, line):
+        pass
+
+    monkeypatch.setattr(hooks, "reask_line", reask)
+    monkeypatch.setattr(T._Handle, "submit", submit, raising=False)
+    lines = (b'{"message": "a"}\n{"message": "b", "final": true}\n{"message": "c", "final": "yes"}\n'
+             b'{"quit": true}\n')
+    code, *_ = T._drive(monkeypatch, ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "Say hi"], lines,
+                        T._Run([]))  # fmt: skip
+    assert code == 0 and seen == [("a", False), ("b", True), ("c", False)]
