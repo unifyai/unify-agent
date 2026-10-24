@@ -1,9 +1,12 @@
-"""The request's input as the world declared it: a value a world adapter sends beside a message, as data.
+"""The request's input and examples as the world declared them: values a world adapter sends beside a message, as data.
 
 A driver may send, with a message, the input the request is about (``{"message": ..., "input": ...}`` on the
 CLI's stdin): the CLI keeps it here, the latest declaration replacing the one before, for the rest of the process.
 ``tools.answer_from`` answers on it, and the memory harness tells a use on the request's real input from a use on any
-other value by it. The harness never parses a message's text for it: a world that declares nothing has none.
+other value by it. A driver may also send example pairs (``"examples": [{"input": ..., "output": ...}, ...]``): they
+are kept in the order received, each distinct pair once, and ``tools.examples()`` returns them; ``tools.answer_from``
+checks the function on them first. The harness never parses a message's text for either: a world that declares
+nothing has none.
 """
 
 from __future__ import annotations
@@ -43,12 +46,43 @@ def declare(value: Any) -> bool:
     return True
 
 
+_EXAMPLES: list[dict] = []
+_EXAMPLE_KEYS: set[str] = set()
+
+
+def add_examples(pairs: Any) -> bool:
+    """Keep each pair of *pairs* (``{"input": ..., "output": ...}``) not already kept, in order; False, and nothing
+    kept, when *pairs* is not a list of such pairs with JSON forms, or when all the pairs together would take more than
+    :data:`MAX_BYTES` of JSON."""
+    if not isinstance(pairs, list) or not all(isinstance(p, dict) and set(p) == {"input", "output"} for p in pairs):
+        return False
+    try:
+        texts = [canonical(p) for p in pairs]
+    except (TypeError, ValueError, RecursionError):
+        return False
+    new = [(t, json.loads(t)) for t in dict.fromkeys(texts) if t not in _EXAMPLE_KEYS]
+    size = sum(len(k.encode("utf-8", "surrogatepass")) for k in _EXAMPLE_KEYS)
+    if size + sum(len(t.encode("utf-8", "surrogatepass")) for t, _ in new) > MAX_BYTES:
+        return False
+    for text, pair in new:
+        _EXAMPLE_KEYS.add(text)
+        _EXAMPLES.append(pair)
+    return True
+
+
+def examples() -> list[dict]:
+    """The example pairs declared so far, in the order received ([] when none)."""
+    return [dict(p) for p in _EXAMPLES]
+
+
 def current() -> dict | None:
     """The declared input, ``{"value", "digest"}``, or None when none was declared."""
     return dict(_CURRENT) if _CURRENT is not None else None
 
 
 def clear() -> None:
-    """Forget the declared input (tests, and a driver that starts over)."""
+    """Forget the declared input and examples (tests, and a driver that starts over)."""
     global _CURRENT
     _CURRENT = None
+    _EXAMPLES.clear()
+    _EXAMPLE_KEYS.clear()

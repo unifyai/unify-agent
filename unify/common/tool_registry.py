@@ -1177,8 +1177,10 @@ ANSWER_FROM = RegisteredTool(
         "request's input, and answer the request with what it returns, as `tools.answer` does: the same response "
         "format check, and the request ends when this cell returns. The request's input is the value the request "
         "declares beside its text, when it declares one; pass `input=` to give it yourself, which you must where the "
-        "request declares none (then the call raises and answers nothing). A result that is not text is answered as "
-        "its JSON. What `fn` raises reaches you unchanged, and nothing is answered."
+        "request declares none (then the call raises and answers nothing). When the request was given examples as "
+        "data (`tools.examples()`), `fn` is first checked on each, as `tools.check_examples` does: if one fails, "
+        "nothing is answered and the report comes back. A result that is not text is answered as its JSON. What `fn` "
+        "raises reaches you unchanged, and nothing is answered."
     ),
     parameters={
         "type": "object",
@@ -1190,13 +1192,47 @@ ANSWER_FROM = RegisteredTool(
         "additionalProperties": False,
     },
     roles=(_A, _T),
-    returns="what `tools.answer` returns: a line saying the answer is recorded.",
+    returns=(
+        "what `tools.answer` returns: a line saying the answer is recorded; or, when `fn` failed one of the "
+        "request's examples, a text starting `not answered:` with the check's report."
+    ),
     examples=(
         "def solve(order):\n    return {\"count\": len(order[\"prices\"])}\ntools.answer_from(solve)",
         'tools.answer_from(solve, input={"prices": [2, 3]})',
     ),
     when="When a function of yours computes the answer: answer with it rather than copying its output yourself.",
     kind="local",
+)
+
+#: The example pairs the request was given as data (rev 2.3): box-local, reading them from the channel.
+EXAMPLES = RegisteredTool(
+    name="examples",
+    summary="the examples this request was given as data, if any.",
+    description=(
+        "The example pairs the request was given as data, beside its text, in the order they came: a list of "
+        '{"input": ..., "output": ...}, which `tools.check_examples` takes as it is; [] when it was given none '
+        "(examples written only in a message's text are not here)."
+    ),
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    roles=(_A, _T),
+    returns='a list of {"input": ..., "output": ...} (not text); [] when there are none.',
+    examples=("pairs = tools.examples()\nprint(tools.check_examples(solve, pairs))",),
+    when="Before answering, to check a candidate on the examples the request was given.",
+    kind="local",
+)
+
+#: The request's declared example pairs, for ``tools.examples()`` and ``tools.answer_from``: channel only.
+DECLARED_EXAMPLES = RegisteredTool(
+    name="declared_examples",
+    summary="the examples the request was given as data, for examples() and answer_from (never called from a cell).",
+    description="The example pairs the world declared for the request. `tools.examples()` and `tools.answer_from` call it.",
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    roles=(_A, _T),
+    returns='JSON text: a list of {"input": ..., "output": ...}.',
+    examples=('tools._call("declared_examples", {})',),
+    when="Never from a cell: tools.examples() calls it.",
+    kind="reader",
+    handler="unify.actor.tool_handlers:declared_examples",
 )
 
 #: The request's declared input, for ``tools.answer_from`` and the memory package: on the channel of the actor and a
@@ -1237,8 +1273,15 @@ ANSWERED_FROM = RegisteredTool(
             "output": {},
             "kept": {"type": "boolean"},
             "answered": {"type": "boolean"},
+            "checked": {
+                "type": ["object", "null"],
+                "properties": {"passed": {"type": "integer"}, "total": {"type": "integer"}},
+                "required": ["passed", "total"],
+            },
+            "withheld": {"type": "boolean"},
         },
-        "required": ["item", "source", "input_digest", "output_digest", "input", "output", "kept", "answered"],
+        "required": ["item", "source", "input_digest", "output_digest", "input", "output", "kept", "answered", "checked",
+                     "withheld"],
         "additionalProperties": False,
     },
     refusals={"bad_row": "the row is not one tools.answer_from writes"},
@@ -2261,10 +2304,12 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     KEEP_NOTE,
     CURRENT_REQUEST,
     DECLARED_INPUT,
+    DECLARED_EXAMPLES,
     ANSWERED_FROM,
     REQUEST,
     SH,
     CHECK_EXAMPLES,
+    EXAMPLES,
     ANSWER_FROM,
     OPEN_ENTRIES,
     TAKE,
@@ -2434,7 +2479,7 @@ def allow_list(agent: str, flags: frozenset = frozenset()) -> tuple[str, ...]:
 #: Registered tools that only the ``memory`` package calls, through the channel client (``tools._call``): on the
 #: channel's allow-list of the agents in their ``roles``, never in the ``tools`` module, ``tools.list()`` or
 #: ``tools.help`` (:func:`render_stub` leaves them out).
-CHANNEL_ONLY = frozenset({"current_request", "declared_input", "answered_from"})
+CHANNEL_ONLY = frozenset({"current_request", "declared_input", "declared_examples", "answered_from"})
 
 
 def channel_only(agent: str) -> tuple[str, ...]:
@@ -2459,6 +2504,7 @@ _ACTOR_HANDLED = {
     "answer": False,
     "current_request": False,
     "declared_input": False,
+    "declared_examples": False,
     "answered_from": False,
     "request": False,
 }
@@ -2835,7 +2881,7 @@ def __getattr__(name):
 #: The names the embedded shell source defines that the stub exports.
 SHELL_NAMES = ("sh", "ShellResult")
 #: The registered tools whose function the stub embeds rather than generates (they run in the box, never on the host).
-EMBEDDED = frozenset({"sh", "check_examples", "answer_from"})
+EMBEDDED = frozenset({"sh", "check_examples", "answer_from", "examples"})
 
 
 def _function_source(name: str, agent: Optional[str]) -> str:
@@ -2930,17 +2976,22 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
     for n in allowed:
         if n not in EMBEDDED:
             out += ["", _function_source(n, agent), f"{n} = _taught({n})", ""]
-    if "answer_from" in allowed and "answer" in allowed:
-        # run in the box after `answer` exists: the function runs here and its result goes through `answer`
+    if ("answer_from" in allowed and "answer" in allowed) or "examples" in allowed:
+        # run in the box after `answer` exists: the function runs here, checked first on the request's examples
+        # (check runs, never uses), and its result goes through `answer`
+        answer = "answer" if "answer" in allowed else "None"
+        check = "check_examples" if "check_examples" in allowed else "None"
         out += [
             "",
             "_ANSWER_FROM_SOURCE = " + repr(answer_from_source()),
-            "_answer_from = {'__name__': __name__, '_call': _call, '_answer': answer, '_contract': _contract}",
+            f"_answer_from = {{'__name__': __name__, '_call': _call, '_answer': {answer}, "
+            f"'_check_examples': {check}, '_contract': _contract}}",
             "exec(compile(_ANSWER_FROM_SOURCE, '<tools: answer_from>', 'exec'), _answer_from)",
-            "answer_from = _taught(_answer_from['answer_from'])",
-            f"answer_from.__doc__ = {json.dumps(help_text('answer_from', agent))}",
-            "",
         ]
+        for n in ("answer_from", "examples"):
+            if n in allowed and (n != "answer_from" or "answer" in allowed):
+                out += [f"{n} = _taught(_answer_from[{n!r}])", f"{n}.__doc__ = {json.dumps(help_text(n, agent))}"]
+        out += [""]
     helps = {n: help_text(n, agent) for n in allowed}
     # the help topics the agent has besides its tools (topics are never listed or callable)
     helps.update({t: text for t, (agents, text) in help_topics(agent).items() if agent in agents and t not in helps})
@@ -3061,11 +3112,13 @@ EXAMPLES_LINE = (
     "When the request or the environment gives examples, check a candidate against them with "
     "`tools.check_examples` before acting on it."
 )
-#: The same line where the agent also answers from a function (``tools.answer_from``, rev 2.3): still one line.
+#: The same line where the agent also answers from a function (``tools.answer_from``) and reads the examples it was
+#: given as data (``tools.examples``), rev 2.3: still one line, true in any world (a world that declares none gives []).
 EXAMPLES_ANSWER_LINE = (
     "When the request or the environment gives examples, check a candidate against them with "
-    "`tools.check_examples` before acting on it; `tools.answer_from` answers with a function's output on the request's "
-    "input (`input=` where the request declares none)."
+    "`tools.check_examples` before acting on it; `tools.examples()` returns those this request was given as data, "
+    "if any, and `tools.answer_from` answers with a function's output on the request's input (`input=` where the "
+    "request declares none), unless the function fails one of those."
 )
 #: Where thinking goes: execute_code's ``thought`` argument. It stays in the conversation and ends nothing (an answer
 #: is a message without a tool call, or ``tools.answer``), and a call with a thought and no code runs nothing, so a

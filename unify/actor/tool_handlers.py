@@ -839,9 +839,17 @@ def declared_input(ctx: Any, args: dict) -> Any:
     return _reply(json.dumps({"declared": True, "value": declared["value"]}, ensure_ascii=False))
 
 
+def declared_examples(ctx: Any, args: dict) -> Any:
+    """The example pairs the world declared for this request, for ``tools.examples()`` and ``tools.answer_from``
+    (never called from a cell): JSON text, a list of ``{"input", "output"}`` ([] when none)."""
+    from unify.common import declared_input as _declared
+
+    return _reply(json.dumps(_declared.examples(), ensure_ascii=False))
+
+
 #: The fields of an ``answered_from`` row as the box sends it.
 _ANSWERED_FROM_FIELDS = frozenset({"item", "source", "input_digest", "output_digest", "input", "output", "kept",
-                                   "answered"})  # fmt: skip
+                                   "answered", "checked", "withheld"})  # fmt: skip
 
 
 def answered_from(ctx: Any, args: dict) -> Any:
@@ -934,6 +942,7 @@ __all__ = [
     "ask",
     "ask_library",
     "current_request",
+    "declared_examples",
     "declared_input",
     "delegate",
     "grep",

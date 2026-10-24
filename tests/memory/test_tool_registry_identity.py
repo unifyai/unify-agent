@@ -150,7 +150,7 @@ def test_the_allow_lists_follow_the_profiles_and_the_design():
     teammate = set(R.allow_list("teammate", FULL))
     assert actor == {
         "read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "answer",
-        "request", "sh", "check_examples", "answer_from",
+        "request", "sh", "check_examples", "examples", "answer_from",
     }  # fmt: skip
     assert teammate == actor | {"ask"}  # any agent may start agents
     # learned skills are dropped in rev 2: no agent stores skills
@@ -400,6 +400,9 @@ ADDED_TOOLS = (
     "answer_from",
     "declared_input",
     "answered_from",
+    # rev 2.3: the examples the request was given as data, and their channel-only reader
+    "examples",
+    "declared_examples",
     # the librarian's notes for its later instances
     "keep_note",
 )

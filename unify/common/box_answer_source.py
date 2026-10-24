@@ -3,16 +3,20 @@ embeds.
 
 :data:`SOURCE` is standard-library-only Python, self-contained apart from the names the ``tools`` module binds before it
 runs it: ``_call`` (the channel client's call), ``_answer`` (the module's ``answer``, so the answer takes the same path
-and the same response-format check as ``tools.answer``) and ``_contract`` (the module's error renderer). It defines
-``answer_from`` and private names starting ``_af_``.
+and the same response-format check as ``tools.answer``), ``_check_examples`` (the module's box-local check) and
+``_contract`` (the module's error renderer). It defines ``answer_from``, ``examples`` and private names starting
+``_af_``.
 
 It runs inside the agent's interpreter, where the agent's cells run: ``fn`` is called there, once, on the request's
 input, with the same mounts, filter and limits as the cell that calls it. A stored item of the library passed as ``fn``
 is called through its own tracked entry (a use on the real input); nothing else is run. The request's input is the
 value the world declared beside the request (the channel's ``declared_input``), or the ``input=`` given; with
-neither, the call raises and answers nothing. What it answered from is recorded on the channel (``answered_from``): the
-item called, when ``fn`` is one, where the input came from, and the input and output (their digests, and the values
-while they are small).
+neither, the call raises and answers nothing. When the world declared example pairs for the request (the channel's
+``declared_examples``; ``examples()`` returns them), ``fn`` is first checked on each with ``check_examples``: those are
+check runs, never uses (no call inside one is tracked); when one fails, nothing is answered and the report comes back
+(a withhold). What it answered from is recorded on the channel (``answered_from``): the item called, when ``fn`` is
+one, where the input came from, the input and output (their digests, and the values while they are small), the check's
+counts, and whether it answered or withheld.
 """
 
 from __future__ import annotations
@@ -72,6 +76,13 @@ def _af_declared():
     return False, None
 
 
+def examples():
+    """The example pairs this request was given as data, as a list of {"input": ..., "output": ...} ([] when none):
+    tools.check_examples takes them as they are."""
+    got = _af_json.loads(str(_call("declared_examples", {})))
+    return got if isinstance(got, list) else []
+
+
 def answer_from(fn, input=_AF_MISSING):
     """Answer the request with what *fn* returns on the request's input (tools.help("answer_from") has the whole
     text)."""
@@ -87,6 +98,22 @@ def answer_from(fn, input=_AF_MISSING):
     else:
         value, source = input, "given"
     item = getattr(fn, "__memory_item__", None)
+    pairs = examples() if _check_examples is not None else []
+    checked = None
+    if pairs:
+        report = _check_examples(fn, pairs)
+        checked = {"passed": report.passed, "total": report.total}
+        if not report.ok:
+            in_digest, in_kept, in_whole = _af_kept(value)
+            _call("answered_from", {
+                "item": item if isinstance(item, str) else None, "source": source, "input_digest": in_digest,
+                "output_digest": "", "input": in_kept, "output": None, "kept": bool(in_whole), "answered": False,
+                "checked": checked, "withheld": True,
+            })
+            return (
+                "not answered: fn did not pass this request's examples (passed %d of %d), so nothing was answered; "
+                "change it and call again.\n\n%s" % (report.passed, report.total, report)
+            )
     result = fn(value)
     in_digest, in_kept, in_whole = _af_kept(value)
     out_digest, out_kept, out_whole = _af_kept(result)
@@ -98,6 +125,8 @@ def answer_from(fn, input=_AF_MISSING):
         "input": in_kept,
         "output": out_kept,
         "kept": bool(in_whole and out_whole),
+        "checked": checked,
+        "withheld": False,
     }
     try:
         reply = _answer(result)

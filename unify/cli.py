@@ -451,6 +451,13 @@ class Act:
 
                             if not declared_input.declare(item.get("input")):
                                 self._progress("the declared input was not kept: it has no JSON form or is too large")
+                        if "examples" in item:
+                            # rev 2.3: example pairs the world declares beside the message (data); tools.examples()
+                            from unify.common import declared_input
+
+                            if not declared_input.add_examples(item.get("examples")):
+                                self._progress("the declared examples were not kept: not a list of input/output pairs, "
+                                               "or too large")  # fmt: skip
                         line = message
                 if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED

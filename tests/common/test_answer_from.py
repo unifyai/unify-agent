@@ -38,11 +38,14 @@ class ChannelClosed(Exception):
     pass
 CALLS = []
 DECLARED = {"declared": False}
+EXAMPLES = []
 REFUSE_ANSWER = []
 def _call(tool, args):
+    import json
+    if tool == "declared_examples":
+        return Result(json.dumps(EXAMPLES))  # read, never recorded among the calls
     CALLS.append((tool, args))
     if tool == "declared_input":
-        import json
         return Result(json.dumps(DECLARED))
     if tool == "answer" and REFUSE_ANSWER:
         raise Refused("not answered: the answer does not match the required response format: x")
@@ -116,6 +119,7 @@ def test_with_input_given_it_answers_the_functions_output(load):
     assert tool == "answered_from" and row["answered"] is True and row["source"] == "given"
     assert row["input"] == {"prices": [2, 3]} and row["output"] == {"count": 4} and row["item"] is None
     assert row["output_digest"] == declared_input.digest(declared_input.canonical({"count": 4}))
+    assert row["checked"] is None and row["withheld"] is False  # no examples: nothing checked
 
 
 def test_with_a_declared_input_it_answers_on_that_input(load):
@@ -280,7 +284,7 @@ def test_the_answered_from_channel_records_on_the_run_and_refuses_a_foreign_row(
     try:
         monkeypatch.setattr(RQ, "current", lambda: run)
         row = {"item": None, "source": "given", "input_digest": "a", "output_digest": "b", "input": 1, "output": 2,
-               "kept": True, "answered": True}  # fmt: skip
+               "kept": True, "answered": True, "checked": None, "withheld": False}  # fmt: skip
         assert H.answered_from(None, row).text == "recorded"
         assert run.answered_from[-1]["output"] == 2
         ctx = types.SimpleNamespace(agent="actor")

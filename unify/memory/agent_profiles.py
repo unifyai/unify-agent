@@ -88,6 +88,7 @@ _ACTOR_IN_CODE = [
     "ask_library",
     "sh",
     "check_examples",
+    "examples",
     "answer_from",
     # only with UNIFY_MEMORY=in_episode (registry flag "checkpoint")
     "checkpoint",
@@ -107,6 +108,7 @@ _TEAMMATE_IN_CODE = [
     "ask_library",
     "sh",
     "check_examples",
+    "examples",
     "answer_from",
 ]
 _BOX_MOUNTS = [

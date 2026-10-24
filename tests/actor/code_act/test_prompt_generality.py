@@ -170,13 +170,18 @@ def _actor_texts() -> dict[str, str]:
     return texts
 
 
-#: The general example-check tool (the lead's 14 Oct decision: any domain, explicit or implicit examples) is the
-#: one text whose subject is checking against examples; it still names no benchmark.
-EXAMPLE_CHECK_TOOL = "tools.help('check_examples')"
+#: The general example-check tool (the lead's 14 Oct decision: any domain, explicit or implicit examples) and, since
+#: rev 2.3, exactly the tools the opening's one examples line names with it (the examples given as data, and the answer
+#: from a function, checked on them first) are the texts whose subject is checking against examples; they still name
+#: no benchmark.
+EXAMPLE_CHECK_TOOLS = ("tools.help('check_examples')", "tools.help('examples')", "tools.help('answer_from')")
 
 
 def test_what_the_actor_reads_names_no_benchmark():
     texts = _actor_texts()
-    assert EXAMPLE_CHECK_TOOL in texts
+    assert all(t in texts for t in EXAMPLE_CHECK_TOOLS)
     assert _benchmark_words(texts) == []
-    assert _example_checks({k: v for k, v in texts.items() if k != EXAMPLE_CHECK_TOOL}) == []
+    assert _example_checks({k: v for k, v in texts.items() if k not in EXAMPLE_CHECK_TOOLS}) == []
+    # the exemption is exactly the line's tools: the examples line names each of them and no other tool
+    line_tools = {t.split("'")[1] for t in EXAMPLE_CHECK_TOOLS}
+    assert set(re.findall(r"`tools\.([A-Za-z_]\w*)", R.EXAMPLES_ANSWER_LINE)) == line_tools
