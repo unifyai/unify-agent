@@ -369,5 +369,6 @@ def test_an_input_is_spread_over_a_two_parameter_function_in_the_answer_as_in_th
     calls = _calls(tools)
     assert calls[0] == ("answer", {"answer": 9})  # spread, as the check spread [1, 2] (it passed)
     assert calls[1][1]["checked"] == {"passed": 1, "total": 1}
+    tools._client["EXAMPLES"].clear()  # len([1, 2]) is not 3: with the example kept, nothing would be answered
     tools.answer_from(lambda pair: len(pair), input=[4, 5])  # one parameter: the list is its one argument
     assert _calls(tools)[2] == ("answer", {"answer": 2})
