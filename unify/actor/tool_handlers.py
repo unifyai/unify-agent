@@ -729,6 +729,10 @@ async def _ask_librarian(
             extra["failed"] = failed
             if failed_at and messages_now is not None:
                 extra["failed_at"], extra["messages_now"] = failed_at, messages_now
+        held = _memory_run_held()
+        if held:
+            # held back until the next verdict: linked to an entry whose answer the world just rejected
+            extra["held"] = held
         declared = _memory_run_declared()
         if declared is not None:
             # the request's declared input orders the librarian's search (its structure, never its text)
@@ -866,6 +870,19 @@ def answered_from(ctx: Any, args: dict) -> Any:
     except Exception:  # noqa: BLE001 - the record never costs the answer
         pass
     return _reply("recorded")
+
+
+def _memory_run_held() -> dict:
+    """The items the memory run holds back from the librarian's fits until the next verdict (``RequestRun.held``),
+    each with the rejected entry it is linked to; {} when none or no run is open."""
+    try:
+        from unify.memory.integration import request as _request
+
+        run = _request.current()
+        held = run.held() if run is not None and hasattr(run, "held") else {}
+    except Exception:  # noqa: BLE001 - nothing known: nothing is held back
+        return {}
+    return {k: v for k, v in held.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 def _memory_run_failed_at() -> tuple[dict[str, int], Optional[int]]:

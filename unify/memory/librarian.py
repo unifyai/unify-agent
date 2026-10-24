@@ -369,6 +369,7 @@ def sent_to_librarian(
     failed: Any = (),
     failed_at: Mapping[str, Any] | None = None,
     messages_now: int | None = None,
+    held: Mapping[str, Any] | None = None,
 ) -> dict:
     """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening and the brief, the same
     for every ask and every library): the user message (:func:`question_message`: the question and the catalogue
@@ -393,6 +394,12 @@ def sent_to_librarian(
         message = message.rsplit("Answer with tools.finish(answer).", 1)[0] + failed_line(
             tried, failed_at, messages_now
         ) + ("\n\nAnswer with tools.finish(answer).")
+    kept = {k: v for k, v in sorted((held or {}).items()) if isinstance(k, str) and isinstance(v, str)}
+    if kept:
+        # linked to an entry whose answer was just rejected: held back until the next result in this request
+        message = message.rsplit("Answer with tools.finish(answer).", 1)[0] + held_line(kept) + (
+            "\n\nAnswer with tools.finish(answer)."
+        )
     if schema is None:
         return {"message": message, "library": dict(library)}
     # a structured answer: the schema replaces the answer's form for this question (its digest is in the key)
@@ -420,6 +427,17 @@ def failed_line(failed: list[str], failed_at: Mapping[str, Any] | None = None, m
             '"message:<n>"}] to the answer, n a message after the one it failed at.'
         )
     return line
+
+
+def held_line(held: Mapping[str, str]) -> str:
+    """The line of a question that names the items held back until the next result in the agent's current request:
+    each comes from the same recorded work (a shared recorded episode) as an entry whose answer was just rejected."""
+    return (
+        "Held back until the next result in this request (each comes from the same recorded work as an entry whose "
+        "answer was just rejected; never offer one of them now, name it as nearest if it is): "
+        + ", ".join(f"{i} (with {e})" for i, e in held.items())
+        + "."
+    )
 
 
 def _failed_at(failed_at: Mapping[str, Any] | None, ids: Any) -> dict[str, int]:
@@ -487,6 +505,9 @@ class LibrarianCalls:
     messages_now: int | None = None
     #: rev 2.3: the current request's structure profile (``library_search.request_profile``), which orders the search
     request_profile: str | None = None
+    #: rev 2.3: the items held back until the next verdict (linked to an entry whose answer was just rejected), each
+    #: with that entry
+    held_here: dict[str, str] = field(default_factory=dict)
     answer: dict | None = None
     finish_text: str | None = None
     finished: bool = False
@@ -758,6 +779,7 @@ def check_answer(
     copy: Path | None = None,
     failed_at: Mapping[str, int] | None = None,
     messages_now: int | None = None,
+    held: Mapping[str, str] | None = None,
 ) -> tuple[dict | None, str]:
     """The answer as the librarian gave it, or None with the reason it is refused: the form of design J(b).4, every
     id an item of the library (*ids*), no captured attempt that failed among the fits, each fit that names a
@@ -789,6 +811,11 @@ def check_answer(
             return None, f"fit {i}: {f['id'][:200]!r} is not an item of the library"
         if f["id"] in failed:
             return None, f"fit {i}: {f['id']!r} was tried and failed; it is never offered to run (name it as nearest)"
+        if held and f["id"] in held:
+            return None, (
+                f"fit {i}: {f['id']!r} is held back until the next result in this request: it comes from the same "
+                f"recorded work as {held[f['id']]!r}, whose answer was just rejected (name it as nearest)"
+            )
         if f["id"] in failed_here and f["id"] not in again:
             return None, (
                 f"fit {i}: {f['id']!r} was tried and failed in this request; it is not offered again in it (name it "
@@ -936,7 +963,7 @@ async def finish(ctx: Any, args: dict) -> Any:
         return _finish_schema(state, args.get("answer"))
     got, why = check_answer(
         args.get("answer"), state.ids, state.failed, state.recipes, state.acting, state.failed_here, copy=state.copy,
-        failed_at=state.failed_at, messages_now=state.messages_now,
+        failed_at=state.failed_at, messages_now=state.messages_now, held=state.held_here,
     )
     if got is None:
         text = refusal("finish", "bad_answer", reason=why[:2000])
@@ -1269,6 +1296,7 @@ class LibrarianSession:
         failed_at: Mapping[str, Any] | None = None,
         messages_now: int | None = None,
         declared: Mapping[str, Any] | None = None,
+        held: Mapping[str, Any] | None = None,
     ) -> str:
         """One question about the current request, as JSON text (:meth:`answer`; *request* is not sent to the
         librarian, so it is not in the key; *facts*, which an older cell may still send, are not read: rev 2 runs no
@@ -1276,6 +1304,7 @@ class LibrarianSession:
         got = await self.answer(
             question, schema=schema, last_message=last_message, failed=failed, failed_at=failed_at,
             messages_now=messages_now, request=request, **({"declared": declared} if declared is not None else {}),
+            **({"held": held} if held else {}),
         )
         return json.dumps(got, ensure_ascii=False, sort_keys=True)
 
@@ -1290,6 +1319,7 @@ class LibrarianSession:
         messages_now: int | None = None,
         request: str | None = None,
         declared: Mapping[str, Any] | None = None,
+        held: Mapping[str, Any] | None = None,
     ) -> dict:
         """One question about the current request. When the librarian was already sent the same
         (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave it, with :data:`ALREADY_GIVEN`, and
@@ -1312,6 +1342,7 @@ class LibrarianSession:
             here = {i for i in failed or () if isinstance(i, str) and i in set(ids)}
             self.state.failed_here = here
             self.state.failed_at = _failed_at(failed_at, here)
+            self.state.held_here = {k: v for k, v in (held or {}).items() if isinstance(k, str) and k in set(ids)}
             self.state.messages_now = messages_now if isinstance(messages_now, int) else None
             # the request's structure orders the search; it is not sent to the librarian, so it is not in the key
             from .library_search import request_profile
@@ -1329,10 +1360,12 @@ class LibrarianSession:
                 self.evidence = read_evidence(self.copy) or {}
                 sent = sent_to_librarian(question, library, evidence=self.evidence, last_message=last_message,
                                          rows=len(self.dispatch), schema=schema, failed=here,
-                                         failed_at=self.state.failed_at, messages_now=self.state.messages_now)  # fmt: skip
+                                         failed_at=self.state.failed_at, messages_now=self.state.messages_now,
+                                         held=self.state.held_here)  # fmt: skip
             else:
                 sent = sent_to_librarian(question, library, rows=len(self.dispatch), schema=schema, failed=here,
-                                         failed_at=self.state.failed_at, messages_now=self.state.messages_now)  # fmt: skip
+                                         failed_at=self.state.failed_at, messages_now=self.state.messages_now,
+                                         held=self.state.held_here)  # fmt: skip
             key = answer_key(sent)
             given = self.answers.get(key)
             if given is not None:
@@ -1526,9 +1559,10 @@ class AskInstance(LibrarianSession):
 
     async def ask(self, question: str, facts: Any = None, request: str | None = None, last_message: str | None = None,
                   schema: dict | None = None, failed: Any = (), failed_at: Mapping[str, Any] | None = None,
-                  messages_now: int | None = None, declared: Mapping[str, Any] | None = None) -> str:  # fmt: skip
+                  messages_now: int | None = None, declared: Mapping[str, Any] | None = None,
+                  held: Mapping[str, Any] | None = None) -> str:  # fmt: skip
         text = await super().ask(question, facts, request, last_message, schema, failed, failed_at, messages_now,
-                                 declared)  # fmt: skip
+                                 declared, held)  # fmt: skip
         keep_answers(self)
         try:
             self._post_ask(question, text)

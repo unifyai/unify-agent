@@ -988,6 +988,38 @@ def _json_value(text: Any) -> Any:
         return _NOT_JSON
 
 
+def derivation_links(copy: Any, iid: str) -> set[str]:
+    """The library entries linked to *iid* by a recorded derivation link in the copy at *copy*: those that come from a
+    recorded episode *iid* comes from (the link a card shows as "generalised by"; an item landed from a capture or merged
+    from others carries their episodes in its provenance). Read from the copy's ``items.json`` rows and its captures'
+    records; nothing is run and no text is matched. Empty when the copy cannot be read."""
+    if copy is None or not isinstance(iid, str):
+        return set()
+    root = Path(copy)
+    episodes: dict[str, set[str]] = {}
+    try:
+        rows = json.loads((root / ".memory" / "items.json").read_text(encoding="utf-8")).get("items") or {}
+    except (OSError, ValueError, AttributeError):
+        rows = {}
+    for item, row in rows.items() if isinstance(rows, dict) else ():
+        eps = row.get("episodes") if isinstance(row, dict) else None
+        episodes[item] = {e for e in eps if isinstance(e, str)} if isinstance(eps, list) else set()
+    caps = root / ".memory" / "captures"
+    try:
+        names = sorted(p.name for p in caps.iterdir() if re.fullmatch(r"[0-9a-f]{16}", p.name))
+    except OSError:
+        names = []
+    for cid in names:
+        try:
+            rec = json.loads((caps / cid / "record.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        eps = rec.get("episodes") if isinstance(rec, dict) else None
+        episodes["capture:" + cid] = {e for e in eps if isinstance(e, str)} if isinstance(eps, list) else set()
+    mine = episodes.get(iid) or set()
+    return {other for other, eps in episodes.items() if other != iid and mine & eps}
+
+
 def _result_digest_of(text: str) -> str:
     """The digest the library package's ``result_digest`` gives a value whose canonical JSON is *text*."""
     import hashlib
@@ -1062,6 +1094,10 @@ class RequestRun:
         self.returned_here: dict[str, set[str]] = {}
         self.bad_here: dict[str, dict] = {}
         self.answer_attributions: list[dict] = []
+        # the items held back from the librarian's fits until the next verdict in this request: each linked by a
+        # recorded derivation link to an entry whose answer the world just rejected (an in-request serving rule, never
+        # trust), with that entry
+        self.held_here: dict[str, dict] = {}
         # Rev 2.3 (re-ask on new evidence): the primary fit of the librarian's latest answer in this request
         # (None: no fit stands, before any answer or after one that named none); the value-free shapes of the
         # request's messages so far; how many verdicts and bad uses the last check had seen; the actor's in-code
@@ -1643,9 +1679,22 @@ class RequestRun:
         if not events:
             return []
         standing = self.standing_fit
-        if standing is not None and standing not in self.bad_here:
+        if standing is not None and standing not in self.bad_here and standing not in self.held_here:
             return []
         return events
+
+    def _hold_linked(self, rejected: list[str], entry: dict) -> None:
+        """Hold back, until the next verdict, every item linked by a recorded derivation link to an entry whose answer
+        was just rejected (:func:`derivation_links`), other than those with a bad use of their own."""
+        for e in rejected:
+            for item in sorted(derivation_links(self.copy_root, e)):
+                if item not in self.bad_here:
+                    self.held_here.setdefault(item, {"because": e, "at": entry.get("obs")})
+
+    def held(self) -> dict[str, str]:
+        """The items held back from the librarian's fits until the next verdict, each with the rejected entry it is
+        linked to."""
+        return {item: row["because"] for item, row in sorted(self.held_here.items())}
 
     def bad_uses(self) -> dict[str, int | None]:
         """The items with a bad use in this request, each with the observation count when it was found."""
@@ -1672,6 +1721,7 @@ class RequestRun:
             self.answer_attributions.append(row)
             if entry["label"] == "fail":
                 self.bad_here.setdefault(made["item"], {"how": "answered_from", "at": entry.get("obs")})
+                self._hold_linked([made["item"]], entry)
             return
         if not self.returned_here:
             return
@@ -1694,6 +1744,7 @@ class RequestRun:
         if entry["label"] == "fail":
             for item in row["items"]:
                 self.bad_here.setdefault(item, {"how": "value", "at": entry.get("obs")})
+            self._hold_linked(row["items"], entry)
 
     def _answer_values(self) -> list[str] | None:
         """The canonical JSON texts of the latest reply's action, its arguments and its keyword values, and of the
@@ -1814,6 +1865,8 @@ class RequestRun:
             }
         entry = {"label": raw["label"], "obs": self._observations_now(), "at": _now(), "about": about}
         self.checker_seen.append(entry)
+        # a new world result: what an earlier rejection held back is offered again (its own bad use stands)
+        self.held_here = {}
         try:
             self._attribute(entry)
         except Exception as exc:  # noqa: BLE001 - an attribution never costs the verdict its line

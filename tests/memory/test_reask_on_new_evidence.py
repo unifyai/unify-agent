@@ -35,6 +35,7 @@ def _run(**kw):
         _reask_seen=(0, 0),
         checker_seen=[],
         bad_here={},
+        held_here={},
         reasks=[],
         reask_state=None,
         _observations_now=lambda: 2,
