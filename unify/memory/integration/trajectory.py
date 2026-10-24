@@ -367,7 +367,7 @@ def _fingerprints(actions: list[Action]) -> dict:
         action_fingerprints(actions),
     )  # tool keys, with capped responses at their full shape
     # dialogue keys: the adapter's value-free observation shapes (line buckets, a trailing counter, JSON
-    # kind and keys) in place of the generic text labels, which carry values such as grid sizes
+    # kind and keys) in place of the generic text labels, which carry values such as sizes or counts
     for key, row in observation_fingerprint(actions).items():
         out[key] = {**out.get(key, {}), "shapes": row["shapes"]}
     return out

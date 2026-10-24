@@ -246,8 +246,7 @@ async def query_llm(
     Use current external evidence when the model choice matters. Start with
     Artificial Analysis (https://artificialanalysis.ai/) because it is
     especially useful for comparing model price, speed, latency, and
-    quality/cost tradeoffs across providers. Then supplement with:
-    - ARC Prize leaderboard: https://arcprize.org/leaderboard
+    quality/cost tradeoffs across providers.
 
     Do this research while authoring or storing the function, then bake the
     selected endpoint into the function. Do not put benchmark browsing or
