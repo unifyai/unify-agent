@@ -1732,6 +1732,9 @@ class RequestRun:
             and made.get("answered") is True
             and isinstance(made.get("item"), str)
             and made.get("obs") == entry.get("obs")
+            # the row names an item only as far as the request saw it: a tracked call of that item on the real input
+            # returned the very value answered (exact provenance never claims more than value identity shows)
+            and made.get("output_digest") in self.returned_here.get(made["item"], set())
         ):
             # (ii) exact provenance: the answer this verdict judged was made with tools.answer_from from that item
             row = {"label": entry["label"], "obs": entry.get("obs"), "items": [made["item"]], "short_items": [],

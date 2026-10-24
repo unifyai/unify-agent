@@ -266,7 +266,10 @@ def test_a_rejected_answer_made_from_an_item_is_a_bad_use_of_that_item(mv2, monk
     run = _begin(mv2, "the request")
     try:
         monkeypatch.setattr(run, "_observations_now", lambda: 1)
-        run.note_answered_from({"item": A, "source": "declared", "input_digest": "a", "output_digest": "b",
+        out = _d([[1, 2], [3, 4]])
+        # the item's tracked call on the real input returned the answered value: the row names it with that proof
+        run.note_calls({"calls": {"results": [{"item": A, "outcome": "ok", "digest": out, "input": ""}]}})
+        run.note_answered_from({"item": A, "source": "declared", "input_digest": "a", "output_digest": out,
                                 "input": None, "output": None, "kept": False, "answered": True})  # fmt: skip
         run.take_checker({"label": "fail"})
         assert run.answer_attributions[-1] == {"label": "fail", "obs": 1, "items": [A], "short_items": [],
@@ -276,19 +279,45 @@ def test_a_rejected_answer_made_from_an_item_is_a_bad_use_of_that_item(mv2, monk
         _abort(mv2, run)
 
 
-def test_the_answered_from_channel_records_on_the_run_and_refuses_a_foreign_row(mv2, monkeypatch):  # noqa: F811
+def test_a_row_naming_an_item_no_real_call_returned_its_value_proves_nothing(mv2, monkeypatch):  # noqa: F811
+    # a forged row (a cell can reach the channel): no tracked call of A on the real input returned that value
+    run = _begin(mv2, "the request")
+    try:
+        monkeypatch.setattr(run, "_observations_now", lambda: 1)
+        run.note_answered_from({"item": A, "source": "declared", "input_digest": "a", "output_digest": _d([[9]]),
+                                "input": None, "output": None, "kept": False, "answered": True})  # fmt: skip
+        run.take_checker({"label": "fail"})
+        assert run.bad_uses() == {} and all(r.get("how") != "answered_from" for r in run.answer_attributions)
+    finally:
+        _abort(mv2, run)
+
+
+def _ctx(answer_text):
+    return types.SimpleNamespace(agent="actor", state=types.SimpleNamespace(
+        reply_slot=types.SimpleNamespace(text=answer_text)))  # fmt: skip
+
+
+def test_the_answered_from_channel_records_only_a_row_whose_output_is_the_answer_received(mv2, monkeypatch):  # noqa: F811
     from unify.actor import tool_handlers as H
     from unify.memory.integration import request as RQ
 
     run = _begin(mv2, "the request")
     try:
         monkeypatch.setattr(RQ, "current", lambda: run)
-        row = {"item": None, "fn": "f", "source": "given", "input_digest": "a", "output_digest": "b", "input": 1,
+        row = {"item": None, "fn": "f", "source": "given", "input_digest": "a", "output_digest": _d(2), "input": 1,
                "output": 2, "kept": True, "answered": True, "checked": None, "withheld": False}  # fmt: skip
-        assert H.answered_from(None, row).text == "recorded"
+        assert H.answered_from(_ctx("2"), row).text == "recorded"  # answered as its JSON text
         assert run.answered_from[-1]["output"] == 2
-        ctx = types.SimpleNamespace(agent="actor")
-        assert getattr(H.answered_from(ctx, {"item": None}), "status", "") == "refused"
+        assert H.answered_from(_ctx("two"), dict(row, output_digest=_d("two"))).text == "recorded"  # a text answer
+        # forged: not the answer this request received, or no answer received at all
+        for ctx in (_ctx("3"), _ctx(None), types.SimpleNamespace(agent="actor")):
+            got = H.answered_from(ctx, row)
+            assert getattr(got, "status", "") == "refused" and "not the answer" in got.text, got.text
+        n = len(run.answered_from)
+        # a withhold answered nothing, so nothing is compared (and it never counts for anything)
+        H.answered_from(_ctx(None), dict(row, answered=False, withheld=True))
+        assert len(run.answered_from) == n + 1
+        assert getattr(H.answered_from(_ctx("2"), {"item": None}), "status", "") == "refused"
     finally:
         _abort(mv2, run)
 

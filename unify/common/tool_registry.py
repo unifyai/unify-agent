@@ -1285,7 +1285,10 @@ ANSWERED_FROM = RegisteredTool(
                      "checked", "withheld"],
         "additionalProperties": False,
     },
-    refusals={"bad_row": "the row is not one tools.answer_from writes"},
+    refusals={
+        "bad_row": "the row is not one tools.answer_from writes",
+        "not_the_answer": "the row's output is not the answer this request received; nothing was recorded",
+    },
     roles=(_A, _T),
     returns="that the row was recorded.",
     examples=('tools._call("answered_from", {...})',),

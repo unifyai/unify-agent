@@ -68,6 +68,14 @@ def _af_kept(value):
     return digest, None, False
 
 
+def _af_record(row):
+    """Record what the answer was made from; a record the host refuses never costs the answer."""
+    try:
+        _call("answered_from", row)
+    except Exception:
+        pass
+
+
 def _af_declared():
     """The request's declared input: (True, value), or (False, None) when the request declares none."""
     got = _af_json.loads(str(_call("declared_input", {})))
@@ -106,7 +114,7 @@ def answer_from(fn, input=_AF_MISSING):
         if not report.ok:
             in_digest, in_kept, in_whole = _af_kept(value)
             name = getattr(fn, "__name__", None)
-            _call("answered_from", {
+            _af_record({
                 "item": item if isinstance(item, str) else None,
                 "fn": name if isinstance(name, str) and name.isidentifier() else None,
                 "source": source, "input_digest": in_digest,
@@ -136,8 +144,8 @@ def answer_from(fn, input=_AF_MISSING):
     try:
         reply = _answer(result)
     except Exception:
-        _call("answered_from", dict(row, answered=False))
+        _af_record(dict(row, answered=False))
         raise
-    _call("answered_from", dict(row, answered=True))
+    _af_record(dict(row, answered=True))
     return reply
 '''.replace("__KEPT_CHARS__", str(KEPT_CHARS))

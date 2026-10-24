@@ -846,11 +846,33 @@ _ANSWERED_FROM_FIELDS = frozenset({"item", "fn", "source", "input_digest", "outp
                                    "answered", "checked", "withheld"})  # fmt: skip
 
 
+def _received_digests(text: Any) -> set[str]:
+    """The digests (canonical JSON, as the box computes them) the answer the ``answer`` tool received may have: of the
+    text itself, and of the JSON value it parses to when it is one (a non-text result is answered as its JSON)."""
+    from unify.common import declared_input as _declared
+
+    if not isinstance(text, str):
+        return set()
+    out = {_declared.digest(_declared.canonical(text))}
+    try:
+        out.add(_declared.digest(_declared.canonical(json.loads(text))))
+    except (ValueError, RecursionError):
+        pass
+    return out
+
+
 def answered_from(ctx: Any, args: dict) -> Any:
     """Record one answer made with ``tools.answer_from`` on the memory run (never called from a cell): the box's row,
-    kept as it came (its digests and small values); nothing is kept without a run."""
+    kept as it came (its digests and small values); nothing is kept without a run. A cell can reach this channel tool,
+    so a row that says it answered is refused unless its output digest is that of the answer the ``answer`` tool
+    actually received in this request; a row naming an item counts as that item's answer only where a tracked call of
+    the item on the real input returned the same value (``RequestRun._attribute``)."""
     if set(args) != _ANSWERED_FROM_FIELDS:
         return _refused(_refusal(ctx, "answered_from", "bad_row"))
+    if args.get("answered") is True:
+        slot = getattr(getattr(ctx, "state", None), "reply_slot", None)
+        if args.get("output_digest") not in _received_digests(getattr(slot, "text", None)):
+            return _refused(_refusal(ctx, "answered_from", "not_the_answer"))
     try:
         from unify.memory.integration import request as _request
 
