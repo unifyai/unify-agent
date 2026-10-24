@@ -157,12 +157,6 @@ SHOULD_MENTION: dict[str, tuple[dict[str, str], ...]] = {
             "when": "a served item was wrong, misleading, or something you needed was missing",
         },
     ),
-    "fork": (
-        {
-            "who": "writer",
-            "when": "to point at your summary and drafts, and to say what you were unsure of",
-        },
-    ),
     "writer": (
         {
             "who": "fork",
