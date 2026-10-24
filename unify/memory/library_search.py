@@ -279,7 +279,7 @@ def shape_profile(desc: Any) -> str | None:
     """The structure profile of a recorded input shape (``captures.shape``: a value's key tree and list length
     classes, a text's length class, a scalar's type) as canonical JSON, or None when it has none: an object as its key
     count and the profiles of its values, a list as its length class and the profiles of its elements, a leaf as its
-    type; a text as its line-count and length classes (only when the shape records both). No key text is kept."""
+    type. A text has none: its length class alone says nothing of its structure. No key text is kept."""
     if not isinstance(desc, Mapping):
         return None
     kind = desc.get("kind")
@@ -299,8 +299,6 @@ def shape_profile(desc: Any) -> str | None:
         if not isinstance(tree, (Mapping, list)):
             return None
         return json.dumps(reduced(tree, ""), sort_keys=True, separators=(",", ":"))
-    if kind == "text" and isinstance(desc.get("length"), str) and isinstance(desc.get("lines"), str):
-        return json.dumps({"text": desc["length"], "lines": desc["lines"]}, sort_keys=True, separators=(",", ":"))
     if kind == "scalar" and isinstance(desc.get("type"), str):
         return json.dumps({"scalar": desc["type"]}, separators=(",", ":"))
     return None
@@ -312,9 +310,9 @@ UNDECLARED = object()
 
 def request_profile(text: Any, declared: Any = UNDECLARED) -> str | None:
     """The structure profile of the current request (:func:`shape_profile`): of its *declared* input when the world
-    declared one (rev 2.3), else of the request text when the whole text parses as JSON, else of the text itself
-    (its line-count and length classes); None without a request."""
-    from .captures import _length_class, shape
+    declared one (rev 2.3), else of the request text when the whole text parses as JSON; None otherwise (a request in
+    words has no structure to compare) and without a request."""
+    from .captures import shape
 
     if declared is not UNDECLARED:
         return shape_profile(shape(declared))
@@ -326,8 +324,7 @@ def request_profile(text: Any, declared: Any = UNDECLARED) -> str | None:
         value = None
     if isinstance(value, (dict, list)) or (value is not None and not isinstance(value, str)):
         return shape_profile(shape(value))
-    lines = len(text.splitlines()) or 1
-    return shape_profile({"kind": "text", "length": _length_class(len(text)), "lines": _length_class(lines)})
+    return None
 
 
 def capture_profiles(copy: Path, data: Mapping[str, Any]) -> dict[str, str]:

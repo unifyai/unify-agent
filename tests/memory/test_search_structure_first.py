@@ -48,14 +48,10 @@ def test_the_request_profile_reads_a_whole_json_request_as_its_value():
     assert S.request_profile(json.dumps(7)) == S.shape_profile({"kind": "scalar", "type": "int"})
 
 
-def test_the_request_profile_of_text_is_its_line_count_and_length_classes():
-    one = S.request_profile("a request\nin two lines")
-    assert one == S.shape_profile({"kind": "text", "length": "10-99", "lines": "2-9"})
+def test_a_request_in_words_has_no_profile_and_reorders_nothing():
+    # only a declared input or a whole-JSON request has a structure to compare (M2 needs one of them)
+    assert S.request_profile("a request\nin two lines") is None
     assert S.request_profile("") is None and S.request_profile(None) is None
-
-
-def test_a_recorded_text_input_without_its_line_count_has_no_profile():
-    # rev 2.2 signatures record a text's length class only: never equal to a request's text profile
     assert S.shape_profile({"kind": "text", "length": "10-99"}) is None
 
 
