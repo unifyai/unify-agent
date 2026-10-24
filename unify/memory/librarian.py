@@ -1843,11 +1843,16 @@ REASK_CHARS = 1000
 REASK_HEAD = "The library's answer on this message (its librarian, asked again):"
 
 
-def reask_line(answer: Mapping[str, Any]) -> str:
+def reask_line(answer: Mapping[str, Any], answer_from: Any = ()) -> str:
     """One line from the librarian's checked *answer* on new evidence, in the one-primary form: the primary entry with
     its call, then at most one fallback, labelled for when the first fails; or that nothing in the library fits. At
-    most :data:`REASK_CHARS` characters, no count."""
-    fits = [f for f in answer.get("fits") or [] if isinstance(f, Mapping)][:MAX_FITS]
+    most :data:`REASK_CHARS` characters, no count. A primary among *answer_from* (rev 2.3: a one-call procedure that
+    reads the request's declared input, on a request that holds examples; :func:`answer_from_ids`) has its call
+    written as the answer from it, ``tools.answer_from(memory.get('<id>'))``, which checks it on those examples first;
+    the librarian's own fits keep the value call."""
+    fits = [dict(f) for f in answer.get("fits") or [] if isinstance(f, Mapping)][:MAX_FITS]
+    if fits and fits[0].get("id") in set(answer_from or ()):
+        fits[0]["call"] = f"tools.answer_from(memory.get({fits[0]['id']!r}))"
 
     def short(text: Any, n: int) -> str:
         text = " ".join(str(text or "").split())
@@ -1895,7 +1900,35 @@ async def request_reask_line(run: Any, message: str) -> str:
         return ""
     fits = got.get("fits") if isinstance(got.get("fits"), list) else []
     row["fit"] = fits[0].get("id") if fits and isinstance(fits[0], Mapping) else None
-    return reask_line(got)
+    ids = answer_from_ids(run, [f.get("id") for f in fits if isinstance(f, Mapping)])
+    if ids:
+        row["answer_from"] = sorted(ids)
+    return reask_line(got, ids)
+
+
+def answer_from_ids(run: Any, ids: Any) -> set[str]:
+    """Of *ids*, the recorded procedures whose re-ask call is written as the answer from them (rev 2.3): only when the
+    request holds at least one example pair given as data, and only those whose record says they read the request's
+    declared input (one call, the same input ``tools.answer_from`` passes). Read from the request's copy; nothing
+    run."""
+    from unify.common import declared_input
+
+    if not declared_input.examples():
+        return set()
+    copy = getattr(run, "copy_root", None) or getattr(getattr(run, "paths", None), "checkout", None)
+    if copy is None:
+        return set()
+    out = set()
+    for iid in ids:
+        if not isinstance(iid, str) or not iid.startswith("capture:") or _CAPTURE_DIR.fullmatch(iid[8:]) is None:
+            continue
+        try:
+            rec = json.loads((Path(copy) / _CAPTURES_DIR / iid[8:] / "record.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("reads") == "declared_input":
+            out.add(iid)
+    return out
 
 
 async def request_start_block(state: Any) -> str:

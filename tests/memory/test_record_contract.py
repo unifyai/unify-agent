@@ -103,7 +103,7 @@ REGISTRY: dict[str, dict] = {
             "occurrences": ["unify.memory.library_export:dispatch_data"],
             # rev 2.3: what it reads (the request, or the declared input for one built from an accepted answer's
             # function) and that function's example check when it was made
-            "reads": ["unify.memory.library_helper:_capture_lines", "unify.memory.library_helper:_reads_declared"],
+            "reads": ["unify.memory.library_helper:_capture_lines", "unify.memory.library_helper:_reads_declared", "unify.memory.librarian:answer_from_ids"],
             "checked": ["unify.memory.library_helper:_capture_lines"],
             # exported only (captures.listed_record): what it rests on as far as its record shows it
             "support": ["unify.memory.library_helper:_capture_support", "unify.memory.library_export:capture_support"],
