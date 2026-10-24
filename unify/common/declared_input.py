@@ -80,6 +80,30 @@ def current() -> dict | None:
     return dict(_CURRENT) if _CURRENT is not None else None
 
 
+def load_file(path: Any) -> str | None:
+    """Declare the input and examples a JSON file holds (``{"input": ..., "examples": [...]}``, either key optional;
+    the CLI's ``--declared``, for a request's first message, which is not a stdin line), or say why nothing was
+    declared: a file that cannot be read, is not such an object, or holds a value :func:`declare` or
+    :func:`add_examples` refuses. All or nothing."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError, RecursionError) as exc:
+        return f"the file cannot be read as JSON ({type(exc).__name__})"
+    if not isinstance(doc, dict) or not doc or not set(doc) <= {"input", "examples"}:
+        return 'the file must hold an object with "input", "examples" or both, and no other key'
+    global _CURRENT
+    before = (_CURRENT, list(_EXAMPLES), set(_EXAMPLE_KEYS))
+    if "examples" in doc and not add_examples(doc["examples"]):
+        return '"examples" is not a list of {"input": ..., "output": ...} pairs with JSON forms, or is too large'
+    if "input" in doc and not declare(doc["input"]):
+        _CURRENT, _EXAMPLES[:], keys = before[0], before[1], before[2]
+        _EXAMPLE_KEYS.clear()
+        _EXAMPLE_KEYS.update(keys)
+        return '"input" has no JSON form or is too large'
+    return None
+
+
 def clear() -> None:
     """Forget the declared input and examples (tests, and a driver that starts over)."""
     global _CURRENT

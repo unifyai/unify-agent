@@ -114,6 +114,7 @@ def test_a_withhold_is_no_bad_use_and_no_reask_event(mv2):  # noqa: F811
     finally:
         _abort(mv2, run)
 
+
 # --- a stored item under answer_from: its checks on the examples are check runs, never uses ----------------------
 
 
@@ -148,3 +149,54 @@ def test_a_stored_item_whose_examples_fail_is_withheld_with_no_use_and_no_failur
     # no tracked call, no result, no failure: the item's check runs leave no use (no item_use row, nothing metered)
     assert during == [] and failed == []
     assert calls == ["declared_examples", "answered_from"]  # read the pairs, recorded the withhold, answered nothing
+
+
+# --- the first request's declaration (--declared): its first message is the command line, never a stdin line --------
+
+
+def test_a_declared_file_declares_both_or_nothing(tmp_path, clean_declared):
+    good = tmp_path / "d.json"
+    good.write_text(json.dumps({"input": {"prices": [3]}, "examples": PAIRS}))
+    assert declared_input.load_file(good) is None
+    assert declared_input.current()["value"] == {"prices": [3]} and declared_input.examples() == PAIRS
+    declared_input.clear()
+    for doc, why in (
+        ([1], "an object"),
+        ({}, "an object"),
+        ({"input": 1, "other": 2}, "an object"),
+        ({"examples": [{"input": 1}]}, '"examples"'),
+        ({"examples": PAIRS, "input": "y" * (declared_input.MAX_BYTES + 1)}, '"input"'),
+    ):
+        bad = tmp_path / "bad.json"
+        bad.write_text(json.dumps(doc))
+        got = declared_input.load_file(bad)
+        assert got is not None and why in got, (doc, got)
+        assert declared_input.current() is None and declared_input.examples() == [], doc  # all or nothing
+    assert "cannot be read" in declared_input.load_file(tmp_path / "missing.json")
+
+
+def test_the_cli_reads_the_declared_file_before_the_actor_starts(monkeypatch, tmp_path, clean_declared):
+    from tests.memory.integration import test_request as T
+
+    path = tmp_path / "d.json"
+    path.write_text(json.dumps({"input": {"prices": [3]}, "examples": PAIRS}))
+    argv = ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "--declared", str(path), "Say hi"]
+    code, _out, log, _handle = T._drive(monkeypatch, argv, b'{"quit": true}\n', None)
+    assert code == 0 and [e[0] for e in log][:2] == ["begin", "act"]
+    assert declared_input.current()["value"] == {"prices": [3]} and declared_input.examples() == PAIRS
+
+
+def test_without_the_flag_nothing_is_declared_and_a_bad_file_stops_the_run(monkeypatch, tmp_path, clean_declared):
+    from tests.memory.integration import test_request as T
+
+    declared_input.declare({"left": "over"})  # a request starts with nothing declared
+    code, *_ = T._drive(monkeypatch, ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "Say hi"],
+                        b'{"quit": true}\n', None)  # fmt: skip
+    assert code == 0 and declared_input.current() is None and declared_input.examples() == []
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json")
+    code, _out, log, _handle = T._drive(
+        monkeypatch, ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "--declared", str(bad), "Say hi"],
+        b'{"quit": true}\n', None,
+    )
+    assert code == 2 and log == []  # the actor never started

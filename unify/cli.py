@@ -139,6 +139,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="newline-delimited JSON on stdin and stdout, for a program driving "
         "the actor (see the description)",
     )
+    act.add_argument(
+        "--declared",
+        metavar="FILE",
+        help='a JSON file declaring the first request\'s input and examples as data ({"input": ..., '
+        '"examples": [{"input": ..., "output": ...}]}, either key optional), read before the actor starts',
+    )
 
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
@@ -518,12 +524,18 @@ class Act:
         args = self._args
         from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY=on: export memory and open the request's record
-        # before the actor builds its prompt.
-        # rev 2.3: a request starts with no input or examples declared; its messages may declare them
+        # rev 2.3: a request starts with no input or examples declared; a driver may declare them for the first
+        # request in a file (--declared), read here before the actor starts, and beside any later message
         from unify.common import declared_input
 
         declared_input.clear()
+        if getattr(args, "declared", None):
+            why = declared_input.load_file(args.declared)
+            if why is not None:
+                print(f"unify act: --declared: {why}", file=sys.stderr, flush=True)
+                return 2
+        # UNIFY_MEMORY=on: export memory and open the request's record
+        # before the actor builds its prompt.
         self._mv2 = _mv2.begin_request(request)
         if args.jsonl and self._mv2 is not None:
             # the episode's id, so a verdict that arrives after it ends can name it

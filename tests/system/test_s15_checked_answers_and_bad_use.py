@@ -160,3 +160,35 @@ async def test_without_memory_an_answer_from_a_function_is_checked_first_and_wit
     assert str(out["answered"]).startswith("answered"), out
     results = [line for line in r.lines if line.get("type") == "response"]
     assert any("ENOTS" in json.dumps(line) for line in results), results
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(900)
+@pytest.mark.parametrize("mode", ["off", "on"])
+async def test_the_first_turn_sees_what_the_declared_file_declares(system, mode, monkeypatch, tmp_path):
+    # a driver's first message is the command line, never a stdin line: its declaration comes in a file (--declared)
+    import unify.cli as cli
+
+    path = tmp_path / "declared.json"
+    path.write_text(json.dumps({"input": ["stone", "river"], "examples": EXAMPLES}))
+    real = cli._parse_args
+    monkeypatch.setattr(cli, "_parse_args", lambda argv: real([*argv[:-1], "--declared", str(path), argv[-1]]))
+    s = system
+    sink: dict = {}
+
+    def first(call):
+        code = FN + SW.probe_json(
+            "_try('examples', lambda: tools.examples())\n_try('answered', lambda: str(tools.answer_from(solve)))\n"
+        )
+        return reply(calls=[cell(code)])
+
+    def after(call):
+        sink["out"] = SW.marked(SW.last_tools(call))
+        return reply("Good.")
+
+    model = ScriptedModel(actor=[first, after], librarian=Always(lambda c: SW.librarian_answer([], nearest=[])))
+    r = await s.request(SW.words_request(["stone", "river"]), model, H.replies([{"message": SW.ACCEPTED_MESSAGE}]))
+    assert sink["out"]["examples"] == EXAMPLES
+    assert str(sink["out"]["answered"]).startswith("answered"), sink["out"]
+    assert any("ENOTS" in json.dumps(line) for line in r.lines if line.get("type") == "response")
