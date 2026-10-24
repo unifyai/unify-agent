@@ -1202,7 +1202,7 @@ ANSWER_FROM = RegisteredTool(
         "def solve(order):\n    return {\"count\": len(order[\"prices\"])}\ntools.answer_from(solve)",
         'tools.answer_from(solve, input={"prices": [2, 3]})',
     ),
-    when="When a function of yours computes the answer: answer with it rather than copying its output yourself.",
+    when="When a function of yours computes the answer.",
     kind="local",
 )
 
