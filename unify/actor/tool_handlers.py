@@ -729,6 +729,10 @@ async def _ask_librarian(
             extra["failed"] = failed
             if failed_at and messages_now is not None:
                 extra["failed_at"], extra["messages_now"] = failed_at, messages_now
+        declared = _memory_run_declared()
+        if declared is not None:
+            # the request's declared input orders the librarian's search (its structure, never its text)
+            extra["declared"] = declared
         latest = situation
         if getattr(session, "evidence", None) is not None:
             # the harness's evidence serving on: the situation's latest message goes with the question
@@ -818,6 +822,44 @@ def _memory_run_failed() -> list[str]:
     )
 
 
+def _memory_run_declared() -> Optional[dict]:
+    """The request's declared input (``unify.common.declared_input``: ``{"value", "digest"}``), or None when none was
+    declared; with or without memory."""
+    from unify.common import declared_input as _declared
+
+    return _declared.current()
+
+
+def declared_input(ctx: Any, args: dict) -> Any:
+    """The request's declared input for ``tools.answer_from`` and the memory package (never called from a cell): JSON
+    text ``{"declared": true, "value": ...}``, or ``{"declared": false}`` when the world declared none."""
+    declared = _memory_run_declared()
+    if declared is None:
+        return _reply(json.dumps({"declared": False}))
+    return _reply(json.dumps({"declared": True, "value": declared["value"]}, ensure_ascii=False))
+
+
+#: The fields of an ``answered_from`` row as the box sends it.
+_ANSWERED_FROM_FIELDS = frozenset({"item", "source", "input_digest", "output_digest", "input", "output", "kept",
+                                   "answered"})  # fmt: skip
+
+
+def answered_from(ctx: Any, args: dict) -> Any:
+    """Record one answer made with ``tools.answer_from`` on the memory run (never called from a cell): the box's row,
+    kept as it came (its digests and small values); nothing is kept without a run."""
+    if set(args) != _ANSWERED_FROM_FIELDS:
+        return _refused(_refusal(ctx, "answered_from", "bad_row"))
+    try:
+        from unify.memory.integration import request as _request
+
+        run = _request.current()
+        if run is not None and hasattr(run, "note_answered_from"):
+            run.note_answered_from(dict(args))
+    except Exception:  # noqa: BLE001 - the record never costs the answer
+        pass
+    return _reply("recorded")
+
+
 def _memory_run_failed_at() -> tuple[dict[str, int], Optional[int]]:
     """Per item with a bad use in the memory run, the request's message count when it was found (where known), and
     the count now; ({}, None) when no run is open or the transcript cannot be read."""
@@ -888,9 +930,11 @@ __all__ = [
     "actor_binding",
     "actor_flags",
     "answer",
+    "answered_from",
     "ask",
     "ask_library",
     "current_request",
+    "declared_input",
     "delegate",
     "grep",
     "install",

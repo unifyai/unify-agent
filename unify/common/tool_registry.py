@@ -1167,6 +1167,90 @@ CHECK_EXAMPLES = RegisteredTool(
 )
 
 
+#: The answer from a function (rev 2.3): runs a function of the agent's session on the request's input, in the agent's
+#: box (the stub embeds :mod:`unify.common.box_answer_source`), and answers with what it returns through ``answer``.
+ANSWER_FROM = RegisteredTool(
+    name="answer_from",
+    summary="answer the request with what a function of yours returns on the request's input.",
+    description=(
+        "Call `fn`, a function defined in your session, once, here in your box, on the "
+        "request's input, and answer the request with what it returns, as `tools.answer` does: the same response "
+        "format check, and the request ends when this cell returns. The request's input is the value the request "
+        "declares beside its text, when it declares one; pass `input=` to give it yourself, which you must where the "
+        "request declares none (then the call raises and answers nothing). A result that is not text is answered as "
+        "its JSON. What `fn` raises reaches you unchanged, and nothing is answered."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "fn": {"description": "The function to answer with: any callable defined in your session."},
+            "input": {"description": "The input to call it on, where the request declares none (or to override it)."},
+        },
+        "required": ["fn"],
+        "additionalProperties": False,
+    },
+    roles=(_A, _T),
+    returns="what `tools.answer` returns: a line saying the answer is recorded.",
+    examples=(
+        "def solve(order):\n    return {\"count\": len(order[\"prices\"])}\ntools.answer_from(solve)",
+        'tools.answer_from(solve, input={"prices": [2, 3]})',
+    ),
+    when="When a function of yours computes the answer: answer with it rather than copying its output yourself.",
+    kind="local",
+)
+
+#: The request's declared input, for ``tools.answer_from`` and the memory package: on the channel of the actor and a
+#: teammate, never in their ``tools`` (:data:`CHANNEL_ONLY`).
+DECLARED_INPUT = RegisteredTool(
+    name="declared_input",
+    summary="the input the request declares, for answer_from and the memory package (never called from a cell).",
+    description=(
+        "The input the request declares beside its text, as data, when the world declares one. `tools.answer_from` "
+        "and the `memory` package call it."
+    ),
+    parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    roles=(_A, _T),
+    returns='JSON text: {"declared": true, "value": the input} or {"declared": false}.',
+    examples=('tools._call("declared_input", {})',),
+    when="Never from a cell: tools.answer_from calls it.",
+    kind="reader",
+    handler="unify.actor.tool_handlers:declared_input",
+)
+
+#: What ``tools.answer_from`` answered from, recorded on the request (never called from a cell).
+ANSWERED_FROM = RegisteredTool(
+    name="answered_from",
+    summary="the record of an answer made with answer_from (never called from a cell).",
+    description=(
+        "Records what an answer made with `tools.answer_from` was made from: the library item called when the "
+        "function was one, where the input came from, and the input and output (their digests, and the values "
+        "while they are small). `tools.answer_from` calls it."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "item": {"type": ["string", "null"]},
+            "source": {"enum": ["declared", "given"]},
+            "input_digest": {"type": "string"},
+            "output_digest": {"type": "string"},
+            "input": {},
+            "output": {},
+            "kept": {"type": "boolean"},
+            "answered": {"type": "boolean"},
+        },
+        "required": ["item", "source", "input_digest", "output_digest", "input", "output", "kept", "answered"],
+        "additionalProperties": False,
+    },
+    refusals={"bad_row": "the row is not one tools.answer_from writes"},
+    roles=(_A, _T),
+    returns="that the row was recorded.",
+    examples=('tools._call("answered_from", {...})',),
+    when="Never from a cell: tools.answer_from calls it.",
+    kind="action",
+    handler="unify.actor.tool_handlers:answered_from",
+)
+
+
 # --- the attention ledger's tools and the writer's stated tests (unify/memory/attention_tools.py) ---
 
 #: the flag ``checkpoint`` needs: ``UNIFY_MEMORY=in_episode``
@@ -2176,9 +2260,12 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     SEARCH,
     KEEP_NOTE,
     CURRENT_REQUEST,
+    DECLARED_INPUT,
+    ANSWERED_FROM,
     REQUEST,
     SH,
     CHECK_EXAMPLES,
+    ANSWER_FROM,
     OPEN_ENTRIES,
     TAKE,
     DECIDE,
@@ -2347,7 +2434,7 @@ def allow_list(agent: str, flags: frozenset = frozenset()) -> tuple[str, ...]:
 #: Registered tools that only the ``memory`` package calls, through the channel client (``tools._call``): on the
 #: channel's allow-list of the agents in their ``roles``, never in the ``tools`` module, ``tools.list()`` or
 #: ``tools.help`` (:func:`render_stub` leaves them out).
-CHANNEL_ONLY = frozenset({"current_request"})
+CHANNEL_ONLY = frozenset({"current_request", "declared_input", "answered_from"})
 
 
 def channel_only(agent: str) -> tuple[str, ...]:
@@ -2371,6 +2458,8 @@ _ACTOR_HANDLED = {
     "delegate": False,
     "answer": False,
     "current_request": False,
+    "declared_input": False,
+    "answered_from": False,
     "request": False,
 }
 
@@ -2629,6 +2718,13 @@ def check_source() -> str:
     return box_check_source.SOURCE
 
 
+def answer_from_source() -> str:
+    """The box-local ``answer_from``, embedded verbatim in every stub that has it (``unify.common.box_answer_source``)."""
+    from unify.common import box_answer_source
+
+    return box_answer_source.SOURCE
+
+
 def comparison_source() -> str:
     """The module source of the one comparison of an expected value with an actual one
     (:mod:`unify.memory.value_diff`), byte for byte: the stub runs it in its own namespace, so ``check_examples`` in a
@@ -2739,7 +2835,7 @@ def __getattr__(name):
 #: The names the embedded shell source defines that the stub exports.
 SHELL_NAMES = ("sh", "ShellResult")
 #: The registered tools whose function the stub embeds rather than generates (they run in the box, never on the host).
-EMBEDDED = frozenset({"sh", "check_examples"})
+EMBEDDED = frozenset({"sh", "check_examples", "answer_from"})
 
 
 def _function_source(name: str, agent: Optional[str]) -> str:
@@ -2834,6 +2930,17 @@ def render_stub(names: tuple[str, ...], agent: Optional[str] = None) -> str:
     for n in allowed:
         if n not in EMBEDDED:
             out += ["", _function_source(n, agent), f"{n} = _taught({n})", ""]
+    if "answer_from" in allowed and "answer" in allowed:
+        # run in the box after `answer` exists: the function runs here and its result goes through `answer`
+        out += [
+            "",
+            "_ANSWER_FROM_SOURCE = " + repr(answer_from_source()),
+            "_answer_from = {'__name__': __name__, '_call': _call, '_answer': answer, '_contract': _contract}",
+            "exec(compile(_ANSWER_FROM_SOURCE, '<tools: answer_from>', 'exec'), _answer_from)",
+            "answer_from = _taught(_answer_from['answer_from'])",
+            f"answer_from.__doc__ = {json.dumps(help_text('answer_from', agent))}",
+            "",
+        ]
     helps = {n: help_text(n, agent) for n in allowed}
     # the help topics the agent has besides its tools (topics are never listed or callable)
     helps.update({t: text for t, (agents, text) in help_topics(agent).items() if agent in agents and t not in helps})
@@ -2954,6 +3061,12 @@ EXAMPLES_LINE = (
     "When the request or the environment gives examples, check a candidate against them with "
     "`tools.check_examples` before acting on it."
 )
+#: The same line where the agent also answers from a function (``tools.answer_from``, rev 2.3): still one line.
+EXAMPLES_ANSWER_LINE = (
+    "When the request or the environment gives examples, check a candidate against them with "
+    "`tools.check_examples` before acting on it; `tools.answer_from` answers with a function's output on the request's "
+    "input (`input=` where the request declares none)."
+)
 #: Where thinking goes: execute_code's ``thought`` argument. It stays in the conversation and ends nothing (an answer
 #: is a message without a tool call, or ``tools.answer``), and a call with a thought and no code runs nothing, so a
 #: cell is never needed just to keep thinking.
@@ -3004,7 +3117,7 @@ def preamble(agent: str, facts: dict) -> str:
     if "install" in allowed:
         parts += ["", "Install packages with `tools.install(...)`; a cell has no network, so pip there fails."]
     if agent in (_A, _T) and "check_examples" in allowed:
-        parts += ["", EXAMPLES_LINE]
+        parts += ["", EXAMPLES_ANSWER_LINE if "answer_from" in allowed else EXAMPLES_LINE]
     env = str(facts.get("environment") or "").strip()
     if env:
         parts += ["", env]

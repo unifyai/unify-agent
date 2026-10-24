@@ -123,9 +123,13 @@ FAILED_EVENT = "memory.call_failed"
 FAILURE_TEXT = 200
 REFUSAL = "MemoryInputError"
 DIGEST_CHARS = 16
-#: The audit event of a tracked call that returned: the id and a digest of its result's canonical JSON (never the
-#: value), so the harness can tell, value for value, whether an answer the world then judged was this result.
+#: The audit event of a tracked call that ended: the id, how it ended (``ok``, ``refused``, ``error``), a digest of its
+#: result's canonical JSON ('' unless it returned) and of its one input's (:func:`input_digest`), never a value; so the
+#: harness can tell, value for value, whether an answer the world then judged was this result, and whether the call was
+#: on the request's real input.
 RESULT_EVENT = "memory.call_result"
+#: The host tool that gives the request's declared input, as JSON text ``{"declared": bool, "value": ...}``.
+DECLARED_INPUT_TOOL = "declared_input"
 # The status and evidence-level names (``item_states``'s; this file imports only the standard library, so it
 # keeps its own copy, which a test holds equal): the status a row without one has, the statuses the index leaves
 # out, and the old stored names each now means.
@@ -1194,10 +1198,10 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
         return RunReport(target, outcome="error", error="WrongCall", detail=BY_HAND.format(cid=target), **base)
     rep = _confined(capture_id, args, kwargs)
     if rep.get("error") != "LookupError" or rep["outcome"] != "error":
-        _emit(target, args_digest(args, kwargs), "ok" if rep["outcome"] == "returned" else
-              ("refused" if rep["outcome"] == "refused" else "error"))
-        if rep["outcome"] == "returned":
-            _emit_result(target, rep.get("result"))
+        outcome = "ok" if rep["outcome"] == "returned" else ("refused" if rep["outcome"] == "refused" else "error")
+        on = input_digest(args, kwargs)
+        _emit(target, args_digest(args, kwargs), outcome, CALL_EVENT, on)
+        _emit_result(target, outcome, rep.get("result"), on)
     conditions, code = _capture_conditions(rep)
     return RunReport(
         target,
@@ -1640,6 +1644,11 @@ class Item:
     history: tuple[str, ...]
     reason: str = ""
     support: str = ""
+
+    @property
+    def __memory_item__(self) -> str:
+        """The item's id, as a library function's tracked wrapper carries it (``tools.answer_from`` records it)."""
+        return self.id
 
     def _on_request(self) -> "Item | None":
         """What a call with no arguments runs on the current request: this item when it is a captured procedure
@@ -2610,10 +2619,45 @@ def call_outcome(exc: BaseException) -> str:
     )
 
 
+def input_digest(args: tuple, kwargs: dict) -> str:
+    """What a call was on, as the harness compares it with the request's input: '' for a call with no arguments (the
+    item reads the request itself), the digest of the one positional argument's canonical JSON (:func:`result_digest`)
+    for a call with exactly that argument when it is plain data, and ``-`` for any other call. No code of an argument
+    runs."""
+    if not args and not kwargs:
+        return ""
+    if len(args) == 1 and not kwargs and _plain_data(args[0]):
+        return result_digest(args[0])
+    return "-"
+
+
+def _plain_data(value: Any, depth: int = 0) -> bool:
+    """Whether *value* is plain JSON data, by exact types only, so no code of the value runs (a ``str`` or ``int``
+    subclass, a mapping that is not a ``dict``, or anything nested past :data:`_PLAIN_DEPTH` is not)."""
+    t = type(value)
+    if value is None or t in (bool, int, float, str):
+        return True
+    if depth >= _PLAIN_DEPTH:
+        return False
+    if t in (list, tuple):
+        return all(_plain_data(v, depth + 1) for v in value)
+    if t is dict:
+        return all(type(k) is str and _plain_data(v, depth + 1) for k, v in value.items())
+    return False
+
+
+#: How deep :func:`_plain_data` looks into nested lists and dicts.
+_PLAIN_DEPTH = 64
+
+
 def result_digest(value: Any) -> str:
-    """A digest of *value*'s canonical JSON: sorted keys, separators ``(",", ":")``, non-ASCII kept, anything else
-    as its ``str``; the same text the harness's ``fixtures.canonical`` makes, so equal values give equal digests."""
-    text = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+    """A digest of *value*'s canonical JSON (sorted keys, separators ``(",", ":")``, non-ASCII kept), the same text the
+    harness's ``fixtures.canonical`` makes, so equal values give equal digests; a value that is not plain data
+    (:func:`_plain_data`) is digested by its type's name alone, so none of its code runs."""
+    if _plain_data(value):
+        text = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    else:
+        text = "<not plain data: %s>" % type(value).__name__
     return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:DIGEST_CHARS]
 
 
@@ -2638,17 +2682,18 @@ class _check_run:
         _CHECKING.on = self._before
 
 
-def _emit_result(item: str, value: Any) -> None:
-    """Raise :data:`RESULT_EVENT` for a tracked call of *item* that returned *value* (not inside a check run)."""
+def _emit_result(item: str, outcome: str, value: Any, on: str) -> None:
+    """Raise :data:`RESULT_EVENT` for a tracked call of *item* that ended *outcome*, returning *value* when ``ok``, on
+    the input whose digest is *on* (:func:`input_digest`); not inside a check run."""
     if _checking():
         return
     try:
-        sys.audit(RESULT_EVENT, item, result_digest(value))
+        sys.audit(RESULT_EVENT, item, outcome, result_digest(value) if outcome == "ok" else "", on)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
         pass
 
 
-def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None:
+def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT, on: str = "") -> None:
     if _checking():
         return
     try:
@@ -2656,7 +2701,7 @@ def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
         pass
     if event == CALL_EVENT and outcome != "ok":
-        _note_failed(item)
+        _note_failed(item, on)
 
 
 #: The items whose call failed in this process (it raised, or refused its input), by the request they were called on
@@ -2671,9 +2716,37 @@ def _request_key() -> str:
     return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:16] if text else ""
 
 
-def _note_failed(item: str) -> None:
+def _declared_digest() -> str | None:
+    """The digest of the request's declared input (:data:`DECLARED_INPUT_TOOL`), or None when the request declares
+    none or it is not available here. Never raises."""
+    call = getattr(_tools(), "_call", None)
+    if not callable(call):
+        return None
     try:
-        _FAILED_HERE.setdefault(_request_key(), set()).add(item)
+        reply = json.loads(str(call(DECLARED_INPUT_TOOL, {})))
+    except Exception:  # noqa: BLE001 - a refusal or a closed channel: nothing declared here
+        return None
+    if not isinstance(reply, dict) or reply.get("declared") is not True:
+        return None
+    return result_digest(reply.get("value"))
+
+
+def _on_real_input(on: str) -> bool:
+    """Whether a call on the input with digest *on* was on the request's real input: a call with no arguments, a call
+    on the declared input or on the request's text, or any call when the request declares no input."""
+    if on == "":
+        return True
+    declared = _declared_digest()
+    if declared is None:
+        return True
+    text = _current_request()[0]
+    return on in (declared, result_digest(text) if text is not None else declared)
+
+
+def _note_failed(item: str, on: str = "") -> None:
+    try:
+        if _on_real_input(on):
+            _FAILED_HERE.setdefault(_request_key(), set()).add(item)
     except Exception:  # noqa: BLE001 - keeping it never changes the call
         pass
 
@@ -2709,15 +2782,18 @@ def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
         @functools.wraps(fn)
         async def call(*args: Any, **kwargs: Any) -> Any:
             digest = args_digest(args, kwargs)
+            on = input_digest(args, kwargs) if event == CALL_EVENT else "-"
             try:
                 result = await fn(*args, **kwargs)
             except Exception as exc:
-                _emit(item, digest, call_outcome(exc), event)
+                _emit(item, digest, call_outcome(exc), event, on)
                 _emit_failed(item, exc, args, kwargs, event)
+                if event == CALL_EVENT:
+                    _emit_result(item, call_outcome(exc), None, on)
                 raise
-            _emit(item, digest, "ok", event)
+            _emit(item, digest, "ok", event, on)
             if event == CALL_EVENT:
-                _emit_result(item, result)
+                _emit_result(item, "ok", result, on)
             return result
 
     else:
@@ -2725,15 +2801,18 @@ def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
         @functools.wraps(fn)
         def call(*args: Any, **kwargs: Any) -> Any:
             digest = args_digest(args, kwargs)
+            on = input_digest(args, kwargs) if event == CALL_EVENT else "-"
             try:
                 result = fn(*args, **kwargs)
             except Exception as exc:
-                _emit(item, digest, call_outcome(exc), event)
+                _emit(item, digest, call_outcome(exc), event, on)
                 _emit_failed(item, exc, args, kwargs, event)
+                if event == CALL_EVENT:
+                    _emit_result(item, call_outcome(exc), None, on)
                 raise
-            _emit(item, digest, "ok", event)
+            _emit(item, digest, "ok", event, on)
             if event == CALL_EVENT:
-                _emit_result(item, result)
+                _emit_result(item, "ok", result, on)
             return result
 
     call.__memory_item__ = item  # type: ignore[attr-defined]

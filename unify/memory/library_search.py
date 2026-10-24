@@ -306,11 +306,18 @@ def shape_profile(desc: Any) -> str | None:
     return None
 
 
-def request_profile(text: Any) -> str | None:
-    """The structure profile of the current request (:func:`shape_profile`): of the request text when the whole text
-    parses as JSON, else of the text itself (its line-count and length classes); None without a request."""
+#: No input declared (:func:`request_profile`).
+UNDECLARED = object()
+
+
+def request_profile(text: Any, declared: Any = UNDECLARED) -> str | None:
+    """The structure profile of the current request (:func:`shape_profile`): of its *declared* input when the world
+    declared one (rev 2.3), else of the request text when the whole text parses as JSON, else of the text itself
+    (its line-count and length classes); None without a request."""
     from .captures import _length_class, shape
 
+    if declared is not UNDECLARED:
+        return shape_profile(shape(declared))
     if not isinstance(text, str) or not text:
         return None
     try:

@@ -47,9 +47,10 @@ def test_a_tracked_call_that_returned_raises_its_result_digest_once(tmp_path):
         + "from memory.grid.cells import rows\nrows([[1], [2], [3]])\n"
         + "print(json.dumps([e for e in seen[start:] if e[0] == 'memory.call_result']))\n",
     )
+    # rev 2.3: how it ended, its result's digest and its one input's
     assert seen == [
-        ["memory.call_result", [ROWS, _digest(2)]],
-        ["memory.call_result", [ROWS, _digest(3)]],
+        ["memory.call_result", [ROWS, "ok", _digest(2), _digest([[1], [2]])]],
+        ["memory.call_result", [ROWS, "ok", _digest(3), _digest([[1], [2], [3]])]],
     ]
 
 
@@ -127,7 +128,7 @@ def _cell(**results) -> dict:
     return {
         "calls": {
             "counts": {item: {"ok": 1, "refused": 0, "error": 0} for item in results},
-            "results": [{"item": item, "digest": _digest(v)} for item, v in results.items()],
+            "results": [{"item": item, "outcome": "ok", "digest": _digest(v), "input": ""} for item, v in results.items()],
         }
     }
 

@@ -824,6 +824,16 @@ def with_reasks(record: Any, reasks: list[dict]) -> Any:
     return {**record, "reasks": [dict(r) for r in reasks]}
 
 
+def with_answered_from(record: Any, rows: list[dict]) -> Any:
+    """*record* (a use record) with ``answered_from`` (rev 2.3): one row per answer made with
+    ``tools.answer_from``: the item it called when ``fn`` was one, where its input came from, the digests of its input
+    and output and the values while small, whether the answer was taken, and the observation count. Unchanged when it
+    is not a use record."""
+    if not isinstance(record, dict) or "error" in record:
+        return record
+    return {**record, "answered_from": [dict(r) for r in rows]}
+
+
 def with_pins(record: Any, pin_counts: Mapping[str, Mapping[str, Mapping[str, int]]], cell_pins: list[str]) -> Any:
     """*record* (a use record) with the pin each use was served under (``UNIFY_MEMORY=in_episode``): each item row gains
     ``pins`` (pin -> its observed calls, {ok, refused, error}), each tracked call, ``Item.fits`` and
@@ -1058,6 +1068,8 @@ class RequestRun:
         self._reask_seen = (0, 0)
         self.reask_state: Any = None
         self.reasks: list[dict] = []
+        # Rev 2.3: one row per answer made with ``tools.answer_from``.
+        self.answered_from: list[dict] = []
         #: this request's role dispatcher (:func:`start_role_dispatcher`), running on the loop; None when none runs
         self.role_task: Any = None
         self._lock: int | None = None
@@ -1499,22 +1511,54 @@ class RequestRun:
                 for k in RUNTIME_OUTCOMES:
                     self._add_pin_count(pin, item, k, row[k])
 
+    @property
+    def declared(self) -> dict | None:
+        """The request's input as the world declared it beside a message (``unify.common.declared_input``:
+        ``{"value", "digest"}``), or None when none was declared."""
+        from unify.common import declared_input
+
+        return declared_input.current()
+
+    def on_real_input(self, on: Any) -> bool:
+        """Whether a tracked call on the input whose digest is *on* was on the request's real input: a call
+        with no arguments (the item reads the request itself), a call on the declared input or on the request's text,
+        or any call outside a check run when the request declares no input (a check run raises no event at all)."""
+        declared = self.declared
+        if declared is None or on == "":
+            return True
+        from ..fixtures import canonical
+
+        return on in (declared["digest"], _result_digest_of(canonical(self.request)))
+
+    def note_answered_from(self, row: dict) -> None:
+        """Keep one answer made with ``tools.answer_from`` (the box's row), with the observation count when it was
+        made, so the verdict that follows can name the item it was made from."""
+        self.answered_from.append({**row, "obs": self._observations_now()})
+
     def _note_results(self, drained: Any) -> None:
-        """Keep the result digests of one cell's tracked calls, and open a bad use for each item whose tracked
-        call raised or refused its input in it (a check run raises no event, so it never opens one)."""
+        """Keep the result digests of one cell's tracked calls on the request's real input (:meth:`on_real_input`),
+        and open a bad use for each item whose tracked call on it raised or refused its input (a check run raises no
+        event, so it never opens one). A cell whose records carry no results (an older box) counts its failures."""
         calls = drained.get("calls") if isinstance(drained, dict) else None
         if not isinstance(calls, dict):
             return
         results = calls.get("results")
+        failed: list[str] = []
         for r in results if isinstance(results, list) else []:
-            if isinstance(r, dict) and isinstance(r.get("item"), str) and isinstance(r.get("digest"), str):
+            if not isinstance(r, dict) or not isinstance(r.get("item"), str) or not self.on_real_input(r.get("input")):
+                continue
+            if r.get("outcome") == "ok" and isinstance(r.get("digest"), str):
                 self.returned_here.setdefault(r["item"], set()).add(r["digest"])
+            elif r.get("outcome") in ("refused", "error"):
+                failed.append(r["item"])
         counts = calls.get("counts")
-        failed = [
-            item
-            for item, row in (counts if isinstance(counts, dict) else {}).items()
-            if isinstance(item, str) and isinstance(row, dict) and (_count(row.get("refused")) or _count(row.get("error")))
-        ]
+        if not isinstance(results, list):
+            failed = [
+                item
+                for item, row in (counts if isinstance(counts, dict) else {}).items()
+                if isinstance(item, str) and isinstance(row, dict)
+                and (_count(row.get("refused")) or _count(row.get("error")))
+            ]
         if failed and any(item not in self.bad_here for item in failed):
             at = self._observations_now()
             for item in sorted(failed):
@@ -1569,6 +1613,20 @@ class RequestRun:
         either is read. A rejection ties a bad use to each matched item. A verdict after calls whose results the answer
         does not equal is kept as not attributed, for display only. ``short`` marks a match that rests only on a short
         or scalar value (at most :data:`SHORT_VALUE_CHARS` characters of JSON), which may equal by coincidence."""
+        made = self.answered_from[-1] if self.answered_from else None
+        if (
+            made is not None
+            and made.get("answered") is True
+            and isinstance(made.get("item"), str)
+            and made.get("obs") == entry.get("obs")
+        ):
+            # (ii) exact provenance: the answer this verdict judged was made with tools.answer_from from that item
+            row = {"label": entry["label"], "obs": entry.get("obs"), "items": [made["item"]], "short": False,
+                   "how": "answered_from"}  # fmt: skip
+            self.answer_attributions.append(row)
+            if entry["label"] == "fail":
+                self.bad_here.setdefault(made["item"], {"how": "answered_from", "at": entry.get("obs")})
+            return
         if not self.returned_here:
             return
         values = self._answer_values()
@@ -2020,6 +2078,8 @@ class RequestRun:
         ep.memory_use = with_answer_attributions(ep.memory_use, self.answer_attributions)
         # Each time the librarian was asked again on new evidence
         ep.memory_use = with_reasks(ep.memory_use, self.reasks)
+        # Each answer made with tools.answer_from
+        ep.memory_use = with_answered_from(ep.memory_use, self.answered_from)
         if self.in_episode is not None:
             # UNIFY_MEMORY=in_episode: the episode's pins, and every use under the pin served when it was called
             ep.memory_pins = self.in_episode.pin_rows()

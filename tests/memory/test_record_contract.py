@@ -48,6 +48,7 @@ from unify.memory.integration.request import (
     add_runtime_calls,
     runtime_calls_empty,
     with_answer_attributions,
+    with_answered_from,
     with_pins,
     with_reasks,
     with_runtime_calls,
@@ -122,7 +123,7 @@ REGISTRY: dict[str, dict] = {
     },
     "memory_use.json": {
         "writer": "unify.memory.analysis.use:request_use, unify.memory.integration.request:with_runtime_calls, "
-        "with_pins, with_answer_attributions and with_reasks",
+        "with_pins, with_answer_attributions, with_reasks and with_answered_from",
         "readers": [
             "unify.memory.evidence:EvidenceStore.index_episode",
             "unify.memory.integration.outcomes:implicit_evidence",
@@ -530,6 +531,8 @@ def test_every_field_a_use_record_reader_asks_for_is_written(tmp_path, library_r
     record = with_answer_attributions(record, [{"label": "fail", "obs": 1, "items": [item], "short": False}])
     # rev 2.3: each time the librarian was asked again on new evidence
     record = with_reasks(record, [{"obs": 2, "events": ["outcome"], "fit": item}])
+    # rev 2.3: each answer made with tools.answer_from
+    record = with_answered_from(record, [{"item": item, "source": "declared", "answered": True, "obs": 1}])
     rows = record["items"]
     assert item in rows and "runtime" in rows[item]
     written = {"record": set(record), "item": {k for row in rows.values() for k in row}}

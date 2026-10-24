@@ -223,7 +223,8 @@ FAILURE_HELPERS = HELPER_ITEMS
 #: went (ids and outcomes only).
 MATCH_EVENT = "memory.match_result"
 RUN_EVENT = "memory.run_result"
-#: A tracked call that returned: (id, a digest of its result's canonical JSON); never the value (rev 2.3).
+#: A tracked call that ended: (id, ``ok``/``refused``/``error``, a digest of its result's canonical JSON or '', a digest
+#: of its one input's or '' (no arguments) or ``-`` (another call)); never a value (rev 2.3).
 RESULT_EVENT = "memory.call_result"
 #: What ``memory.ask`` got back: the ids the answer listed as fitting, whether it said
 #: nothing fits, and the recognisers' outcomes as ``(id, read, applies)`` labels, with a fixed short reason after
@@ -660,18 +661,23 @@ class CellAudit:
         self.match_records.append(record)
 
     def _call_result(self, args: tuple) -> None:
-        """Keep one ``memory.call_result`` event: the item and its result's digest (exact ``str`` shapes only)."""
-        if type(args) is not tuple or len(args) != 2:
+        """Keep one ``memory.call_result`` event: the item, how it ended, its result's digest and its input's (exact
+        ``str`` shapes only)."""
+        if type(args) is not tuple or len(args) != 4:
             self.calls_malformed += 1
             return
-        item, digest = args
-        if self._id(item) is None or type(digest) is not str or _HEX_DIGEST.fullmatch(digest) is None:
+        item, outcome, digest, on = args
+        digest_ok = type(digest) is str and (
+            _HEX_DIGEST.fullmatch(digest) is not None if outcome == "ok" else digest == ""
+        )
+        on_ok = type(on) is str and (on in ("", "-") or _HEX_DIGEST.fullmatch(on) is not None)
+        if self._id(item) is None or outcome not in ("ok", "refused", "error") or not digest_ok or not on_ok:
             self.calls_malformed += 1
             return
         if len(self.result_records) >= MAX_CALL_RECORDS:
             self.call_records_dropped += 1
             return
-        self.result_records.append({"item": item, "digest": digest})
+        self.result_records.append({"item": item, "outcome": outcome, "digest": digest, "input": on})
 
     def _run_result(self, args: tuple) -> None:
         """Keep one ``memory.run_result`` event: its target, outcome, level and conditions."""

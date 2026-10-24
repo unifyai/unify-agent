@@ -265,7 +265,9 @@ def test_the_help_is_typed_and_shows_a_json_and_a_text_example(load, capsys):
 def test_the_actors_and_a_teammates_opening_hold_the_line_once():
     for agent in ("actor", "teammate"):
         opening = R.preamble(agent, {"environment": "Your box: /workspace is writable.", "flags": FULL})
-        assert opening.count(R.EXAMPLES_LINE) == 1, agent
+        # rev 2.3: they also answer from a function, so their line is the one that names it too
+        assert opening.count(R.EXAMPLES_ANSWER_LINE) == 1, agent
+        assert opening.count(R.EXAMPLES_LINE[:-1]) == 1, agent
         # rev 2: the record's rules come in the first message (COMMON_SECTION), never in the opening
         assert R.COMMON_SECTION not in opening, agent
     for agent in ("writer", "helper", "librarian"):

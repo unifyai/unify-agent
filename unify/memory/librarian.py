@@ -1268,13 +1268,14 @@ class LibrarianSession:
         failed: Any = (),
         failed_at: Mapping[str, Any] | None = None,
         messages_now: int | None = None,
+        declared: Mapping[str, Any] | None = None,
     ) -> str:
         """One question about the current request, as JSON text (:meth:`answer`; *request* is not sent to the
         librarian, so it is not in the key; *facts*, which an older cell may still send, are not read: rev 2 runs no
         reader)."""
         got = await self.answer(
             question, schema=schema, last_message=last_message, failed=failed, failed_at=failed_at,
-            messages_now=messages_now, request=request,
+            messages_now=messages_now, request=request, **({"declared": declared} if declared is not None else {}),
         )
         return json.dumps(got, ensure_ascii=False, sort_keys=True)
 
@@ -1288,6 +1289,7 @@ class LibrarianSession:
         failed_at: Mapping[str, Any] | None = None,
         messages_now: int | None = None,
         request: str | None = None,
+        declared: Mapping[str, Any] | None = None,
     ) -> dict:
         """One question about the current request. When the librarian was already sent the same
         (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave it, with :data:`ALREADY_GIVEN`, and
@@ -1314,7 +1316,12 @@ class LibrarianSession:
             # the request's structure orders the search; it is not sent to the librarian, so it is not in the key
             from .library_search import request_profile
 
-            self.state.request_profile = request_profile(request)
+            # the request's declared input (``{"value": ...}``, rev 2.3) when the world declared one
+            self.state.request_profile = (
+                request_profile(request, declared["value"])
+                if isinstance(declared, Mapping) and "value" in declared
+                else request_profile(request)
+            )
             self.questions += 1
             library = {"commit": self.library, "dispatch": _digest_of(self.dispatch)}
             if self.evidence is not None:
@@ -1519,8 +1526,9 @@ class AskInstance(LibrarianSession):
 
     async def ask(self, question: str, facts: Any = None, request: str | None = None, last_message: str | None = None,
                   schema: dict | None = None, failed: Any = (), failed_at: Mapping[str, Any] | None = None,
-                  messages_now: int | None = None) -> str:  # fmt: skip
-        text = await super().ask(question, facts, request, last_message, schema, failed, failed_at, messages_now)
+                  messages_now: int | None = None, declared: Mapping[str, Any] | None = None) -> str:  # fmt: skip
+        text = await super().ask(question, facts, request, last_message, schema, failed, failed_at, messages_now,
+                                 declared)  # fmt: skip
         keep_answers(self)
         try:
             self._post_ask(question, text)

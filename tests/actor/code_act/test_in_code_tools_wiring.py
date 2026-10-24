@@ -306,7 +306,7 @@ async def test_the_actor_checks_a_function_of_its_session_against_examples_in_it
     assert "check_examples" in session.allow
     assert [r["tool"] for r in _channel_rows(_rows(session))] == ["answer"]
     system = _system_texts(model.calls[0])[0]
-    assert system.count(R.EXAMPLES_LINE) == 1
+    assert system.count(R.EXAMPLES_ANSWER_LINE) == 1  # rev 2.3: the line that also names answer_from
     _assert_ended(in_code["opened"])
 
 

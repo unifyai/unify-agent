@@ -3,6 +3,7 @@
 actor	/memory-library
 actor	/workspace
 actor	await
+actor	input=
 actor	risky: bool
 actor	schema=
 actor	steps: list[str]
@@ -12,6 +13,7 @@ helper	cases/<name>.json
 teammate	/memory-library
 teammate	/workspace
 teammate	await
+teammate	input=
 teammate	risky: bool
 teammate	schema=
 teammate	steps: list[str]

@@ -298,8 +298,10 @@ def sh(command, timeout=None):
 def test_the_request_tool_is_on_the_channel_but_never_in_tools(monkeypatch, capsys):
     monkeypatch.setattr(R, "client_source", lambda: CLIENT)
     monkeypatch.setattr(R, "shell_source", lambda: SHELL)
-    assert R.CHANNEL_ONLY == {"current_request"}
-    assert R.channel_only("actor") == R.channel_only("teammate") == ("current_request",)
+    # rev 2.3: the declared input and the record of an answer made from a function are channel-only too
+    assert R.CHANNEL_ONLY == {"current_request", "declared_input", "answered_from"}
+    assert R.channel_only("actor") == R.channel_only("teammate") == ("current_request", "declared_input",
+                                                                     "answered_from")
     assert R.channel_only("writer") == () and "current_request" not in R.allow_list("actor", frozenset({"librarian"}))
     mod = types.ModuleType("tools")
     names = R.allow_list("actor", frozenset({"librarian", "store", "helper"})) + R.channel_only("actor")

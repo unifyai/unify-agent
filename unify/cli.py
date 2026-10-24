@@ -444,6 +444,13 @@ class Act:
                         message = item.get("message")
                         if not isinstance(message, str) or not message:
                             continue
+                        if "input" in item:
+                            # rev 2.3: the request's input as the world declares it beside the message (data, never
+                            # parsed from text); tools.answer_from answers on it
+                            from unify.common import declared_input
+
+                            if not declared_input.declare(item.get("input")):
+                                self._progress("the declared input was not kept: it has no JSON form or is too large")
                         line = message
                 if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED
@@ -506,6 +513,10 @@ class Act:
 
         # UNIFY_MEMORY=on: export memory and open the request's record
         # before the actor builds its prompt.
+        # rev 2.3: a request starts with no input or examples declared; its messages may declare them
+        from unify.common import declared_input
+
+        declared_input.clear()
         self._mv2 = _mv2.begin_request(request)
         if args.jsonl and self._mv2 is not None:
             # the episode's id, so a verdict that arrives after it ends can name it
