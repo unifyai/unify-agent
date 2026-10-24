@@ -121,6 +121,17 @@ REGISTRY: dict[str, dict] = {
         },
         "conditional": {},
     },
+    # rev 2.3: the procedure the harness builds from an accepted answer's function, per episode, outside every box
+    "memory-answered/<episode>/procedure.py and answered.json": {
+        "writer": "unify.memory.integration.request:RequestRun._store_answered",
+        "readers": ["unify.memory.captures:answered_procedure", "unify.memory.captures:capture_trace_step"],
+        "fields": {
+            "fn": [],
+            "checked": ["unify.memory.captures:capture_trace_step"],
+            "input_digest": [],
+            "input": ["unify.memory.captures:capture_trace_step"],
+        },
+    },
     "item_use": {
         "writer": "unify.memory.evidence:EvidenceStore.index_episode (_use_rows)",
         "readers": ["unify.memory.lifecycle:facts_from_evidence"],
@@ -133,6 +144,9 @@ REGISTRY: dict[str, dict] = {
             "unify.memory.integration.outcomes:implicit_evidence",
             "unify.memory.usage:writer_usage_record",
         ],
+        # rev 2.3: read by the analysis only (no harness reader): each re-ask on new evidence, and each answer made
+        # with tools.answer_from; answer_attributions is read by the evidence store (_answer_verdicts)
+        "analysis_only": ["reasks", "answered_from"],
     },
     "signal": {
         "writer": "unify.memory.signals:post_signal (EvidenceStore.add_signal), read back by EvidenceStore.signals_for",
@@ -661,3 +675,24 @@ def test_a_capture_record_keeps_its_uses_and_what_they_give_it(tmp_path, name):
     # a record rewritten keeps them as its uses give them (one derivation), never a value written over them
     old = {**rec, name: "x"}
     assert cp.refresh(old)[name] == cp.use_fields(rec, [])[name]
+
+
+def test_the_answered_procedures_fields_are_those_its_writer_writes_and_its_reader_reads(tmp_path):
+    # rev 2.3: _store_answered writes answered.json beside procedure.py; the capture step reads it in place of the
+    # fork's procedure (captures.answered_procedure)
+    import ast
+    import inspect
+    import textwrap
+
+    from unify.memory import captures as cp
+    from unify.memory.integration import request as rq
+
+    fields = set(REGISTRY["memory-answered/<episode>/procedure.py and answered.json"]["fields"])
+    tree = ast.parse(textwrap.dedent(inspect.getsource(rq.RequestRun._store_answered)))
+    doc = next(n for n in ast.walk(tree) if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "doc")
+    written = {k.value for k in doc.value.keys} | {"input"}  # input: added when the value was kept
+    assert '"input"' in inspect.getsource(rq.RequestRun._store_answered)
+    assert written == fields, written
+    read = inspect.getsource(cp.capture_trace_step)
+    assert '"checked"' in read and '"input"' in read
+    assert REGISTRY["memory_use.json"]["analysis_only"] == ["reasks", "answered_from"]
