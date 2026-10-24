@@ -208,3 +208,12 @@ def test_a_no_argument_call_passes_the_declared_input_or_says_to_pass_one(monkey
     with pytest.raises(LH.WrongCall) as got:
         item()
     assert "declares none" in str(got.value) and "(<input>)" in str(got.value)
+
+
+def test_a_stored_two_parameter_function_is_called_as_answer_from_called_it():
+    cells = ["def add(a, b):\n    return a + b\n", "def one(rows, scale=2):\n    return [r * scale for r in rows]\n"]
+    two = closure.build(cells, "add")
+    assert _run(two, [3, 4]) == 7 and _run(two, (5, 6)) == 11  # spread, as answer_from spread [3, 4]
+    single = closure.build(cells, "one")  # one required parameter (the other has a default): never spread
+    assert _run(single, [1, 2]) == [2, 4]
+    assert "fn(*value)" not in single and "add(*value)" in two

@@ -16,7 +16,8 @@ reaches is one of the harness's own (:data:`HARNESS_NAMES`), is bound by anythin
 own body included) imports a harness or key-routed module (:data:`HARNESS_MODULES`). These are hard security checks;
 beyond them the guarantee is the confined child a stored procedure runs in (no keys, no tool channel). The stored
 procedure reads the declared input as data: its ``read_input`` is the identity and its ``run(value)`` calls
-``fn(value)``. The code is untrusted text from the agent's box: the capture step's safety checks still apply.
+``fn(value)``, or ``fn(*value)`` for a list or tuple when ``fn`` needs two or more positional arguments, as
+``tools.answer_from`` called it. The code is untrusted text from the agent's box: the capture step's safety checks still apply.
 """
 
 from __future__ import annotations
@@ -172,6 +173,11 @@ def build(cells: Iterable[str], fn: str) -> str:
         if all(node is not n for n in nodes):
             nodes.append(node)
     body = ast.unparse(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])))
+    if spreads(bindings[fn][1]):
+        # as tools.answer_from called it: a list or tuple input passed as its arguments (two or more required)
+        call = f"    if isinstance(value, (list, tuple)):\n        return {fn}(*value)\n    return {fn}(value)\n"
+    else:
+        call = f"    return {fn}(value)\n"
     return (
         f'"""The function an accepted answer was made with, {fn}, stored with what it needs."""\n\n'
         f"{body}\n\n\n"
@@ -179,5 +185,15 @@ def build(cells: Iterable[str], fn: str) -> str:
         '    """The request\'s declared input, as data."""\n'
         "    return value\n\n\n"
         "def run(value):\n"
-        f"    return {fn}(value)\n"
+        f"{call}"
     )
+
+
+def spreads(node: ast.AST) -> bool:
+    """Whether the ``def`` *node* needs two or more positional arguments (required positional parameters, read from
+    its AST): then a list or tuple input is passed as its arguments, the rule ``tools.answer_from`` and
+    ``tools.check_examples`` call a function by."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    positional = [*node.args.posonlyargs, *node.args.args]
+    return len(positional) - len(node.args.defaults) >= 2
