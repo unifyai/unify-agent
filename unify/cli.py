@@ -53,7 +53,15 @@ drafted; with no turn running it is ignored. Without --persist it ends the
 session as {"quit": true} does. Progress still goes to stderr. With memory
 on, a stdin line {"outcome": {...}} gives the request its checked outcome
 (see unify/outcome.py) and is answered with {"type": "outcome",
-"accepted": ...}. A message is posted to the run's shared agent
+"accepted": ...}; a line {"checker": {"label": "pass" | "fail"}} (with
+"about" and "episode" when it names them) is a verdict the environment
+showed the actor, sent just before the message that shows it. A message
+line may also carry, as data, "input" (the request's declared input),
+"examples" (a list of {"input": ..., "output": ...} pairs the request was
+given) and "final": true (the episode is over or its verdict final: the
+library's librarian is not asked again on it). --declared FILE and
+--final do the same for the first request, which comes from the command
+line. A message is posted to the run's shared agent
 record and reaches the actor at its next step instead of interrupting it,
 and each record entry that mentions @user is written out as
 {"type": "record", ...} (a "record>" line without --jsonl).

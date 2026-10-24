@@ -1729,14 +1729,16 @@ class Item:
             ArgumentError: a captured procedure refused the input or did not return; the error says why.
             NotFound: the function could not be loaded from this copy of the library.
             WrongCall: the item is a note, which is read, not called; or a captured procedure that acts through its
-                episode's tools, which no call runs.
+                episode's tools, which no call runs; or, with no arguments, a procedure that runs on the input a
+                request declares, when the current request declares none (pass the input).
 
         Example:
             memory.get('memory.<package>.<module>:<name>')('2026-10-09')
 
         With no arguments, a procedure that takes the request (a captured procedure of the value or state form, or a
         procedure with a recipe) runs on the current request, as ``memory.request()`` gives it: one call re-runs the
-        stored work on it.
+        stored work on it. A procedure stored from the function an accepted answer was made with runs instead on the
+        input the current request declares (its card says so); where the request declares none, pass the input.
         """
         if self.id.startswith(CAPTURE_PREFIX) and _capture_form(self.id[len(CAPTURE_PREFIX) :]) == "state_env":
             # a fact of the harness, not a failure of the procedure: nothing is run and no use is recorded. The error
