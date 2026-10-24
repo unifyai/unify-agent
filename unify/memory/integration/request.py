@@ -816,6 +816,14 @@ def with_answer_attributions(record: Any, attributions: list[dict]) -> Any:
     return {**record, "answer_attributions": [dict(a) for a in attributions]}
 
 
+def with_reasks(record: Any, reasks: list[dict]) -> Any:
+    """*record* (a use record) with ``reasks`` (rev 2.3): one row per time the librarian was asked again on new
+    evidence, ``{"obs", "events", "fit"}`` (the primary it named, or None). Unchanged when it is not a use record."""
+    if not isinstance(record, dict) or "error" in record:
+        return record
+    return {**record, "reasks": [dict(r) for r in reasks]}
+
+
 def with_pins(record: Any, pin_counts: Mapping[str, Mapping[str, Mapping[str, int]]], cell_pins: list[str]) -> Any:
     """*record* (a use record) with the pin each use was served under (``UNIFY_MEMORY=in_episode``): each item row gains
     ``pins`` (pin -> its observed calls, {ok, refused, error}), each tracked call, ``Item.fits`` and
@@ -1041,6 +1049,15 @@ class RequestRun:
         self.returned_here: dict[str, set[str]] = {}
         self.bad_here: dict[str, dict] = {}
         self.answer_attributions: list[dict] = []
+        # Rev 2.3 (re-ask on new evidence): the primary fit of the librarian's latest answer in this request
+        # (None: no fit stands, before any answer or after one that named none); the value-free shapes of the
+        # request's messages so far; how many verdicts and bad uses the last check had seen; the actor's in-code
+        # state the re-ask asks through (set when the actor opens); and one row per re-ask.
+        self.standing_fit: str | None = None
+        self.message_shapes: set[str] = set()
+        self._reask_seen = (0, 0)
+        self.reask_state: Any = None
+        self.reasks: list[dict] = []
         #: this request's role dispatcher (:func:`start_role_dispatcher`), running on the loop; None when none runs
         self.role_task: Any = None
         self._lock: int | None = None
@@ -1503,6 +1520,43 @@ class RequestRun:
             for item in sorted(failed):
                 self.bad_here.setdefault(item, {"how": "failed", "at": at})
 
+    def note_answer(self, answer: Any) -> None:
+        """Keep the primary fit of a librarian answer given in this request (None when it named none)."""
+        fits = answer.get("fits") if isinstance(answer, dict) else None
+        if not isinstance(fits, list):
+            return
+        first = fits[0] if fits and isinstance(fits[0], dict) else None
+        self.standing_fit = first.get("id") if first is not None and isinstance(first.get("id"), str) else None
+
+    def reask_events(self, message: str) -> list[str]:
+        """The events since the last check that call for asking the librarian again as *message* arrives, or []
+        when none did or the gate is shut. The events: ``message`` (its value-free shape,
+        ``adapters.dialogue.observation_shape``, is new for this request), ``outcome`` (a verdict was taken) and
+        ``failed_use`` (an item had a bad use, :attr:`bad_here`). The gate: no fit stands, or the standing fit had a
+        bad use. A check run or a withhold is never a bad use, so it never opens one. Each call takes the events it
+        sees, whether or not the gate is open."""
+        from .adapters import dialogue
+
+        if not self.message_shapes and isinstance(self.request, str):
+            self.message_shapes.add(dialogue.observation_shape(self.request))
+        events = []
+        shape = dialogue.observation_shape(message) if isinstance(message, str) else None
+        if shape is not None and shape not in self.message_shapes:
+            self.message_shapes.add(shape)
+            events.append("message")
+        verdicts, bad = len(self.checker_seen), len(self.bad_here)
+        if verdicts > self._reask_seen[0]:
+            events.append("outcome")
+        if bad > self._reask_seen[1]:
+            events.append("failed_use")
+        self._reask_seen = (verdicts, bad)
+        if not events:
+            return []
+        standing = self.standing_fit
+        if standing is not None and standing not in self.bad_here:
+            return []
+        return events
+
     def bad_uses(self) -> dict[str, int | None]:
         """The items with a bad use in this request, each with the observation count when it was found."""
         return {item: row.get("at") for item, row in sorted(self.bad_here.items())}
@@ -1701,7 +1755,15 @@ class RequestRun:
             texts = [t for t in dialogue.observation_texts(trajectory.fold(lines)) if t.strip()]
         except Exception:  # noqa: BLE001 - nothing to give: the question goes without it
             return None
-        return texts[-1] if len(texts) > 1 else None
+        if len(texts) <= 1:
+            return None
+        from ..librarian import REASK_HEAD
+
+        # the message as it came: without the line the harness put above it (rev 2.3)
+        last = texts[-1]
+        if last.startswith(REASK_HEAD):
+            last = last.split("\n\n", 1)[1] if "\n\n" in last else ""
+        return last or None
 
     def _observations_now(self) -> int | None:
         """How many observations this request's transcript holds now, or None when it cannot be read."""
@@ -1956,6 +2018,8 @@ class RequestRun:
         )
         # Each verdict taken within the request, with the items whose returned value the judged answer was
         ep.memory_use = with_answer_attributions(ep.memory_use, self.answer_attributions)
+        # Each time the librarian was asked again on new evidence
+        ep.memory_use = with_reasks(ep.memory_use, self.reasks)
         if self.in_episode is not None:
             # UNIFY_MEMORY=in_episode: the episode's pins, and every use under the pin served when it was called
             ep.memory_pins = self.in_episode.pin_rows()

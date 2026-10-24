@@ -682,12 +682,28 @@ async def ask_library(ctx: Any, args: dict) -> Any:
         isinstance(i, str) and 0 < len(i) <= 300 for i in failed
     ):
         return _refused(_refusal(ctx, "ask_library", "bad_failed"))
-    # the items whose call failed in this request: those the asking cell's package saw, and those the request's earlier
-    # cells recorded; none is offered again in this request (a use outcome, never stored as one)
-    failed = sorted(set(failed) | set(_memory_run_failed()))
-    # when each failed (the request's message count then) and the count now: an item may be offered again only on a
-    # later message (the librarian's ``reconsider``)
+    return await _ask_librarian(ctx, question, schema=schema, failed=failed)
+
+
+async def _ask_librarian(
+    ctx: Any,
+    question: str,
+    *,
+    schema: Any = None,
+    failed: list | None = None,
+    situation: Optional[str] = None,
+) -> Any:
+    """One checked question to the request's librarian (``ask_library``'s path; the harness's re-ask on new evidence
+    asks through it with the new message as *situation*). The answer's primary fit becomes the request's standing fit
+    (``RequestRun.note_answer``)."""
+    # the items with a bad use in this request: those the asking cell's package saw, and those the request's earlier
+    # cells and verdicts recorded; none is offered again in this request (a use outcome, never stored as one)
+    failed = sorted(set(failed or ()) | set(_memory_run_failed()))
+    # when each failed (the request's message count then) and the count now, the new message counted when the ask is
+    # on its arrival: an item may be offered again only on a later message (the librarian's ``reconsider``)
     failed_at, messages_now = _memory_run_failed_at() if failed else ({}, None)
+    if situation is not None and messages_now is not None:
+        messages_now += 1
     state = ctx.state
     session = getattr(state, "librarian", None)
     if session is None:
@@ -713,14 +729,32 @@ async def ask_library(ctx: Any, args: dict) -> Any:
             extra["failed"] = failed
             if failed_at and messages_now is not None:
                 extra["failed_at"], extra["messages_now"] = failed_at, messages_now
+        latest = situation
         if getattr(session, "evidence", None) is not None:
             # the harness's evidence serving on: the situation's latest message goes with the question
-            text = await session.ask(question, request=request, last_message=_memory_run_last_message(), **extra)
+            latest = latest if latest is not None else _memory_run_last_message()
+            text = await session.ask(question, request=request, last_message=latest, **extra)
         else:
+            if latest is not None:
+                question = f"{question}\n\nThe latest message of this request:\n{latest}"
             text = await session.ask(question, request=request, **extra)
     except _librarian.NoAnswer as exc:
         return _refused(_refusal(ctx, "ask_library", "no_answer", why=str(exc)[:300]))
+    _note_answer(text)
     return _reply(text)
+
+
+def _note_answer(text: str) -> None:
+    """Keep the answer's primary fit as the memory run's standing fit (a structured answer has none)."""
+    try:
+        from unify.memory.integration import request as _request
+
+        run = _request.current()
+        got = json.loads(text)
+        if run is not None and isinstance(got, dict) and "fits" in got:
+            run.note_answer(got)
+    except Exception:  # noqa: BLE001 - nothing kept: the gate stays as it was
+        pass
 
 
 # --- the current request, for the memory package (never in a cell's tools) ---

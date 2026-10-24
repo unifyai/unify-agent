@@ -452,6 +452,13 @@ class Act:
                     self._stop_requested = True
                     await self._handle.stop(SESSION_ENDED)
                     return
+                if self._mv2 is not None:
+                    # UNIFY_MEMORY (rev 2.3): the librarian asked again on new evidence; its answer goes above
+                    from unify.memory.integration import hooks as _mv2
+
+                    above = await _mv2.reask_line(self._mv2, line)
+                    if above:
+                        line = f"{above}\n\n{line}"
                 if self._bridge is not None:
                     # A record post, read at the next boundary.
                     await self._bridge.user_message(line)

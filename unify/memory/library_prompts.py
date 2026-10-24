@@ -36,7 +36,7 @@ ASK_LINE_IN_CODE = (
     "- At the start of a request, `memory.ask` names the stored procedure or note of the library that fits it best: "
     "with no question it asks about the request itself (the latest message included), and its answer gives the best "
     "fit with its call, and a fallback only for when the first fails. A request's first message may already hold "
-    "that answer, above the request's text. Ask again after a new message arrives, or with a question of your own. "
+    "that answer, above the request's text. Ask again with a question of your own. "
     "What it names can still be wrong for your case.\n"
 )
 #: The in-code paragraph on structured answers (``memory.ask(..., schema=...)``), with one general instance of a

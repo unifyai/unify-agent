@@ -371,6 +371,20 @@ def _host_paths(events: Any, workspace: Path) -> Any:
 # --- memory during an episode (UNIFY_MEMORY=in_episode; in_episode.py) ---------------------------------------------
 
 
+async def reask_line(run: Any, message: str) -> str:
+    """Rev 2.3: the line that goes above a new message of the request when the librarian was asked again on new
+    evidence (:func:`..librarian.request_reask_line`); '' with no run, no re-ask or any failure."""
+    if run is None or not enabled():
+        return ""
+    try:
+        from .. import librarian
+
+        return await librarian.request_reask_line(run, message)
+    except Exception as exc:  # noqa: BLE001 - a re-ask never costs the message its delivery
+        logger.warning("memory: the re-ask failed (%s)", type(exc).__name__)
+        return ""
+
+
 def attach_handle(handle: Any) -> None:
     """The actor's session handle, which a segment fork continues; inert while off or with no run."""
     run = _run()

@@ -258,6 +258,12 @@ class CodeActActor:
                 from unify.memory import librarian as _librarian
 
                 first_message_parts.append(await _librarian.request_start_block(in_code.state))
+                # rev 2.3: the librarian is asked again through the same state when new evidence arrives
+                from unify.memory.integration import request as _mv2_request
+
+                _run = _mv2_request.current()
+                if _run is not None:
+                    _run.reask_state = in_code.state
             # The shared opening comes first, then the actor's own prompt; both
             # are constant for the run.
             opening = in_code.opening()

@@ -1829,6 +1829,67 @@ def start_block(answer: Mapping[str, Any]) -> str:
     return text if len(text) <= START_BLOCK_CHARS else text[: START_BLOCK_CHARS - 1] + "…"
 
 
+#: The longest a re-ask line may be, in characters (one line).
+REASK_CHARS = 1000
+#: The re-ask line's opening.
+REASK_HEAD = "The library's answer on this message (its librarian, asked again):"
+
+
+def reask_line(answer: Mapping[str, Any]) -> str:
+    """One line from the librarian's checked *answer* on new evidence, in the one-primary form: the primary entry with
+    its call, then at most one fallback, labelled for when the first fails; or that nothing in the library fits. At
+    most :data:`REASK_CHARS` characters, no count."""
+    fits = [f for f in answer.get("fits") or [] if isinstance(f, Mapping)][:MAX_FITS]
+
+    def short(text: Any, n: int) -> str:
+        text = " ".join(str(text or "").split())
+        return text if len(text) <= n else text[: n - 1] + "…"
+
+    if not fits:
+        return f"{REASK_HEAD} nothing in the library fits this request."
+    text = f"{REASK_HEAD} {BEST_FIT_LABEL}: {fits[0].get('id')}: {short(fits[0].get('why'), 250)}; call: " + short(
+        fits[0].get("call"), 200
+    )
+    if len(fits) > 1:
+        text += f". {FALLBACK_LABEL}: {fits[1].get('id')}: {short(fits[1].get('why'), 150)}; call: " + short(
+            fits[1].get("call"), 200
+        )
+    return text if len(text) <= REASK_CHARS else text[: REASK_CHARS - 1] + "…"
+
+
+async def request_reask_line(run: Any, message: str) -> str:
+    """Rev 2.3: as *message* arrives, ask the request's librarian again, in its live session, when new evidence
+    came and the gate is open (``RequestRun.reask_events``), and return :func:`reask_line` of its answer to go above
+    the message; '' otherwise, and when no answer came in :data:`START_ASK_S`. The question is the request itself, as at
+    the start, with the new message as its situation."""
+    import asyncio
+
+    from unify.actor import tool_handlers as _handlers
+
+    state = getattr(run, "reask_state", None)
+    request = getattr(state, "request_text", None)
+    if state is None or getattr(state, "open_librarian", None) is None or not isinstance(request, str):
+        return ""
+    events = run.reask_events(message)
+    if not events:
+        return ""
+    row = {"obs": run._observations_now(), "events": events, "fit": None}
+    run.reasks.append(row)
+    try:
+        ctx = type("Ctx", (), {"state": state, "agent": "actor"})()
+        reply = await asyncio.wait_for(_handlers._ask_librarian(ctx, request, situation=message), START_ASK_S)
+        if getattr(reply, "status", "ok") != "ok":
+            return ""
+        got = json.loads(getattr(reply, "text", "") or "{}")
+    except Exception:  # noqa: BLE001 - no answer: the message goes as it came; memory.ask still works
+        return ""
+    if not isinstance(got, Mapping):
+        return ""
+    fits = got.get("fits") if isinstance(got.get("fits"), list) else []
+    row["fit"] = fits[0].get("id") if fits and isinstance(fits[0], Mapping) else None
+    return reask_line(got)
+
+
 async def request_start_block(state: Any) -> str:
     """Ask the request's librarian about the request itself, once, before the actor's first turn (the same ask as
     ``memory.ask()`` with no question, so the actor's own later ``memory.ask()`` gets this answer again with no model
