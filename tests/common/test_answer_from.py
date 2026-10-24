@@ -356,3 +356,18 @@ def test_the_box_reads_a_failure_as_on_the_real_input_by_the_same_rule(monkeypat
     assert not LH._on_real_input(_d({"rows": [9]})) and not LH._on_real_input("-")
     assert LH.input_digest((), {}) == "" and LH.input_digest(({"rows": [1]},), {}) == _d({"rows": [1]})
     assert LH.input_digest((1, 2), {}) == "-" and LH.input_digest((1,), {"k": 2}) == "-"
+
+
+def test_an_input_is_spread_over_a_two_parameter_function_in_the_answer_as_in_the_check(load):
+    tools = load()
+
+    def add(a, b):
+        return a + b
+
+    tools._client["EXAMPLES"].extend([{"input": [1, 2], "output": 3}])
+    tools.answer_from(add, input=[4, 5])
+    calls = _calls(tools)
+    assert calls[0] == ("answer", {"answer": 9})  # spread, as the check spread [1, 2] (it passed)
+    assert calls[1][1]["checked"] == {"passed": 1, "total": 1}
+    tools.answer_from(lambda pair: len(pair), input=[4, 5])  # one parameter: the list is its one argument
+    assert _calls(tools)[2] == ("answer", {"answer": 2})

@@ -1173,14 +1173,16 @@ ANSWER_FROM = RegisteredTool(
     name="answer_from",
     summary="answer the request with what a function of yours returns on the request's input.",
     description=(
-        "Call `fn`, a function defined in your session, once, here in your box, on the "
-        "request's input, and answer the request with what it returns, as `tools.answer` does: the same response "
-        "format check, and the request ends when this cell returns. The request's input is the value the request "
-        "declares beside its text, when it declares one; pass `input=` to give it yourself, which you must where the "
-        "request declares none (then the call raises and answers nothing). When the request was given examples as "
-        "data (`tools.examples()`), `fn` is first checked on each, as `tools.check_examples` does: if one fails, "
-        "nothing is answered and the report comes back. A result that is not text is answered as its JSON. What `fn` "
-        "raises reaches you unchanged, and nothing is answered."
+        "Call `fn`, a function defined in your session, here in your box, once on the request's input (and, when the "
+        "request was given examples as data, once on each example's input first), and answer the request with what "
+        "it returns, as `tools.answer` does: the same response format check, and the request ends when this cell "
+        "returns. The request's input is the value the request declares beside its text, when it declares one; pass "
+        "`input=` to give it yourself, which you must where the request declares none (then the call raises and "
+        "answers nothing). With examples (`tools.examples()`), `fn` is first checked on each, as "
+        "`tools.check_examples` does: if one fails, nothing is answered and the report comes back. An input that is a "
+        "list or a tuple is passed as `fn`'s arguments when `fn` needs two or more, in the check and in the answer "
+        "alike. A result that is not text is answered as its JSON. What `fn` raises reaches you unchanged, and nothing "
+        "is answered."
     ),
     parameters={
         "type": "object",

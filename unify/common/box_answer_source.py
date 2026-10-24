@@ -28,6 +28,7 @@ KEPT_CHARS = 65536
 SOURCE = r'''
 # --- answer_from(): answer with a function's output on the request's input ----------------------------------------
 import hashlib as _af_hashlib
+import inspect as _af_inspect
 import json as _af_json
 
 _AF_KEPT_CHARS = __KEPT_CHARS__
@@ -74,6 +75,17 @@ def _af_record(row):
         _call("answered_from", row)
     except Exception:
         pass
+
+
+def _af_spreads(fn):
+    """Whether *fn* needs two or more positional arguments: then an input that is a tuple or a list is passed as those
+    arguments, exactly as the check passes an example's input (``check_examples``)."""
+    try:
+        parameters = _af_inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = (_af_inspect.Parameter.POSITIONAL_ONLY, _af_inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    return len([p for p in parameters if p.kind in positional and p.default is _af_inspect.Parameter.empty]) >= 2
 
 
 def _af_declared():
@@ -125,7 +137,8 @@ def answer_from(fn, input=_AF_MISSING):
                 "not answered: fn did not pass this request's examples (passed %d of %d), so nothing was answered; "
                 "change it and call again.\n\n%s" % (report.passed, report.total, report)
             )
-    result = fn(value)
+    spread = _af_spreads(fn) and isinstance(value, (tuple, list))
+    result = fn(*value) if spread else fn(value)
     in_digest, in_kept, in_whole = _af_kept(value)
     out_digest, out_kept, out_whole = _af_kept(result)
     name = getattr(fn, "__name__", None)
