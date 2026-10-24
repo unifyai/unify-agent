@@ -414,5 +414,67 @@
   "tests": [
    "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_started_after_the_last_heartbeat_lives"
   ]
+ },
+ {
+  "id": "declared-input-dropped",
+  "what": "the CLI drops the input a message declares",
+  "file": "unify/cli.py",
+  "old": "                            if not declared_input.declare(item.get(\"input\")):\n",
+  "new": "                            if False:  # MUTATION declared-input-dropped\n",
+  "tests": [
+   "tests/system/test_s15_checked_answers_and_bad_use.py::test_an_accepted_answer_from_a_function_is_stored_recalled_and_a_rejected_reuse_is_a_bad_use[on]",
+   "tests/system/test_s15_checked_answers_and_bad_use.py::test_without_memory_an_answer_from_a_function_is_checked_first_and_withheld_on_a_failing_example[off]"
+  ]
+ },
+ {
+  "id": "recall-on-request-text",
+  "what": "a no-argument call of a stored procedure passes the request's text, not its declared input",
+  "file": "unify/memory/library_helper.py",
+  "old": "                    return target(value)\n",
+  "new": "                    return target(request())  # MUTATION recall-on-request-text\n",
+  "tests": [
+   "tests/system/test_s15_checked_answers_and_bad_use.py::test_an_accepted_answer_from_a_function_is_stored_recalled_and_a_rejected_reuse_is_a_bad_use[on]"
+  ]
+ },
+ {
+  "id": "no-value-attribution",
+  "what": "a verdict taken within the request is never tied to the items whose result it judged",
+  "file": "unify/memory/integration/request.py",
+  "old": "            self._attribute(entry)\n",
+  "new": "            pass  # MUTATION no-value-attribution\n",
+  "tests": [
+   "tests/system/test_s15_checked_answers_and_bad_use.py::test_an_accepted_answer_from_a_function_is_stored_recalled_and_a_rejected_reuse_is_a_bad_use[on]"
+  ]
+ },
+ {
+  "id": "no-reask",
+  "what": "the librarian is never asked again when new evidence arrives",
+  "file": "unify/memory/integration/hooks.py",
+  "old": "        return await librarian.request_reask_line(run, message)\n",
+  "new": "        return \"\"  # MUTATION no-reask\n",
+  "tests": [
+   "tests/system/test_s15_checked_answers_and_bad_use.py::test_an_accepted_answer_from_a_function_is_stored_recalled_and_a_rejected_reuse_is_a_bad_use[on]"
+  ]
+ },
+ {
+  "id": "fork-procedure-kept",
+  "what": "the capture step ignores the procedure built from an accepted answer's function",
+  "file": "unify/memory/captures.py",
+  "old": "    answered = answered_procedure(staging.parent.parent, name) if segment is None else None\n",
+  "new": "    answered = None  # MUTATION fork-procedure-kept\n",
+  "tests": [
+   "tests/system/test_s15_checked_answers_and_bad_use.py::test_an_accepted_answer_from_a_function_is_stored_recalled_and_a_rejected_reuse_is_a_bad_use[on]"
+  ]
+ },
+ {
+  "id": "no-check-before-answer",
+  "what": "answer_from answers without checking the function on the request's examples",
+  "file": "unify/common/box_answer_source.py",
+  "old": "    pairs = examples() if _check_examples is not None else []\n",
+  "new": "    pairs = []  # MUTATION no-check-before-answer\n",
+  "tests": [
+   "tests/system/test_s15_checked_answers_and_bad_use.py::test_an_accepted_answer_from_a_function_is_stored_recalled_and_a_rejected_reuse_is_a_bad_use[on]",
+   "tests/system/test_s15_checked_answers_and_bad_use.py::test_without_memory_an_answer_from_a_function_is_checked_first_and_withheld_on_a_failing_example[off]"
+  ]
  }
 ]
