@@ -152,7 +152,8 @@ def common_features(profiles: Iterable[Profile]) -> frozenset:
 def related(a: Profile, b: Profile, common: frozenset = frozenset()) -> list[str]:
     """Why two captures are related (module docstring), as ``"sequence: env.x.y > env.z.w"``, ``"subsequence: ..."``,
     ``"items: <id>"``, ``"input"`` or ``"judged"``; [] when they are not. Sharing only a tool call, only an outcome, or
-    only a call feature in *common* (:func:`common_features`) relates nothing."""
+    only a call feature in *common* (:func:`common_features`) relates nothing; ``input`` alone (the same input
+    structure) is listed but never groups them (:func:`groups`)."""
     out: list[str] = []
     whole = len(a.sequence) >= SEQUENCE_MIN and a.sequence == b.sequence and tuple(a.sequence) not in common
     if whole:
@@ -172,6 +173,13 @@ def related(a: Profile, b: Profile, common: frozenset = frozenset()) -> list[str
     if b.entry in a.kin or a.entry in b.kin:
         out.append("judged")
     return out
+
+
+def joins(why: Iterable[str]) -> bool:
+    """Whether relations *why* (:func:`related`) make two captures kin for a writer pass: any relation but ``input``
+    alone (the same input structure is too coarse: every request of a world may read the same shape). Captures the
+    harness's own relations do not join are the ones the kinship judge is asked about."""
+    return any(str(w).split(":", 1)[0] != "input" for w in why)
 
 
 def reasons(relations: Iterable[Mapping[str, Any]]) -> dict:
@@ -222,7 +230,9 @@ def groups(
             if a not in open_ids and b not in open_ids:
                 continue
             why = related(profiles[a], profiles[b], common)
-            if why:
+            # the same input structure is listed beside another relation, never kinship on its own: it is too coarse
+            # (every request of a world may read the same shape)
+            if joins(why):
                 pairs.append((a, b, why))
                 ra, rb = find(a), find(b)
                 if ra != rb:

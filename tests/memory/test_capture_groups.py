@@ -90,6 +90,20 @@ def test_two_related_open_captures_form_a_due_group_and_an_unrelated_one_waits()
     assert alone and alone[0].due is None  # no related capture: it waits, never written up alone
 
 
+def test_the_same_input_structure_alone_groups_nothing_and_beside_another_relation_is_listed():
+    # every request of a world may read the same shape: the input relation never makes captures kin on its own
+    es = [_e("a" * 16), _e("b" * 16), _e("c" * 16), _e("d" * 16)]
+    profiles = {"a" * 16: _p("a" * 16, form="value", shape={"[].amount:int"}),
+                "b" * 16: _p("b" * 16, form="value", shape={"[].amount:int"}),
+                "c" * 16: _p("c" * 16, form="value", shape={"[].n:int"}, items={"memory.t.m:f"}),
+                "d" * 16: _p("d" * 16, form="value", shape={"[].n:int"}, items={"memory.t.m:f"})}  # fmt: skip
+    got = _groups(es, profiles)
+    assert sorted((tuple(e.entry for e in g.open), g.due) for g in got) == [
+        (("a" * 16,), None), (("b" * 16,), None), (("c" * 16, "d" * 16), "formed")]
+    (formed,) = [g for g in got if g.due]
+    assert formed.relations == [{"a": "c" * 16, "b": "d" * 16, "why": ["items: memory.t.m:f", "input"]}]
+
+
 def test_a_new_capture_related_to_a_decided_one_joins_its_group():
     es = [_e("a" * 16, state="closed"), _e("b" * 16, at_="2026-10-20T00:00:30.000Z")]
     profiles = {"a" * 16: _p("a" * 16, items={"memory.t.m:f"}), "b" * 16: _p("b" * 16, items={"memory.t.m:f"})}

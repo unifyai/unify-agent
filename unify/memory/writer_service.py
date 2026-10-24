@@ -1805,7 +1805,8 @@ async def _judge_kin(service: Any, ledger: Any, profiles: Any, worst: Decimal) -
     common = cg.common_features(profs.values())
     target = None
     for e in sorted((e for e in caps if e.state == "open" and not e.kin_judged), key=lambda e: (e.created_at, e.entry)):
-        if not any(cg.related(profs[e.entry], profs[o.entry], common) for o in caps if o.entry != e.entry):
+        # the judge is asked about a capture the harness's own relations do not join to any other (input alone never does)
+        if not any(cg.joins(cg.related(profs[e.entry], profs[o.entry], common)) for o in caps if o.entry != e.entry):
             target = e
             break
     if target is None:
