@@ -413,3 +413,21 @@ def test_a_card_counts_its_uses_by_outcome():
         "5 calls in 4 episodes: 4 returned, 1 raised; uses: 1 accepted, 1 rejected, 1 unknown"
     )
     assert serving.later_uses_text({"episodes": 1, "raised": 1}) == "1 call in 1 episode: 1 raised"
+
+
+def test_a_failure_on_another_value_is_not_in_the_failed_list(mv2, monkeypatch):  # noqa: F811
+    # the raw runtime counts include every tracked call; the list the librarian is given holds only real-input ones
+    from unify.actor import tool_handlers as th
+    from unify.common import declared_input
+
+    run = _begin(mv2, "the request")
+    try:
+        declared_input.declare({"rows": [1]})
+        other = _digest({"rows": [9]})
+        run.note_calls({"calls": {"counts": {A: {"ok": 0, "refused": 0, "error": 1}},
+                                  "results": [{"item": A, "outcome": "error", "digest": "", "input": other}]}})  # fmt: skip
+        monkeypatch.setattr(request_mod, "current", lambda: run)
+        assert run.runtime_calls["counts"][A]["error"] == 1 and th._memory_run_failed() == []
+    finally:
+        declared_input.clear()
+        _abort(mv2, run)

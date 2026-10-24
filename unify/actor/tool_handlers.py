@@ -803,27 +803,17 @@ MAX_FAILED_ITEMS = 200
 
 
 def _memory_run_failed() -> list[str]:
-    """The items with a bad use in the memory run so far, in id order: their calls raised or refused their input in
-    its cells (its runtime call counts), or an answer equal to what a call of one returned was rejected
-    (``RequestRun.bad_uses``); [] when no run is open."""
+    """The items with a bad use in the memory run so far, in id order (``RequestRun.bad_uses``): a tracked call of one
+    on the request's real input raised or refused it, or an answer equal to what such a call returned was rejected. A
+    call on any other value (an example's input, say) is no bad use; [] when no run is open."""
     try:
         from unify.memory.integration import request as _request
 
         run = _request.current()
-        counts = (getattr(run, "runtime_calls", None) or {}).get("counts") or {}
         bad = run.bad_uses() if run is not None and hasattr(run, "bad_uses") else {}
     except Exception:  # noqa: BLE001 - no memory run here
         return []
-    return sorted(
-        {
-            item
-            for item, row in counts.items()
-            if isinstance(item, str) and isinstance(row, dict) and any(
-                isinstance(row.get(k), int) and row[k] > 0 for k in ("refused", "error")
-            )
-        }
-        | {item for item in bad if isinstance(item, str)}
-    )
+    return sorted(item for item in bad if isinstance(item, str))
 
 
 def _memory_run_declared() -> Optional[dict]:
