@@ -49,7 +49,7 @@ def test_the_request_profile_reads_a_whole_json_request_as_its_value():
 
 
 def test_a_request_in_words_has_no_profile_and_reorders_nothing():
-    # only a declared input or a whole-JSON request has a structure to compare (M2 needs one of them)
+    # only a declared input or a whole-JSON request has a structure to compare (the search order needs one of them)
     assert S.request_profile("a request\nin two lines") is None
     assert S.request_profile("") is None and S.request_profile(None) is None
     assert S.shape_profile({"kind": "text", "length": "10-99"}) is None
