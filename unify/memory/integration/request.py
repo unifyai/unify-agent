@@ -809,8 +809,9 @@ class _Undrained:
 
 def with_answer_attributions(record: Any, attributions: list[dict]) -> Any:
     """*record* (a use record) with ``answer_attributions`` (rev 2.3): one row per verdict taken within the
-    request, ``{"label", "obs", "items", "short"}``, the items whose tracked call returned exactly the value the judged
-    answer gave (``RequestRun._attribute``). Unchanged when it is not a use record."""
+    request, ``{"label", "obs", "items", "short_items"}``: the items whose tracked call returned exactly the value the
+    judged answer gave, and apart those whose match rests only on a short or scalar value, which count for nothing
+    (``RequestRun._attribute``). Unchanged when it is not a use record."""
     if not isinstance(record, dict) or "error" in record:
         return record
     return {**record, "answer_attributions": [dict(a) for a in attributions]}
@@ -1722,8 +1723,9 @@ class RequestRun:
         reply's action (:func:`.adapters.dialogue.action_payload`), of each of its arguments, or of each of its
         keyword values, against the digests of what the calls returned. Equality of whole values only; no word of
         either is read. A rejection ties a bad use to each matched item. A verdict after calls whose results the answer
-        does not equal is kept as not attributed, for display only. ``short`` marks a match that rests only on a short
-        or scalar value (at most :data:`SHORT_VALUE_CHARS` characters of JSON), which may equal by coincidence."""
+        does not equal is kept as not attributed, for display only. A match that rests only on a short or scalar value
+        (at most :data:`SHORT_VALUE_CHARS` characters of JSON) may be a coincidence: it is listed apart
+        (``short_items``) and is never a bad use, a hold or a trust row."""
         made = self.answered_from[-1] if self.answered_from else None
         if (
             made is not None
@@ -1732,7 +1734,7 @@ class RequestRun:
             and made.get("obs") == entry.get("obs")
         ):
             # (ii) exact provenance: the answer this verdict judged was made with tools.answer_from from that item
-            row = {"label": entry["label"], "obs": entry.get("obs"), "items": [made["item"]], "short": False,
+            row = {"label": entry["label"], "obs": entry.get("obs"), "items": [made["item"]], "short_items": [],
                    "how": "answered_from"}  # fmt: skip
             self.answer_attributions.append(row)
             if entry["label"] == "fail":
@@ -1750,11 +1752,13 @@ class RequestRun:
             for item, digests in self.returned_here.items():
                 if digest in digests:
                     matched[item] = matched.get(item, True) and len(text) <= SHORT_VALUE_CHARS
+        # a match only on a short or scalar value may be a coincidence: it is shown (``short_items``) and gates nothing
+        # (no bad use, no hold, no trust row: the evidence store reads ``items`` alone)
         row = {
             "label": entry["label"],
             "obs": entry.get("obs"),
-            "items": sorted(matched),
-            "short": bool(matched) and all(matched.values()),
+            "items": sorted(i for i, short in matched.items() if not short),
+            "short_items": sorted(i for i, short in matched.items() if short),
         }
         self.answer_attributions.append(row)
         if entry["label"] == "fail":

@@ -142,7 +142,7 @@ def test_a_rejected_answer_equal_to_what_a_call_returned_is_a_bad_use_of_that_it
         run.note_calls(_cell(**{A: [[7, 7], [7, 7]], B: 4}))
         _say(run, 'Submitting.\n{"action": "submit", "grid": [[7, 7], [7, 7]]}')
         run.take_checker({"label": "fail"})
-        assert run.answer_attributions == [{"label": "fail", "obs": 1, "items": [A], "short": False}]
+        assert run.answer_attributions == [{"label": "fail", "obs": 1, "items": [A], "short_items": []}]
         assert run.bad_uses() == {A: 1}
         assert run.bad_here[A]["how"] == "value"
     finally:
@@ -166,7 +166,7 @@ def test_a_rejected_answer_equal_to_nothing_is_kept_not_attributed_and_gates_not
         run.note_calls(_cell(**{A: [[7, 7]]}))
         _say(run, '{"action": "submit", "grid": [[1, 1]]}')
         run.take_checker({"label": "fail"})
-        assert run.answer_attributions == [{"label": "fail", "obs": 1, "items": [], "short": False}]
+        assert run.answer_attributions == [{"label": "fail", "obs": 1, "items": [], "short_items": []}]
         assert run.bad_uses() == {}
     finally:
         _abort(mv2, run)
@@ -182,13 +182,15 @@ def test_a_verdict_with_no_tracked_call_before_it_records_nothing(mv2):  # noqa:
         _abort(mv2, run)
 
 
-def test_a_match_on_a_short_value_is_marked_short(mv2):  # noqa: F811
+def test_a_match_on_a_short_value_is_shown_apart_and_gates_nothing(mv2):  # noqa: F811
+    # 0, true, "yes" or [] may equal a call's result by coincidence: listed, but no bad use, no hold, no trust row
     run = _begin(mv2, "hi")
     try:
         run.note_calls(_cell(**{B: 0}))
         _say(run, '{"action": "count", "n": 0}')
         run.take_checker({"label": "fail"})
-        assert run.answer_attributions[0]["items"] == [B] and run.answer_attributions[0]["short"] is True
+        assert run.answer_attributions[0]["items"] == [] and run.answer_attributions[0]["short_items"] == [B]
+        assert run.bad_uses() == {} and run.held() == {}
     finally:
         _abort(mv2, run)
 
@@ -283,7 +285,7 @@ def test_the_use_record_carries_the_attributions(mv2, monkeypatch):  # noqa: F81
     _transcript(run)
     _finish(mv2, run)
     assert [w.get("answer_attributions") for w in written] == [
-        [{"label": "fail", "obs": 1, "items": [A], "short": False}]
+        [{"label": "fail", "obs": 1, "items": [A], "short_items": []}]
     ]
 
 
@@ -357,6 +359,7 @@ def test_the_evidence_store_counts_the_verdicts_per_item():
             {"label": "fail", "items": [A]},
             {"label": "pass", "items": [A, B]},
             {"label": "fail", "items": []},
+            {"label": "fail", "items": [], "short_items": [B]},  # a short match counts for nothing
             {"label": "maybe", "items": [B]},
             "not a row",
         ]

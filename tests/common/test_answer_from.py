@@ -269,7 +269,7 @@ def test_a_rejected_answer_made_from_an_item_is_a_bad_use_of_that_item(mv2, monk
         run.note_answered_from({"item": A, "source": "declared", "input_digest": "a", "output_digest": "b",
                                 "input": None, "output": None, "kept": False, "answered": True})  # fmt: skip
         run.take_checker({"label": "fail"})
-        assert run.answer_attributions[-1] == {"label": "fail", "obs": 1, "items": [A], "short": False,
+        assert run.answer_attributions[-1] == {"label": "fail", "obs": 1, "items": [A], "short_items": [],
                                                "how": "answered_from"}  # fmt: skip
         assert run.bad_here[A]["how"] == "answered_from"
     finally:

@@ -532,7 +532,7 @@ def test_every_field_a_use_record_reader_asks_for_is_written(tmp_path, library_r
     # UNIFY_MEMORY=in_episode: the pin each call was served under
     record = with_pins(record, {"c0ffee" * 6 + "abcd": {item: {"ok": 1, "refused": 0, "error": 1}}}, ["c0ffee" * 6 + "abcd"])
     # rev 2.3: the verdicts taken within the request, with the items whose returned value the judged answer was
-    record = with_answer_attributions(record, [{"label": "fail", "obs": 1, "items": [item], "short": False}])
+    record = with_answer_attributions(record, [{"label": "fail", "obs": 1, "items": [item], "short_items": []}])
     # rev 2.3: each time the librarian was asked again on new evidence
     record = with_reasks(record, [{"obs": 2, "events": ["outcome"], "fit": item}])
     # rev 2.3: each answer made with tools.answer_from

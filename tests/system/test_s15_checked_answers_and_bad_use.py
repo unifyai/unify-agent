@@ -122,7 +122,7 @@ async def test_an_accepted_answer_from_a_function_is_stored_recalled_and_a_rejec
         sink2["msg"], seen)
     assert any("Tried and failed in this request" in q and item in q for q in librarian_calls), librarian_calls[-1:]
     rejected = [a for a in use2["answer_attributions"] if a["label"] == "fail"]
-    assert rejected and rejected[0]["items"] == [item] and rejected[0]["short"] is False, use2["answer_attributions"]
+    assert rejected and rejected[0]["items"] == [item] and rejected[0]["short_items"] == [], use2["answer_attributions"]
     (reask,) = use2["reasks"]
     assert "outcome" in reask["events"] and "failed_use" in reask["events"]
     assert s.item_use(item).get("answered_rejected", 0) >= 1
