@@ -138,3 +138,33 @@ def test_the_finish_tool_checks_against_the_copy_the_librarian_reads(copy):
         L.finish(SimpleNamespace(state=state), {"answer": {"fits": [{"id": CAPTURE, "call": f"memory.get({CAPTURE!r}).run()", "why": "w"}]}})
     )
     assert not state.finished and "reads 'run' on the item" in got.text
+
+
+# --- the dotted form: memory.<package>.<module>.<name>(...) is the same function, checked the same way -------------
+
+
+@pytest.mark.parametrize(
+    "call, why",
+    [
+        ("memory.tables.count.count_rows(1, 2, 3)", "takes at most 2"),
+        ("memory.tables.count.scale([1], scale=3)", "has no such parameter"),
+        ("memory.tables.count.count_rows()", "has no recipe that runs it on the current request"),
+    ],
+)
+def test_a_dotted_call_is_checked_as_the_item_it_names(copy, call, why):
+    got, reason = _check(call, copy, FUNC)
+    assert got is None and why in reason, reason
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "memory.tables.count.count_rows(rows)",
+        "memory.tables.count.scale(rows, factor=3)",
+        "print(memory.tables.count.count_rows.__doc__)",  # the function itself, not an Item: its own attributes
+        "memory.tables.unknown_module.f(1, 2, 3, 4)",  # not an item the copy lists: left to the other checks
+    ],
+)
+def test_a_dotted_call_that_matches_passes(copy, call):
+    got, reason = _check(call, copy, FUNC)
+    assert reason == "" and got is not None

@@ -603,7 +603,8 @@ def _api_problem(call: str, copy: Path | None, recipes: Mapping[str, str] | None
     copy at *copy*: a member it reads on an item must exist on the Item ``memory.get`` returns (no ``.run()``); a direct
     call of a recorded procedure takes no argument (the current request) or one input; a function's call fits its
     definition's parameters, and with no arguments it is allowed only for a procedure with a recipe (one call on the
-    current request); a note is read, never called. A parse of the call against the items' recorded forms: no word of
+    current request); a note is read, never called. A function named in the dotted form,
+    ``memory.<package>.<module>.<name>(...)``, is checked as ``memory.get('memory.<package>.<module>:<name>')(...)``. A parse of the call against the items' recorded forms: no word of
     it is matched and nothing is run."""
     import ast
 
@@ -621,7 +622,7 @@ def _api_problem(call: str, copy: Path | None, recipes: Mapping[str, str] | None
     rows = rows if isinstance(rows, dict) else {}
     recipes = recipes or {}
 
-    def item_of(node: Any) -> str | None:
+    def item_of(node: Any, dotted_too: bool = True) -> str | None:
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -635,7 +636,19 @@ def _api_problem(call: str, copy: Path | None, recipes: Mapping[str, str] | None
             return node.args[0].value
         if isinstance(node, ast.Name):
             return bound.get(node.id)
-        return None
+        return dotted(node) if dotted_too else None
+
+    def dotted(node: Any) -> str | None:
+        # memory.<package>.<module>.<name>: the item memory.<package>.<module>:<name>, when the copy lists it
+        parts: list[str] = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if not (isinstance(node, ast.Name) and node.id == "memory") or len(parts) < 2:
+            return None
+        parts.reverse()
+        iid = "memory." + ".".join(parts[:-1]) + ":" + parts[-1]
+        return iid if iid in rows else None
 
     bound: dict[str, str] = {}
     for stmt in ast.walk(tree):
@@ -647,7 +660,8 @@ def _api_problem(call: str, copy: Path | None, recipes: Mapping[str, str] | None
     members = _item_members()
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
-            iid = item_of(node.value)
+            # the members of the Item memory.get returns (a function named in the dotted form is the function itself)
+            iid = item_of(node.value, dotted_too=False)
             if iid is not None and node.attr not in members:
                 return (
                     f"reads {node.attr!r} on the item {iid!r}, which an item does not have; an item is called "
