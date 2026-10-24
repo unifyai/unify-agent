@@ -235,6 +235,19 @@ def fork_instruction() -> str:
     return INSTRUCTION
 
 
+#: Rev 2.3: what the fork is told when the harness already stored the request's procedure.
+STORED_PROCEDURE_LINE = (
+    "The harness has already stored this request's procedure, built from the function its accepted answer was made "
+    "with: write no `procedure.py`, and write the other files as above."
+)
+
+
+def stored_instruction() -> str:
+    """The episode fork's instruction when the harness stored the request's procedure (:data:`STORED_PROCEDURE_LINE`
+    after :data:`INSTRUCTION`)."""
+    return f"{INSTRUCTION}\n\n{STORED_PROCEDURE_LINE}"
+
+
 def segment_instruction(first_cell: int | None, last_cell: int | None) -> str:
     """A segment fork's instruction (:data:`SEGMENT_INSTRUCTION`) for the cells from *first_cell* to *last_cell*."""
     if first_cell is None or last_cell is None:

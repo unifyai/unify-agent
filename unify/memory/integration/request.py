@@ -967,6 +967,9 @@ def _plain(value: Any) -> Any:
     return value
 
 
+#: Where the harness keeps, per episode, the procedure it built from an accepted answer's function (under the
+#: state dir, outside every box's writable roots; the capture step reads it in place of the fork's).
+ANSWERED_DIR = "memory-answered"
 #: The longest canonical JSON of an answer value whose match with a call's result is marked ``short`` (a scalar
 #: or a short value such as ``0``, ``true``, ``"yes"`` or ``[]`` can equal a result by coincidence).
 SHORT_VALUE_CHARS = 8
@@ -1070,6 +1073,8 @@ class RequestRun:
         self.reasks: list[dict] = []
         # Rev 2.3: one row per answer made with ``tools.answer_from``.
         self.answered_from: list[dict] = []
+        # Rev 2.3: whether this request's accepted answer's function was stored as its procedure
+        self.stored_procedure = False
         #: this request's role dispatcher (:func:`start_role_dispatcher`), running on the loop; None when none runs
         self.role_task: Any = None
         self._lock: int | None = None
@@ -1529,6 +1534,47 @@ class RequestRun:
         from ..fixtures import canonical
 
         return on in (declared["digest"], _result_digest_of(canonical(self.request)))
+
+    def _store_answered(self, ep: Any) -> None:
+        """When this request's accepted answer was made with ``tools.answer_from(fn)`` (its row answered, from a
+        function of the session rather than a library item, and a ``pass`` verdict taken at the same observation),
+        build ``fn``'s closure from the recorded cells by AST nodes only (:func:`..closure.build`) and keep it for the
+        capture step as this episode's procedure, with the input it answered on and its example check
+        (:data:`ANSWERED_DIR`). Nothing is run. A closure that cannot be built, or that the capture step's safety
+        checks refuse, keeps nothing, and its row says why; the fork then captures as before."""
+        made = self.answered_from[-1] if self.answered_from else None
+        if (
+            made is None
+            or made.get("answered") is not True
+            or made.get("item") is not None
+            or not isinstance(made.get("fn"), str)
+            or not any(c.get("label") == "pass" and c.get("obs") == made.get("obs") for c in self.checker_seen)
+        ):
+            return
+        from .. import capture_trace, closure
+
+        try:
+            source = closure.build([c.code for c in getattr(ep, "cells", []) or []], made["fn"])
+        except closure.ClosureError as exc:
+            made["stored"], made["why"] = False, str(exc)
+            return
+        why = capture_trace.safety(source)
+        if why is not None:
+            made["stored"], made["why"] = False, why
+            return
+        doc = {"fn": made["fn"], "checked": made.get("checked"), "input_digest": made.get("input_digest")}
+        if made.get("kept") is True or made.get("input") is not None:
+            doc["input"] = made.get("input")
+        try:
+            d = Path(self.paths.state_dir) / ANSWERED_DIR / ep.episode_id
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "procedure.py").write_text(source, encoding="utf-8")
+            (d / "answered.json").write_text(json.dumps(doc, ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError as exc:
+            made["stored"], made["why"] = False, f"not written ({type(exc).__name__})"
+            return
+        made["stored"], made["lines"] = True, source.count("\n")
+        self.stored_procedure = True
 
     def note_answered_from(self, row: dict) -> None:
         """Keep one answer made with ``tools.answer_from`` (the box's row), with the observation count when it was
@@ -2005,6 +2051,8 @@ class RequestRun:
         try:
             from . import fork as _fork
 
+            # When the harness stored the request's procedure, the fork writes everything else but no procedure
+            instruction = _fork.stored_instruction() if self.stored_procedure else None
             return _fork.start(
                 self.paths,
                 handle,
@@ -2012,6 +2060,7 @@ class RequestRun:
                 progress=progress,
                 reservation=reservation,
                 parts=parts,
+                instruction=instruction,
             )
         except Exception as exc:  # noqa: BLE001
             self._error("fork", exc, progress)
@@ -2078,6 +2127,8 @@ class RequestRun:
         ep.memory_use = with_answer_attributions(ep.memory_use, self.answer_attributions)
         # Each time the librarian was asked again on new evidence
         ep.memory_use = with_reasks(ep.memory_use, self.reasks)
+        # The function an accepted answer was made with, stored as the request's procedure (before the fork)
+        self._store_answered(ep)
         # Each answer made with tools.answer_from
         ep.memory_use = with_answered_from(ep.memory_use, self.answered_from)
         if self.in_episode is not None:

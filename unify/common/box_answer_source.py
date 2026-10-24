@@ -105,8 +105,11 @@ def answer_from(fn, input=_AF_MISSING):
         checked = {"passed": report.passed, "total": report.total}
         if not report.ok:
             in_digest, in_kept, in_whole = _af_kept(value)
+            name = getattr(fn, "__name__", None)
             _call("answered_from", {
-                "item": item if isinstance(item, str) else None, "source": source, "input_digest": in_digest,
+                "item": item if isinstance(item, str) else None,
+                "fn": name if isinstance(name, str) and name.isidentifier() else None,
+                "source": source, "input_digest": in_digest,
                 "output_digest": "", "input": in_kept, "output": None, "kept": bool(in_whole), "answered": False,
                 "checked": checked, "withheld": True,
             })
@@ -117,8 +120,10 @@ def answer_from(fn, input=_AF_MISSING):
     result = fn(value)
     in_digest, in_kept, in_whole = _af_kept(value)
     out_digest, out_kept, out_whole = _af_kept(result)
+    name = getattr(fn, "__name__", None)
     row = {
         "item": item if isinstance(item, str) else None,
+        "fn": name if isinstance(name, str) and name.isidentifier() else None,
         "source": source,
         "input_digest": in_digest,
         "output_digest": out_digest,

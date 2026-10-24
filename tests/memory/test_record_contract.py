@@ -101,6 +101,10 @@ REGISTRY: dict[str, dict] = {
             "effects_seen": [],
             "shape": [],
             "occurrences": ["unify.memory.library_export:dispatch_data"],
+            # rev 2.3: what it reads (the request, or the declared input for one built from an accepted answer's
+            # function) and that function's example check when it was made
+            "reads": ["unify.memory.library_helper:_capture_lines", "unify.memory.library_helper:_reads_declared"],
+            "checked": ["unify.memory.library_helper:_capture_lines"],
             # exported only (captures.listed_record): what it rests on as far as its record shows it
             "support": ["unify.memory.library_helper:_capture_support", "unify.memory.library_export:capture_support"],
             # its uses, from the evidence store's item_use rows (serving.record_capture_uses), and what they give it

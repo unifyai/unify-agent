@@ -848,7 +848,7 @@ def declared_examples(ctx: Any, args: dict) -> Any:
 
 
 #: The fields of an ``answered_from`` row as the box sends it.
-_ANSWERED_FROM_FIELDS = frozenset({"item", "source", "input_digest", "output_digest", "input", "output", "kept",
+_ANSWERED_FROM_FIELDS = frozenset({"item", "fn", "source", "input_digest", "output_digest", "input", "output", "kept",
                                    "answered", "checked", "withheld"})  # fmt: skip
 
 

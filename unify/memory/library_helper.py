@@ -1534,14 +1534,24 @@ def _capture_lines(iid: str, rec: dict) -> list[str]:
         else "A recorded procedure: it re-runs the work of an earlier request (no outcome of that request is on record)."
     )
     form = _capture_form(iid[len(CAPTURE_PREFIX) :])
-    if form in ("value", "state"):
+    if rec.get("reads") == "declared_input":
+        how = (
+            "Calling it with no arguments runs it on the input the current request declares, in a separate confined "
+            f"process; where the request declares none, pass the input: memory.get({iid!r})(<input>)."
+        )
+    elif form in ("value", "state"):
         how = "Calling it with no arguments runs it on the current request, in a separate confined process."
     elif form == "state_env":
         how = BY_HAND.format(cid=iid)
         how = how[0].upper() + how[1:] + "."
     else:
         how = "Calling it runs it in a separate confined process on text or JSON values."
-    return [what, how]
+    out = [what, how]
+    checked = rec.get("checked") if isinstance(rec.get("checked"), dict) else {}
+    k = checked.get("total")
+    if isinstance(k, int) and not isinstance(k, bool) and k >= 1 and checked.get("passed") == k:
+        out.append(f"Checked on {k} of {k} examples when it was made.")
+    return out
 
 
 def _capture_ids() -> list[str]:
@@ -1735,6 +1745,16 @@ class Item:
         if not args and not kwargs:
             target = self._on_request()
             if target is not None:
+                if _reads_declared(target.id):
+                    # rev 2.3: a procedure stored from an answer's function reads the request's declared input
+                    declared, value = _declared_value()
+                    if not declared:
+                        raise WrongCall(
+                            f"a call of {target.id} with no arguments",
+                            "this procedure runs on the input a request declares, and this request declares none.",
+                            hint=f"Pass the input: memory.get({target.id!r})(<input>).",
+                        )
+                    return target(value)
                 return target(request())
         report = _RUN_TARGET(self.id, *args, **kwargs)
         if report.outcome == "returned":
@@ -2729,6 +2749,30 @@ def _declared_digest() -> str | None:
     if not isinstance(reply, dict) or reply.get("declared") is not True:
         return None
     return result_digest(reply.get("value"))
+
+
+def _declared_value() -> tuple[bool, Any]:
+    """The request's declared input: ``(True, value)``, or ``(False, None)`` when it declares none or it is not
+    available here (:data:`DECLARED_INPUT_TOOL`). Never raises."""
+    call = getattr(_tools(), "_call", None)
+    if not callable(call):
+        return False, None
+    try:
+        reply = json.loads(str(call(DECLARED_INPUT_TOOL, {})))
+    except Exception:  # noqa: BLE001 - a refusal or a closed channel: nothing declared here
+        return False, None
+    if not isinstance(reply, dict) or reply.get("declared") is not True:
+        return False, None
+    return True, reply.get("value")
+
+
+def _reads_declared(iid: str) -> bool:
+    """Whether recorded procedure *iid* was stored from an answer's function and reads the request's declared input
+    (its record's ``reads``)."""
+    if not iid.startswith(CAPTURE_PREFIX):
+        return False
+    rec, _ = _capture_facts(iid[len(CAPTURE_PREFIX) :])
+    return rec.get("reads") == "declared_input"
 
 
 def _on_real_input(on: str) -> bool:

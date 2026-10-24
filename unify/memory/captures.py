@@ -735,7 +735,9 @@ def capture_trace_step(
 
     if not _EPISODE_ID.fullmatch(name):
         return finish(safety="no episode id")
-    source = _staged(staging, PROCEDURE_FILE)
+    # rev 2.3: the procedure the harness built from an accepted answer's function, in place of the fork's
+    answered = answered_procedure(staging.parent.parent, name) if segment is None else None
+    source = answered["source"] if answered is not None else _staged(staging, PROCEDURE_FILE)
     if source is None:
         return finish(safety="no procedure")
     why = ct.safety(source)
@@ -756,6 +758,9 @@ def capture_trace_step(
     # rev 2: the procedure is never run to classify it; its own check is recorded as not run
     check = dict(ct.NOT_RUN)
     run: dict = {"outcome": "not run", "why": check["why"]}
+    if answered is not None and "input" in answered["doc"]:
+        # its signature describes the declared input it answered on (data), never a run's value
+        run["value"] = answered["doc"]["input"]
     # the one derivation of an outcome from the episode's signals (judged_outcome), as the value-form capture's
     judged = judged_outcome(signals, ep, str(getattr(ep, "regime", "") or "none"))
     outcome = ct.outcome_of(judged)
@@ -815,6 +820,17 @@ def capture_trace_step(
             shape=shape_id,
             occurrences=len(rec["episodes"]),
         )
+        # what it reads: the request's declared input as data when the harness built it from an accepted answer's
+        # function, else the request; and that function's example check when it was made (provenance only)
+        if answered is not None:
+            checked = answered["doc"].get("checked")
+            rec["reads"] = "declared_input"
+            rec["checked"] = (
+                {k: checked.get(k) for k in ("passed", "total")} if isinstance(checked, dict) else None
+            )
+        else:
+            rec.setdefault("reads", "request")
+            rec.setdefault("checked", None)
         refresh(rec)
         if not (d / PROCEDURE_FILE).exists():
             _write(d / PROCEDURE_FILE, source.encode("utf-8", "surrogatepass"))
@@ -828,6 +844,7 @@ def capture_trace_step(
                 _write(d / BROKE_FILE, (old + broke.rstrip() + "\n").encode("utf-8"))
         _write(d / RECORD_FILE, _json(rec))
     return finish(
+        answered=answered is not None,
         capture_id=cid,
         source_capture_id=raw_cid,
         shape=shape_id,
@@ -841,6 +858,17 @@ def capture_trace_step(
         run=run["outcome"],
         published_at=clock(),
     )
+
+
+def answered_procedure(state_dir: Path | str, eid: str) -> dict | None:
+    """The procedure the harness built for episode *eid* from its accepted answer's function (rev 2.3:
+    ``<state>/memory-answered/<eid>/``), ``{"source", "doc"}``, or None when there is none or it cannot be read."""
+    d = Path(state_dir) / "memory-answered" / eid
+    source = _read_text(d / PROCEDURE_FILE)
+    doc = _read_json(d / "answered.json")
+    if source is None or not isinstance(doc, dict):
+        return None
+    return {"source": source, "doc": doc}
 
 
 # --- the shape index and occurrences (rev 2) -----------------------------------------------------------------------------

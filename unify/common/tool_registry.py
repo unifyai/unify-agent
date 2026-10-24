@@ -1266,6 +1266,7 @@ ANSWERED_FROM = RegisteredTool(
         "type": "object",
         "properties": {
             "item": {"type": ["string", "null"]},
+            "fn": {"type": ["string", "null"]},
             "source": {"enum": ["declared", "given"]},
             "input_digest": {"type": "string"},
             "output_digest": {"type": "string"},
@@ -1280,8 +1281,8 @@ ANSWERED_FROM = RegisteredTool(
             },
             "withheld": {"type": "boolean"},
         },
-        "required": ["item", "source", "input_digest", "output_digest", "input", "output", "kept", "answered", "checked",
-                     "withheld"],
+        "required": ["item", "fn", "source", "input_digest", "output_digest", "input", "output", "kept", "answered",
+                     "checked", "withheld"],
         "additionalProperties": False,
     },
     refusals={"bad_row": "the row is not one tools.answer_from writes"},

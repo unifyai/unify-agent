@@ -283,8 +283,8 @@ def test_the_answered_from_channel_records_on_the_run_and_refuses_a_foreign_row(
     run = _begin(mv2, "the request")
     try:
         monkeypatch.setattr(RQ, "current", lambda: run)
-        row = {"item": None, "source": "given", "input_digest": "a", "output_digest": "b", "input": 1, "output": 2,
-               "kept": True, "answered": True, "checked": None, "withheld": False}  # fmt: skip
+        row = {"item": None, "fn": "f", "source": "given", "input_digest": "a", "output_digest": "b", "input": 1,
+               "output": 2, "kept": True, "answered": True, "checked": None, "withheld": False}  # fmt: skip
         assert H.answered_from(None, row).text == "recorded"
         assert run.answered_from[-1]["output"] == 2
         ctx = types.SimpleNamespace(agent="actor")
