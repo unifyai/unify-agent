@@ -48,6 +48,20 @@ def declare(value: Any) -> bool:
 
 _EXAMPLES: list[dict] = []
 _EXAMPLE_KEYS: set[str] = set()
+#: Whether the world declared the first request final (``unify act --final``): the episode is over or its verdict
+#: final, so nothing is asked of the librarian at its start.
+_FIRST_FINAL = False
+
+
+def declare_first_final() -> None:
+    """Mark the first request final (the CLI's ``--final``, for a closing turn sent as a session's first message)."""
+    global _FIRST_FINAL
+    _FIRST_FINAL = True
+
+
+def first_final() -> bool:
+    """Whether the world declared the first request final."""
+    return _FIRST_FINAL
 
 
 def add_examples(pairs: Any) -> bool:
@@ -106,7 +120,8 @@ def load_file(path: Any) -> str | None:
 
 def clear() -> None:
     """Forget the declared input and examples (tests, and a driver that starts over)."""
-    global _CURRENT
+    global _CURRENT, _FIRST_FINAL
     _CURRENT = None
+    _FIRST_FINAL = False
     _EXAMPLES.clear()
     _EXAMPLE_KEYS.clear()

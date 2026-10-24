@@ -1995,6 +1995,10 @@ async def request_start_block(state: Any) -> str:
     request = getattr(state, "request_text", None)
     if getattr(state, "open_librarian", None) is None or not isinstance(request, str) or not request.strip():
         return ""
+    from unify.common import declared_input
+
+    if declared_input.first_final():
+        return ""  # the world declared this request final (--final): the episode is over, nothing is asked
     try:
         from .integration import request as _request
 

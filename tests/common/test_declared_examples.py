@@ -200,3 +200,43 @@ def test_without_the_flag_nothing_is_declared_and_a_bad_file_stops_the_run(monke
         b'{"quit": true}\n', None,
     )
     assert code == 2 and log == []  # the actor never started
+
+
+# --- a closing turn sent as a session's first message: --final --------------------------------------------------
+
+
+def test_with_final_the_first_request_asks_the_librarian_nothing(monkeypatch, clean_declared):
+    import asyncio
+    from types import SimpleNamespace
+
+    from unify.memory import librarian as L
+
+    asked: list = []
+
+    async def ask(ctx, args):
+        asked.append(args)
+        return SimpleNamespace(status="ok", text='{"fits": []}')
+
+    from unify.actor import tool_handlers as H
+
+    monkeypatch.setattr(H, "ask_library", ask)
+    monkeypatch.setattr(L, "library_items", lambda copy: (["capture:00112233445566aa"], set(), {}))
+    monkeypatch.setattr("unify.memory.integration.request.current", lambda: SimpleNamespace(copy_root="/x"))
+    state = SimpleNamespace(request_text="The episode is over.", open_librarian=object())
+    declared_input.declare_first_final()
+    assert asyncio.run(L.request_start_block(state)) == "" and asked == []
+    declared_input.clear()
+    assert asyncio.run(L.request_start_block(state)) != "" and len(asked) == 1
+
+
+def test_the_cli_marks_the_first_request_final_only_with_the_flag(monkeypatch, clean_declared):
+    from tests.memory.integration import test_request as T
+
+    seen: list = []
+    code, *_ = T._drive(monkeypatch, ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "--final", "Over."],
+                        b'{"quit": true}\n', None)  # fmt: skip
+    seen.append(declared_input.first_final())
+    code2, *_ = T._drive(monkeypatch, ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "Say hi"],
+                         b'{"quit": true}\n', None)  # fmt: skip
+    seen.append(declared_input.first_final())
+    assert (code, code2) == (0, 0) and seen == [True, False]

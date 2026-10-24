@@ -140,6 +140,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "the actor (see the description)",
     )
     act.add_argument(
+        "--final",
+        action="store_true",
+        help="the first request is final (the episode is over or its verdict final): nothing is asked of the "
+        "library's librarian at its start",
+    )
+    act.add_argument(
         "--declared",
         metavar="FILE",
         help='a JSON file declaring the first request\'s input and examples as data ({"input": ..., '
@@ -532,6 +538,8 @@ class Act:
         from unify.common import declared_input
 
         declared_input.clear()
+        if getattr(args, "final", False) is True:
+            declared_input.declare_first_final()
         if getattr(args, "declared", None):
             why = declared_input.load_file(args.declared)
             if why is not None:
