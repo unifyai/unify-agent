@@ -1094,9 +1094,9 @@ class RequestRun:
         self.returned_here: dict[str, set[str]] = {}
         self.bad_here: dict[str, dict] = {}
         self.answer_attributions: list[dict] = []
-        # the items held back from the librarian's fits until the next verdict in this request: each linked by a
-        # recorded derivation link to an entry whose answer the world just rejected (an in-request serving rule, never
-        # trust), with that entry
+        # the items held back from the librarian's fits in this request, until an accepted verdict or a rejection
+        # attributed to another entry: each linked by a recorded derivation link to an entry whose answer the world
+        # rejected (an in-request serving rule, never trust), with that entry
         self.held_here: dict[str, dict] = {}
         # Rev 2.3 (re-ask on new evidence): the primary fit of the librarian's latest answer in this request
         # (None: no fit stands, before any answer or after one that named none); the value-free shapes of the
@@ -1696,16 +1696,20 @@ class RequestRun:
         return events
 
     def _hold_linked(self, rejected: list[str], entry: dict) -> None:
-        """Hold back, until the next verdict, every item linked by a recorded derivation link to an entry whose answer
-        was just rejected (:func:`derivation_links`), other than those with a bad use of their own."""
+        """Hold back every item linked by a recorded derivation link to an entry whose answer was just rejected
+        (:func:`derivation_links`), other than those with a bad use of their own, until an accepted verdict, or a
+        verdict attributed to another entry (whose own links are then held instead). A rejection attributed to nothing
+        keeps them held. Inside this request only: nothing is stored, and the holds end with the request."""
+        if rejected and self.held_here and set(rejected).isdisjoint(row["because"] for row in self.held_here.values()):
+            self.held_here = {}
         for e in rejected:
             for item in sorted(derivation_links(self.copy_root, e)):
                 if item not in self.bad_here:
                     self.held_here.setdefault(item, {"because": e, "at": entry.get("obs")})
 
     def held(self) -> dict[str, str]:
-        """The items held back from the librarian's fits until the next verdict, each with the rejected entry it is
-        linked to."""
+        """The items held back from the librarian's fits (until an accepted verdict, or a rejection attributed to
+        another entry), each with the rejected entry it is linked to."""
         return {item: row["because"] for item, row in sorted(self.held_here.items())}
 
     def bad_uses(self) -> dict[str, int | None]:
@@ -1877,12 +1881,13 @@ class RequestRun:
             }
         entry = {"label": raw["label"], "obs": self._observations_now(), "at": _now(), "about": about}
         self.checker_seen.append(entry)
-        # a new world result: what an earlier rejection held back is offered again (its own bad use stands)
-        self.held_here = {}
         try:
             self._attribute(entry)
         except Exception as exc:  # noqa: BLE001 - an attribution never costs the verdict its line
             logger.warning("memory: an answer attribution failed (%s)", type(exc).__name__)
+        if entry["label"] == "pass":
+            # an accepted answer: what an earlier rejection held back is offered again (its own bad use stands)
+            self.held_here = {}
         self._tell_listeners(entry)
         if self.in_episode is not None:
             # UNIFY_MEMORY=in_episode: an in-episode signal is a pause; its segment fork starts at the next turn

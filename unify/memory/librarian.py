@@ -430,11 +430,12 @@ def failed_line(failed: list[str], failed_at: Mapping[str, Any] | None = None, m
 
 
 def held_line(held: Mapping[str, str]) -> str:
-    """The line of a question that names the items held back until the next result in the agent's current request:
-    each comes from the same recorded work (a shared recorded episode) as an entry whose answer was just rejected."""
+    """The line of a question that names the items held back in the agent's current request until an answer is
+    accepted: each comes from the same recorded work (a shared recorded episode) as an entry whose answer was
+    rejected."""
     return (
-        "Held back until the next result in this request (each comes from the same recorded work as an entry whose "
-        "answer was just rejected; never offer one of them now, name it as nearest if it is): "
+        "Held back in this request until an answer is accepted (each comes from the same recorded work as an entry "
+        "whose answer was rejected; never offer one of them now, name it as nearest if it is): "
         + ", ".join(f"{i} (with {e})" for i, e in held.items())
         + "."
     )
@@ -827,8 +828,8 @@ def check_answer(
             return None, f"fit {i}: {f['id']!r} was tried and failed; it is never offered to run (name it as nearest)"
         if held and f["id"] in held:
             return None, (
-                f"fit {i}: {f['id']!r} is held back until the next result in this request: it comes from the same "
-                f"recorded work as {held[f['id']]!r}, whose answer was just rejected (name it as nearest)"
+                f"fit {i}: {f['id']!r} is held back in this request until an answer is accepted: it comes from the "
+                f"same recorded work as {held[f['id']]!r}, whose answer was rejected (name it as nearest)"
             )
         if f["id"] in failed_here and f["id"] not in again:
             return None, (

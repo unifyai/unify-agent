@@ -3,8 +3,9 @@
 When the world rejects an answer that a request attributes to an entry (by exact provenance or by value identity), that
 entry has a bad use, and every entry linked to it by a recorded derivation link (a shared recorded episode: the link a
 card shows as "generalised by"; an item landed from a capture or merged from others carries their episodes) is held back
-from the librarian's fits until the next verdict in the request. The question names them, the answer may not, and the
-next verdict offers them again. Nothing is stored as trust.
+from the librarian's fits until an answer is accepted, or a rejection is attributed to another entry (whose links are
+then held instead). The question names them and the answer may not. Inside the request only: nothing is stored as
+trust.
 """
 
 from __future__ import annotations
@@ -69,10 +70,32 @@ def test_a_rejection_holds_back_what_is_linked_until_the_next_verdict(mv2, monke
         # the standing fit was the generalising item: the gate opens on it (re-ask on new evidence)
         run.standing_fit = GEN
         assert run.reask_events("the request") == ["outcome", "failed_use"]
-        # a new world result: the linked item is offered again; the rejected entry's own bad use stands
+        # a rejection attributed to nothing keeps the hold (the loop it stops goes on through such answers)
         _say(run, json.dumps({"action": "submit", "grid": [[1]]}))
         run.take_checker({"label": "fail"})
+        assert run.held() == {GEN: CAP}
+        # an accepted answer: the linked item is offered again; the rejected entry's own bad use stands
+        run.take_checker({"label": "pass"})
         assert run.held() == {} and list(run.bad_uses()) == [CAP]
+    finally:
+        _abort(mv2, run)
+
+
+def test_a_rejection_attributed_to_another_entry_holds_its_links_instead(mv2, monkeypatch, tmp_path):  # noqa: F811
+    run = _begin(mv2, "the request")
+    try:
+        copy = _copy(tmp_path / "copy")
+        monkeypatch.setattr(R.RequestRun, "copy_root", property(lambda self: copy))
+        first, second = [[7, 7, 7], [7, 7, 7]], [[8, 8, 8], [8, 8, 8]]
+        run.note_calls({"calls": {"results": [{"item": CAP, "outcome": "ok", "digest": _digest(first), "input": ""},
+                                              {"item": GEN, "outcome": "ok", "digest": _digest(second),
+                                               "input": ""}]}})  # fmt: skip
+        _say(run, json.dumps({"action": "submit", "grid": first}))
+        run.take_checker({"label": "fail"})
+        assert run.held() == {GEN: CAP}
+        _say(run, json.dumps({"action": "submit", "grid": second}))
+        run.take_checker({"label": "fail"})  # attributed to GEN: its own links are held now, and it has a bad use
+        assert run.held() == {} and sorted(run.bad_uses()) == sorted([CAP, GEN])
     finally:
         _abort(mv2, run)
 
@@ -93,7 +116,7 @@ FIT = {"id": GEN, "call": f"memory.get({GEN!r})(grid)", "why": "w"}
 
 def test_a_held_item_is_refused_as_a_fit_and_may_be_named_as_nearest():
     got, why = L.check_answer({"fits": [FIT]}, [GEN, CAP], held={GEN: CAP})
-    assert got is None and "held back until the next result" in why and CAP in why
+    assert got is None and "held back in this request until an answer is accepted" in why and CAP in why
     nearest = {"fits": [], "nearest": [{"id": GEN, "differs": "held back"}]}
     assert L.check_answer(nearest, [GEN, CAP], held={GEN: CAP})[1] == ""
     assert L.check_answer({"fits": [FIT]}, [GEN, CAP])[1] == ""  # nothing held: offered as before
@@ -102,7 +125,7 @@ def test_a_held_item_is_refused_as_a_fit_and_may_be_named_as_nearest():
 def test_the_question_names_what_is_held_and_its_key_changes_with_it():
     one = L.sent_to_librarian("q", {"commit": "c"})
     two = L.sent_to_librarian("q", {"commit": "c"}, held={GEN: CAP})
-    assert "Held back until the next result" not in one["message"]
+    assert "Held back in this request" not in one["message"]
     assert f"{GEN} (with {CAP})" in two["message"] and L.answer_key(one) != L.answer_key(two)
 
 
