@@ -242,6 +242,8 @@ def read_evidence(copy: Path) -> dict | None:
 #: The captured procedures of a library copy, as its export holds them.
 _CAPTURES_DIR = ".memory/captures"
 _CAPTURE_DIR = re.compile(r"[0-9a-f]{16}")
+#: The copy's item records (``library_helper.ITEMS_FILE``), read for the items' call forms.
+_ITEMS_FILE = ".memory/items.json"
 #: The statuses ``memory.items`` leaves out (:data:`.library_index.HIDDEN`).
 _HIDDEN = ("retired",)
 
@@ -510,6 +512,136 @@ def _call_problem(call: str) -> str:
     return ""
 
 
+def _item_members() -> frozenset[str]:
+    """The public members of the Item that ``memory.get`` returns in the agent's cells (its fields and methods)."""
+    import dataclasses
+
+    from .library_helper import Item
+
+    fields = {f.name for f in dataclasses.fields(Item)}  # fields without a default are not class attributes
+    return frozenset(n for n in fields | set(dir(Item)) if not n.startswith("_"))
+
+
+def _function_signature(copy: Path, row: dict, name: str) -> tuple[int, int | None, frozenset[str], bool] | None:
+    """A library function's call form from its source in the copy: (required positional parameters, the most
+    positional arguments it takes or None for ``*args``, its keyword names, whether it takes ``**kwargs``); None when
+    the source or the definition cannot be read. Read only, nothing run."""
+    import ast
+
+    rel = row.get("path")
+    if not isinstance(rel, str) or not rel or rel.startswith("/") or ".." in Path(rel).parts:
+        return None
+    try:
+        tree = ast.parse((Path(copy) / rel).read_text(encoding="utf-8"))
+    except (OSError, ValueError, SyntaxError, UnicodeDecodeError):
+        return None
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            a = node.args
+            positional = list(a.posonlyargs) + list(a.args)
+            required = len(positional) - len(a.defaults)
+            most = None if a.vararg is not None else len(positional)
+            keywords = frozenset(x.arg for x in a.args + a.kwonlyargs)
+            return required, most, keywords, a.kwarg is not None
+    return None
+
+
+def _api_problem(call: str, copy: Path | None, recipes: Mapping[str, str] | None = None) -> str:
+    """Why a fit's *call* does not match the real API of the items it uses ('' when it does), read from the library
+    copy at *copy*: a member it reads on an item must exist on the Item ``memory.get`` returns (no ``.run()``); a direct
+    call of a recorded procedure takes no argument (the current request) or one input; a function's call fits its
+    definition's parameters, and with no arguments it is allowed only for a procedure with a recipe (one call on the
+    current request); a note is read, never called. A parse of the call against the items' recorded forms: no word of
+    it is matched and nothing is run."""
+    import ast
+
+    if copy is None:
+        return ""
+    try:
+        tree = ast.parse(call.strip(), mode="exec")
+    except SyntaxError:
+        return ""  # _call_problem says why
+    try:
+        data = json.loads((Path(copy) / _ITEMS_FILE).read_text(encoding="utf-8"))
+        rows = data.get("items") if isinstance(data, dict) else None
+    except (OSError, ValueError, UnicodeDecodeError):
+        rows = None
+    rows = rows if isinstance(rows, dict) else {}
+    recipes = recipes or {}
+
+    def item_of(node: Any) -> str | None:
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "memory"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            return node.args[0].value
+        if isinstance(node, ast.Name):
+            return bound.get(node.id)
+        return None
+
+    bound: dict[str, str] = {}
+    for stmt in ast.walk(tree):
+        if isinstance(stmt, ast.Assign):
+            iid = item_of(stmt.value)
+            for target in stmt.targets:
+                if iid is not None and isinstance(target, ast.Name):
+                    bound[target.id] = iid
+    members = _item_members()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            iid = item_of(node.value)
+            if iid is not None and node.attr not in members:
+                return (
+                    f"reads {node.attr!r} on the item {iid!r}, which an item does not have; an item is called "
+                    f"directly, e.g. memory.get({iid!r})(...), and its members are {', '.join(sorted(members))}"
+                )
+        if not isinstance(node, ast.Call):
+            continue
+        iid = item_of(node.func)
+        if iid is None:
+            continue
+        n_args, names = len(node.args), [k.arg for k in node.keywords]
+        if iid.startswith("notes/"):
+            return f"calls the note {iid!r}, which is read, not called: print(memory.get({iid!r}))"
+        if iid.startswith(CAPTURE_PREFIX):
+            if n_args > 1 or names:
+                return (
+                    f"passes {n_args} argument(s){' and keywords' if names else ''} to the recorded procedure {iid!r}, "
+                    f"which takes none (the current request) or one input: memory.get({iid!r})()"
+                )
+            continue
+        row = rows.get(iid)
+        if not isinstance(row, dict):
+            continue
+        if not node.args and not node.keywords:
+            if iid in recipes:
+                continue
+        sig = _function_signature(Path(copy), row, iid.split(":", 1)[1]) if ":" in iid else None
+        if sig is None:
+            continue
+        required, most, keywords, varkw = sig
+        given_kw = [k for k in names if k is not None]
+        unknown = [k for k in given_kw if k not in keywords and not varkw]
+        if unknown:
+            return f"passes {unknown[0]!r} to {iid!r}, which has no such parameter"
+        if most is not None and n_args > most:
+            return f"passes {n_args} positional argument(s) to {iid!r}, which takes at most {most}"
+        if n_args + len(given_kw) < required and not any(k is None for k in names):
+            if not node.args and not node.keywords:
+                return (
+                    f"calls {iid!r} with no arguments, but it has no recipe that runs it on the current request; it "
+                    f"needs {required} argument(s): give them, e.g. memory.get({iid!r})(<input>)"
+                )
+            return f"passes {n_args + len(given_kw)} argument(s) to {iid!r}, which needs at least {required}"
+    return ""
+
+
 def _returned_by_memory(node: Any, tree: Any) -> bool:
     """Whether *node* calls a name the same snippet bound to what a ``memory`` call returned (``f = memory.get(..)``
     then ``f(x)``)."""
@@ -592,13 +724,15 @@ def check_answer(
     recipes: Mapping[str, str] | None = None,
     acting: set[str] = frozenset(),
     failed_here: set[str] = frozenset(),
+    copy: Path | None = None,
 ) -> tuple[dict | None, str]:
     """The answer as the librarian gave it, or None with the reason it is refused: the form of design J(b).4, every
     id an item of the library (*ids*), no captured attempt that failed among the fits, each fit that names a
     procedure with a recipe (or the recipe) carrying the call that applies it to the current request (*recipes*:
     id -> that call), so the agent has the one call, and no fit calling a recorded procedure that acts through its
     episode's tools (*acting*, :func:`acting_captures`), which no call runs, and none whose call failed in the agent's
-    current request (*failed_here*). The harness adds and reorders nothing; it only keeps the answer within its bound
+    current request (*failed_here*); with the library copy at *copy*, each call must match the real API of the items
+    it uses (:func:`_api_problem`). The harness adds and reorders nothing; it only keeps the answer within its bound
     (:func:`bounded_answer`)."""
     recipes = recipes or {}
     known = set(ids)
@@ -622,7 +756,7 @@ def check_answer(
                 f"fit {i}: {f['id']!r} was tried and failed in this request; it is not offered again in it (name it "
                 "as nearest)"
             )
-        why_not = _call_problem(f["call"])
+        why_not = _call_problem(f["call"]) or _api_problem(f["call"], copy, recipes)
         if why_not:
             return None, f"fit {i}: its call {f['call'][:200]!r} {why_not}"
         if f["id"] in acting and _calls_item(f["call"], f["id"]):
@@ -722,7 +856,9 @@ async def finish(ctx: Any, args: dict) -> Any:
         return Reply(str(text), "refused", text.form)
     if state.schema is not None:
         return _finish_schema(state, args.get("answer"))
-    got, why = check_answer(args.get("answer"), state.ids, state.failed, state.recipes, state.acting, state.failed_here)
+    got, why = check_answer(
+        args.get("answer"), state.ids, state.failed, state.recipes, state.acting, state.failed_here, copy=state.copy
+    )
     if got is None:
         text = refusal("finish", "bad_answer", reason=why[:2000])
         state.finish_text = str(text)
