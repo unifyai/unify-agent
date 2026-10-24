@@ -370,6 +370,7 @@ def sent_to_librarian(
     failed_at: Mapping[str, Any] | None = None,
     messages_now: int | None = None,
     held: Mapping[str, Any] | None = None,
+    unattributed: int = 0,
 ) -> dict:
     """Exactly what one ask sends the librarian beyond its fixed opening (the shared opening and the brief, the same
     for every ask and every library): the user message (:func:`question_message`: the question and the catalogue
@@ -394,6 +395,10 @@ def sent_to_librarian(
         message = message.rsplit("Answer with tools.finish(answer).", 1)[0] + failed_line(
             tried, failed_at, messages_now
         ) + ("\n\nAnswer with tools.finish(answer).")
+    if isinstance(unattributed, int) and not isinstance(unattributed, bool) and unattributed > 0:
+        message = message.rsplit("Answer with tools.finish(answer).", 1)[0] + unattributed_line(unattributed) + (
+            "\n\nAnswer with tools.finish(answer)."
+        )
     kept = {k: v for k, v in sorted((held or {}).items()) if isinstance(k, str) and isinstance(v, str)}
     if kept:
         # linked to an entry whose answer was just rejected: held back until the next result in this request
@@ -427,6 +432,15 @@ def failed_line(failed: list[str], failed_at: Mapping[str, Any] | None = None, m
             '"message:<n>"}] to the answer, n a message after the one it failed at.'
         )
     return line
+
+
+def unattributed_line(n: int) -> str:
+    """The line of a question that says how many answers of the current request were rejected after a library call
+    and equal nothing it returned: shown, gating nothing (no item is tied to them)."""
+    return (
+        f"Rejected after use (not attributed) in this request: {n} answer{'s' if n != 1 else ''}, rejected after a "
+        "library call, equal to nothing the call returned, so tied to no item."
+    )
 
 
 def held_line(held: Mapping[str, str]) -> str:
@@ -1312,6 +1326,7 @@ class LibrarianSession:
         messages_now: int | None = None,
         declared: Mapping[str, Any] | None = None,
         held: Mapping[str, Any] | None = None,
+        unattributed: int = 0,
     ) -> str:
         """One question about the current request, as JSON text (:meth:`answer`; *request* is not sent to the
         librarian, so it is not in the key; *facts*, which an older cell may still send, are not read: rev 2 runs no
@@ -1320,6 +1335,7 @@ class LibrarianSession:
             question, schema=schema, last_message=last_message, failed=failed, failed_at=failed_at,
             messages_now=messages_now, request=request, **({"declared": declared} if declared is not None else {}),
             **({"held": held} if held else {}),
+            **({"unattributed": unattributed} if unattributed else {}),
         )
         return json.dumps(got, ensure_ascii=False, sort_keys=True)
 
@@ -1335,6 +1351,7 @@ class LibrarianSession:
         request: str | None = None,
         declared: Mapping[str, Any] | None = None,
         held: Mapping[str, Any] | None = None,
+        unattributed: int = 0,
     ) -> dict:
         """One question about the current request. When the librarian was already sent the same
         (:func:`answer_key` of :func:`sent_to_librarian`), that answer as it gave it, with :data:`ALREADY_GIVEN`, and
@@ -1376,11 +1393,11 @@ class LibrarianSession:
                 sent = sent_to_librarian(question, library, evidence=self.evidence, last_message=last_message,
                                          rows=len(self.dispatch), schema=schema, failed=here,
                                          failed_at=self.state.failed_at, messages_now=self.state.messages_now,
-                                         held=self.state.held_here)  # fmt: skip
+                                         held=self.state.held_here, unattributed=unattributed)  # fmt: skip
             else:
                 sent = sent_to_librarian(question, library, rows=len(self.dispatch), schema=schema, failed=here,
                                          failed_at=self.state.failed_at, messages_now=self.state.messages_now,
-                                         held=self.state.held_here)  # fmt: skip
+                                         held=self.state.held_here, unattributed=unattributed)  # fmt: skip
             key = answer_key(sent)
             given = self.answers.get(key)
             if given is not None:
@@ -1575,9 +1592,9 @@ class AskInstance(LibrarianSession):
     async def ask(self, question: str, facts: Any = None, request: str | None = None, last_message: str | None = None,
                   schema: dict | None = None, failed: Any = (), failed_at: Mapping[str, Any] | None = None,
                   messages_now: int | None = None, declared: Mapping[str, Any] | None = None,
-                  held: Mapping[str, Any] | None = None) -> str:  # fmt: skip
+                  held: Mapping[str, Any] | None = None, unattributed: int = 0) -> str:  # fmt: skip
         text = await super().ask(question, facts, request, last_message, schema, failed, failed_at, messages_now,
-                                 declared, held)  # fmt: skip
+                                 declared, held, unattributed)  # fmt: skip
         keep_answers(self)
         try:
             self._post_ask(question, text)

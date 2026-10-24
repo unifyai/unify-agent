@@ -1036,7 +1036,10 @@ CURRENT_REQUEST = RegisteredTool(
     parameters={"type": "object", "properties": {}, "additionalProperties": False},
     refusals={"unavailable": "the current request is not available here ({why})"},
     roles=(_A, _T),
-    returns='JSON text: {"text": the request\'s text, "data": the list of JSON objects and arrays it contains}.',
+    returns=(
+        'JSON text: {"text": the request\'s text, "data": the list of JSON objects and arrays it contains}, and '
+        '"bad_uses" (item -> how its use went badly in this request) when there are any.'
+    ),
     examples=('tools._call("current_request", {})',),
     when="Never from a cell: memory.ask() and memory.request() call it.",
     kind="reader",

@@ -434,3 +434,50 @@ def test_a_failure_on_another_value_is_not_in_the_failed_list(mv2, monkeypatch):
     finally:
         declared_input.clear()
         _abort(mv2, run)
+
+
+# --- what is shown: rejected after use (not attributed), and the card's in-request line -------------------------
+
+
+def test_an_unattributed_rejection_is_shown_to_the_librarian_and_gates_nothing(mv2, monkeypatch):  # noqa: F811
+    from unify.actor import tool_handlers as th
+
+    run = _begin(mv2, "hi")
+    try:
+        run.note_calls(_cell(**{A: [[7, 7]]}))
+        _say(run, '{"action": "submit", "grid": [[1, 1]]}')
+        run.take_checker({"label": "fail"})
+        monkeypatch.setattr(request_mod, "current", lambda: run)
+        assert th._memory_run_unattributed() == 1 and run.bad_uses() == {}
+    finally:
+        _abort(mv2, run)
+    sent = L.sent_to_librarian("q", {"commit": "c"}, unattributed=1)
+    assert "Rejected after use (not attributed) in this request: 1 answer," in sent["message"]
+    assert "not attributed" not in L.sent_to_librarian("q", {"commit": "c"})["message"]
+
+
+def test_the_card_says_when_an_answer_equal_to_its_result_was_rejected_here(monkeypatch):
+    evidence = {A: {"later_uses_text": "none yet"}}
+    monkeypatch.setattr(library_helper, "failed_here", lambda: [])
+    monkeypatch.setattr(library_helper, "_host_bad_uses", lambda: {A: "value"})
+    lines = library_helper._evidence_lines(evidence, A)
+    assert "In this request: an answer equal to what it returned was rejected" in lines
+    monkeypatch.setattr(library_helper, "_host_bad_uses", lambda: {A: "failed"})
+    assert "In this request: a call of it failed" in library_helper._evidence_lines(evidence, A)
+
+
+def test_the_request_reply_carries_the_hosts_bad_uses(mv2, monkeypatch):  # noqa: F811
+    from types import SimpleNamespace
+
+    from unify.actor import tool_handlers as th
+
+    run = _begin(mv2, "hi")
+    try:
+        run.bad_here[A] = {"how": "value", "at": 1}
+        monkeypatch.setattr(request_mod, "current", lambda: run)
+        ctx = SimpleNamespace(state=SimpleNamespace(request_text="the request", request_data=[]), agent="actor")
+        assert json.loads(th.current_request(ctx, {}).text)["bad_uses"] == {A: "value"}
+        run.bad_here.clear()
+        assert "bad_uses" not in json.loads(th.current_request(ctx, {}).text)
+    finally:
+        _abort(mv2, run)

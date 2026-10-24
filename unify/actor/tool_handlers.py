@@ -729,6 +729,10 @@ async def _ask_librarian(
             extra["failed"] = failed
             if failed_at and messages_now is not None:
                 extra["failed_at"], extra["messages_now"] = failed_at, messages_now
+        unattributed = _memory_run_unattributed()
+        if unattributed:
+            # shown, gating nothing: answers rejected after a library call that equal nothing it returned
+            extra["unattributed"] = unattributed
         held = _memory_run_held()
         if held:
             # held back until the next verdict: linked to an entry whose answer the world just rejected
@@ -884,6 +888,33 @@ def answered_from(ctx: Any, args: dict) -> Any:
     return _reply("recorded")
 
 
+def _memory_run_bad_how() -> dict:
+    """Per item with a bad use in the memory run, how it was found (``failed``, ``value`` or ``answered_from``); {}
+    when none or no run is open."""
+    try:
+        from unify.memory.integration import request as _request
+
+        run = _request.current()
+        rows = getattr(run, "bad_here", None) if run is not None else None
+    except Exception:  # noqa: BLE001 - nothing known
+        return {}
+    return {k: str(v.get("how")) for k, v in sorted((rows or {}).items()) if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _memory_run_unattributed() -> int:
+    """How many answers the memory run's request had rejected after a tracked call, equal to nothing any call
+    returned (``rejected after use, not attributed``); 0 when none or no run is open."""
+    try:
+        from unify.memory.integration import request as _request
+
+        run = _request.current()
+        rows = getattr(run, "answer_attributions", None) if run is not None else None
+    except Exception:  # noqa: BLE001 - nothing known
+        return 0
+    return sum(1 for r in rows or () if isinstance(r, dict) and r.get("label") == "fail" and not r.get("items")
+               and r.get("how") != "answered_from")  # fmt: skip
+
+
 def _memory_run_held() -> dict:
     """The items the memory run holds back from the librarian's fits until the next verdict (``RequestRun.held``),
     each with the rejected entry it is linked to; {} when none or no run is open."""
@@ -941,7 +972,13 @@ def current_request(ctx: Any, args: dict) -> Any:
         text = None
     if text is None:
         return _refused(_refusal(ctx, "current_request", "unavailable", why="no current request is known"))
-    reply = json.dumps({"text": text, "data": data})
+    doc: dict = {"text": text, "data": data}
+    bad = _memory_run_bad_how()
+    if bad:
+        # the request's bad uses as the host knows them (call failures, and answers equal to what an item returned
+        # that the world rejected), for the in-request line of the items' cards
+        doc["bad_uses"] = bad
+    reply = json.dumps(doc)
     if len(reply.encode("utf-8")) > REQUEST_REPLY_BYTES:
         return _refused(_refusal(ctx, "current_request", "unavailable", why="the request is larger than a reply carries"))
     return _reply(reply)

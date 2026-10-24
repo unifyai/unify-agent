@@ -436,8 +436,11 @@ def _evidence_lines(evidence: dict | None, iid: str) -> list[str]:
         "Recorded failures: " + _failure_text(_failures(evidence, iid)),
         "Later uses: " + _str(row.get("later_uses_text"), "none yet"),
     ]
-    if iid in failed_here():
+    how = _host_bad_uses().get(iid)
+    if iid in failed_here() or how == "failed":
         out.append("In this request: a call of it failed")
+    elif how in ("value", "answered_from"):
+        out.append("In this request: an answer equal to what it returned was rejected")
     if _str(row.get("conditions")):
         out.append("States that it applies when: " + _str(row.get("conditions")))
     return out
@@ -2749,6 +2752,20 @@ def _declared_digest() -> str | None:
     if not isinstance(reply, dict) or reply.get("declared") is not True:
         return None
     return result_digest(reply.get("value"))
+
+
+def _host_bad_uses() -> dict:
+    """The current request's bad uses as the host knows them (:data:`REQUEST_TOOL`'s ``bad_uses``: item -> how), or {}
+    when there are none or they are not available here. Never raises."""
+    call = getattr(_tools(), "_call", None)
+    if not callable(call):
+        return {}
+    try:
+        reply = json.loads(str(call(REQUEST_TOOL, {})))
+    except Exception:  # noqa: BLE001 - a refusal or a closed channel: nothing known here
+        return {}
+    bad = reply.get("bad_uses") if isinstance(reply, dict) else None
+    return {k: v for k, v in bad.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(bad, dict) else {}
 
 
 def _declared_value() -> tuple[bool, Any]:
