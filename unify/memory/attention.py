@@ -965,7 +965,7 @@ class Ledger:
                 )
                 contrary = isinstance(cap, Mapping) and cap.get("outcome") in ("contrary", "failed")
                 out += self._create_rows(state, "new_experience", refs, (f.name,), dup_capture=True, contrary=contrary)
-            # rev 2: no capture is run to classify it, so no own check fails and no ``own_check_failed`` entry
+            # no capture is run to classify it, so no own check fails and no ``own_check_failed`` entry
             # is made (the kind stays readable: an older ledger's entries still fold)
             # uses that went badly (an actor's report on the record comes through the same source)
             for u in sources.use_failures():

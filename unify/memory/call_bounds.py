@@ -1,7 +1,6 @@
 """One model request's worst case, per model: the tier-1 catalogue-max bound of the pinned public catalogue (cbb212a9,
-the same source as the programme guard's ``catalogue_max_bound`` and the kc3hf68se guard; e.g. 0.65625 USD and
-13.125 USD for the two models the kits run), in ``call_bounds.json`` beside this file (written by the research repo's
-``artifacts/orchestrator/REDESIGN-BUILD-20261020/builder-a/make_call_bounds.py``). A model the catalogue cannot bound
+the source a spend guard's ``catalogue_max_bound`` reads; e.g. 0.65625 USD and 13.125 USD for two of its models), in
+``call_bounds.json`` beside this file, generated from that catalogue. A model the catalogue cannot bound
 has no entry and is refused: fail closed.
 
 Standard library only.

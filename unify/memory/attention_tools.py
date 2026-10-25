@@ -105,7 +105,7 @@ def take(ctx: Any, args: dict) -> "_wt.Reply":
     """``tools.take(entry_id)``: pull an open entry into this pass; its material is exported under /inputs and it is
     owed a read and a decision like the handed ones. A closed entry (an earlier pass decided it) is taken read-only:
     its material is exported and what was decided is returned, so earlier captures of the same kind can be read with
-    the new ones; nothing about it is owed or changed (rev 2.1)."""
+    the new ones; nothing about it is owed or changed."""
     writer, att = _state(ctx)
     if att is None:
         return _no_ledger("take")
@@ -267,7 +267,7 @@ def find(ctx: Any, args: dict) -> "_wt.Reply":
     """``tools.find(query, scope="items", k=10)``: the library's items by their "When to use" text, the episodes'
     summaries, or the open entries, against *query*; the first *k*. Ranked by meaning with the run's embedding backend
     (:func:`.library_search.backend`, the librarian's), else not ranked at all: listed in their own order, the result
-    saying why (rev 2.1: no word matching ranks anything). The writer drives it: nothing here proposes a group."""
+    saying why (no word matching ranks anything). The writer drives it: nothing here proposes a group."""
     from .library_search import NO_BACKEND, backend, index_data, ranking
 
     writer, att = _state(ctx)

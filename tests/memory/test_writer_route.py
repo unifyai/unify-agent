@@ -1144,7 +1144,7 @@ def test_the_cli_settles_after_loading_dotenv(monkeypatch, tmp_path, capsys):
     leaked = WRITER_TOKEN in err or WRITER_BASE in err
     assert order == ["load_dotenv", "settle"]
     assert refused and not token_left and not leaked
-    assert "memory v2:" in err and ".env" in err
+    assert "memory:" in err and ".env" in err
 
 
 def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(

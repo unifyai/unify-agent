@@ -1,4 +1,4 @@
-"""Work-tree and shell observation for memory v2, by an audit hook in the worker child.
+"""Work-tree and shell observation for memory, by an audit hook in the worker child.
 
 This module runs *inside the worker child* and imports the standard library
 only, so the worker can load it by file path without the ``unify`` package.
@@ -89,7 +89,7 @@ the failed attempts listed apart), and a function item's
 call raises ``memory.run_result``
 with its target id, its outcome (``returned``, ``refused`` or ``error``),
 its level and its conditions (``none``, ``held``, ``not-held`` or
-``error``): the one call it made (rev 2.1: never a second run, never
+``error``): the one call it made (never a second run, never
 another procedure beside it). Ids are
 library item ids or ``capture:<16 hex digits>`` (a captured procedure's run
 also raises ``memory.call`` under its capture id). ``calls`` then also
@@ -686,7 +686,7 @@ class CellAudit:
 
     def _ask_result(self, args: tuple) -> None:
         """Keep one ``memory.ask_result`` event: the ids listed as fitting, whether nothing fits, how many rows the
-        copy's structural catalogue holds (rev 2: no reader runs, so there are no reader facts), and how many of the
+        copy's structural catalogue holds (no reader runs, so there are no reader facts), and how many of the
         cell's call records and runs came before it."""
         if type(args) is not tuple or len(args) != 3:
             self.calls_malformed += 1

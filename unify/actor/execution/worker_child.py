@@ -588,7 +588,7 @@ class Worker:
         self._stdout: list[dict] = []
         self._stderr: list[dict] = []
         self._real_print = builtins.print
-        # UNIFY_MEMORY (spec §3a): the work-tree audit hook, only when the
+        # UNIFY_MEMORY: the work-tree audit hook, only when the
         # harness asks for it in init; ``audit_state`` is "on" or why not.
         self.audit: Any = None
         self.audit_state: Optional[str] = None

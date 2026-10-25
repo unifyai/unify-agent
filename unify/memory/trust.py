@@ -30,7 +30,7 @@ verdicts (:func:`signal_outcome`).
   basis is ``verdicts`` when one does, else ``implicit``; an ``implicit`` basis never claims correctness;
 * ``on-trial`` otherwise. An ``adopted`` item stays adopted until the retirement rule fires; one episode never decides.
 
-**Evidence levels.** The gate sets ``unchecked``: it runs no code (rev 2.1), so nothing shows an item reproducing its
+**Evidence levels.** The gate sets ``unchecked``: it runs no code, so nothing shows an item reproducing its
 case, and ``reproduces-its-case`` is read only on records written before. Outcomes only move the top of the scale
 (:func:`apply_outcome`, the one decider, which :func:`.lifecycle.decide_status` delegates to): an item adopted on the
 basis of verdicts is raised to ``confirmed-by-outcomes``, and one that is retired, or no longer adopted on verdicts,
@@ -50,13 +50,13 @@ from typing import Any
 # --- names ----------------------------------------------------------------------------------------------------
 
 #: Statuses and evidence levels: the one vocabulary (:mod:`.item_states`); ``FROM_LIFECYCLE`` maps the lifecycle's old
-#: status names (``deprecated`` is the curator's retirement).
+#: status names (``deprecated`` is a curate pass's retirement).
 from .item_states import (  # noqa: E402
     ADOPTED,
     CONFIRMED_BY_OUTCOMES,
     FROM_LIFECYCLE,  # noqa: F401 - read as trust.FROM_LIFECYCLE
     ON_TRIAL,
-    REPRODUCES_ITS_CASE,  # noqa: F401 - read as trust.REPRODUCES_ITS_CASE (records from before rev 2.1)
+    REPRODUCES_ITS_CASE,  # noqa: F401 - read as trust.REPRODUCES_ITS_CASE (older records)
     RETIRED,
     STATUSES,  # noqa: F401 - read as trust.STATUSES
     UNCHECKED,
@@ -95,7 +95,7 @@ class Use:
     *end_outcome*: the episode-end outcome (``positive``/``contrary``), else None. *holds*: the procedure's stated
     result condition on this call (None: none stated). *corrected*: a correction or re-ask followed the use.
     *agreed*: agreement with the actor's own final result (None: nothing to compare). No second run and no other
-    procedure is ever run to compare (rev 2.1).
+    procedure is ever run to compare.
 
     *answered* None means the record does not say whether the result was handed back (a use record without result
     digests). Such a use is attributed as the lifecycle always has: a contrary signal in its episode

@@ -13,7 +13,7 @@ from unify.common.llm_client import new_llm_client
 from unify.common.token_utils import count_tokens
 from unify.function_manager.execution_env import create_base_globals
 
-#: Every agent (the agent loop, and the memory writer, curator and helpers) compacts its context once a model call's
+#: Every agent (the agent loop, and the memory writer and its helpers) compacts its context once a model call's
 #: prompt reaches whichever comes first: this share of the model's context window (``unillm.get_max_input_tokens``)
 #: or a fixed number of prompt tokens (:func:`compaction_at_tokens`). With no known window, the fixed number applies.
 COMPACTION_THRESHOLD = 0.85

@@ -205,7 +205,7 @@ class WorktreeCapture:
             recorder.begin()
         except Exception as exc:  # noqa: BLE001 - a capture never fails the request
             logger.warning(
-                "memory v2: no work-tree capture for this request (%s)",
+                "memory: no work-tree capture for this request (%s)",
                 type(exc).__name__,
             )
             return
@@ -234,7 +234,7 @@ class WorktreeCapture:
                 if not self._over_cap:
                     self._over_cap = True
                     logger.warning(
-                        "memory v2: audit records over the request cap (%d bytes) are dropped",
+                        "memory: audit records over the request cap (%d bytes) are dropped",
                         MAX_AUDIT_BYTES,
                     )
                 self._recorder.skip_counts["audit records over the request cap"] += 1
@@ -262,7 +262,7 @@ class WorktreeCapture:
                 recorder.close()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "memory v2: work-tree capture abort (%s)",
+                "memory: work-tree capture abort (%s)",
                 type(exc).__name__,
             )
 
@@ -277,7 +277,7 @@ class WorktreeCapture:
             return self._finish(recorder, events, cells)
         except Exception as exc:  # noqa: BLE001 - never into the request
             logger.warning(
-                "memory v2: work-tree capture failed (%s)",
+                "memory: work-tree capture failed (%s)",
                 type(exc).__name__,
             )
             return WorktreeResult([], recorder.before, None, "")
@@ -297,7 +297,7 @@ class WorktreeCapture:
             recorder.redactor = self._redactor_factory()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "memory v2: no work-tree rows (redactor failed: %s)",
+                "memory: no work-tree rows (redactor failed: %s)",
                 type(exc).__name__,
             )
             return WorktreeResult([], recorder.before, None, "")
@@ -313,14 +313,14 @@ class WorktreeCapture:
                 Exception
             ) as exc:  # noqa: BLE001 - one cell's records never lose the rest
                 logger.warning(
-                    "memory v2: a cell's work-tree records failed (%s)",
+                    "memory: a cell's work-tree records failed (%s)",
                     type(exc).__name__,
                 )
         try:
             recorder.finish(deadline=deadline)
         except Exception as exc:  # noqa: BLE001 - keep what was recorded
             logger.warning(
-                "memory v2: no work-tree after snapshot (%s)",
+                "memory: no work-tree after snapshot (%s)",
                 type(exc).__name__,
             )
         diff = ""
@@ -328,7 +328,7 @@ class WorktreeCapture:
             try:
                 diff = recorder.diff(seconds=max(deadline - time.monotonic(), 0.1))
             except Exception as exc:  # noqa: BLE001 - worktree_diff never raises
-                logger.warning("memory v2: no work-tree diff (%s)", type(exc).__name__)
+                logger.warning("memory: no work-tree diff (%s)", type(exc).__name__)
         self.cut_off = sum(
             n
             for reason, n in recorder.skip_counts.items()

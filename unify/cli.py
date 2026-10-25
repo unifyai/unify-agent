@@ -151,15 +151,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def _configure_environment(args: argparse.Namespace) -> Path:
     """Point the runtime at its home directory and route logs there."""
     load_dotenv()
-    # Settings were read before .env: a Sol route value only there is refused
-    # (it would leave Sol on the actor's route) and its token leaves the
+    # Settings were read before .env: a writer route value only there is refused
+    # (it would leave the writer on the actor's route) and its token leaves the
     # environment.
     from unify.memory.integration.switch import settle_writer_route_env
     from unify.settings import SETTINGS
 
     refusal = settle_writer_route_env(os.environ, SETTINGS)
     if refusal is not None:
-        print(f"memory v2: {refusal}", file=sys.stderr)
+        print(f"memory: {refusal}", file=sys.stderr)
     if args.home:
         os.environ["UNIFY_HOME"] = str(Path(args.home).expanduser())
     home = Path(os.environ.get("UNIFY_HOME", "").strip() or "~/.unify").expanduser()
@@ -459,8 +459,8 @@ class Act:
                 await self._handle.submit(line)
 
     def _post_checker(self, raw: object, **where: object) -> None:
-        """Hand a ``{"checker": ...}`` line to the memory run and answer it (memory v2.1 P9: a verdict the
-        bed showed the actor, kept as an agent-visible checker signal). Without a memory run it is refused.
+        """Hand a ``{"checker": ...}`` line to the memory run and answer it (a verdict the
+        world showed the actor, kept as an agent-visible checker signal). Without a memory run it is refused.
         *where*: the line's ``episode`` and ``about`` (a run with memory).
         """
         if self._mv2 is None:

@@ -424,7 +424,7 @@ def _unknown_tool(tool: str, allow: tuple[str, ...]) -> Any:
 
     near = nearest(tool[:80], allow)
     if tool not in allow and tool != "execute_code" and tool in registry():
-        # a tool of another role: say so, and suggest only the caller's own tools (MAIN, 13 Oct)
+        # a tool of another role: say so, and suggest only the caller's own tools
         text = f"tools.{tool} isn't available in your role; "
     else:
         text = f"unknown tool {tool[:80]!r}; "

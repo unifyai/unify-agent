@@ -279,7 +279,7 @@ class PythonWorker:
             # PYTHONDONTWRITEBYTECODE would be ignored); otherwise no key at all.
             msg["no_bytecode"] = True
         # UNIFY_MEMORY=on, while the request's work tree is captured: the
-        # child installs the audit hook (spec §3a); otherwise no key at all.
+        # child installs the audit hook; otherwise no key at all.
         audit = _mv2.worker_audit()
         if audit is not None:
             msg["audit"] = audit
@@ -304,9 +304,9 @@ class PythonWorker:
         workspace = str(policy.workspace)
         from unify.memory.integration import hooks as _mv2
 
-        # UNIFY_MEMORY=on: the request's memory export, read-write (v2) ...
+        # UNIFY_MEMORY=on: writable memory mounts (none: the library copy is never writable) ...
         mounts = _mv2.worker_mounts()
-        # ... or read-only (spec v2.1 §6)
+        # ... and the read-only ones (the request's library copy)
         late_ro = _mv2.worker_readonly_mounts()
         env = {**env, **self.box_env}
         wrapped = sandbox.wrap_argv(
@@ -363,7 +363,7 @@ class PythonWorker:
                 ready["missing"],
             )
         if ready.get("audit", "on") != "on":
-            logger.warning("memory v2: no audit hook in the worker: %r", ready["audit"])
+            logger.warning("memory: no audit hook in the worker: %r", ready["audit"])
 
     async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
         assert proc.stderr is not None

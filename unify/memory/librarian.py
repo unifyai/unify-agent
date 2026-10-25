@@ -33,7 +33,7 @@ each carries ``X-Unify-Call-Kind: librarian`` (:data:`CALL_KIND`). The
 session also keeps its own totals (calls, tokens, cache reads, USD) for the use record; an unpriced call keeps the
 USD unknown.
 
-Rev 2 (PLAN-REV2 item 1): the librarian is a role of the run record (``run_record.INSTANCE_ROLES``). Its state lives as
+The librarian is a role of the run record (``run_record.INSTANCE_ROLES``). Its state lives as
 long as the run, under ``memory-state/agents/roles/librarian/``: the answers its instances gave (an exact-match cache:
 :func:`answer_key` names the library's commit, its dispatch digest and the schema's digest, so a changed library never
 serves an old answer) and the notes they kept; every instance reads it at its start. An instance starts in one of two
@@ -163,7 +163,7 @@ BRIEF = (
 )
 
 
-#: The brief's paragraph on what each question brings (rev 2: the structural catalogue; no reader runs).
+#: The brief's paragraph on what each question brings (the structural catalogue; no reader runs).
 _BRINGS = (
     "## What each question brings\n"
     "Each question names the catalogue: /memory/.memory/dispatch.json, one row per stored procedure, made by the "
@@ -372,7 +372,7 @@ def sent_to_librarian(
     for every ask and every library): the user message (:func:`question_message`: the question and the catalogue
     line) and the library it reads in its box with its tools (*library*: the copy's commit and its catalogue's
     digest as the ask read it). The question and the situation's message are sent as the asker wrote them,
-    identifiers included (rev 2.1: the librarian sees the same identifiers the library's items carry, so it can tell
+    identifiers included (the librarian sees the same identifiers the library's items carry, so it can tell
     an item keyed on another request's identifier from a fit). :func:`answer_key` is this structure's digest, and
     the message the session sends is its ``message``, so nothing the librarian reads can be missing from the key. With *evidence* (the copy's item
     evidence: the harness's evidence serving on) the message is :func:`evidence_question_message`, with
@@ -462,7 +462,7 @@ class LibrarianCalls:
     #: the JSON Schema of the question in progress (``memory.ask(..., schema=...)``), and its answers that missed it
     schema: dict | None = None
     schema_failures: int = 0
-    #: rev 2: the run's memory home when the run has the librarian role (its notes are kept there), and this
+    #: the run's memory home when the run has the librarian role (its notes are kept there), and this
     #: instance's name on the record (:func:`keep_note`); None and "" without the role
     role_home: Path | None = None
     instance: str = ""
@@ -882,7 +882,7 @@ async def finish(ctx: Any, args: dict) -> Any:
     return Reply(state.finish_text)
 
 
-#: Rev 2: one kept note's characters at most, and the role's notes file's bytes at most (a full file refuses more).
+#: One kept note's characters at most, and the role's notes file's bytes at most (a full file refuses more).
 NOTE_CHARS = 1000
 NOTES_MAX_BYTES = 256 * 1024
 
@@ -1198,8 +1198,8 @@ class LibrarianSession:
         failed: Any = (),
     ) -> str:
         """One question about the current request, as JSON text (:meth:`answer`; *request* is not sent to the
-        librarian, so it is not in the key; *facts*, which an older cell may still send, are not read: rev 2 runs no
-        reader)."""
+        librarian, so it is not in the key; *facts*, which an older cell may still send, are not read: no
+        reader runs)."""
         got = await self.answer(question, schema=schema, last_message=last_message, failed=failed)
         return json.dumps(got, ensure_ascii=False, sort_keys=True)
 
@@ -1411,7 +1411,7 @@ def actor_turn() -> Turn:
     return unillm_turn(actor_model(), actor_effort(), origin=ORIGIN)
 
 
-#: Rev 2 (PLAN-REV2 item 1): the two ways an instance of the librarian role starts. ``ask``: ``memory.ask``'s instance, the
+#: The two ways an instance of the librarian role starts. ``ask``: ``memory.ask``'s instance, the
 #: synchronous client of the role (one per request, kept for the request's follow-ups, as before); ``message``: one
 #: instance per message to ``@librarian`` on the run record (:func:`answer_message`), which answers it and ends.
 MODES = ("ask", "message")
@@ -1420,7 +1420,7 @@ NOTES_HEAD = "Notes earlier librarians of this run kept (read them; they may be 
 
 
 class AskInstance(LibrarianSession):
-    """Rev 2: ``memory.ask``'s instance of the librarian role. Answers as :class:`LibrarianSession` does (its answer is
+    """``memory.ask``'s instance of the librarian role. Answers as :class:`LibrarianSession` does (its answer is
     the tool's result, as before); each ask is also put on the run record, so the record's readers see asks and
     answers the same way as messages: one harness entry naming the asker and the question, and this instance's
     ``reply`` to it. Neither mentions anyone (the asker already has the answer as its tool result). The answer goes on
@@ -1466,7 +1466,7 @@ def reply_text(seq: int, got: dict) -> str:
 
 
 def keep_answers(session: LibrarianSession) -> int:
-    """Rev 2: keep in the role's state the answers *session* gave that the role did not have yet (its exact-match cache:
+    """Keep in the role's state the answers *session* gave that the role did not have yet (its exact-match cache:
     the key is :func:`answer_key` of exactly what was asked, which names the library's commit and dispatch digest and
     the schema's digest, so a changed library or schema never matches). Returns how many were kept."""
     home = getattr(session, "role_home", None)
@@ -1486,7 +1486,7 @@ def keep_answers(session: LibrarianSession) -> int:
 
 
 def _role_state(session: LibrarianSession, home: Any) -> None:
-    """Rev 2: every instance reads the role's state at its start: the answers earlier instances kept (exact-match cache:
+    """Every instance reads the role's state at its start: the answers earlier instances kept (exact-match cache:
     :meth:`LibrarianSession.answer` returns one for exactly the same ask) and the notes they kept."""
     from unify.agents import run_record as _rr
 
@@ -1524,7 +1524,7 @@ def opener(
     """What opens an instance of the librarian: the run's library copy (``RequestRun.copy_root``; refused while no
     library copy is mounted or its items cannot be read), a turn on the actor's model (:func:`actor_turn`, or
     *turn_factory*'s), and the commit the copy was exported at (``RequestRun.pin``). The session is registered with the
-    run, whose use record reads its totals. Rev 2: ``mode`` (:data:`MODES`): ``ask`` (the default: ``memory.ask``'s
+    run, whose use record reads its totals. ``mode`` (:data:`MODES`): ``ask`` (the default: ``memory.ask``'s
     instance, :class:`AskInstance`) or ``message`` (one per message to ``@librarian``); either reads the role's state at
     its start (:func:`_role_state`)."""
 
@@ -1601,7 +1601,7 @@ def question_of(text: str) -> str:
 
 
 async def answer_message(entry: Any, *, record: Any, open_session: Callable[..., Awaitable[LibrarianSession]]) -> dict:
-    """Rev 2 (PLAN-REV2 item 1): one message to ``@librarian`` (*entry*, from *record*): a message instance is started
+    """One message to ``@librarian`` (*entry*, from *record*): a message instance is started
     (``open_session(mode="message")``), given the message as its question (the delivery log names it), and posts ONE
     reply entry (``reply_to`` = the message, mentioning its author): the answer, or why there is none. A message its
     author withdrew (a ``cancel`` of theirs that answers it) gets no reply. The instance keeps its new answers in the

@@ -19,7 +19,7 @@ A result that is not known yet (missing, empty, a pending placeholder) never
 matches. A call made while other calls are still running is not counted. A
 text reply, any other call and every user message start the count again.
 
-The memory agents (the writer, the curator, their helpers and the librarian)
+The memory agents (the writer, its helpers and the librarian)
 run their own loops, and :class:`AgentNoProgress` applies the rule to their
 conversations: ``MEMORY_K`` no-progress calls in a row get one notice, twice
 as many end the agent's round.
@@ -331,7 +331,7 @@ class Tracker:
 
 # ── agents that run their own loop ───────────────────────────────────────
 
-#: K for the memory agents (the writer, the curator and their helpers), which run their own loops rather than the
+#: K for the memory agents (the writer and its helpers), which run their own loops rather than the
 #: actor's: K no-progress model calls in a row get one notice, 2K end the agent's round. Five is past the one or two
 #: retries a refused call reasonably gets, and short enough that a loop is noticed within a few minutes and a few
 #: calls' cost; a model that changes approach after the notice starts the count again. A recorded writer pass ran
@@ -340,7 +340,7 @@ MEMORY_K = 5
 
 
 def terminal_tool(agent: str) -> str:
-    """The registry's terminal tool for *agent*: ``finish`` for the writer and the curator, ``done`` for a helper."""
+    """The registry's terminal tool for *agent*: ``finish`` for the writer, ``done`` for a helper."""
     from unify.common import tool_registry
 
     for name, spec in tool_registry.registry().items():

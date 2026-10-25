@@ -107,7 +107,7 @@ class Supervisor:
                 stopper.cancel()
         if task in done:
             if task.exception() is not None:
-                # the pass's exception is kept as its class and frame (rev 2: a failed pass row always says why)
+                # the pass's exception is kept as its class and frame (a failed pass row always says why)
                 result = Supervised(None, "error", self.clock() - t0, error=error_of(task.exception()))
             else:
                 out = task.result()

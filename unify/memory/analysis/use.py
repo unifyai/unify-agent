@@ -705,7 +705,7 @@ def ask_fields(runtime: Any) -> dict:
 
     * ``ask_calls``: the answers the audit hook saw;
     * ``ask_rows``: per ask, its ``cell``, the ids it listed as fitting (``listed``), whether it said nothing fits
-      (``nothing_fits``), how many rows the copy's structural catalogue held (``catalogue_rows``; rev 2: no reader
+      (``nothing_fits``), how many rows the copy's structural catalogue held (``catalogue_rows``; no reader
       runs, so there are no reader facts) and ``called_after``, the listed ids a later library call or ``run``
       called;
     * ``listed_by_ask``: every item or capture id that was called after an ask listed it;

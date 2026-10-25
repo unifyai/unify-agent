@@ -11,7 +11,7 @@ embedder (:func:`unify.common.embeddings.embed`, whose cache makes a commit's ve
 with its model; the vectors live only in the copy, never in a prompt, and a search ranks by meaning. Without one (no
 backend configured, the paper profile, or an embedding call that failed) the index holds the rows alone and says why,
 and :func:`search_text` ranks nothing: it lists every row in the library's order, says why, and leaves the judgement to
-the reader of the cards (rev 2.1: no word matching ranks anything). Each request an embedding sends to a provider is
+the reader of the cards (no word matching ranks anything). Each request an embedding sends to a provider is
 told to *on_call* (:func:`backend`), which books it (``integration.cost``).
 
 Nothing here caps what is returned: every row is listed, and a long result is paged.
@@ -91,7 +91,7 @@ def rows(
     also carries what each was asked in its text, so it is found where they were; a captured procedure is a row of
     kind ``captured procedure``. With *serving*, each card also ends with what its status rests on and its recorded
     failures, and an item offered in the place of withdrawn library items carries their docstrings in its text. Cards
-    and texts are as written, identifiers included (rev 2.1)."""
+    and texts are as written, identifiers included."""
     from . import when_to_use as wtu
     from .item_records import recipe_call, recipe_of
     from .layout import discover
@@ -245,7 +245,7 @@ def _dot(a: list, b: list) -> float:
 def ranking(data: dict, query: str, use: Backend = NO_BACKEND) -> tuple[list[tuple[float | None, dict]], str]:
     """Every row of the index *data* with its score, best first (ties in index order), and how they were ranked:
     by meaning when the index holds vectors of *use*'s model and the query embeds; else not ranked at all: every row
-    in the index's own order with no score, and the reason (rev 2.1: no word matching ranks anything)."""
+    in the index's own order with no score, and the reason (no word matching ranks anything)."""
     items = [r for r in data.get("items") or [] if isinstance(r, dict)]
     why = ""
     if data.get("backend") == "embedding":

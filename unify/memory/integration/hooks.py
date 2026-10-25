@@ -1,4 +1,4 @@
-"""The names harness files import from memory v2 (UNIFY_MEMORY); each is inert while the switch is off.
+"""The names harness files import from memory (UNIFY_MEMORY); each is inert while the switch is off.
 
 With the switch off every function returns its input unchanged (or nothing), so the harness behaves
 byte for byte as shipped. With it on and no request run active, only the storage review and the library
@@ -36,7 +36,7 @@ def _run() -> Any:
 
 def begin_request(request: str) -> Any:
     """This request's memory run (``request.RequestRun``), opened before the actor starts; ``None``
-    while the switch is off, when nothing of memory v2 is opened, exported or recorded.
+    while the switch is off, when nothing of memory is opened, exported or recorded.
     """
     if not enabled():
         return None
@@ -49,7 +49,7 @@ def system_prompt(text: str) -> str:
     """*text* with the run's memory section appended, last in the cached prefix: the v2 index,
     or the constant guide (the same bytes for the whole run).
 
-    Under memory v2 the sandbox has no ``functions`` object, so the core prompt's pointer to
+    With memory on the sandbox has no ``functions`` object, so the core prompt's pointer to
     ``functions.search`` is dropped too, and the role and the sandbox section no longer name stored
     functions; the change is the same for every request.
     """
@@ -215,7 +215,7 @@ def worker_audit() -> dict | None:
     except (
         Exception
     ) as exc:  # noqa: BLE001 - the worker always starts; this request then records no file events
-        logger.warning("memory v2: no audit for this worker (%s)", type(exc).__name__)
+        logger.warning("memory: no audit for this worker (%s)", type(exc).__name__)
         return None
 
 
@@ -249,12 +249,12 @@ def _without_library(events: Any, roots: list[str]) -> Any:
 
 def result_hook() -> Callable[..., None] | None:
     """The tool loop's hook for a finished tool call (:func:`tool_result`), or None while the switch is
-    off or no request run is active: the loop then never enters it (``tools_data``), so with memory v2
+    off or no request run is active: the loop then never enters it (``tools_data``), so with memory
     off a tool call runs exactly as shipped. Never raises."""
     try:
         return tool_result if _run() is not None else None
     except Exception as exc:  # noqa: BLE001 - the loop goes on without the hook
-        logger.warning("memory v2: no tool result hook (%s)", type(exc).__name__)
+        logger.warning("memory: no tool result hook (%s)", type(exc).__name__)
         return None
 
 
@@ -294,7 +294,7 @@ def tool_result(
             run.note_result(call_id, raw)
     except Exception as exc:  # noqa: BLE001 - recording never fails a tool call
         logger.warning(
-            "memory v2: a cell's result was not noted (%s)",
+            "memory: a cell's result was not noted (%s)",
             type(exc).__name__,
         )
 
@@ -311,7 +311,7 @@ def worker_cell_done(events: Any) -> None:
         run.note_calls(events)
     except Exception as exc:  # noqa: BLE001 - recording never fails a cell
         logger.warning(
-            "memory v2: a cell's library calls were lost (%s)",
+            "memory: a cell's library calls were lost (%s)",
             type(exc).__name__,
         )
     try:
@@ -326,7 +326,7 @@ def worker_cell_done(events: Any) -> None:
             )
     except Exception as exc:  # noqa: BLE001 - recording never fails a cell
         logger.warning(
-            "memory v2: a cell's audit records were lost (%s)",
+            "memory: a cell's audit records were lost (%s)",
             type(exc).__name__,
         )
 

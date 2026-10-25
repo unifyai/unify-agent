@@ -3,7 +3,7 @@
 **Covers** (:func:`parse_cover`, :func:`cover_raw`): a function's typed cover names the episode it comes from and
 its type: an actor ``cell`` that defined it, the work-tree ``diff`` that added it, or an ``episode`` cover naming the
 runner of the episode's action kind (``worktree``, ``tool`` or ``dialogue``). The gate reads covers against the
-recording and re-runs none of them (rev 2.1, :mod:`.gate_policy`); an ``episode`` cover is recorded on the item's
+recording and re-runs none of them (:mod:`.gate_policy`); an ``episode`` cover is recorded on the item's
 label as not run. A procedure of another kind has no runner; :func:`parse_cover` refuses it, so it goes to drafts.
 
 **Stored readers** (:func:`reader_parse`): a library function with one text parameter that a fixture names

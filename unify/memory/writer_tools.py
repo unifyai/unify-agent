@@ -1,7 +1,7 @@
 """The writer's tools: the handlers that need no pass state. Each tool's definition is in the shared registry
 (:mod:`unify.common.tool_registry`).
 
-Every tool JSON the writer, the curator or a helper receives is rendered from the registry (through
+Every tool JSON the writer or a helper receives is rendered from the registry (through
 :mod:`.agent_profiles`), and every refusal text comes from a spec's ``refusals`` (or :data:`.tool_spec.GENERAL_REFUSALS` for the
 answers the pass loop itself gives), each with a stable form code that the structured tool events record.
 

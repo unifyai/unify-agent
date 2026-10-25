@@ -10,7 +10,7 @@ pinned replay of an old one included, renders byte-identical catalogue files.
 
 * **A landed merge** (:meth:`.gate.Gate.merge`) writes the candidate's snapshot (:func:`snapshot_rows`):
   for every function in the candidate, the parent's shapes for the same body, plus the shapes read statically from
-  the function's own files (:func:`static_shapes`, rev 2.1: nothing is run). Those are the shapes of the values in its
+  the function's own files (:func:`static_shapes`: nothing is run). Those are the shapes of the values in its
   recorded-inputs fixture (:func:`.fixtures.inputs_file`, one ``{"input": <value>, ...}`` per line), each naming the
   parameter when the function's signature has exactly one (its definition's AST); a function with no such fixture,
   or whose values have no structure, has none, and none is made up.

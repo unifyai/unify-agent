@@ -3,7 +3,7 @@
 # This section is generated after the rest of the package whenever the run has memory
 # (``library_export.package_source``); it uses the names defined above it and is never imported on its own.
 #
-# ``ask(question=None)`` informs and runs nothing, here or anywhere (rev 2: no stored reader or ``applies`` runs to
+# ``ask(question=None)`` informs and runs nothing, here or anywhere (no stored reader or ``applies`` runs to
 # recognise anything). The question (the given one, else the current request's text, from the host tool
 # ``current_request``) goes to the librarian through ``tools.ask_library``; the librarian judges relevance from the
 # harness's structural catalogue (``.memory/dispatch.json``) and the items' text. Its answer comes back as JSON text,

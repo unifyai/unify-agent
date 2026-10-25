@@ -68,7 +68,7 @@ ETC_ALLOW = (
     "alternatives",
 )
 
-#: Never in a box's environment, whatever a caller passes: memory v2's route for the writer's own model calls.
+#: Never in a box's environment, whatever a caller passes: memory's route for the writer's own model calls.
 HARNESS_ONLY_ENV = frozenset(
     {
         "UNIFY_MEMORY_WRITER_BASE_URL",

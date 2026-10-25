@@ -1,4 +1,4 @@
-"""Where memory v2 keeps its harness-side state under ``<UNIFY_HOME>``.
+"""Where memory keeps its harness-side state under ``<UNIFY_HOME>``.
 
 Only ``memory-checkout/`` (the per-request export) is ever mounted into a cell; every other path stays behind
 the sandbox's tmpfs over ``<UNIFY_HOME>`` (unify/sandbox.py ``build_policy``).

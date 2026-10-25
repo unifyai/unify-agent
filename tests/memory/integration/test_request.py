@@ -276,7 +276,7 @@ def test_finish_never_raises_and_logs_a_failed_pass(mv2):
     assert [e["stage"] for e in errors] == ["passes"]
     assert errors[0]["episode_id"] == run.episode_id
     assert "RuntimeError" in errors[0]["error"]
-    assert len(progress) == 2 and progress[0] == FORK_REFUSED and "memory v2" in progress[1]
+    assert len(progress) == 2 and progress[0] == FORK_REFUSED and "memory:" in progress[1]
     assert mv2.paths.state.exists()  # generations are kept even when the passes fail
     _left_nothing(mv2.paths)
 

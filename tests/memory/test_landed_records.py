@@ -71,7 +71,7 @@ def test_a_landing_is_recorded_in_the_store_and_carried_into_its_item_record(tmp
     # rev 2: nothing landed runs to decide its listing; the landing says so explicitly
     recognition = got[cid].pop("recognition")
     assert got[cid] == landing
-    assert recognition == {"ran": False, "why": "rev2: a landed procedure is never run to decide its listing"}
+    assert recognition == {"ran": False, "why": "a landed procedure is never run to decide its listing"}
     landed = captures.landed_items(store)
     assert landed == {
         PROC: {

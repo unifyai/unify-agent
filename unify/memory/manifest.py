@@ -267,7 +267,7 @@ LIBRARY_ITEM_FIELDS: tuple[str, ...] = (
     "cases",
 )
 #: What the writer may state about an item (its label keeps it): the kind of situation it is for (in general words;
-#: rev 2.1: never the episodes it is meant to cover, which are its evidence), what varies (its inputs), the values it
+#: never the episodes it is meant to cover, which are its evidence), what varies (its inputs), the values it
 #: holds fixed with their sources (its constants), a function's effects on the environment, and a note's form (a
 #: checklist). Refused as unknown fields otherwise.
 LABEL_ITEM_FIELDS: tuple[str, ...] = ("situation", "inputs", "constants", "effects", "form")

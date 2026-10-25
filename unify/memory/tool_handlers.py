@@ -3,7 +3,7 @@
 
 Each handler keeps the logic, reply texts and refusal forms of the same tool as a JSON tool call
 (``writer_pass.WriterPass._run``'s dispatch and ``helpers._tool``); only how the call arrives changes. The calling
-agent's pass state is ``ctx.state``: a :class:`WriterCalls` for the writer or the curator, a :class:`HelperCalls` for
+agent's pass state is ``ctx.state``: a :class:`WriterCalls` for the writer, a :class:`HelperCalls` for
 a helper. The channel has already checked the allow-list, the arguments against the tool's schema and the counters
 (``state.admit``, on the event loop) before a handler runs.
 
@@ -39,7 +39,7 @@ _MANIFEST_SHOWN = "/memory/.pass/manifest.json"
 
 @dataclass
 class WriterCalls:
-    """The writer's (or the curator's) pass state its in-code tool handlers use, owned by the pass's event loop and
+    """The writer's pass state its in-code tool handlers use, owned by the pass's event loop and
     by its one channel (one call in flight): the pass loop copies its counters in before a cell and back after it.
     """
 

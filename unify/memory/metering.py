@@ -274,7 +274,7 @@ def pass_row(home: Path | str, report: Any) -> dict:
         "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     if report.ended == "error":
-        # rev 2: a failed pass always says why (a class name and where; never a message); a path that recorded
+        # a failed pass always says why (a class name and where; never a message); a path that recorded
         # neither is named as such, so a missing cause is visible, never silent
         row["error_class"] = getattr(report, "error_class", None) or "unrecorded"
         row["error_where"] = getattr(report, "error_where", None) or "unrecorded"

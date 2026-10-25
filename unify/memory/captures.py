@@ -27,7 +27,7 @@ earlier contract, :func:`negative`) is never offered to run; it reaches the writ
 request text: the shapes of the recorded input and the handed-back value (key paths, leaf types, length classes),
 the structural relations between them, whether the stated conditions exist (with their source digests), and the
 goal, the ``## Asked`` section of the fork's ``summary.md``, which is shown and never compared. Nothing here strips
-or masks an identifier: a key, a goal or a docstring is kept as written (rev 2.1).
+or masks an identifier: a key, a goal or a docstring is kept as written.
 
 **Trust.** ``record.json`` keeps what the capture step saw: the capture's episodes and its cases, each with the
 outcome its episode's signals gave. Every call of a capture is recorded where every library item's is, in the
@@ -95,7 +95,7 @@ EXPORT_DIR = ".memory/captures"
 #: captures no longer offered (the writer superseded or retired them) and what is offered in each one's place
 #: (:func:`export_files`).
 WITHDRAWN_FILE = "withdrawn.json"
-#: The shape index (rev 2): one row per shape address, ``{"shape", "capture_id", "at"}``, the first row of a shape
+#: The shape index: one row per shape address, ``{"shape", "capture_id", "at"}``, the first row of a shape
 #: naming the capture its later occurrences fold into (:mod:`.capture_shape`).
 SHAPES_FILE = "shapes.jsonl"
 #: Each capture's occurrences: one row per episode it was captured from, and the raw bytes of an
@@ -335,7 +335,7 @@ def final_value_signals(signals: Iterable[Any], ep: Any) -> list:
     episode handed back a value through an answered dialogue action (:func:`answered_action`), the verdicts on that
     action judge it; one that names another action judged another value and is left out (an attempt that was
     rejected and then accepted is judged by its acceptance), and when verdicts name actions but none names this one,
-    no verdict judges it. When it handed back no such value (rev 2.1: in tool and action worlds the work is its
+    no verdict judges it. When it handed back no such value (in tool and action worlds the work is its
     actions), the last verdict on any of its actions stands for the work. When none names an action, the last
     verdict given stands for the final value. Checker verdicts are the only signals the harness posts."""
     checker = [s for s in signals if getattr(s, "source", None) == "checker"]
@@ -677,7 +677,7 @@ def capture_trace_step(
     1. the safety checks, as for every capture (a key-shaped string, a refused path, code that does not parse, no
        ``run``); a file that fails is not captured, and the reason is recorded;
     2. the procedure's form, read from its code (``value``, ``state`` or ``state_env``);
-    3. no own check (rev 2): a capture is never run to classify it, so ``own_check`` records
+    3. no own check: a capture is never run to classify it, so ``own_check`` records
        ``{"ran": false, "why"}`` (:data:`.capture_trace.NOT_RUN`); its signature describes the recorded input and the
        value the episode handed back;
     4. the value the episode handed back, if any (``value.present``), and the outcome from its signals only;
@@ -723,7 +723,7 @@ def capture_trace_step(
     if why is not None:
         return finish(safety=why)
     if ct.empty_procedure(source):
-        # rev 2.1: a stub that reads nothing, calls nothing and hands back nothing records no work; the episode's
+        # a stub that reads nothing, calls nothing and hands back nothing records no work; the episode's
         # summary is read as a fork without a procedure, and no capture entry is opened or reopened by it
         return finish(safety="empty procedure", stub=True)
     broke = _staged(staging, BROKE_FILE)
@@ -734,7 +734,7 @@ def capture_trace_step(
     form = entry["form"]
     value_doc, value = ct.value_of(ep)
     case_doc = ct.case_doc(form, ep)
-    # rev 2: the procedure is never run to classify it; its own check is recorded as not run
+    # the procedure is never run to classify it; its own check is recorded as not run
     check = dict(ct.NOT_RUN)
     run: dict = {"outcome": "not run", "why": check["why"]}
     # the one derivation of an outcome from the episode's signals (judged_outcome), as the value-form capture's
@@ -823,7 +823,7 @@ def capture_trace_step(
     )
 
 
-# --- the shape index and occurrences (rev 2) -----------------------------------------------------------------------------
+# --- the shape index and occurrences -----------------------------------------------------------------------------
 
 
 def _append_row(path: Path, row: dict) -> None:
@@ -1059,7 +1059,7 @@ def batch_row(store: Path | str, eid: str) -> dict | None:
 
 def record_landing(store: Path | str, cid: str, landing: Mapping[str, Any]) -> None:
     """Record that capture *cid* was landed as *landing* (``item``, ``reader``, ``applies``, ``episode``, ``pass``: the
-    pass that landed it, ``recognition``: its recognition record, :mod:`.recognition`, ``verified``: rev 2's
+    pass that landed it, ``recognition``: its recognition record, :mod:`.recognition`, ``verified``:
     ``{"ran": false, "why"}`` (nothing was run to verify it), and ``at``: when it landed), replacing an earlier landing
     of it."""
     if not _ID.fullmatch(str(cid)):

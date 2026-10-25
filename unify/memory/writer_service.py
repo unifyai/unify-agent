@@ -1531,7 +1531,7 @@ def _capture_if_new(service: "Service") -> None:
 def _raised_pass_row(
     home: Path, pass_id: str, handed: list, exc: BaseException, returned: Any, settled: str, settings: Any
 ) -> None:
-    """A pass that raised still gets its ``pass-results.jsonl`` row (rev 2: no failed pass is silent): ``ended`` is
+    """A pass that raised still gets its ``pass-results.jsonl`` row (no failed pass is silent): ``ended`` is
     ``error``, with the exception's class and innermost frame (never its message); its USD is unknown (the settle above
     is the spend file's figure). A row that cannot be written is an event, and the service goes on."""
     try:

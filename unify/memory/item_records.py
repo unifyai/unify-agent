@@ -12,7 +12,7 @@ the map does not hold is ``on-trial``.
 
 Statuses and evidence levels use :mod:`.item_states`'s names. A map written before those names existed holds the old
 status names: :func:`read_records` maps them as it reads (``experimental`` to ``on-trial``, ``stable`` to
-``adopted``, ``suspect`` and ``deprecated`` to ``retired``; a ``deprecated`` item was the curator's, so it reads as a
+``adopted``, ``suspect`` and ``deprecated`` to ``retired``; a ``deprecated`` item was retired by a curate pass, so it reads as a
 retirement with the rule ``curate``), so an existing library loads unchanged.
 
 Models never write these records. The writer and the actor read them through ``memory.get``
@@ -41,7 +41,7 @@ NOTES_REF = "items"
 RECORD_VERSION = 1
 SCAN = 200
 _HEADER = "items_map"
-#: the old stored status of a curator's retirement (an alias, or an item a curate pass retired)
+#: the old stored status of a curate pass's retirement (an alias, or an item a curate pass retired)
 OLD_CURATOR_STATUS = "deprecated"
 _USE_TOTAL_KEYS = (
     "episodes",
@@ -132,8 +132,8 @@ def _line(obj: dict) -> str:
 def record_from_stored(rec: dict) -> dict:
     """*rec* as stored, with an old status name mapped to today's (:func:`.item_states.status_from_stored`) and an
     old level name mapped (:func:`.item_states.level_from_stored`; a record without a level keeps none). A
-    ``deprecated`` record was the curator's (an alias, or an item a curate pass retired): it reads as ``retired``
-    with the rule ``curate``, so it stays a curator's retirement. A record already in today's names is returned
+    ``deprecated`` record was a curate pass's (an alias, or an item a curate pass retired): it reads as ``retired``
+    with the rule ``curate``, so it stays a curate pass's retirement. A record already in today's names is returned
     as it is."""
     stored = rec.get("status")
     level = rec.get("level")
@@ -285,7 +285,7 @@ def recipe_ids(records: Mapping | None) -> set[str]:
 
 
 def support(record: Mapping | None) -> dict | None:
-    """What an item rests on (rev 2.1, in place of the pure-function evidence ladder), from its record only: the
+    """What an item rests on (in place of the pure-function evidence ladder), from its record only: the
     distinct episodes it comes from (a library item's provenance episodes; a captured procedure's own episodes) and the
     uses whose outcome confirmed it (accepted verdicts and positive end outcomes in its track); None when it has no
     record (unknown stays unknown). Nothing is run."""

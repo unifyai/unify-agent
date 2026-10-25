@@ -168,7 +168,7 @@ RULES: dict[str, str] = {
 }
 
 # The state directory's entries wrap_argv may bind read-only after the masks
-# (late_readonly): memory v2.1's library copy only (memory/integration/paths.py).
+# (late_readonly): memory's library copy only (memory/integration/paths.py).
 LATE_READONLY_DIRS = ("memory-checkout",)
 
 SECRET_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
@@ -336,8 +336,8 @@ _SECRET_ENV_WORDS = frozenset({"PAT", "AUTH", "PASSWD", "PASS"})
 # A URL with a password in it (a database URL with user and password, an
 # index URL with a token as its password).
 _URL_CREDENTIALS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s@:]*:[^/\s@]*@")
-# Harness-only by exact name, whatever the markers say: memory v2's route for
-# Sol's model calls (its URL names Sol's proxy listener; the token is its key;
+# Harness-only by exact name, whatever the markers say: memory's route for
+# the writer's model calls (its URL names the writer's proxy listener; the token is its key;
 # the descriptor number is harmless but stays with the controller), and the fork lane's route likewise (C2).
 HARNESS_ONLY_ENV = frozenset(
     {
@@ -2031,9 +2031,8 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         # What a cell sees of the state directory, read-only (the harness's
         # file tools check the same list):
         # - transcripts/: every session's and every agent's, across sessions,
-        #   by the lead's design (8 Oct: "the model should be able to grep any
-        #   transcript even other sessions' and other agents' transcripts too.
-        #   That's by design."). Every line is outcome-free (the outcome
+        #   by design: the model may grep any transcript, other sessions' and
+        #   other agents' included. Every line is outcome-free (the outcome
         #   section the harness rendered is redacted, unify/outcome.py).
         readonly = [
             p
@@ -2532,7 +2531,7 @@ def wrap_argv(
     forwarded to that allow-listing proxy; only the harness's package
     installer asks for these (unify/environment.py). No command ever gets the
     host's network. *late_readonly* paths are bound read-only right after
-    the writable ones, so a path under a masked directory (memory v2.1's
+    the writable ones, so a path under a masked directory (memory's
     library copy, under the hidden state directory) is seen and is never
     writable.
 
@@ -2827,7 +2826,7 @@ _BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-t
 def _late_readonly_path(path: Path, policy: SandboxPolicy) -> Path:
     """A *late_readonly* path of :func:`wrap_argv`, resolved: one of
     :data:`LATE_READONLY_DIRS` directly under the policy's state directory,
-    an existing directory and not a link (memory v2.1's library copy).
+    an existing directory and not a link (memory's library copy).
     Anything else is refused, so no caller can mount another host path into
     a command, not even another part of the state directory."""
     real = Path(os.path.realpath(path))

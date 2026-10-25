@@ -1,5 +1,5 @@
 """The comms tools on the run record: ``send``, ``messages``, ``wait`` and ``who``,
-one definition for every agent: the actor, a teammate, the librarian, the writer, the curator and every helper call
+one definition for every agent: the actor, a teammate, the librarian, the writer and every helper call
 them from their cells (``tools.send(...)``), and the fork through its relay (:mod:`unify.agents.fork_relay`).
 
 Each host handler has the registry's signature ``handler(ctx, args) -> Reply``: ``ctx.record`` is the calling agent's

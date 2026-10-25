@@ -153,7 +153,7 @@ def new_episode_id(transcripts_dir: Path) -> str:
 DIALOGUE_CHANNEL = "env"
 
 
-# --- rev 2 (PLAN-REV2 item 1): the role dispatcher ------------------------------------------------------------------
+# --- the role dispatcher ------------------------------------------------------------------
 
 #: How often the dispatcher reads the run record for messages to a role (other processes' posts reach it within this).
 ROLE_POLL_S = 0.5
@@ -182,7 +182,7 @@ def start_role_dispatcher(run: Any) -> Any:
 
 
 async def role_dispatcher(run: Any, *, poll_s: float = ROLE_POLL_S) -> None:
-    """Rev 2 (PLAN-REV2 item 1): the request's dispatcher for the run's roles (``run_record.INSTANCE_ROLES``: the
+    """The request's dispatcher for the run's roles (``run_record.INSTANCE_ROLES``: the
     librarian). Every :data:`ROLE_POLL_S` it reads the run record (every process's posts); each message to the role
     that is not done (``run_record.role_claims``), in order, gets one message instance (``librarian.answer_message``):
     one at a time across the run's processes (``run_record.role_lock``; a lock another process holds waits for the next
@@ -637,7 +637,7 @@ def _log_no_outcome(call: str, facts: Any) -> None:
 
 def _add_asks(acc: dict, calls: dict, cell: int) -> None:
     """Add one cell's ``memory.ask`` results to *acc*: each with the ids it listed as
-    fitting, whether it said nothing fits and how many rows the copy's structural catalogue held (rev 2: no reader
+    fitting, whether it said nothing fits and how many rows the copy's structural catalogue held (no reader
     runs, so there are no reader facts); and mark which listed ids were called afterwards (a library call or a run in a
     later cell, or later in the same cell). Ids and labels only. Added under ``asks`` and ``listed_by_ask`` only
     once an ask was seen, so a request without one is unchanged."""
@@ -1492,7 +1492,7 @@ class RequestRun:
             event,
         )  # the events file and --jsonl
         progress(
-            "memory v2: episode recorded; no consolidation pass started (quit without consolidation)",
+            "memory: episode recorded; no consolidation pass started (quit without consolidation)",
         )
 
     def _error(
@@ -1515,9 +1515,9 @@ class RequestRun:
             with self.paths.errors.open("a") as fh:
                 fh.write(json.dumps(row) + "\n")
         except OSError:
-            logger.warning("memory v2: %s failed: %s", stage, text)
+            logger.warning("memory: %s failed: %s", stage, text)
         try:
-            progress(f"memory v2: {stage} failed: {type(exc).__name__}")
+            progress(f"memory: {stage} failed: {type(exc).__name__}")
         except Exception:  # noqa: BLE001
             pass
 
@@ -1831,7 +1831,7 @@ class RequestRun:
         try:
             self._scope.close()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("memory v2: request scope not closed cleanly: %s", exc)
+            logger.warning("memory: request scope not closed cleanly: %s", exc)
 
     def abort(self, stopped: dict | None = None) -> None:
         """End the run with nothing recorded now (the process is closing without a finished request). Its journal
@@ -1851,7 +1851,7 @@ class RequestRun:
         from .state import release_lock
 
         if self.role_task is not None:
-            # rev 2: the dispatcher ends with the request; a message instance still answering posts nothing, and its
+            # the dispatcher ends with the request; a message instance still answering posts nothing, and its
             # message is taken again by the next request's dispatcher (the claim is marked abandoned)
             self.role_task.cancel()
         self._close_scope()
@@ -1866,11 +1866,11 @@ class RequestRun:
             except (
                 Exception
             ) as exc:  # noqa: BLE001 - abort never raises; belt and braces
-                logger.warning("memory v2: work-tree capture not aborted: %s", exc)
+                logger.warning("memory: work-tree capture not aborted: %s", exc)
         try:
             remove_checkout(self.paths.checkout)
         except OSError as exc:
-            logger.warning("memory v2: export not removed: %s", exc)
+            logger.warning("memory: export not removed: %s", exc)
         if self._lock is not None:
             try:
                 release_lock(self._lock)

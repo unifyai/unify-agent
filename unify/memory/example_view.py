@@ -1,8 +1,8 @@
 """One example call of a library function, quoted from its tests: what the index, an item's card and the
 docstring's ``Example:`` line show of how to call it.
 
-An item record may keep one example call of its function (``{"test", "line", "call"}``), picked by a gate before
-rev 2.1 from the calls its tests made; the gate now runs no test, so it picks none. Whatever shows a kept call
+An item record may keep one example call of its function (``{"test", "line", "call"}``), picked by an earlier gate
+from the calls its tests made; the gate now runs no test, so it picks none. Whatever shows a kept call
 re-quotes it from the tree first (:func:`verified_example`, :func:`quote_call`: the call expression at the recorded
 line, whitespace runs collapsed to one space, comments dropped, cut past :data:`EXAMPLE_MAX_CHARS`): a test edited
 since gives other text at that line, and then nothing is shown, so a stale call is never quoted. Pure, standard

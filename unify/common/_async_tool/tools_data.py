@@ -70,9 +70,9 @@ async def _raise(exc: BaseException) -> None:
 
 
 def _memory_result_hook():
-    """UNIFY_MEMORY=on with a request run: memory v2's hook for a finished tool
+    """UNIFY_MEMORY=on with a request run: memory's hook for a finished tool
     call (``hooks.tool_result``); None otherwise, and then the loop never enters
-    it, so with memory v2 off a call is processed exactly as without it."""
+    it, so with memory off a call is processed exactly as without it."""
     from unify.memory.integration import hooks
 
     return hooks.result_hook()

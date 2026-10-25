@@ -42,7 +42,7 @@ MAX_REPLAY_CALLS = 2000
 MAX_LISTED_CALLS = 200
 LISTED_ARGS_CHARS = 400
 PROCEDURE_FILE = "procedure.py"
-#: What a capture's ``own_check`` records under rev 2: it was not run, and why.
+#: What a capture's ``own_check`` records: it was not run, and why.
 NOT_RUN: dict = {"ran": False, "why": "a capture is never run to classify it"}
 
 
@@ -62,7 +62,7 @@ def _positional(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
 
 
 def empty_procedure(source: str) -> bool:
-    """Whether *source*'s ``run`` does nothing a later request could reuse (rev 2.1): its body (without its docstring)
+    """Whether *source*'s ``run`` does nothing a later request could reuse: its body (without its docstring)
     reads none of its parameters, calls nothing and hands back no value. Such a stub records no work; it is never a
     capture (:func:`.captures.capture_trace_step`), so it neither opens nor reopens an attention entry. Parsed, never
     run; a ``run`` that does not parse or is absent is not judged here (:func:`safety` refuses it)."""
@@ -259,7 +259,7 @@ def outcome_of(judged: Mapping[str, Any]) -> str:
 
 def signature_input(form: str, run: Mapping[str, Any], case: Mapping[str, Any]) -> Any:
     """What a form's signature describes as its input: the read value (``value``) when a run read one, else the recorded
-    data (the request's for ``value``, the state's otherwise; rev 2: nothing is run, so always the recorded data)."""
+    data (the request's for ``value``, the state's otherwise; nothing is run, so always the recorded data)."""
     if form == "value" and "value" in run:
         return run.get("value")
     return copy.deepcopy(case.get("data") or [])

@@ -990,7 +990,7 @@ SEARCH = RegisteredTool(
     blocking=True,
 )
 
-#: Rev 2: the librarian role's notes (``memory-state/agents/roles/librarian/notes.md``), appended by its instances.
+#: The librarian role's notes (``memory-state/agents/roles/librarian/notes.md``), appended by its instances.
 KEEP_NOTE = RegisteredTool(
     name="keep_note",
     summary="keep one short note for the later librarians of this run.",
@@ -1974,7 +1974,7 @@ _RUN_POST_REFUSALS = {
     "too_large": "{why}; nothing was sent",
     "too_fast": "{why}; nothing was sent",
     "record_full": "{why}; nothing was sent",
-    # rev 2: an address that cannot be read: a role the run does not have, or an agent that has ended
+    # an address that cannot be read: a role the run does not have, or an agent that has ended
     "no_role": "{why}; nothing was sent",
     "ended": "{why}; nothing was sent",
     "not_posted": "{why}; nothing was sent",
@@ -2636,7 +2636,7 @@ ROLE_DIGEST_SALT = "tools-of-another-role:"
 
 def role_digest(name: str) -> str:
     """The digest a stub keeps of a tool another role has. It tells "a tool of another role" from "no such tool"
-    while no other role's tool name appears in the stub, its ``dir`` or its help (MAIN, 13 Oct)."""
+    while no other role's tool name appears in the stub, its ``dir`` or its help."""
     return hashlib.sha256((ROLE_DIGEST_SALT + name).encode()).hexdigest()[:16]
 
 

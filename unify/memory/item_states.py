@@ -11,7 +11,7 @@
   and outcome tracking alone raises an item to it, lowers it again (to ``unchecked``) and changes statuses.
 
 **Status**: where the item is in its life, from what happens after it is stored. ``on-trial`` (every new or changed
-item), ``adopted`` (used cleanly), ``retired`` (failed in use, depends on a failed item, or retired by the curator).
+item), ``adopted`` (used cleanly), ``retired`` (failed in use, depends on a failed item, or retired by a curate pass).
 An item can be ``on-trial`` at any evidence level. A ``retired`` item is hidden from the index and stays reachable
 through ``memory.get``.
 
@@ -50,7 +50,7 @@ RETIRED = "retired"
 STATUSES = (ON_TRIAL, ADOPTED, RETIRED)
 #: statuses the index leaves out (``memory.get`` still opens them)
 HIDDEN = frozenset({RETIRED})
-#: the status rule of a curator's retirement (an alias, or an item a curate pass retired): it is kept as it is,
+#: the status rule of a curate pass's retirement (an alias, or an item a curate pass retired): it is kept as it is,
 #: while a retirement by outcomes is decided again from the uses of the item's current version
 CURATE_RULE = "curate"
 #: stored status names from before the rename, and the status each now means

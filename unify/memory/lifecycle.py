@@ -410,7 +410,7 @@ def decide_status(
 
     *prior* is its status before (old names are mapped), and *prior_rule* the rule that gave it.
 
-    - ``retired`` by the curator (rule ``curate``) is kept as it is, with that rule.
+    - ``retired`` by a curate pass (rule ``curate``) is kept as it is, with that rule.
     - ``retired`` (rule ``errors``): an exception other than a refusal left it in at least
       :data:`MIN_EPISODES` episodes, in any regime.
     - ``retired`` (rule ``negative_signals``): a negative signal followed its use in at least
@@ -428,7 +428,7 @@ def decide_status(
     """
     from .item_records import OLD_CURATOR_STATUS
 
-    if prior == OLD_CURATOR_STATUS:  # an old name: always the curator's
+    if prior == OLD_CURATOR_STATUS:  # an old name: always a curate pass's
         prior, prior_rule = RETIRED, CURATE_RULE
     prior = status_from_stored(prior, default=None) if prior is not None else None
     if prior == RETIRED and prior_rule == CURATE_RULE:
@@ -462,8 +462,8 @@ def taint(
 ) -> dict[str, tuple[str, list[str]]]:
     """Items that depend on a function retired by its outcomes, with the reason and the items behind it.
 
-    A retirement is one by outcomes unless its rule (*rules*: item -> status rule) is the curator's
-    (``curate``): an alias forwards to its target and a curator's retirement is a decision, not a failure, so
+    A retirement is one by outcomes unless its rule (*rules*: item -> status rule) is a curate pass's
+    (``curate``): an alias forwards to its target and a curate pass's retirement is a decision, not a failure, so
     neither taints. The edges:
 
     - every function of a module that imports the retired function's module, directly or through others (the
@@ -724,7 +724,7 @@ def next_records(
     (*since*: from *changed_at*, the commit that last changed it, onward). An item in *unknown_version* (that
     commit could not be found) is never promoted to ``adopted``: its counted use may be an older version's. A new
     version therefore starts as ``on-trial``, and its predecessors' use stays in its ``use`` record. ``bisect`` and
-    ``rollback`` carry over while the version is unchanged; ``alias_of`` and a curator's retirement (``retired``
+    ``rollback`` carry over while the version is unchanged; ``alias_of`` and a curate pass's retirement (``retired``
     with rule ``curate``) are CURATE's and carry over. A function with failure-only provenance in at least
     :data:`MIN_EPISODES` episodes is ``retired`` (rule ``failure_only``: it belongs in a note); with one such
     episode it is only flagged. Taint is applied last. Old status names in *prev* are mapped
@@ -732,7 +732,7 @@ def next_records(
 
     CURATE's decisions (``EvidenceStore.aliases()`` and ``curations()``), when given: a live alias is
     ``retired`` (rule ``curate``) with ``alias_of`` its target, and an item a landed CURATE pass retired is
-    ``retired`` (rule ``curate``) with its reason. Without them ``alias_of`` and a curator's retirement carry over.
+    ``retired`` (rule ``curate``) with its reason. Without them ``alias_of`` and a curate pass's retirement carry over.
 
     The evidence fields of a function come from its verification record (the gate's): ``level``
     (:func:`.item_states.level_of_record`: a verification without one, or none, fails closed), ``level_reasons``,
@@ -805,7 +805,7 @@ def next_records(
         )
         v = verification.get(item) or (old.get("verification") if same else None)
         rec["verification"] = v
-        # the example call a gate before rev 2.1 picked from the item's tests, kept in its record; None: none
+        # the example call an earlier gate picked from the item's tests, kept in its record; None: none
         examples = v.get("examples") if isinstance(v, dict) else None
         example = examples.get("example") if isinstance(examples, dict) else None
         rec["example"] = example if isinstance(example, dict) else None
@@ -849,7 +849,7 @@ def next_records(
             "pass": p.get("pass"),
             "failure_only": bool(flagged),
         }
-        # a curator's retirement carries across versions; any other status only while the version is unchanged
+        # a curate pass's retirement carries across versions; any other status only while the version is unchanged
         kept = old.get("status") == RETIRED and old.get("status_rule") == CURATE_RULE
         prior = old.get("status") if (same or kept) else None
         prior_rule = old.get("status_rule") if (same or kept) else None

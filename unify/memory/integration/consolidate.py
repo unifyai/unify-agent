@@ -701,7 +701,7 @@ def _end_event(
                 # an uncapped pass's refusals the gate repeated for the same reason in consecutive rounds, so no
                 # further repair round was offered for them, and whether that ended repair (None: none)
                 "repair_stuck": getattr(outcome, "repair_stuck", None),
-                # the writer's (or curator's) no-progress notices and whether 2 * k no-progress model calls in a row
+                # the writer's no-progress notices and whether 2 * k no-progress model calls in a row
                 # ended its round (loop_stop.AgentNoProgress.report; None: no notice was given)
                 "no_progress": getattr(outcome, "no_progress", None),
                 # the landed functions' evidence levels (counts per level) and the evidence findings that set them
@@ -869,7 +869,7 @@ class AttentionPassReport:
     read: list[str] = field(default_factory=list)
     returned: list[str] = field(default_factory=list)
     #: with ``ended == "error"``: why, as a class name and where (``file:line:function``, or the step that refused);
-    #: never a message (rev 2: every failed pass row carries them)
+    #: never a message (every failed pass row carries them)
     error_class: str | None = None
     error_where: str | None = None
 

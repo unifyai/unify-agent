@@ -140,7 +140,7 @@ def record_transcript(
     """Store an agent's whole conversation *messages* for pass *pass_id*: each message redacted as one JSON line
     (:func:`.writer_pass.transcript_lines`, with its *redactor*, *tools*, *originals*, *store* and *label*), none
     cut or dropped, in chunk files under ``<root>/<pass_id>/`` (:func:`write_chunks`). The one way every agent of
-    a pass (the writer, the curator, each helper) stores its transcript. Returns the manifest; when the files
+    a pass (the writer, each helper) stores its transcript. Returns the manifest; when the files
     cannot be written, ``{"pass_id", "agent", "lines", "error"}`` naming the error's class.
     """
     from .writer_pass import transcript_lines

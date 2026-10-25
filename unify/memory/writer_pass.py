@@ -99,7 +99,7 @@ def _thought_only_reply() -> str:
     return THOUGHT_ONLY_REPLY
 
 
-#: the memory agents (the writer, the curator, each helper) compact their conversation
+#: the memory agents (the writer, each helper) compact their conversation
 #: as the agent loop does (unify/common/_async_tool): once a model call's prompt reaches
 #: ``context_compression.COMPACTION_THRESHOLD`` of the model's context window (the window unillm gives for the
 #: agent's endpoint, ``unillm.get_max_input_tokens``, the agent loop's own source), the agent writes a summary
@@ -579,7 +579,7 @@ class PassOutcome:
     chain: dict | None = None
     # library layout: the gate's {"item", "adopts"} row per landed item
     provenance: list[dict] = field(default_factory=list)
-    # the writer's (or curator's) compactions, the messages they took out of its
+    # the writer's compactions, the messages they took out of its
     # conversation and those messages' prompt characters (summary calls are counted in calls and usd)
     compactions: int = 0
     chars_moved: int = 0
@@ -609,7 +609,7 @@ class PassOutcome:
     # None when none became stuck
     repair_stuck: dict | None = None
     # library mode: the no-progress rule (loop_stop.AgentNoProgress.report): {"k", "notices", "ended", "at_call"}
-    # when the writer (or curator) made loop_stop.MEMORY_K no-progress model calls in a row at least once; "ended":
+    # when the writer made loop_stop.MEMORY_K no-progress model calls in a row at least once; "ended":
     # 2 * k in a row ended its round and the pass went to its final merge. None when no notice was given
     no_progress: dict | None = None
     # library mode: the landed functions' evidence levels, as counts per level (:mod:`.item_states`), and the
@@ -1620,7 +1620,7 @@ class WriterPass:
         self._delegate_ctx: Any = (
             None  # the current pass run's helpers.DelegateContext, made at its first delegate
         )
-        # the current pass run's record (messaging.PassRecord): the writer or curator and every helper it starts
+        # the current pass run's record (messaging.PassRecord): the writer and every helper it starts
         self._pass_record: Any = None
         self.load, self.turn, self.cfg = load, model_turn, config
         self.redactor = redactor  # for the transcript: the run's registered secrets
@@ -1657,7 +1657,7 @@ class WriterPass:
         self.tool_events: list[dict] = []
         self._events_file: Path | None | bool = None
         # the raw manifest dict of the pass's last accepted finish (either role), else None; consolidation reads it
-        # for what the curator kept
+        # for what the pass kept
         self.final_manifest: dict | None = None
         # request blocks shared by most episodes (id -> text), shown as markers; {} until staged
         self._shared: dict[str, str] = {}
@@ -3643,7 +3643,7 @@ class WriterPass:
                 )
             if (
                 self._pool is not None
-            ):  # the curator has no pool
+            ):  # a pass with no pool skips this
                 try:
                     self._pool_open = self._pool.stage(Path(inputs) / "pool")
                 except (
@@ -3659,7 +3659,7 @@ class WriterPass:
 
                 # what each handed entry owes a read, under /inputs (its staging, captures and attention files)
                 _at_tools.export_entries(self, self._attention, list(req.attention))
-                # rev 2.1: a capture group's related closed entries and the library items it touches
+                # a capture group's related closed entries and the library items it touches
                 _at_tools.export_group(self._attention, list(req.attention))
                 wall = format(Decimal(str(float(self.cfg.deadline_s))).normalize(), "f")
                 first = _at_tools.first_message(self._attention, req, wall)

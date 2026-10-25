@@ -614,7 +614,7 @@ async def answer(ctx: Any, args: dict) -> Any:
 async def ask_library(ctx: Any, args: dict) -> Any:
     """One question to the request's librarian (``memory.ask`` sends it): the session is opened at the request's
     first question and kept for its follow-ups; the reply is the librarian's checked answer as JSON text. The
-    librarian judges from the copy's structural catalogue and the items' text; nothing is run (rev 2). A question it
+    librarian judges from the copy's structural catalogue and the items' text; nothing is run. A question it
     already answered about the current request gets that answer again, marked as already given, with no model call
     (``LibrarianSession.ask``)."""
     question = args.get("question")

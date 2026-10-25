@@ -1,4 +1,4 @@
-"""One persistent confined Python interpreter per agent: per pass for the writer, the curator and each helper, per
+"""One persistent confined Python interpreter per agent: per pass for the writer and each helper, per
 request for the actor and each teammate.
 
 The interpreter is the actor's worker child (``unify/actor/execution/worker_child.py``: ``python -I -S``, it imports
@@ -254,7 +254,7 @@ class Binds:
 
 @dataclass(frozen=True)
 class MemoryProfile:
-    """A memory agent's interpreter box (writer, curator, helper).
+    """A memory agent's interpreter box (writer, helper).
 
     *sys_path*: box paths first on the import path after the ``tools`` directory (today's cells use
     ``PYTHONPATH=/inputs:/memory``). *fsize_bytes*: the file-size limit lowered for the interpreter (today's per-cell

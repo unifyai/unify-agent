@@ -230,7 +230,7 @@ def items_data(
                 rec.get("status_reason") if rec else None
             ),  # why it is out of the index (item record)
             "use": use_totals(rec) if rec else None,
-            # what it rests on: the episodes it comes from and its confirmed uses (rev 2.1, every card shows it)
+            # what it rests on: the episodes it comes from and its confirmed uses (every card shows it)
             "support": support(rec),
             # the episodes it comes from, by id: the recorded procedures of those episodes are the ones it generalises
             "episodes": _provenance_episodes(rec),
@@ -423,8 +423,8 @@ def _json_bytes(data: dict) -> bytes:
 # Both are harness-generated at each export, with no model call: ``.memory/catalogue.md``, one card per stored
 # function in module-path order (never a score), then the notes, then the captured procedures; and
 # ``.memory/dispatch.json``, the structural catalogue: one row per stored procedure from its syntax and records
-# (rev 2). Neither carries an answer or a raw request text; the free texts (docstrings, summary sections, what broke)
-# are shown as written, identifiers included (rev 2.1: nothing strips or masks an identifier).
+#. Neither carries an answer or a raw request text; the free texts (docstrings, summary sections, what broke)
+# are shown as written, identifiers included (nothing strips or masks an identifier).
 
 CATALOGUE_FILE = ".memory/catalogue.md"
 DISPATCH_FILE = ".memory/dispatch.json"
@@ -904,7 +904,7 @@ def dispatch_data(
     captures: Mapping[str, bytes] | None = None,
     bodies: Mapping[str, str] | None = None,
 ) -> dict:
-    """``.memory/dispatch.json`` (rev 2): the structural catalogue, one row per stored procedure, from the code's
+    """``.memory/dispatch.json``: the structural catalogue, one row per stored procedure, from the code's
     syntax and the harness's records only (nothing is run to make it, and nothing reads it to run anything):
 
     ``{id, kind, form, signature, applies_text, calls, occurrences, outcomes, provenance}``:

@@ -88,11 +88,11 @@ ENDED_FILE = "roster-ended.jsonl"
 
 #: The schema version every row carries.
 VERSION = 1
-#: Who an entry's author is (§2.1).
+#: Who an entry's author is.
 ROLES = ("actor", "fork", "librarian", "writer", "helper", "harness", "user")
 #: The roles of agents (the others are the harness and the user).
 AGENT_ROLES = ("actor", "fork", "librarian", "writer", "helper")
-#: An agent's state on the roster (§2.2): ``idle`` is the writer service with no pass running; ``ended`` is gone.
+#: An agent's state on the roster: ``idle`` is the writer service with no pass running; ``ended`` is gone.
 STATES = ("running", "waiting", "idle", "ended")
 #: The ways an entry reaches an agent, as the delivery log records them.
 VIAS = ("block", "wait", "messages")
@@ -100,7 +100,7 @@ VIAS = ("block", "wait", "messages")
 ROLE_ADDRESSES = ("writer", "actor", "librarian", "fork", "helpers")
 #: The writer's one name on the record.
 WRITER = "writer"
-#: Rev 2: the roles that live as long as the run (module docstring); each instance is ``<role>-<hex>``, short-lived.
+#: The roles that live as long as the run (module docstring); each instance is ``<role>-<hex>``, short-lived.
 INSTANCE_ROLES = ("librarian",)
 #: A role's durable state, ``<agents>/roles/<role>/``: ``role.json`` (written once, when the run seeds the role),
 #: ``answers.jsonl`` (the role's exact-match answer cache), ``notes.md`` (what instances keep for later ones),
@@ -148,7 +148,7 @@ HELPS_WITH = {
     "writer": "keeps the library: decides what it stores, changes and retires, and answers questions about stored items",
 }
 
-#: Whom each role should mention, and when (§2.2): the complete default set; general, naming no world.
+#: Whom each role should mention, and when: the complete default set; general, naming no world.
 SHOULD_MENTION: dict[str, tuple[dict[str, str], ...]] = {
     # the actor asks the library one way, memory.ask (its tool text says so); it is never told to mention @librarian
     "actor": (
@@ -255,7 +255,7 @@ def deliveries_path(home: Path | str) -> Path:
     return agents_dir(home) / CURSORS_FILE
 
 
-# --- a role's state (rev 2: INSTANCE_ROLES) --------------------------------------------------------------------------
+# --- a role's state (INSTANCE_ROLES) --------------------------------------------------------------------------
 
 
 def role_dir(home: Path | str, role: str) -> Path:
@@ -576,7 +576,7 @@ def cut_to(text: str, limit: int, why: str) -> str:
 
 
 def row_of(entry: Entry) -> dict:
-    """The run record's line for *entry* (§2.1): every field, null where it does not apply."""
+    """The run record's line for *entry*: every field, null where it does not apply."""
     return {
         "v": VERSION,
         "seq": entry.seq,
@@ -594,7 +594,7 @@ def row_of(entry: Entry) -> dict:
     }
 
 
-#: A ref's form (§2.1): ``<episode>/<part>`` with the episode part grammar, or ``item:``, ``entry:``, ``capture:``.
+#: A ref's form: ``<episode>/<part>`` with the episode part grammar, or ``item:``, ``entry:``, ``capture:``.
 _REF = re.compile(
     r"^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,127}/(?:request|diff|(?:observation|cell|action):[0-9]+)"
     r"|(?:item|entry|capture):[^\s]{1,200})$",
@@ -607,7 +607,7 @@ _REF_IN_TEXT = re.compile(
 
 
 def refs_in(text: str, episode: Optional[str] = None) -> tuple[str, ...]:
-    """The typed pointers a message names (§2.1 ``refs``), in first-seen order: ``<episode>/<part>``, ``item:<id>``,
+    """The typed pointers a message names, in first-seen order: ``<episode>/<part>``, ``item:<id>``,
     ``entry:<id>``, ``capture:<id>``; a bare ``action:<n>`` (or another part) is the author's own episode's.
     """
     out: list[str] = []
@@ -1099,7 +1099,7 @@ class RunRecord(Record):
                 found = [r["name"] for r in live if r.get("role") == "actor"]
                 add(found) if found else unresolved.append(token)
             elif token in INSTANCE_ROLES:
-                # rev 2: the role itself, while the run has it: a question for its next instance (module docstring)
+                # the role itself, while the run has it: a question for its next instance (module docstring)
                 add([token]) if role_seeded(self.home, token) else unresolved.append(token)
             elif token == "fork":
                 found = [
@@ -1123,7 +1123,7 @@ class RunRecord(Record):
                 unresolved.append(token)
         return resolved, unresolved, ended
 
-    # -- the roles' messages (rev 2) -----------------------------------------------------------------------------
+    # -- the roles' messages -----------------------------------------------------------------------------
 
     def role_messages(self, role: str) -> list[Entry]:
         """The entries addressed to *role* (the role in their mentions), never one an instance of the role wrote."""
@@ -1486,7 +1486,7 @@ class RunRecord(Record):
     # -- waiting --------------------------------------------------------------------------------------------------
 
     def nobody_can_answer(self, name: str) -> bool:
-        """Whether every other agent that could answer *name* is waiting with nothing unread, idle or ended (rev 2: and no
+        """Whether every other agent that could answer *name* is waiting with nothing unread, idle or ended (and no
         question of *name*'s to a role is still to be answered: its instance can still reply)."""
         self.sync()
         if self.role_pending_for(name):
@@ -1682,7 +1682,7 @@ class RunRecordView:
         default_to: Optional[str] = None,
     ) -> dict:
         """Post *text* from *sender* (``@`` names in *to* go first). A message that addresses no agent goes to
-        *default_to* when given, and is otherwise refused (``no_recipient``): nobody would read it. Rev 2: a post that
+        *default_to* when given, and is otherwise refused (``no_recipient``): nobody would read it. A post that
         names an agent that has ended (the writer apart), or a role this run does not have, is refused with a pointer
         (module docstring); nothing is posted.
         """

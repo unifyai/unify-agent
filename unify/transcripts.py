@@ -141,7 +141,7 @@ def _secret_values() -> list[tuple[str, str]]:
                     found.setdefault(raw, name)
     except Exception:
         pass
-    # Credentials this process holds outside its environment (memory v2's Sol
+    # Credentials this process holds outside its environment (the memory writer's
     # token, removed from os.environ once read).
     from unify.process_secrets import registered_secrets
 

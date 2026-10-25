@@ -1,4 +1,4 @@
-"""Input shapes and the shape matcher (rev 2's library mode).
+"""Input shapes and the shape matcher (the library mode).
 
 :func:`file_shape` and :func:`value_shape` describe a value by its shape (named key paths with each leaf's type,
 list length classes, a file's format), never its words; :func:`match`, :func:`compare` and :func:`same_shape`

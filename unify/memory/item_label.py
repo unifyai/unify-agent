@@ -6,7 +6,7 @@ from its own records each time the item records are written (:func:`build`):
 * ``form``: ``function``, ``note`` or ``checklist`` (a note the writer stated is one);
 * ``effects``: what the writer declared its calls do to the environment (``none``, ``reads``, ``writes`` or
   ``unknown``; ``declared`` says whether it declared one);
-* ``covers``: the episodes it was built from, its evidence (``stated_by``: ``harness``; rev 2.1: the writer never
+* ``covers``: the episodes it was built from, its evidence (``stated_by``: ``harness``; the writer never
   states episodes as an item's scope);
 * ``situation``: the kind of situation it is for, as the writer stated it (None when it stated none);
 * ``inputs_vs_constants``: what the writer said varies and what it holds fixed, each constant with its source;
@@ -137,7 +137,7 @@ def build(
             "declared": declared is not None,
         },
         # the episodes it comes from are its evidence (the harness's provenance), never a scope the writer states;
-        # the writer states the kind of situation it is for (rev 2.1)
+        # the writer states the kind of situation it is for
         "covers": {"episodes": list(prov.get("episodes") or []), "stated_by": "harness"},
         "situation": stated.get("situation") if isinstance(stated.get("situation"), str) else None,
         "inputs_vs_constants": {
