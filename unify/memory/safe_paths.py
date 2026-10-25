@@ -36,6 +36,8 @@ DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 #: a root's own host path is chosen by the host (its parents are never box-writable), so it may be reached by a link
 ROOT_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+#: The mode an open that creates no file passes (the kernel reads a mode only when a file is created).
+NO_CREATE_MODE = 0o600
 #: a handle on the entry itself (a link is the link), for ``fstat`` and a mode change through /proc only
 PATH_FLAGS = os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC
 TEMP_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -86,8 +88,9 @@ class TooLarge(PathError):
     kind = "too_large"
 
 
-def openat(name: str, flags: int, dir_fd: int, mode: int = 0o777) -> int:
-    """``openat(dir_fd, name, flags)``."""
+def openat(name: str, flags: int, dir_fd: int, mode: int) -> int:
+    """``openat(dir_fd, name, flags, mode)``. Every caller states the mode: a file the open creates gets it (less the
+    umask); an open that creates nothing passes :data:`NO_CREATE_MODE`."""
     return os.open(name, flags, mode, dir_fd=dir_fd)
 
 
@@ -246,7 +249,7 @@ def walk_dirs(
 ) -> int:
     """A new descriptor of the directory ``root/parts...``, reached component by component, never through a link.
     *create*: missing directories are made (mode 0755). The caller closes the descriptor."""
-    op = opener or (lambda name, flags, dfd: openat(name, flags, dfd))
+    op = opener or (lambda name, flags, dfd: openat(name, flags, dfd, NO_CREATE_MODE))
     fd = os.dup(root_fd)
     try:
         for i, name in enumerate(parts):
@@ -285,7 +288,7 @@ def open_leaf(dir_fd: int, name: str, where: str = "") -> int:
     if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
         raise NotRegular("not a regular file or directory", where)
     try:
-        fd = openat(name, READ_FLAGS, dir_fd)
+        fd = openat(name, READ_FLAGS, dir_fd, NO_CREATE_MODE)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise LinkFound("a link is not followed", where) from None
@@ -487,7 +490,7 @@ def iter_files(
                 continue
             if stat.S_ISDIR(st.st_mode):
                 try:
-                    cfd = openat(name, DIR_FLAGS, dfd)
+                    cfd = openat(name, DIR_FLAGS, dfd, NO_CREATE_MODE)
                 except OSError:
                     continue
                 try:

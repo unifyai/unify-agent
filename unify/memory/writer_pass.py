@@ -1360,7 +1360,7 @@ def _read_manifest(box: Path) -> tuple[bool, object, str | None]:
             return True, None, f"manifest: /memory/.pass cannot be read ({exc.strerror})"
         try:
             try:
-                fd = _safe.openat("manifest.json", _safe.READ_FLAGS, pfd)
+                fd = _safe.openat("manifest.json", _safe.READ_FLAGS, pfd, _safe.NO_CREATE_MODE)
             except FileNotFoundError:
                 return False, None, None
             except OSError as exc:

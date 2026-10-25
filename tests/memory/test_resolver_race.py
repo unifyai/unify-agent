@@ -551,3 +551,25 @@ def test_the_measures_fail_closed_without_proc(tmp_path, monkeypatch):
     )
     assert writer_pass._measure(tmp_path) == writer_pass.NO_PROC_BREACH
     assert "cannot be measured safely" in helpers.work_over(tmp_path)
+
+
+def test_openat_takes_no_default_mode_and_creates_with_the_one_it_is_given(tmp_path):
+    """A component open states its mode: with none it is refused, so no caller can create a file with a permissive
+    default; a created file gets the mode it was given (less the umask), and an open that creates nothing passes the
+    narrow NO_CREATE_MODE."""
+    dfd = os.open(tmp_path, safe_paths.DIR_FLAGS)
+    try:
+        with pytest.raises(TypeError):
+            safe_paths.openat("a.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, dfd)  # the missing mode is the test
+        assert not (tmp_path / "a.txt").exists()
+        old = os.umask(0)
+        try:
+            fd = safe_paths.openat("b.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, dfd, 0o600)
+        finally:
+            os.umask(old)
+        os.close(fd)
+        assert stat.S_IMODE((tmp_path / "b.txt").stat().st_mode) == 0o600
+        assert safe_paths.NO_CREATE_MODE & 0o077 == 0
+        os.close(safe_paths.openat("b.txt", safe_paths.READ_FLAGS, dfd, safe_paths.NO_CREATE_MODE))
+    finally:
+        os.close(dfd)

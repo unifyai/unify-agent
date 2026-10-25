@@ -107,7 +107,7 @@ def memory_path(path: object) -> list[str]:
     return parts
 
 
-def _openat(name: str, flags: int, dir_fd: int, mode: int = 0o777) -> int:
+def _openat(name: str, flags: int, dir_fd: int, mode: int) -> int:
     """``openat(dir_fd, name, flags)``: the one place a component is opened (tests stand in here to change the tree
     between the check and the open)."""
     return _safe.openat(name, flags, dir_fd, mode)
@@ -129,7 +129,7 @@ def _parent(root_fd: int, parts: list[str], shown: str) -> int:
             except OSError as exc:
                 raise Refused("not_written", path=shown, error=_what(exc)) from None
             try:
-                nxt = _openat(name, _DIR_FLAGS, fd)
+                nxt = _openat(name, _DIR_FLAGS, fd, _safe.NO_CREATE_MODE)
             except OSError as exc:
                 where = "/".join(parts[: i + 1])
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR) and _is_link(fd, name):
