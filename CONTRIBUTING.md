@@ -68,9 +68,6 @@ pre-commit run --all-files       # run them by hand
 
 - Open pull requests against `main`. Keep each one to one concern, with the
   tests passing locally.
-- Research arms live on tags named by their ledger id and on `arms/<id>`
-  branches (see [Research arms](README.md#research-arms)). They record what
-  was measured and are not developed further; changes go to `main`.
 - Backward compatibility is not required. Remove what a change makes unused.
 
 ## Design principles
