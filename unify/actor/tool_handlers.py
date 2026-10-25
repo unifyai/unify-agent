@@ -120,7 +120,10 @@ def actor_flags(agent: str, *, librarian: Optional[bool] = None) -> frozenset:
         {"helper"}
         | ({_registry.LIBRARIAN_FLAG} if librarian and agent in ("actor", "teammate") else set())
         # UNIFY_MEMORY=in_episode: the actor marks the pauses of its work (tools.checkpoint)
-        | ({_registry.CHECKPOINT_FLAG} if agent == "actor" and _in_episode(SETTINGS) else set()),
+        | ({_registry.CHECKPOINT_FLAG} if agent == "actor" and _in_episode(SETTINGS) else set())
+        # a world whose requests give examples offers the example check (UNIFY_ACTOR_EXAMPLES_CHECK)
+        | ({_registry.EXAMPLES_FLAG} if agent in ("actor", "teammate") and SETTINGS.UNIFY_ACTOR_EXAMPLES_CHECK
+           else set()),
     )
 
 

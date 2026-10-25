@@ -29,6 +29,7 @@ CONFIGURATION = {
     # Deployment policy.
     "UNIFY_ENV_NAMESPACES": "the environment's own namespaces (an embedding application's factory)",
     "UNIFY_CELL_LLM_MODELS": "which model endpoints cell code may name",
+    "UNIFY_ACTOR_EXAMPLES_CHECK": "whether the world's requests give input/output examples the actor may check against",
     "UNIFY_CELL_ENV_ALLOW": "a runner's own variables a cell gets beside the allow-list",
     "UNIFY_WORKSPACE_NETWORK": "whether cells reach the network, and only through the host's proxy",
     "UNIFY_WORKSPACE_PROXY_PORT": "that proxy's port",

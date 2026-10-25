@@ -170,13 +170,13 @@ def _actor_texts() -> dict[str, str]:
     return texts
 
 
-#: The general example-check tool (the lead's 14 Oct decision: any domain, explicit or implicit examples) is the
-#: one text whose subject is checking against examples; it still names no benchmark.
+#: The general example-check tool is offered only where the world gives examples (UNIFY_ACTOR_EXAMPLES_CHECK); by
+#: default the actor reads nothing about checking against examples.
 EXAMPLE_CHECK_TOOL = "tools.help('check_examples')"
 
 
 def test_what_the_actor_reads_names_no_benchmark():
     texts = _actor_texts()
-    assert EXAMPLE_CHECK_TOOL in texts
+    assert EXAMPLE_CHECK_TOOL not in texts
     assert _benchmark_words(texts) == []
     assert _example_checks({k: v for k, v in texts.items() if k != EXAMPLE_CHECK_TOOL}) == []

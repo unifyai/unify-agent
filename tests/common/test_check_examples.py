@@ -22,7 +22,7 @@ from unify.common import tool_registry as R
 from unify.memory import value_diff
 from tests.memory.prompt_guards import tool_names_in
 
-FULL = frozenset({"pool", "similar", "helper", "edit", "store"})
+FULL = frozenset({"pool", "similar", "helper", "edit", "store", "examples"})
 CODE_AGENTS = ("actor", "teammate", "writer", "helper")  # rev 2 has no curator role
 
 #: A channel client that records every call (a check must make none).

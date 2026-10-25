@@ -8,6 +8,7 @@ MEMORY_K	not-a-knob	a Python name in loop_stop.__all__, not an environment varia
 PATH	internal	process environment
 PYTHONPATH	internal	process environment
 TOOLS_CHANNEL	internal	box plumbing set by the harness
+UNIFY_ACTOR_EXAMPLES_CHECK	deployment	a world whose requests give examples offers the actor the example check
 UNIFY_CELL_ENV_ALLOW	deployment	environment names a cell may see
 UNIFY_CELL_LLM_MODELS	deployment	models a cell may call
 UNIFY_EMBED_TOKEN	deployment	the embedding route token (name only)

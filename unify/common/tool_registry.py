@@ -2327,10 +2327,17 @@ def profile_in_code(agent: str) -> tuple[str, ...]:
     return names + tuple(n for n in RUN_RECORD_TOOLS if n not in names)
 
 
+#: The flag that offers the actor and a teammate the example check (``UNIFY_ACTOR_EXAMPLES_CHECK``).
+EXAMPLES_FLAG = "examples"
+#: Tools the actor and a teammate are offered only with :data:`EXAMPLES_FLAG`; the memory agents keep them.
+ACTOR_OPT_IN = frozenset({"check_examples"})
+
+
 def allow_list(agent: str, flags: frozenset = frozenset()) -> tuple[str, ...]:
     """The tools *agent* may call in code with the configuration *flags* on, in registry order: its profile's
-    in-code names that it is eligible for and whose flag is on. ``execute_code`` is never on it (it is the one
-    model-API tool)."""
+    in-code names that it is eligible for and whose flag is on (for the actor and a teammate, the tools of
+    :data:`ACTOR_OPT_IN` only with :data:`EXAMPLES_FLAG`). ``execute_code`` is never on it (it is the one model-API
+    tool)."""
     if agent not in AGENTS:
         raise ValueError(f"unknown agent {agent!r}")
     named = set(profile_in_code(agent))
@@ -2341,6 +2348,7 @@ def allow_list(agent: str, flags: frozenset = frozenset()) -> tuple[str, ...]:
         and s.name != "execute_code"
         and agent in s.roles
         and (s.requires is None or s.requires in flags)
+        and not (s.name in ACTOR_OPT_IN and agent in (_A, _T) and EXAMPLES_FLAG not in flags)
     )
 
 

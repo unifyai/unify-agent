@@ -277,9 +277,13 @@ async def test_a_thought_alone_runs_nothing_and_is_not_refused(in_code):
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
-async def test_the_actor_checks_a_function_of_its_session_against_examples_in_its_box(in_code):
+async def test_the_actor_checks_a_function_of_its_session_against_examples_in_its_box(in_code, monkeypatch):
     """tools.check_examples runs a function the actor defined in an earlier cell, in the actor's own box (the path
-    exists only there), and is never a host call; the opening holds its one line once."""
+    exists only there), and is never a host call; the opening holds its one line once (a world that gives examples
+    offers it: UNIFY_ACTOR_EXAMPLES_CHECK)."""
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_ACTOR_EXAMPLES_CHECK", True)
     define = "def line_of(path):\n    return open(path).read().splitlines()[0]\n"
     check = (
         "r = tools.check_examples(line_of, [{'input': '/workspace/data.txt', 'expected': 'line 1'},"

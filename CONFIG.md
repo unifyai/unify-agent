@@ -48,6 +48,7 @@ per run). `UNIFY_MEMORY=off` makes none.
 | Variable | Default | What it allows |
 |---|---|---|
 | `UNIFY_CELL_LLM_MODELS` | empty | The model endpoints that cell code may name. This governs both spend and confinement. |
+| `UNIFY_ACTOR_EXAMPLES_CHECK` | `false` | `true` offers the actor and its teammates `tools.check_examples` and one opening line about it, for a world whose requests give input/output examples. Off, neither is shown. |
 | `UNIFY_CELL_ENV_ALLOW` | empty | A runner's own variables that a cell receives, in addition to the allow-list. |
 | `UNIFY_WORKSPACE_NETWORK`, `UNIFY_WORKSPACE_PROXY_PORT` | off | Whether cells reach the network. When they do, it is only through the host's proxy on that port. |
 | `UNIFY_ENV_NAMESPACES` | empty | An embedding application's own `primitives.<name>` namespaces. |

@@ -29,7 +29,7 @@ from unify.memory import agent_profiles, helpers, mining, pool, tool_spec
 from tests.memory.prompt_guards import tool_names_in
 
 ROOT = Path(__file__).resolve().parents[2]
-FULL = frozenset({"pool", "similar", "helper", "edit", "store"})
+FULL = frozenset({"pool", "similar", "helper", "edit", "store", "examples"})
 
 #: Small stand-ins for the channel client and the shell helper (their real sources are embedded the same way).
 CLIENT = '''

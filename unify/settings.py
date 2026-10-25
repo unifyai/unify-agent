@@ -127,6 +127,10 @@ class ProductionSettings(BaseSettings):
     # comma list of names and ``PREFIX_*`` patterns, for a runner's own cell
     # variables. A credential's name or a key-shaped value is never passed.
     UNIFY_CELL_ENV_ALLOW: str = ""
+    # Whether the actor and its teammates are offered the example check (``tools.check_examples``) and the one
+    # opening line about it. A world whose requests give input/output examples may turn it on; off (the default)
+    # the actor's tools and opening carry neither.
+    UNIFY_ACTOR_EXAMPLES_CHECK: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Logging / Observability
