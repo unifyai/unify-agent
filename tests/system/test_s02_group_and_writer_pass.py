@@ -12,7 +12,9 @@ from __future__ import annotations
 import pytest
 
 from tests.actor.code_act.sandbox_world import needs_bwrap
-from tests.scripted_model import Always, ScriptedModel
+import json
+
+from tests.scripted_model import Always, ScriptedModel, cell, reply
 from tests.system import sysworld as SW
 from tests.system.drive import MEMORY_MODES
 
@@ -27,7 +29,15 @@ async def test_a_related_capture_forms_a_group_the_pass_lands_an_item_linked_bot
     r1 = await s.accepted_words(["stone", "river"], "reverse")
     a = s.capture_of(r1.episode_id)
     assert not s.writer.pass_bodies, "a lone capture was written up alone"
-    r2 = await s.accepted_words(["glass", "cloud"], "upper")
+    # the second episode used the first capture: a used item relates them (the same input shape alone never
+    # does: every request of this world reads the same shape)
+    words = ["glass", "cloud"]
+    use_a = f"memory.get({'capture:' + a!r})({words!r})\n"
+    r2 = await s.request(SW.words_request(words, op="upper"), ScriptedModel(
+        actor=[reply(calls=[cell(use_a + SW.words_cell(words, op="upper"))]),
+               reply(json.dumps(SW.words_answer(words, op="upper"))), reply("Good.")],
+        librarian=Always(lambda c: SW.librarian_answer([], nearest=[]))), SW.accepted_host())
+    s.settle()
     b = s.capture_of(r2.episode_id)
     assert a != b
 

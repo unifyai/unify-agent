@@ -108,11 +108,15 @@ class System:
         assert s.code == 0, s.lines[-6:]
         return s
 
-    async def accepted_words(self, words: list[str], op: str = "reverse", *, librarian: Any = None):
-        """An accepted episode of the words world (a verdict the actor sees, then a message); settled after."""
+    async def accepted_words(self, words: list[str], op: str = "reverse", *, librarian: Any = None,
+                             uses: str | None = None):
+        """An accepted episode of the words world (a verdict the actor sees, then a message); settled after.
+        With *uses* (a capture id), its cell first calls that capture: a used item relates the two captures
+        (the same input shape alone never does)."""
         from tests.scripted_model import Always, ScriptedModel, cell, reply
 
-        kinds = {"actor": [reply(calls=[cell(SW.words_cell(words, op=op))]),
+        first = f"memory.get({'capture:' + uses!r})({words!r})\n" if uses else ""
+        kinds = {"actor": [reply(calls=[cell(first + SW.words_cell(words, op=op))]),
                            reply(json.dumps(SW.words_answer(words, op=op))), reply("Good.")]}
         kinds["librarian"] = librarian or Always(lambda c: SW.librarian_answer([], nearest=[]))
         r = await self.request(SW.words_request(words, op=op), ScriptedModel(**kinds), SW.accepted_host())

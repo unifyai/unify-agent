@@ -78,8 +78,9 @@ async def test_an_item_only_served_relates_nothing(system, mode):
     s = system
     s.writer.plan = "land"
     s.writer.kin = False
-    await s.accepted_words(["stone"], "reverse")
-    await s.accepted_words(["glass"], "upper")  # a pass lands the note: from here on every request is served it
+    a = s.capture_of((await s.accepted_words(["stone"], "reverse")).episode_id)
+    # a pass lands the note (the second episode used the first capture): from here on every request is served it
+    await s.accepted_words(["glass"], "upper", uses=a)
     assert s.library_main_has(SW.NOTE_ID)
     passes = len(s.writer.passes)
     served = Always(lambda call: SW.librarian_answer([SW.fit(SW.NOTE_ID, call=f"print(memory.get({SW.NOTE_ID!r}))")]))
