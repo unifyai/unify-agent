@@ -65,6 +65,10 @@ THREADS_GRACE_S = 10.0
 SESSIONS: "weakref.WeakSet[InCodeTools]" = weakref.WeakSet()
 
 
+class SessionEnded(RuntimeError):
+    """A cell of a session that has closed: no box is started (or kept) for it."""
+
+
 def _utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -305,7 +309,7 @@ class InCodeTools:
             from unify.common.box_interpreter import ActorProfile, BoxInterpreter
 
             start = self._start or BoxInterpreter.start
-            self.interp = await start(
+            interp = await start(
                 agent=self.agent,
                 profile=ActorProfile(shadow=self.shadow),
                 binds=None,
@@ -314,6 +318,11 @@ class InCodeTools:
                 stub_source=self.stub,
                 cell_limit_s=self.cell_limit_s,
             )
+            if self.closed:
+                # the session closed while this box started: close() found no interpreter to stop, so it is stopped here
+                await interp.stop()
+                raise SessionEnded("the session ended while its box started: the box is stopped")
+            self.interp = interp
         return self.interp
 
     def box_alive(self) -> bool:
@@ -514,10 +523,29 @@ class InCodeTools:
 
     async def close(self) -> None:
         """Stop the interpreter (verified kill) and the librarian, and wait for every handler thread; each is
-        checked to have ended. Safe to repeat. Raises when something could not be ended."""
+        checked to have ended. Safe to repeat. Raises when something could not be ended.
+
+        The teardown runs to its end even when the task closing the session is cancelled meanwhile (a helper's request
+        is cancelled as its run ends, while this runs in its ``finally``): an interrupted teardown would leave the box
+        running with nothing left to stop it. The cancellation is raised again once the teardown has ended."""
         if self.closed:
             return
         self.closed = True
+        teardown = asyncio.ensure_future(self._teardown())
+        cancelled = False
+        while not teardown.done():
+            try:
+                await asyncio.shield(teardown)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            failure = None if teardown.cancelled() else teardown.exception()
+            if failure is not None:  # the cancellation goes on; the teardown's own failure is logged, not lost
+                logger.warning("closing the session failed while it was being cancelled", exc_info=failure)
+            raise asyncio.CancelledError
+        teardown.result()
+
+    async def _teardown(self) -> None:
         problems: list[str] = []
         try:
             interp, self.interp = self.interp, None
