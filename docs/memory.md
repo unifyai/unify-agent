@@ -5,41 +5,68 @@ Memory lets later requests use what earlier ones learned. One setting controls i
 
 ## What happens with `UNIFY_MEMORY=on`
 
-1. **An episode is recorded.** Each request is an episode in the memory home, `<UNIFY_HOME>/memory`. The episode
-   records the request, the cells the actor ran with their outputs, its tool calls and its reply, plus any signal that
-   arrives about it later, such as a verdict on the result.
-2. **A fork stages what it did.** When the episode ends, the actor's own conversation is forked once, on the fork
-   lane. The fork writes a summary and, where the episode computed something, a procedure that redoes it. Its
-   capture is a record of what the episode did. **Nothing is ever run in order to classify, deduplicate or rank a
-   capture.**
+1. **An episode is recorded.** Each request is an episode, committed to `<UNIFY_HOME>/episodes.git`: the request, the
+   cells the actor ran with their outputs, its tool calls and its reply, plus any signal that arrives about it later,
+   such as a verdict on the result. A SQLite evidence store, `<UNIFY_HOME>/memory-evidence.sqlite`, indexes the
+   episodes and every use of a library item.
+2. **A fork writes down what it did.** When the episode ends, the actor's own conversation is continued once, on the
+   fork lane, with a fixed instruction. The fork writes a summary (`summary.md`) and, where the episode computed
+   something, a procedure that redoes it (`procedure.py`) with what broke on the way (`broke.md`). It may also post to
+   `@writer` on the run record, to point at its summary and drafts and to say what it was unsure of. The harness turns
+   the procedure into a **capture**: the procedure plus a signature and a record the harness computes, with the
+   outcome taken from the signals the actor could see (`positive`, `none` or `contrary`). **Nothing is ever run in
+   order to classify, deduplicate or rank a capture.** A capture is served at once to later requests, before any
+   writer pass has read it.
 3. **The ledger says what needs reading.** The attention ledger opens an entry for each piece of new experience:
    - a settled fork;
    - a use of a library item that went badly;
    - a signal that arrived after its episode ended;
-   - an item called again in new episodes.
+   - an item called again in new episodes;
+   - a run-record message to the writer.
 
-   An entry stays open until a writer pass decides it. A new capture waits until its **capture group** is due:
-   captures whose records show they act through the same tools, use the same library items or read the same shape
-   of input (never an id, a word or the order they came in). A group is due once two of them are open, once a new one
-   relates to captures an earlier pass decided, or, for a capture still alone, after 8 later captures or 10 minutes
-   with none. Every other kind of entry is handed at once.
+   An entry stays open until a writer pass decides it. A new capture waits until its **capture group** is due.
+   Captures are related when their records show they make the same calls, when they use the same library items, or
+   when the writer's model, asked as a judge, reads them as the same kind of work; a shared shape of input alone never
+   relates two captures, and no id, word or order is read. A group is due once two of its captures are open, or once
+   a new one relates to captures an earlier pass decided. A capture with no related capture is due once its own
+   request has ended: it goes with the pass that runs then, or, when none runs, in one pass with every other such
+   capture. No count of later captures and no idle time makes anything due. Every other kind of entry is handed at
+   once.
 4. **The writer keeps the library.** The writer is a detached service, one per memory home. It hands open entries to
-   writer passes, and each pass is a model with tools in a confined box:
+   writer passes, and each pass is a model with tools in a confined box (no network, no credentials):
    - it reads the entries' material: for a capture group, its members together with the related captures earlier
      passes decided and the library items the group touches;
    - it may start helpers;
-   - it lands new library items (tested functions and linked notes), changes or renames existing ones, and decides
-     each entry. A pass never removes an item or merges two in the library: the gate refuses aliases, declared
-     retirements and a smaller library. The writer retires or replaces an item it has learnt is harmful by deciding an
-     entry about it (`retire`, or `merged_into` the item that replaces it): the item stays in the library, marked
-     retired, and is no longer served.
+   - it lands new library items, changes or renames existing ones, and decides each entry.
+
+   The library, `<UNIFY_HOME>/memory`, is a git repository of **functions** (`memory/<package>/<module>.py`, each with
+   its tests) and **notes** (`notes/<topic>/<slug>.md`). Notes and functions link both ways: a note lists the
+   functions it uses in its `uses:` front matter, and a function's docstring names its notes on a `Notes:` line.
+   Every copy also carries generated files that are never committed: `INDEX.md` and `links.json`, which show both
+   directions of every link, and the package files that bind the library as `memory`.
+
+   A pass never removes an item or merges two in the library: the gate refuses aliases, declared retirements and a
+   smaller library. The writer retires or replaces an item it has learnt is harmful by deciding an entry about it
+   (`retire`, or `merged_into` the item that replaces it): the item stays in the library, marked retired, and is no
+   longer served.
 
    A gate checks every candidate before it lands. Safety, paths and syntax refuse a candidate. Every other finding
    is recorded on the item's label. The gate runs no code: the only code that runs is a test the writer states
    and runs itself (`tools.test`). Every item shows what it rests on: its kind (a curated item, a recorded
-   procedure or a fixed answer), how many episodes it comes from and how many uses confirmed it.
+   procedure or a fixed answer), how many episodes it comes from and how many uses confirmed it. An item's status
+   follows its uses: it starts `on-trial`, becomes `adopted` after clean uses in at least three episodes with no
+   failed use, and is `retired` after failed uses in at least two episodes, or by the writer's decision.
 5. **The next episode is served from the library.** An episode starts with a read-only copy of the library as it is
-   then, bound as the Python package `memory` in its cells. The librarian answers questions about it (`memory.ask`).
+   then, bound as the Python package `memory` in its cells, and with the captures served beside it. Before the actor's
+   first turn, the librarian is asked once what in the library fits the request; its answer is part of the actor's first
+   message. In its cells the actor calls `memory.ask(...)` to ask again, `memory.items()` to list the library and
+   `memory.get(id)` to read an item or call a function; `help(memory)` documents them. The librarian checks every
+   call it suggests against the item's real interface, and never suggests an item whose call failed earlier in the
+   same request.
+
+All of memory's agents share the run's record with the actor and its teammates: an append-only log they post to and
+read, addressing one another as `@writer`, `@librarian`, `@actor`, `@fork` or `@helpers`. It is how the fork points the
+writer at what it wrote, and how the actor tells the writer that a served item was wrong.
 
 `UNIFY_MEMORY_CAP_USD` bounds what memory spends in one run, meaning one `unify act` including the writer service it
 ran. The run's count starts when the `unify act` makes its first memory request; a writer service that stops and starts
