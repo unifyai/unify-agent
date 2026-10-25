@@ -25,7 +25,7 @@ class Paths:
 
     @property
     def checkout(self) -> Path:
-        """The request's scratch export of memory ``main``, mounted read-write into the worker."""
+        """The request's export of memory ``served``, bound read-only into the worker at ``/memory-library``."""
         return self.home / "memory-checkout"
 
     @property

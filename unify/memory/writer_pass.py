@@ -1,9 +1,10 @@
 """One consolidation pass: the writer as a sandboxed coding agent, then the gate.
 
 The pass copies the memory library's ``main`` into a plain directory, creates an empty ``env/<channel>/``
-folder there for every memory channel of the pass's recorded actions, and gives the writer three tools:
+folder there for every memory channel of the pass's recorded actions, and gives the writer one model-API tool,
 ``execute_code`` (the code as a read-only file run in :func:`.sandbox_run.run_confined`, with the copy
-read-write at ``/memory`` and the pass's inputs read-only at ``/inputs``), ``check`` (the gate's cheap,
+read-write at ``/memory`` and the pass's inputs read-only at ``/inputs``); its other tools are calls ``tools.<name>``
+from its cells (its profile in :mod:`.agent_profiles` lists them), among them ``check`` (the gate's cheap,
 read-only checks of a manifest against the current copy, host-side; :meth:`.gate.Gate.preview`; each counted as a
 call) and ``finish``. It ends on ``finish``, the operational step guard (``max_calls``), the run's spend room for the
 pass (``usd_limit``), the pass deadline or a breach of the write quota (which refuses the pass without a commit). The harness then reads ``/memory/.pass/manifest.json`` without following
@@ -17,7 +18,9 @@ The box never sees the git checkout itself: a ``.git`` file the model could rewr
 The writer sees only what :func:`export_for_writer` and :func:`export_blobs` write: request, cells,
 actions, and the file blobs worktree actions recorded; and, from the harness, the library's generated files, its
 attention entries and, with ``PassConfig.show_usage``, a table of how requests used each function
-(:func:`.usage.usage_table`, harness counts). Nothing about outcomes, signals or checkers reaches it. The
+(:func:`.usage.usage_table`, harness counts). An outcome reaches it only as a recorded fact: each capture's outcome
+(``positive``, ``none`` or ``contrary``, from the signals the actor could see) in the capture's record and, for a
+group, in its group document; no checker or grader runs for it. The
 pass's messages are kept (:meth:`WriterPass.transcript`, redacted and bounded) for the driver to store on the
 episode repo.
 """

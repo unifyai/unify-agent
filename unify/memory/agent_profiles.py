@@ -133,7 +133,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "in_code": list(_ACTOR_IN_CODE),
         # what its guide names that it does in its own cells, through no tool
         "in_cells": ["memory.ask", "memory.items", "memory.get"],
-        "mounts": [{"path": "<library scratch copy>", "mode": "rw"}],
+        "mounts": [{"path": "<library scratch copy>", "mode": "ro"}],
         "denied": [
             "/inputs",
             "staging",
@@ -204,7 +204,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "json_tools": list(_JSON_TOOLS),
         "in_code": list(_TEAMMATE_IN_CODE),
         "in_cells": ["memory.ask", "memory.items", "memory.get"],
-        "mounts": [{"path": "<library scratch copy>", "mode": "rw"}],
+        "mounts": [{"path": "<library scratch copy>", "mode": "ro"}],
         "denied": ["/inputs", "library repository"],
         "consumes": [{"artifact": "agent record", "path": _AGENT_RECORD}],
         "produces": [{"artifact": "agent record", "path": _AGENT_RECORD, "consumer": "actor"}],

@@ -12,7 +12,7 @@ and from nothing else: no world name, label, id of a request, stream position or
 kind                   created when
 =====================  ==================================================================================================
 ``new_experience``     an episode's fork settled with any output: the summary, plus the procedure
-``own_check_failed``   never made under rev 2 (no capture is run to classify it); kept so an older ledger still folds
+``own_check_failed``   never made (no capture is run to classify it); kept so an older ledger still folds
 ``use_went_badly``     a use of an item was failed (an error, ``holds`` false, a contrary signal after it) or refused (the
                        item refused the call, ``MemoryInputError``), or an actor wrote to the writer about it on the run
                        record (an actor entry to the writer with an ``item:`` ref, or naming by its library name an item
@@ -53,10 +53,12 @@ handed in the last :data:`STARVATION_PASSES` passes, it is handed first. :data:`
 everywhere; the writer may take more.
 
 **Capture groups** (:mod:`.capture_groups`): the writer service hands with a grouping, so a ``new_experience``
-entry with a capture waits until a related capture exists (another new one, or its history: earlier related ones),
-and a pass is then handed that group's new members with a ``group`` row naming its history. A capture with no related
-capture is never handed alone; an entry whose episode left no capture is closed by the harness and runs no pass. A
-judge's ``kin`` rows (:meth:`Ledger.record_kin`) are one of the relations. Every other kind is still handed at once.
+entry with a capture waits until its group is due: a related capture exists (another new one, or its history: earlier
+related ones), and a pass is then handed that group's new members with a ``group`` row naming its history. A capture
+with no related capture is due once its request has ended (:data:`.capture_groups.ENDED`): it is handed with the pass
+that runs then, or, when none runs, in one pass with every other such capture, under a ``group`` row that names no
+group. An entry whose episode left no capture is closed by the harness and runs no pass. A judge's ``kin`` rows
+(:meth:`Ledger.record_kin`) are one of the relations. Every other kind is handed at once.
 
 **Reopening.** A ``late_evidence`` entry reopens every closed entry that names one of the items its episode used or
 produced, when the signal is newer than that entry's last close; each reopen names its cause.
