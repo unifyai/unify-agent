@@ -924,7 +924,7 @@ def _item_function(target: str) -> Any:
 
 def _run_item(target: str, args: tuple, kwargs: dict) -> RunReport:
     """Call a library function by id in this process, once (an ordinary use: the wrapper raises ``memory.call``).
-    Rev 2.1: it is never called a second time, so an item that acts on the world acts once."""
+    It is never called a second time, so an item that acts on the world acts once."""
     gone = _withdrawn().get(target) if _evidence() is not None else None
     if gone is not None:
         by = gone.get("by")
@@ -1207,7 +1207,7 @@ def _run_capture(capture_id: str, args: tuple, kwargs: dict) -> RunReport:
 def _tracked_run(target: str, args: tuple, kwargs: dict) -> RunReport:
     """The tracked call of one stored procedure (calling a function :class:`Item`): try it on the
     arguments, in this cell, once, and report how it went: whether it returned, its result, whether its stated
-    conditions held, and its evidence level and status. Rev 2.1: nothing calls it a second time or calls another
+    conditions held, and its evidence level and status. Nothing calls it a second time or calls another
     procedure beside it. *target* is an item id (``memory.<package>.<module>:<name>``) or a ``capture:<id>``. A
     library function is called here, as an import would call it; a captured procedure runs in a separate confined
     process and takes text or JSON values (given one text, it reads its input from that text). A failure is
