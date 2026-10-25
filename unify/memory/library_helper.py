@@ -698,7 +698,7 @@ def _emit_event(event: str, *args: Any) -> None:
 # --- the current request, and the harness's catalogue ---------------------------------------------------------------
 #
 # the harness writes ``.memory/dispatch.json``: the structural catalogue, one row
-# per stored procedure from its syntax and records (rev 2). Nothing here runs a reader or an ``applies`` on it.
+# per stored procedure from its syntax and records. Nothing here runs a reader or an ``applies`` on it.
 #
 # The current request reaches this file from the host tool :data:`REQUEST_TOOL`, called through the channel client
 # (``tools._call``): no name for it is bound in a cell, and its text crosses only as data.
@@ -824,7 +824,7 @@ def _event_rows(rows: list[MatchRow]) -> tuple:
 
 
 class RunReport:
-    """How one tracked call went: the one call it made (rev 2.1: a stored procedure is called once, never a second time and
+    """How one tracked call went: the one call it made (a stored procedure is called once, never a second time and
     never beside another procedure). ``outcome``: returned, refused (``MemoryInputError``) or error; ``result``: what
     it returned (None otherwise); ``conditions``: whether its stated conditions held."""
 
@@ -1294,7 +1294,7 @@ def _status_of(row: dict) -> str:
 
 
 def _support_line(kind: str, facts: Any) -> str:
-    """What an item rests on, in words (rev 2.1, every card shows it in place of the evidence ladder): its kind
+    """What an item rests on, in words (every card shows it): its kind
     (``curated item`` or ``recorded procedure``), the episodes it comes from and, when it has any,
     the uses whose outcome confirmed it. *facts* is the export's ``support`` (``{"episodes", "confirmed_uses"}``)."""
     if not isinstance(facts, dict):
@@ -1580,8 +1580,8 @@ class Item:
         kind: ``'function'`` or ``'note'``.
         summary: one line.
         applies: when it applies, written from the request alone ('' when none is recorded).
-        evidence: ``'unchecked'`` (nothing has shown more), ``'confirmed-by-outcomes'`` (outcomes after use confirm it)
-            or, on a record from before rev 2.1, ``'reproduces-its-case'``; a note is unchecked.
+        evidence: ``'unchecked'`` (nothing has shown more) or ``'confirmed-by-outcomes'`` (outcomes after use confirm
+            it); a note is unchecked.
         status: ``'on-trial'``, ``'adopted'`` or ``'retired'``.
         example: one recorded call, for a function ('' when none is shown).
         text: a note's front matter and ``## Rule`` section, a function's source with its docstring, or a recorded
