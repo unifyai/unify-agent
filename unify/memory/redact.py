@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Mapping
 
@@ -25,19 +26,24 @@ _MIN_SECRET_LEN = 8
 CREDENTIAL_STRUCTURE = re.compile(
     r"(?i)(\bauthorization[\"']?\s*[:=]\s*[\"']?)(?:(?:bearer|basic|token)\s+)?[^\s\"',;}]+"
     r"|(\bbearer\s+)[A-Za-z0-9._~+/=-]+"
-    r"|(\b(?:x-)?api[_-]?key[\"']?\s*[:=]\s*[\"']?|\b(?:access|auth)[_-]?token[\"']?\s*[:=]\s*[\"']?)[^\s\"',;}&]+",
+    r"|(\b(?:x-)?api[_-]?key[\"']?\s*[:=]\s*[\"']?|\b(?:access|auth)[_-]?token[\"']?\s*[:=]\s*[\"']?)[^\s\"',;}&]+"
+    # a credential in a URL's query: ?key=..., &token=...
+    r"|([?&](?:key|api_key|token|access_token)=)[^\s&\"'#]+",
 )
 
 
 def redact_error(text: str) -> str:
-    """Error text as it may be recorded (pass notes, ``errors.jsonl``, logs): registered credentials by value,
-    credential structures (:data:`CREDENTIAL_STRUCTURE`) and key-shaped strings (:data:`KEY_SHAPED`) removed.
+    """Error text as it may be recorded (pass notes, ``errors.jsonl``, logs): registered credentials by value (each
+    under its own label), then the environment's credentials by value (:meth:`Redactor.from_environ`), credential
+    structures (:data:`CREDENTIAL_STRUCTURE`, query parameters included) and key-shaped strings (:data:`KEY_SHAPED`)
+    removed.
     """
     for label, value in registered_secrets():
         if len(value) >= _MIN_SECRET_LEN and value in text:
             text = text.replace(value, f"<secret:{label}>")
+    text = Redactor.from_environ(os.environ).text(text)
     text = CREDENTIAL_STRUCTURE.sub(
-        lambda m: f"{m.group(1) or m.group(2) or m.group(3)}<redacted>",
+        lambda m: f"{m.group(1) or m.group(2) or m.group(3) or m.group(4)}<redacted>",
         text,
     )
     return KEY_SHAPED.sub("<redacted:key-shaped>", text)
