@@ -45,9 +45,10 @@ lines.
 
 `CodeActActor.act(request)` refuses to start without bubblewrap, joins the run's agent record, builds the system
 prompt and starts the tool loop. The system prompt is a pure function of the configuration: the shared opening that
-names the agent's tools, the actor's role and rules, each environment's section, and with memory on the memory
-index at the end, so the prefix stays the same for the whole run. The first user message carries the record's
-section (and with memory on the library's size) before the request.
+names the agent's tools, the actor's role and rules, each environment's section, and with memory on a fixed guide to
+the library at the end, so the prefix stays the same for the whole run. The first user message carries, before the
+request, the record's section and, with memory on, the library's size and the librarian's answer about what in the
+library fits the request.
 
 `InCodeTools` is the request's in-code surface: it opens the interpreter with the tool channel, runs each
 `execute_code` call as one cell, writes one row per call to the request's `tool-events.jsonl`, and refuses a cell
@@ -109,7 +110,9 @@ name.
 
 One registry holds every tool's name, description, parameter schema and refusal texts, for the actor, its teammates
 and the memory agents. The box module `tools` is generated from it; `tools.list()` and `tools.help(name)` read it.
-A call is validated on the host before its handler runs, and a refusal carries a stable form code.
+A call is validated on the host before its handler runs, and a refusal carries a stable form code. Each agent's
+allow-list says which tools it has; `tools.check_examples` reaches the actor and its teammates only with
+`UNIFY_ACTOR_EXAMPLES_CHECK=true`, for a world whose requests give input/output examples.
 
 ## The workspace environment
 
@@ -140,9 +143,11 @@ model (`UNIFY_CELL_LLM_MODELS` widens that). A provider's refusal of the request
 
 **Files:** `unify/agents/`
 
-One append-only record per run that every agent, the requester and the harness post to. An agent reads new entries
-that concern it only at its turn boundary. The actor can start teammates with a task, ask its requester a question and
-ask the librarian what the library holds.
+One append-only record per run that every agent, the requester and the harness post to: the actor and its
+teammates, and with memory on the episode-end forks, the writer, its helpers and the librarian. An agent reads new
+entries that concern it only at its turn boundary, and addresses others by name or by role (`@writer`, `@librarian`,
+`@actor`, `@fork`, `@helpers`). The actor can start teammates with a task, ask its requester a question and ask the
+librarian what the library holds.
 
 ## Transcripts and logs
 
@@ -156,5 +161,8 @@ credential values are replaced before a line is written. The log files go to `UN
 
 **Files:** `unify/memory/`, `unify/memory/integration/hooks.py`; see `docs/memory.md`.
 
-`UNIFY_MEMORY` is `off` or `on` (the default). Off is no memory of any kind. On, each request reads a pinned copy of
-the library and its index, and after the request the writer turns what happened into tested library items.
+`UNIFY_MEMORY` is `off` or `on` (the default). Off is no memory of any kind. On, each request reads a pinned,
+read-only copy of the library (functions and linked notes, with their generated `INDEX.md` and `links.json`) and the
+captures served beside it. After the request a fork of the actor writes down what it did, and the detached writer
+service turns that into tested library items in passes it runs in a confined box; a gate checks every change before
+it lands. `docs/memory.md` walks through it.

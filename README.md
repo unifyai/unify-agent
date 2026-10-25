@@ -36,13 +36,10 @@ You need:
 - **One model-provider key:** `OPENROUTER_API_KEY` for the default model, or
   `ANTHROPIC_API_KEY` with an Anthropic model named in `UNIFY_MODEL`.
 
-> **Install status.** unify-agent pins its model client, unillm, to commit
-> `9d85422`, which is not yet on GitHub. Until it is, the checkout step below
-> fails unless your unillm clone already has that commit.
-> TODO(lead): publish unillm `9d85422` (12 commits past unillm `main`). After
-> that, remove the sibling-checkout entry in `pyproject.toml`, and
-> `pip install git+https://github.com/unifyai/unify-agent` installs the pin
-> directly.
+> **Install layout.** unify-agent pins its model client, unillm, to commit
+> `9d85422` of unillm's `main`, and uv installs it from a unillm checkout
+> beside this one (`[tool.uv.sources]` in `pyproject.toml`), at that commit.
+> Clone both as below.
 
 ```bash
 git clone https://github.com/unifyai/unify-agent.git
@@ -100,18 +97,22 @@ Packages a program needs are installed into one shared environment under
    to write down what it did: a small runnable procedure, what it was for, and
    which parts of the task it rests on.
 2. **The writer.** A background writer reads the captures and failures that
-   need attention, and keeps a library of functions and notes in a git
-   repository at `~/.unify/memory`. It states tests for what it writes, and the
-   harness runs them in a sandbox. A gate checks every change and records what
-   it finds as labels on the item. The writer has its own spend cap, outlives
-   the `unify act` command, and stops by itself once idle for 30 minutes.
-3. **The librarian.** In a later task the actor can call `memory.ask("...")`.
-   A librarian agent reads the library and answers with the items that fit.
-   Each item comes with a recorded example call and can be called directly,
-   as `item(...)`. The actor decides whether to use it.
-4. **A shared run record.** The actor, the forks, the writer and the librarian
-   post to one append-only record. They can address one another (`@writer`,
-   `@librarian`), so a question reaches the agent that can answer it.
+   need attention, and keeps a library in a git repository at
+   `~/.unify/memory`: tested functions, and notes that link to the functions
+   they use (and back). It states tests for what it writes, and the harness
+   runs them in a sandbox. A gate checks every change and records what it
+   finds as labels on the item. The writer spends under memory's cap,
+   outlives the `unify act` command, and stops by itself once idle for 30
+   minutes.
+3. **The librarian.** At the start of a later task, a librarian agent reads
+   the library and tells the actor which items fit; the actor can ask it
+   again with `memory.ask("...")`. Each item comes with a recorded example
+   call and can be called directly, as `item(...)`. The actor decides
+   whether to use it.
+4. **A shared run record.** The actor, its teammates, the forks, the writer
+   and the librarian post to one append-only record. They can address one
+   another (`@writer`, `@librarian`), so a question reaches the agent that
+   can answer it.
 
 [`docs/memory.md`](docs/memory.md) explains the memory in full.
 

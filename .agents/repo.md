@@ -102,9 +102,8 @@ pre-commit run --all-files
 
 ## Testing philosophy
 
-**Tests always use stubbed models and never reach a real provider.** This is the lead's rule ("we do not add tests
-that need a real provider key and always mock those tests with stubbed LLM calls"), and `tests/conftest.py` enforces
-it in every test: unillm's provider calls raise, a socket may connect only to this machine, and the markers that once
+**Tests always use stubbed models and never reach a real provider.** No test needs a real provider key; every model
+call in a test is a stubbed one. `tests/conftest.py` enforces it in every test: unillm's provider calls raise, a socket may connect only to this machine, and the markers that once
 let a test reach a provider (`live_provider`, `requires_provider_key`) fail the test that carries them. No test needs a
 key; with none set, the root conftest sets a placeholder that is plainly not a secret.
 
