@@ -19,6 +19,17 @@ from tests.memory import store_reads
 KEY = "sk-or-v1-" + "ab" * 32
 
 
+#: Every recorder a test made through :func:`_setup`; each is closed when its test ends (its blob reader is a process).
+_OPEN: list = []
+
+
+@pytest.fixture(autouse=True)
+def _close_recorders():
+    yield
+    while _OPEN:
+        _OPEN.pop().close()
+
+
 def _setup(tmp_path, **kw):
     wt = tmp_path / "work"
     wt.mkdir()
@@ -33,6 +44,7 @@ def _setup(tmp_path, **kw):
     (wt / "sub" / "a.txt").write_text("a\n")
     repo = store_reads.init_snapshot(tmp_path / "worktree.git", wt)
     rec = WorkTreeRecorder(wt, repo, BlobStore(tmp_path / "blobs"), **kw)
+    _OPEN.append(rec)
     return wt, repo, rec
 
 

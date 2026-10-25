@@ -75,11 +75,14 @@ def test_worktree_stores_a_file_over_the_old_blob_cap_whole_and_redacted(tmp_pat
     big = _planted(2 * 1024 * 1024 + 4096, "FILE_END")
     wt, rec = inp._setup_worktree(tmp_path, blob_cap=None, redactor=RED)
     (wt / "big.txt").write_text(big)
-    rec.begin()
-    (row,) = rec.record_cell(
-        0,
-        [{"event": "open", "path": "big.txt", "mode": "r", "cell": 0}],
-    )
+    try:
+        rec.begin()
+        (row,) = rec.record_cell(
+            0,
+            [{"event": "open", "path": "big.txt", "mode": "r", "cell": 0}],
+        )
+    finally:
+        rec.close()  # its blob reader is a process
     blob = row.response["blob"]
     assert blob is not None
     data = BlobStore(tmp_path / "blobs").get(blob).decode()

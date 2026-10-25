@@ -103,13 +103,16 @@ def off_records(tmp: Path) -> dict:
     )
     out["tool"] = _rows(obs.drain().actions)
     wt, rec = _setup_worktree(Path(tmp))
-    rec.begin()
-    out["worktree"] = _rows(
-        rec.record_cell(
-            0,
-            [{"event": "open", "path": "big.txt", "mode": "r", "cell": 0}],
-        ),
-    )
+    try:
+        rec.begin()
+        out["worktree"] = _rows(
+            rec.record_cell(
+                0,
+                [{"event": "open", "path": "big.txt", "mode": "r", "cell": 0}],
+            ),
+        )
+    finally:
+        rec.close()  # its blob reader is a process
     out["worktree_blobs"] = sorted(
         p.name for p in (Path(tmp) / "blobs").rglob("*") if p.is_file()
     )

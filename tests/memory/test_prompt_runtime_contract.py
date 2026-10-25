@@ -683,6 +683,13 @@ def _actor_turns(seen: list):
     return turn, state
 
 
+async def _sessions_end(opened: list, within_s: float = 120.0) -> None:
+    """Wait, bounded, until every session in *opened* has closed."""
+    end = asyncio.get_running_loop().time() + within_s
+    while not all(s.closed and not s.box_alive() for s in opened) and asyncio.get_running_loop().time() < end:
+        await asyncio.sleep(0.2)
+
+
 @needs_box
 @pytest.mark.asyncio
 @pytest.mark.timeout(900)
@@ -691,12 +698,13 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
     """The actor's request (and a teammate's, started by the actor's own delegate call) in the real sandbox: its
     system message (the shared opening, the core prompt and the library guide with the index), its first message
     and its one tool's text. The calls that end the turn are the scripted reply."""
-    from tests.actor.code_act.test_in_code_tools_wiring import _Collect
+    from tests.actor.code_act.test_in_code_tools_wiring import _Collect, _assert_ended
     from tests.scripted_model import Always, ScriptedModel, reply, scripted
     from unify.actor import in_code_tools
     from unify.actor.code_act_actor import CodeActActor
 
-    monkeypatch.setattr(in_code_tools, "SESSIONS", _Collect())
+    sessions = _Collect()
+    monkeypatch.setattr(in_code_tools, "SESSIONS", sessions)
     _actor_library(core_world, monkeypatch)
     seen: list[str] = []
     turn, state = _actor_turns(seen)
@@ -732,9 +740,15 @@ async def test_every_call_the_actors_prompt_shows_runs_as_written(core_world, mo
         )
     # rev 2: the actor owns nothing past a request; its in-code tools and slot close with the result
     actor = CodeActActor()
-    with scripted(model):
-        handle = await actor.act("Run every call your instructions show.", persist=False)
-        await asyncio.wait_for(handle.result(), 700)
+    try:
+        with scripted(model):
+            handle = await actor.act("Run every call your instructions show.", persist=False)
+            await asyncio.wait_for(handle.result(), 700)
+    finally:
+        # every session this test opened (a teammate's ends after its reply) ends with its box, so nothing it started
+        # outlives the test
+        await _sessions_end(sessions.opened)
+    _assert_ended(sessions.opened)
     assert state["cells"], state["texts"][:1]
     # the library guide names the library's calls without arguments (their help holds those): none is a shown call,
     # and each is one of the library's calls
