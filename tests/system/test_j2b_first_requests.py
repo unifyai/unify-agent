@@ -76,7 +76,7 @@ async def test_each_roles_first_request_reads_as_its_golden(system, mode):
         item = "capture:" + s.capture_of((await s.accepted_words(["stone"], "reverse")).episode_id)
         await s.accepted_tally()  # the judge is asked about an unrelated capture
         await s.accepted_words(["glass"], "upper")  # a group, its pass, and the helper the writer starts
-        forks = [c for c in s.lanes.of("fork") if not SW.is_segment(c.body)]
+        forks = s.lanes.of("fork")
         got[f"fork/{mode}/first_request"] = _body(forks[0].body)
         if s.writer.judge_bodies:
             got[f"judge/{mode}/first_request"] = _body(s.writer.judge_bodies[0])

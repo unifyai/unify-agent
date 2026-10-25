@@ -1,4 +1,4 @@
-"""A captured procedure's shape address, and whether a pause's cells computed anything: from the code's syntax alone.
+"""A captured procedure's shape address, from the code's syntax alone.
 
 **The shape address** (:func:`shape_of`) names what a procedure computes, whatever its prose and its local names. Two
 captured procedures with the same address fold into one capture (:func:`.captures.capture_trace_step`): the second is
@@ -16,17 +16,6 @@ an occurrence of the first, its raw bytes kept beside it as evidence, nothing de
 
 Nothing is run, imported or evaluated, and no world name, word, task id or value is read: the address is a function of
 the procedure's syntax only. A procedure that does not parse has no address (it is not captured anyway).
-
-**Work** (:func:`computes`): a pause's cells did work when one of them binds a name, defines a function or class,
-loops, comprehends, branches, calls with an argument that is not a literal, or calls into the environment or through
-an action surface at all: any call through :data:`.fixed_answer.ACTION_SURFACES` (``tools``, ``primitives``), the
-same surfaces that make a stored procedure an action, and any call whose name is neither the harness's own
-read-only names (:data:`HARNESS_NAMES`: ``memory``, ``display``, ``query_llm``) nor a Python builtin, such as
-``env.board.step("left")`` or ``tools.wait()`` with literal arguments (rev 2.1: in action and tool worlds a run of
-literal action calls is the work). A cell in another language, or one that does not parse, counts as work. Only cells
-with no call into the environment or an action surface and no computation (literal calls of builtins or of the
-harness's read-only names, such as ``print("x")`` or ``memory.items()``) start no segment fork
-(:meth:`.integration.in_episode.InEpisode.segment`).
 """
 
 from __future__ import annotations
@@ -34,9 +23,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-from typing import Any, Iterable
-
-from .fixed_answer import ACTION_SURFACES, is_literal
+from typing import Any
 
 SHAPE_VERSION = 1
 
@@ -313,62 +300,3 @@ def function_shape(source: Any, name: str) -> str | None:
     module = _Nested(module).visit(module)
     dumped = ast.dump(module, annotate_fields=True, include_attributes=False)
     return hashlib.sha256(dumped.encode("utf-8", "surrogatepass")).hexdigest()[:16]
-
-
-# --- whether a pause's cells computed anything ---------------------------------------------------------------------------
-
-_COMPUTES = (
-    ast.Assign, ast.AugAssign, ast.AnnAssign, ast.NamedExpr, ast.Delete,
-    ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
-    ast.For, ast.AsyncFor, ast.While,
-    ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
-    ast.If, ast.IfExp, ast.Try, ast.With, ast.AsyncWith,
-    ast.Import, ast.ImportFrom,
-)  # fmt: skip
-if hasattr(ast, "Match"):
-    _COMPUTES = (*_COMPUTES, ast.Match)
-if hasattr(ast, "TryStar"):
-    _COMPUTES = (*_COMPUTES, ast.TryStar)
-
-
-#: The harness's own read-only names a cell calls: a literal call of one of them (or of a Python builtin) is no work.
-#: The action surfaces (:data:`.fixed_answer.ACTION_SURFACES`) are never among them: a call through one acts.
-HARNESS_NAMES = frozenset({"memory", "display", "query_llm"})
-
-
-def _call_root(node: ast.AST) -> str | None:
-    while isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)):
-        node = node.func if isinstance(node, ast.Call) else node.value
-    return node.id if isinstance(node, ast.Name) else None
-
-
-def cell_computes(code: Any, language: str = "python") -> bool:
-    """Whether one cell did work (module docstring): computed something or called into the environment; a cell that
-    is not Python, or does not parse, does."""
-    import builtins
-
-    if (language or "python") != "python" or not isinstance(code, str):
-        return True
-    try:
-        tree = ast.parse(code)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return True
-    for node in ast.walk(tree):
-        if isinstance(node, _COMPUTES):
-            return True
-        if isinstance(node, ast.Call):
-            root = _call_root(node.func)
-            if root in ACTION_SURFACES:
-                return True  # an action, whatever its arguments (as fixed_answer counts it)
-            if root is not None and root not in HARNESS_NAMES and not hasattr(builtins, root):
-                return True  # a call into the environment is work, whatever its arguments
-            if any(not is_literal(a) for a in node.args):
-                return True
-            if any(not is_literal(k.value) for k in node.keywords):
-                return True
-    return False
-
-
-def computes(cells: Iterable[Any]) -> bool:
-    """Whether any of *cells* (each with ``code`` and ``language``) did work."""
-    return any(cell_computes(getattr(c, "code", None), getattr(c, "language", "python")) for c in cells)

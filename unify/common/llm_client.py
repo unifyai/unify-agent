@@ -153,7 +153,7 @@ def _install_request_metadata(
 # ── metering: the pass and entries a call serves ─────────────────
 # Ids only, never content: a writer, curator or helper call made inside a writer-service pass carries the pass's
 # id and the attention-ledger entries handed to it, so the proxy's journal can attribute the call (the per-pass,
-# per-entry and per-item views, unify/memory/metering.py). The fork sets its episode (and segment) on its own
+# per-entry and per-item views, unify/memory/metering.py). The fork sets its episode on its own
 # request headers (unify/memory/integration/fork.py).
 PASS_HEADER = "X-Unify-Pass-Id"
 ENTRIES_HEADER = "X-Unify-Entries"

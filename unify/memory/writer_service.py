@@ -4,8 +4,8 @@ ledger's entries to writer passes until nothing is open.
 **Why a service.** A pass worker started at a request's end lives inside that request's process tree: in the paper
 adapter's PID namespace the session's 600 s kill took it down with the request, and a third to a half of the writer's
 passes were lost at HIGH and MED. The service outlives requests: :func:`ensure_service` starts it (at a request's start
-and end, and at a checkpoint) by a double fork and ``setsid`` into its own session, so no request owns it; it is never
-started by a runner or an adapter.
+and end) by a double fork and ``setsid`` into its own session, so no request owns it; it is never started by a runner
+or an adapter.
 
 **Exactly one.** The service holds ``flock(service.lock)`` for its whole life (on a descriptor no child inherits). A
 second :func:`ensure_service` finds the lock held and leaves it alone. A holder whose heartbeat is older than
@@ -1677,8 +1677,8 @@ async def _iteration(
         out.update(why_idle="lifetime", stop="lifetime")
         return out
     pass_id = secrets.token_hex(8)
-    # an entry is handed only once every episode it names can be read (a running one with no segment record waits,
-    # with no miss), so no pass asks for an episode that is not recorded yet
+    # an entry is handed only once every episode it names can be read (a running one waits, with no miss), so no pass
+    # asks for an episode that is not recorded yet
     from .attention import HomeSources, entry_ready
 
     sources = HomeSources(home, state_dir=ledger.state_dir)

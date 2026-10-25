@@ -17,8 +17,8 @@ from tests.memory.conformance import fake_lanes as FL
 from tests.memory.conformance import harness as H
 from tests.system import sysworld as SW
 
-MEMORY_MODES = ("on", "in_episode")
-ALL_MODES = ("off", "on", "in_episode")
+MEMORY_MODES = ("on",)
+ALL_MODES = ("off", "on")
 
 
 def _jsonl(path: Path) -> list[dict]:
@@ -95,9 +95,8 @@ class System:
         return open_stores(self.paths)
 
     def copy(self) -> Path:
-        """The library copy the last request mounted (under ``in_episode``, its ``current`` pin)."""
-        c = self.paths.checkout
-        return c / "current" if (c / "current").exists() else c
+        """The library copy the last request mounted."""
+        return self.paths.checkout
 
     # ── running ──────────────────────────────────────────────────────────────────────────────────────────────────
 

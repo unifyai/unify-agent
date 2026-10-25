@@ -3,9 +3,8 @@
 A *completed attempt* is an episode that handed back a result: an answered dialogue action, a final reply, or a
 change to the work tree. Whether it succeeded is not part of the definition. When the episode-end fork settles, it has
 written, beside its other files, ``procedure.py`` (the procedure that produced the result, from code that ran in the
-attempt) and ``broke.md`` (what broke). :func:`capture_settled` captures each settled episode (and, with
-``UNIFY_MEMORY=in_episode``, each segment) under the trace contract (:func:`capture_trace_step`,
-:mod:`.capture_trace`):
+attempt) and ``broke.md`` (what broke). :func:`capture_settled` captures each settled episode under the trace contract
+(:func:`capture_trace_step`, :mod:`.capture_trace`):
 
 1. **safety first**: no key-shaped string, a file that parses as Python, a ``run`` to call and the gate's path rules;
    a file that fails is not captured, and the reason is recorded;
@@ -57,7 +56,6 @@ from __future__ import annotations
 
 import ast
 import contextlib
-import datetime as dt
 import fcntl
 import hashlib
 import json
@@ -100,7 +98,7 @@ WITHDRAWN_FILE = "withdrawn.json"
 #: The shape index (rev 2): one row per shape address, ``{"shape", "capture_id", "at"}``, the first row of a shape
 #: naming the capture its later occurrences fold into (:mod:`.capture_shape`).
 SHAPES_FILE = "shapes.jsonl"
-#: Each capture's occurrences: one row per episode (or segment) it was captured from, and the raw bytes of an
+#: Each capture's occurrences: one row per episode it was captured from, and the raw bytes of an
 #: occurrence that folded into it (``occurrences/<n>/procedure.py``), kept as evidence.
 OCCURRENCES_FILE = "occurrences.jsonl"
 OCCURRENCES_DIR = "occurrences"
@@ -320,17 +318,6 @@ def handed_back(ep: Any) -> tuple[bool, Any]:
             return True, dict(kwargs)
         return True, (args[0] if len(args) == 1 else list(args))
     return False, None
-
-
-def _instant(ts: Any) -> dt.datetime | None:
-    """An ISO time as an aware datetime (``Z`` read as UTC), or None when it is not one."""
-    if not isinstance(ts, str) or not ts:
-        return None
-    try:
-        at = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return at if at.tzinfo is not None else at.replace(tzinfo=dt.UTC)
 
 
 def _given_order(sig: Any) -> tuple:
@@ -557,10 +544,7 @@ def rejudge_episode(
             rec = _read_json(d / RECORD_FILE)
             if not isinstance(rec, dict):
                 continue
-            # a segment's case is judged by the signals about the segment alone (judge_segments), never by the
-            # episode's verdict on its final value
-            cases = [c for c in rec.get("cases") or []
-                     if isinstance(c, dict) and c.get("episode") == eid and c.get("segment") is None]  # fmt: skip
+            cases = [c for c in rec.get("cases") or [] if isinstance(c, dict) and c.get("episode") == eid]
             if not cases:
                 continue
             before = _json(rec)
@@ -626,7 +610,6 @@ def episode_rows(store: Path | str) -> dict[str, dict]:
                 except ValueError:
                     continue
                 if isinstance(row, dict) and isinstance(row.get("episode"), str):
-                    # a segment's row (``UNIFY_MEMORY=in_episode``) is kept under its staging name, beside its episode's
                     staging = row.get("staging")
                     out[staging if isinstance(staging, str) and staging else row["episode"]] = row
     except OSError:
@@ -688,9 +671,8 @@ def capture_trace_step(
     *,
     signals: Iterable[Any] = (),
     clock: Callable[[], float] = time.time,
-    segment: int | None = None,
 ) -> dict:
-    """Capture what episode *ep* (or one segment of it) did, under the trace contract (:mod:`.capture_trace`):
+    """Capture what episode *ep* did, under the trace contract (:mod:`.capture_trace`):
 
     1. the safety checks, as for every capture (a key-shaped string, a refused path, code that does not parse, no
        ``run``); a file that fails is not captured, and the reason is recorded;
@@ -713,12 +695,11 @@ def capture_trace_step(
     t0 = clock()
     staging, store = Path(staging), Path(store)
     name = staging.name
-    eid = name.rsplit(f".s{segment}", 1)[0] if segment is not None and name.endswith(f".s{segment}") else name
+    eid = name
     row: dict = {
         "v": TRACE_VERSION,
         "capture_id": None,
         "episode": eid,
-        "segment": segment,
         "staging": name,
         "safety": "ok",
         "seconds": None,
@@ -778,7 +759,6 @@ def capture_trace_step(
     shape_id = address["shape"] if address else None
     case = {
         "episode": eid,
-        "segment": segment,
         "staging": name,
         "form": form,
         "trace": trace,
@@ -911,7 +891,6 @@ def _occurrence(d: Path, n: int, case: Mapping[str, Any], raw: str | None, shape
     row = {
         "n": n,
         "episode": case.get("episode"),
-        "segment": case.get("segment"),
         "staging": case.get("staging"),
         "outcome": case.get("outcome"),
         "source_capture_id": case.get("source_capture_id"),
@@ -938,19 +917,13 @@ def capture_settled(
     *,
     episode: Callable[[str], Any],
     signals: Callable[[str], Iterable[Any]],
-    segment_episode: Callable[[str], Any] | None = None,
 ) -> list[dict]:
     """Capture each episode of *eids* whose fork has settled and that has no capture row yet. *episode* reads an
     episode by id (raising when it is not recorded), *signals* its signals. Returns the new rows. Never raises: an
     episode that cannot be read is left for a later call.
 
-    Each is captured under the trace contract (:func:`capture_trace_step`): what it did, nothing run. A segment's
-    staging dir (``<episode>.s<n>``, ``UNIFY_MEMORY=in_episode``) is captured from the segment's own record, read by
-    *segment_episode* (None: segments are left alone), unjudged: its episode is still running, so no signal of it is
-    recorded yet, and the episode's own rules would judge it by the final value, which it did not return. Once its
-    episode is recorded, :func:`judge_segments` gives it its outcome from the signals about the segment itself."""
+    Each is captured under the trace contract (:func:`capture_trace_step`): what it did, nothing run."""
     from .staging import STATUS_FILES
-    from .segments import split_staging_name
 
     store = store_dir(state_dir)
     root = Path(state_dir) / "memory-staging"
@@ -967,106 +940,17 @@ def capture_settled(
             continue
         if not any(os.path.lexists(d / name) for name in STATUS_FILES):
             continue  # not settled yet
-        base, segment = split_staging_name(eid)
         try:
-            if segment is not None:
-                if segment_episode is None:
-                    continue
-                ep = segment_episode(eid)
-                if ep is None:
-                    continue  # its record is not written yet: a later call captures it
-                sigs = []  # judged once its episode is recorded (judge_segments), by the signals about it alone
-            else:
-                ep = episode(eid)
-                sigs = list(signals(eid) or [])
+            ep = episode(eid)
+            sigs = list(signals(eid) or [])
         except Exception:  # noqa: BLE001 - not recorded yet: a later call captures it
             continue
         try:
             out.append(
-                capture_trace_step(d, ep, store, signals=sigs, segment=segment),
+                capture_trace_step(d, ep, store, signals=sigs),
             )
         except OSError:
             continue
-    if segment_episode is not None:
-        out += judge_segments(store, episode=episode, signals=signals, segment_episode=segment_episode)  # fmt: skip
-    return out
-
-
-#: The mark of a segment row judged once its episode was recorded (:func:`judge_segments`).
-SEGMENT_JUDGED = "episode_recorded"
-
-
-def segment_outcome(signals: Iterable[Any], seg_ep: Any, ep: Any, *, regime: str) -> str:
-    """The outcome of one segment of the recorded episode *ep* (its record as it stood at the segment's checkpoint is
-    *seg_ep*), from the signals about the segment alone, as :func:`.capture_trace.outcome_of` reads them:
-
-    * a verdict naming an action (``<episode>/actions/<i>``) judges the segment when it names the segment's own
-      answered action (its actions are numbered from the episode's start), whenever it came; when the segment
-      answered no dialogue action (rev 2.1: its work is its actions), it judges the segment as any other signal
-      does (below), by when it came;
-    * every other signal judges it only when it came while the segment's cells ran (at or before its checkpoint).
-
-    So a mid-episode segment is never labelled by the verdict on the episode's final value."""
-    import dataclasses
-
-    from . import capture_trace as ct
-
-    base = str(getattr(ep, "episode_id", "") or "")
-    seg_end = _instant(getattr(seg_ep, "ended_at", None))
-    view = dataclasses.replace(seg_ep, episode_id=base)
-    i = answered_action(view)
-    mine = []
-    for s in signals:
-        at = _instant(getattr(s, "ts", None))
-        named = str(getattr(s, "refers_to", "") or "")
-        if getattr(s, "source", None) == "checker" and named.startswith(f"{base}/actions/") and i is not None:
-            if named == f"{base}/actions/{i}":
-                mine.append(s)
-        elif at is not None and seg_end is not None and at <= seg_end:
-            mine.append(s)
-    return ct.outcome_of(judged_outcome(mine, view, regime))
-
-
-def judge_segments(
-    store: Path | str,
-    *,
-    episode: Callable[[str], Any],
-    signals: Callable[[str], Iterable[Any]],
-    segment_episode: Callable[[str], Any],
-) -> list[dict]:
-    """Each captured segment whose episode is now recorded and that is not judged yet gets its outcome
-    (:func:`segment_outcome`) on its case in its capture's record (the record's derived fields recomputed), and a
-    new ``captures-events.jsonl`` row (its capture row as before, with ``outcome`` and ``judged``), once. Returns
-    those rows; never raises for an episode or a segment record that cannot be read (a later call tries again)."""
-    store = Path(store)
-    rows = episode_rows(store)
-    due = [r for name, r in rows.items() if r.get("segment") is not None and r.get("capture_id") and not r.get("judged")
-           and r.get("v") == TRACE_VERSION and name == r.get("staging")]  # fmt: skip
-    out: list[dict] = []
-    for row in due:
-        base, name = str(row.get("episode") or ""), str(row["staging"])
-        try:
-            ep = episode(base)  # raises while the episode is not recorded
-            sigs = list(signals(base) or [])
-            seg_ep = segment_episode(name)
-        except Exception:  # noqa: BLE001 - not recorded yet: a later call judges it
-            continue
-        if seg_ep is None:
-            continue
-        outcome = segment_outcome(sigs, seg_ep, ep, regime=str(getattr(ep, "regime", "") or "none"))  # fmt: skip
-        with _locked(store):
-            d = store / str(row["capture_id"])
-            rec = _read_json(d / RECORD_FILE)
-            if isinstance(rec, dict):
-                for case in rec.get("cases") or []:
-                    if isinstance(case, dict) and case.get("staging") == name:
-                        case["outcome"] = outcome
-                        case["judged"] = SEGMENT_JUDGED
-                refresh(rec)
-                _write(d / RECORD_FILE, _json(rec))
-            judged = {**row, "outcome": outcome, "judged": SEGMENT_JUDGED}
-            _event(store, judged)
-        out.append(judged)
     return out
 
 

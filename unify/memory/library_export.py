@@ -911,7 +911,7 @@ def dispatch_data(
     ``kind`` is ``function`` or ``capture-shape``; ``form`` a capture's entry form (``value``, ``state``,
     ``state_env``) or ``function``; ``signature`` the input line (:func:`.library_index.signature_text`) and
     ``applies_text`` the ``applies`` source, both as written; ``calls`` from the syntax (:func:`_code_facts`); for a
-    capture, ``occurrences`` (its folded occurrences), ``outcomes`` (their counts by signal outcome) and ``provenance`` (how many episodes and segments it came from;
+    capture, ``occurrences`` (its folded occurrences), ``outcomes`` (their counts by signal outcome) and ``provenance`` (how many episodes it came from;
     never an id).
 
     Module-path order, then the captures in id order. A function its record does not list, a hidden one and a
@@ -968,7 +968,6 @@ def dispatch_data(
                 "outcomes": _outcome_counts(rec),
                 "provenance": {
                     "episodes": len({c.get("episode") for c in cases if c.get("episode")}) or len(episodes),
-                    "segments": sum(1 for c in cases if c.get("segment") is not None),
                 },
             },
         )

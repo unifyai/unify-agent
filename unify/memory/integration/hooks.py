@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def enabled() -> bool:
-    """Whether the run has memory: ``UNIFY_MEMORY`` ``on`` or ``in_episode`` (:func:`.switch.memory_on`)."""
+    """Whether the run has memory: ``UNIFY_MEMORY`` ``on`` (:func:`.switch.memory_on`)."""
     from unify.settings import SETTINGS
 
     from .switch import memory_on
@@ -70,8 +70,7 @@ def _checkout() -> Path | None:
 
 
 def _copy() -> Path | None:
-    """The run's library copy as cells read it: the export itself, or under ``UNIFY_MEMORY=in_episode`` its link
-    to the current pin (``RequestRun.copy_root``); only once the export exists."""
+    """The run's library copy as cells read it (``RequestRun.copy_root``); only once the export exists."""
     path = _checkout()
     if path is None:
         return None
@@ -80,15 +79,10 @@ def _copy() -> Path | None:
 
 
 def worker_paths() -> list[str]:
-    """Import paths the worker puts first: the run's memory export. Under ``UNIFY_MEMORY=in_episode`` the current
-    pin's own directory (the link's target): a re-pin gives the worker the new one."""
+    """Import paths the worker puts first: the run's memory export."""
     path = _copy()
     if path is None:
         return []
-    if getattr(_run(), "in_episode", None) is not None:
-        # each pin is imported from its own directory, so a function's code names the pin it came from, and a
-        # re-pin moves the import path (Worker.repin_modules)
-        path = path.resolve()
     return [str(path)]
 
 
@@ -283,10 +277,6 @@ def tool_result(
     run = _run()
     if run is None:
         return
-    ie = getattr(run, "in_episode", None)
-    if ie is not None and name == "execute_code":
-        # UNIFY_MEMORY=in_episode: the episode's cells are numbered in the order their results come back
-        ie.cell_done()
     try:
         from unify.actor.execution.types import ExecutionResult
 
@@ -366,88 +356,3 @@ def _host_paths(events: Any, workspace: Path) -> Any:
                     record[key] = host(record[key])
         records.append(record)
     return {**events, "records": records}
-
-
-# --- memory during an episode (UNIFY_MEMORY=in_episode; in_episode.py) ---------------------------------------------
-
-
-def attach_handle(handle: Any) -> None:
-    """The actor's session handle, which a segment fork continues; inert while off or with no run."""
-    run = _run()
-    if run is not None:
-        run.handle = handle
-
-
-def in_episode_active() -> bool:
-    """Whether this request's memory changes during its episode (``UNIFY_MEMORY=in_episode``); never raises."""
-    try:
-        return getattr(_run(), "in_episode", None) is not None
-    except Exception:  # noqa: BLE001 - off
-        return False
-
-
-def before_cell() -> dict | None:
-    """Before a worker runs a cell: under ``UNIFY_MEMORY=in_episode``, a re-pin to the commit requests now pin when
-    the writer landed one (:meth:`.in_episode.InEpisode.before_cell`): ``{"generation": n, "notice": <line or None>}``,
-    and :func:`after_cell` once the cell ends. None while off or with no run (then no :func:`after_cell`); never
-    raises."""
-    run = _run()
-    ie = getattr(run, "in_episode", None) if run is not None else None
-    if ie is None:
-        return None
-    try:
-        from ..memory_writer import served_head
-
-        head = served_head(run.stores.memory)
-    except Exception as exc:  # noqa: BLE001 - the cell runs on the pin it has
-        logger.warning("memory: the served head not read at a cell boundary (%s)", type(exc).__name__)
-        head = None
-    try:
-        return ie.before_cell(head)
-    except Exception as exc:  # noqa: BLE001 - a re-pin never stops a cell
-        logger.warning("memory: re-pin failed (%s)", type(exc).__name__)
-        return None
-
-
-def after_cell() -> None:
-    """The cell :func:`before_cell` began has ended; never raises."""
-    run = _run()
-    ie = getattr(run, "in_episode", None) if run is not None else None
-    if ie is not None:
-        try:
-            ie.after_cell()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("memory: cell end not noted (%s)", type(exc).__name__)
-
-
-def repin_roots() -> list[str]:
-    """The host paths under which a re-pinned worker drops every loaded module before its next cell: the library
-    copy's directory (all its pins); [] while off or with no copy."""
-    run = _run()
-    if getattr(run, "in_episode", None) is None:
-        return []
-    path = _checkout()
-    return [str(path)] if path is not None else []
-
-
-def turn_boundary(client: Any, *, compacting: bool = False, new_message: bool = False) -> None:
-    """Between the actor's turns (the loop, before its next model call; before a compaction; before a new message joins
-    the conversation): under ``UNIFY_MEMORY=in_episode`` the pauses due start their segment fork
-    (:meth:`.in_episode.InEpisode.at_boundary`). Only the request's own actor (its session's client); inert while off,
-    for another loop, or with no run; never raises."""
-    run = _run()
-    ie = getattr(run, "in_episode", None) if run is not None else None
-    if ie is None:
-        return
-    handle = getattr(run, "handle", None)
-    inner = getattr(handle, "_inner", None) or handle
-    if handle is None or getattr(inner, "_client", None) is not client:
-        return
-    try:
-        # harness-owned: the segment's record and its fork, which runs in its own box
-        event = ie.at_boundary(handle, compacting=compacting, new_message=new_message)
-    except Exception as exc:  # noqa: BLE001 - a pause never stops the actor
-        logger.warning("memory: a checkpoint failed (%s)", type(exc).__name__)
-        return
-    if event is not None:
-        logger.info("memory: checkpoint %s", event)

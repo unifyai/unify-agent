@@ -544,8 +544,8 @@ def test_the_e4_replay_the_librarian_input_now_carries_the_failure_record(
 
 
 def test_the_request_always_serves_evidence(tmp_path, monkeypatch):
-    # the copy is written by _export_copy (at the request's open, and at a re-pin under UNIFY_MEMORY=in_episode); rev 2
-    # serves the evidence with every copy (no switch)
+    # the copy is written by _export_copy (at the request's open); rev 2 serves the evidence with every copy (no
+    # switch)
     opening = inspect.getsource(RequestRun._export_copy)
     assert "serving=self._serving(records, status_of(records))," in opening and "serving_failure_record" not in opening
     stores = open_stores(Paths.under(tmp_path / "home"))

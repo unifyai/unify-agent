@@ -284,7 +284,7 @@ def _memory_agent_name(name: Optional[str]) -> bool:
 
 def run_has_memory(home: Optional[Path | str] = None, role: Optional[str] = None, spawner: Optional[str] = None) -> bool:
     """Whether the run an agent is in has memory, so a writer, forks and a librarian can be on its record: the agent
-    is one of them (or a helper one of them started), the run's ``UNIFY_MEMORY`` is on or in_episode, or the run's
+    is one of them (or a helper one of them started), the run's ``UNIFY_MEMORY`` is on, or the run's
     record already shows one (a memory agent on its roster, or a seeded librarian). Only a run without memory by all
     three reads :data:`COMMON_SECTION_NO_MEMORY` and is never told to mention a writer, fork or librarian."""
     if role in _registry.MEMORY_ROLES or (role == "helper" and _memory_agent_name(spawner)):
@@ -1022,9 +1022,8 @@ class RunRecord(Record):
             k += 1
         return f"{prefix}{k}"
 
-    def unique_name(self, prefix: str, hexid: str, suffix: str = "") -> str:
-        """``<prefix>-<4 hex of hexid><suffix>``, with more of its hex digits only when a clash in this run needs them
-        (a segment's fork is ``fork-<hex>-s<n>``: *suffix* ``-s<n>``)."""
+    def unique_name(self, prefix: str, hexid: str) -> str:
+        """``<prefix>-<4 hex of hexid>``, with more of its hex digits only when a clash in this run needs them."""
         # an episode id ``<stamp>-<hex>`` is named by its hex part; a bare hex id by itself
         digits = re.sub(
             r"[^0-9a-f]", "", (hexid or "").lower().rsplit("-", 1)[-1]
@@ -1036,11 +1035,11 @@ class RunRecord(Record):
             | set(self.participants)
         )
         for n in range(4, min(len(digits), _MAX_HEX) + 1, 2):
-            name = f"{prefix}-{digits[:n]}{suffix}"
+            name = f"{prefix}-{digits[:n]}"
             if name not in taken:
                 return name
         while True:
-            name = f"{prefix}-{secrets.token_hex(4)}{suffix}"
+            name = f"{prefix}-{secrets.token_hex(4)}"
             if name not in taken:
                 return name
 

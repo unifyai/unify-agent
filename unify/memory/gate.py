@@ -324,20 +324,16 @@ class Gate:
         *,
         action_lookup: Callable[[str, int], Action | None] | None = None,
         library_mode: LibraryConfig,
-        segments_dir: Path | str | None = None,
     ) -> None:
         """*library_mode* is the library's checks' configuration (:class:`.library_checks.LibraryConfig`): G3's not-run
         labels and per-item reduction are scoped by the import graph, and the library gate checks
         (:mod:`.library_checks`) and stage 5's ``/inputs`` check run. Every finding but the hard ones is a label on its item,
-        and the gate runs no code (:mod:`.gate_policy`). *segments_dir* (``UNIFY_MEMORY=in_episode``):
-        the state dir whose segment records (``<episode>.s<n>``) an item may cite as its source while their episode
-        is still open; None: only recorded episodes.
+        and the gate runs no code (:mod:`.gate_policy`).
         """
         self.mem, self.ev, self.blobs = memory, evidence, blobs
         # Fail closed: without an episodes reader no covered call can be confirmed.
         self.lookup = action_lookup or (lambda eid, i: None)
         self.library_mode = library_mode
-        self.segments_dir = Path(segments_dir) if segments_dir is not None else None
 
     # -- public API ---------------------------------------------------------------------------------------
     def check(
@@ -940,18 +936,8 @@ class Gate:
             if not it.source_episodes and not _unchanged(run, it):
                 run.fail("G1", f"{it.item} names no source episode", it.item)
             for eid in it.source_episodes:
-                if not (self.ev.episode_exists(eid) or self._segment_recorded(eid)):
+                if not self.ev.episode_exists(eid):
                     run.fail("G1", f"{it.item} cites unknown episode {eid}", it.item)
-
-    def _segment_recorded(self, eid: str) -> bool:
-        """Whether *eid* is a segment of an open episode (``<episode>.s<n>``) whose record the harness wrote
-        (``UNIFY_MEMORY=in_episode``: :mod:`.segments`); always False without a segments dir."""
-        root = getattr(self, "segments_dir", None)
-        if root is None:
-            return False
-        from . import segments
-
-        return segments.is_segment_name(eid) and segments.snapshot_path(root, eid).is_file()
 
     def _unlisted_ok(self, run: _Run, eid: str) -> bool:
         """An unlisted item is present on both sides, unlisted now, and otherwise byte-for-byte the same."""

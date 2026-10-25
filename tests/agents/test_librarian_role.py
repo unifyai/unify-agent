@@ -420,7 +420,7 @@ async def test_a_real_message_instance_answers_from_the_library_on_the_record(tm
     home, rec = _seeded(tmp_path)
     copy = _copy(tmp_path)
     run = SimpleNamespace(copy_root=copy, library_mode=True, paths=SimpleNamespace(home=home), episode_id="ep-a",
-                          pin="c0ffee", in_episode=None, librarian_sessions=[])
+                          pin="c0ffee", librarian_sessions=[])
     monkeypatch.setattr(R, "current", lambda: run)
     open_session = L.opener(turn_factory=lambda: unillm_turn("openai/gpt-5.6-sol@openrouter", "low", origin=L.ORIGIN))
     asked = rr.RunRecordView(rec, "actor-aaaa", "actor").post("actor-aaaa", "@librarian which items add up a table?")
@@ -444,7 +444,7 @@ def test_a_request_opens_at_most_its_bound_of_ask_sessions(tmp_path, monkeypatch
     from tests.memory.test_librarian import _copy
 
     run = SimpleNamespace(copy_root=_copy(tmp_path), library_mode=True, paths=SimpleNamespace(home=tmp_path / "home"),
-                          episode_id="ep-a", pin="c0ffee", in_episode=None,
+                          episode_id="ep-a", pin="c0ffee",
                           librarian_sessions=[SimpleNamespace(mode="ask") for _ in range(L.MAX_ASK_SESSIONS)])  # fmt: skip
     monkeypatch.setattr(R, "current", lambda: run)
     with pytest.raises(L.Unavailable, match="its bound; send the question to the actor"):

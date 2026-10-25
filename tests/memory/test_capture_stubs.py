@@ -26,7 +26,7 @@ def test_the_fork_writes_a_procedure_only_when_code_did_the_work():
     assert "`procedure.py`, when code that ran here did the work" in text
     assert "write no `procedure.py`" in text
     assert "Write it whether or not the work was accepted" not in text
-    assert fork.CAPTURE_BULLETS in fork.SEGMENT_INSTRUCTION
+    assert fork.CAPTURE_BULLETS in fork.INSTRUCTION
 
 
 @pytest.mark.parametrize(
@@ -68,6 +68,6 @@ def test_an_empty_stub_is_not_captured_and_its_episode_is_read_as_a_summary(tmp_
     assert not [n for n in (os.listdir(store) if store.is_dir() else []) if len(n) == 16]  # nothing stored
     # the ledger reads each episode as a fork with its summary, never as the stub's capture (no fold, no reopen)
     led = Ledger(tmp_path / "home")
-    new = led.sync(Fake(forks=[SettledFork(e, e, None, True, True, None) for e in ("e1", "e2")], captures=rows))
+    new = led.sync(Fake(forks=[SettledFork(e, e, True, True, None) for e in ("e1", "e2")], captures=rows))
     assert sorted(e.refs.episodes[0] for e in new) == ["e1", "e2"]
     assert all(e.refs.captures == () and e.kind == "new_experience" for e in new)

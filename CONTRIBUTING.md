@@ -75,8 +75,8 @@ pre-commit run --all-files       # run them by hand
 
 ## Design principles
 
-- **No knobs.** Memory has one switch, `UNIFY_MEMORY` (`off`, `on`,
-  `in_episode`). Beyond it, only essential configuration (the provider key,
+- **No knobs.** Memory has one switch, `UNIFY_MEMORY` (`off`, `on`).
+  Beyond it, only essential configuration (the provider key,
   the model and effort, paths, the memory writer's spend cap) is allowed, and
   every environment variable is listed in [`CONFIG.md`](CONFIG.md). Do not add
   switches, flags or code kept for a path that no longer runs.

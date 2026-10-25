@@ -91,25 +91,6 @@ _CANCEL_GRACE_S = 2.0
 # rather than crash-and-retry indefinitely.
 MAX_CONSECUTIVE_FAILURES = 3
 
-async def _memory_pause(client: Any, *, compacting: bool = False, new_message: bool = False) -> None:
-    """UNIFY_MEMORY=in_episode: a turn boundary of the request's actor, where the pauses due start their segment
-    fork (``hooks.turn_boundary``: the marked ones, a compaction's, a new message's). Off, or for another loop, or
-    with no request run: returns at once and nothing runs. Never raises."""
-    try:
-        from unify.memory.integration import hooks as _mv2
-
-        if not _mv2.in_episode_active():
-            return
-        await asyncio.to_thread(
-            _mv2.turn_boundary,
-            client,
-            compacting=compacting,
-            new_message=new_message,
-        )
-    except Exception as exc:  # noqa: BLE001 - a pause never stops the loop
-        LOGGER.warning(f"memory: a pause was not taken ({type(exc).__name__})")
-
-
 # A reply whose choice carries a provider error is sent again this many
 # times, after 1 s then 2 s (UniLLM's transient retry already ran inside
 # the call: the provider answered HTTP 200, so it saw no failure).
@@ -1112,10 +1093,6 @@ async def async_tool_loop_inner(
             if _repair_status == "timeout":
                 return await _handle_limit_reached(f"timeout ({timeout}s) exceeded")
 
-            # UNIFY_MEMORY=in_episode: every tool call is answered here, so the pauses marked during the turn (a
-            # checkpoint the actor called, an in-episode signal) start their segment fork now
-            await _memory_pause(client)
-
             # ── Turn boundary: drain the queue ──────────────────────────
             # Nothing runs here, so every message the requester sent since
             # the last boundary is appended now, in the order it was sent.
@@ -1149,9 +1126,6 @@ async def async_tool_loop_inner(
                     # requester (the request metadata headers count them).
                     if tools_in_code:
                         count_requester_message(client)
-                    # UNIFY_MEMORY=in_episode: a new message is a pause; its segment fork runs before the message
-                    # joins the conversation
-                    await _memory_pause(client, new_message=True)
                     await _msg_dispatcher.append_msgs(
                         [{"role": "user", "_interjection": True, "content": _msg_text}],
                     )
@@ -1177,8 +1151,6 @@ async def async_tool_loop_inner(
             # before the next model call, with no forced turn: the handle
             # summarises (the last request and what followed it) and restarts.
             if tools_in_code and _over_threshold:
-                # UNIFY_MEMORY=in_episode: a compaction is a pause; its segment fork runs before it
-                await _memory_pause(client, compacting=True)
                 tail_from = runtime_state.in_code_tail_from
                 runtime_state.in_code_tail = (
                     copy.deepcopy(list(client.messages or [])[tail_from:])

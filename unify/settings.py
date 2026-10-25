@@ -87,8 +87,8 @@ class ProductionSettings(BaseSettings):
     # Empty registers nothing.
     UNIFY_ENV_NAMESPACES: str = ""
     # Memory (unify/memory/integration/switch.py; CONFIG.md and docs/memory.md). ``UNIFY_MEMORY`` is the one memory
-    # switch: ``on`` (the default; also unset or empty) keeps memory between episodes, ``in_episode`` adds memory
-    # during an episode (at a higher cost), ``off`` is the no-memory baseline; anything else is refused.
+    # switch: ``on`` (the default; also unset or empty) keeps memory between episodes, ``off`` is the no-memory
+    # baseline; anything else is refused.
     # ``UNIFY_MEMORY_CAP_USD`` is memory's spend cap for the memory home (a plain decimal string; empty: 20.00).
     # Every other memory setting is deployment configuration, not a behaviour switch, each described in switch.py's
     # "Deployment configuration" section: ``UNIFY_MEMORY_WRITER_MODEL`` is the writer's and its helpers' model

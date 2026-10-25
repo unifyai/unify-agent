@@ -124,9 +124,6 @@ Memory has one switch, `UNIFY_MEMORY`:
   model calls.
 - `UNIFY_MEMORY=on`, the default (also when unset or empty): memory between
   tasks. It adds the capture, writer and librarian calls to the actor's.
-- `UNIFY_MEMORY=in_episode`: `on`, plus memory during a task. Each pause adds a
-  fork and a writer read, so a task costs more than under `on`, and no world
-  has yet shown a gain within a task.
 
 Everything else is essential configuration only: the provider key, the model
 and reasoning effort, the paths, where embeddings come from, and the writer's
@@ -358,7 +355,7 @@ and HIGH, written U / P / USD.
 | Tag (ledger id) | Branch | Build | What it is | LOW | MEDIUM | HIGH | Source, state |
 |---|---|---|---|---|---|---|---|
 | `redesign-noep` | `arms/redesign-noep` | `ed1f3eb22` | Rev 2 main arm: memory between tasks, none during one. Main's `UNIFY_MEMORY=on`. | 38.2 / 79.0 / 0.017 | 19.9 / 96.6 / 0.041 (176) | 19.3 / 97.0 / 0.073 (100) | R, running |
-| `redesign` | `arms/redesign` | `ed1f3eb22` | Everything on, with memory during a task. Main's `UNIFY_MEMORY=in_episode`. | 37.6 / 80.8 / 0.034 | 23.9 / 93.6 / 0.074 (141, 108) | 24.6 / 93.6 / 0.140 (57, 53) | R, 2 runs, running |
+| `redesign` | `arms/redesign` | `ed1f3eb22` | Everything on, with memory during a task (a mode main no longer has). | 37.6 / 80.8 / 0.034 | 23.9 / 93.6 / 0.074 (141, 108) | 24.6 / 93.6 / 0.140 (57, 53) | R, 2 runs, running |
 | `redesign-nomem` | `arms/redesign-nomem` | `ed1f3eb22` | Same build, memory off. Main's `UNIFY_MEMORY=off`. | 40.6 / 74.0 / 0.010 | 22.0 / 96.5 / 0.015 | 20.1 / 95.5 / 0.016 | R, baseline |
 | `redesign-cap` | `arms/redesign-cap` | `ed1f3eb22` | Same build, captures and librarian only; no writer. | 41.6 / 76.0 / 0.019 | 20.4 / 96.8 / 0.027 (154) | 20.3 / 98.1 / 0.051 (52) | R, running |
 | `redesign-nofr` | `arms/redesign-nofr` | `ed1f3eb22` | Without the record of each item's failures in what the librarian serves. | 37.6 / 80.5 / 0.032 | 20.3 / 95.8 / 0.075 (118) | 21.6 / 96.0 / 0.133 (50) | R, running |

@@ -123,7 +123,7 @@ def test_an_empty_cap_is_the_default_cap():
     assert why is None and plan.cap == Decimal("20.00")
 
 
-@pytest.mark.parametrize("value", ["on", "in_episode", ""])
+@pytest.mark.parametrize("value", ["on", ""])
 def test_every_memory_mode_that_runs_a_writer_or_fork_gets_its_lanes(value):
     plan, why = launch.plan(_settings(UNIFY_MEMORY=value), ENV)
     assert why is None and {"writer", "helper", "fork"} <= set(plan.lanes)

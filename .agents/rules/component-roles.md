@@ -26,7 +26,7 @@ are canonical for how each one works.
 
 ### Memory (`unify/memory/`)
 - **Role**: turns finished requests into a tested library that later requests read. One switch, `UNIFY_MEMORY`
-  (`off`, `on`, `in_episode`).
+  (`off`, `on`).
 - **Parts**: episodes and the request's memory (`integration/request.py`), the episode-end fork and captures
   (`integration/fork.py`, `captures.py`, `capture_trace.py`; a capture is never run), the attention ledger
   (`attention.py`), the writer service and its passes (`writer_service.py`, `writer_pass.py`), the gate (`gate.py`,

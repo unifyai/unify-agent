@@ -83,7 +83,6 @@ from .switch import (
     PASS_WALL_S,
     WRITER_BASE_URL,
     WriterRouteRefused,
-    in_episode,
     settle_writer_route_env,
     writer_journal,
     writer_model,
@@ -157,18 +156,11 @@ class EpisodeLookup:
         self._size = cache_size
 
     def episode(self, eid: str) -> Episode:
-        """The episode *eid* (``KeyError`` when it was never indexed). A segment of an episode (``<episode>.s<n>``,
-        ``UNIFY_MEMORY=in_episode``) is read from its own record (:mod:`..segments`) when it has one."""
+        """The episode *eid* (``KeyError`` when it was never indexed)."""
         hit = self._cache.get(eid)
         if hit is not None:
             self._cache.move_to_end(eid)
             return hit
-        from .. import segments
-
-        if segments.is_segment_name(eid):
-            seg = segments.load_snapshot(self.stores.paths.state_dir, eid)
-            if seg is not None:
-                return seg
         sha, started_at = self.stores.evidence.episode_ref(eid)
         rel = episode_dir(SimpleNamespace(episode_id=eid, started_at=started_at))
         ep = load_episode(self.stores.episodes, sha, rel, self.stores.blobs)
@@ -774,8 +766,8 @@ def after_passes(
 
 def capture_settled_forks(stores: Stores) -> list[dict]:
     """Capture each settled fork's attempt that has no capture yet (:func:`..captures.capture_settled`): what each
-    episode (or segment) did, as the harness records it; nothing is run. Never raises, so it never stops a pass."""
-    from .. import captures, segments
+    episode did, as the harness records it; nothing is run. Never raises, so it never stops a pass."""
+    from .. import captures
 
     try:
         state = Path(stores.paths.state_dir)
@@ -787,7 +779,6 @@ def capture_settled_forks(stores: Stores) -> list[dict]:
             eids,
             episode=lookup.episode,
             signals=stores.evidence.signals_for,
-            segment_episode=segments.loader(state),
         )
     except Exception as exc:  # noqa: BLE001 - capture never stops a pass; the error is recorded
         _error(stores, f"capture step: {type(exc).__name__}")
@@ -988,8 +979,6 @@ async def run_attention_pass(
         stores.blobs,
         action_lookup=lookup.action,
         library_mode=library_checks.config_for(stores, lookup),
-        # UNIFY_MEMORY=in_episode: an item may cite a recorded segment of an open episode as its source
-        **({"segments_dir": str(paths.state_dir)} if in_episode(settings) else {}),
     )
     # on the run record, held by the service, over the attention ledger's entries (the brief, the first message and
     # the writer's ledger tools, attention_tools.py)
@@ -1056,9 +1045,9 @@ async def run_attention_pass(
         redactor=Redactor.from_environ(os.environ),
         **helpers,
     )
-    # each episode by the name it can be read by now (a running one by its latest segment record); one that cannot be
-    # read yet is not asked for (the ledger hands no entry naming one; a resumed pass's may)
-    resolve = attention.episode_resolver(paths.state_dir, attention.indexed_by(stores.evidence))
+    # each episode by the name it can be read by now; one that cannot be read yet is not asked for (the ledger hands no
+    # entry naming one; a resumed pass's may)
+    resolve = attention.episode_resolver(attention.indexed_by(stores.evidence))
     req = PassRequest(
         "attention", None, attention.pass_episodes(handed, resolve=resolve), False, None, attention=list(handed)
     )

@@ -115,10 +115,6 @@ class Episode:
     profile: str = ""
     # ``"off"`` (no memory work ran after the request), in ``meta.json`` only then.
     memory_passes: str = ""
-    # ``UNIFY_MEMORY=in_episode``: every pin the episode was served, in order (``[{"from_cell", "commit"},
-    # {"from_cell", "commit", "landed", "retired"}, ...]``; ``memory_main`` stays the first), in ``meta.json`` only
-    # then.
-    memory_pins: list = field(default_factory=list)
 
 
 def episode_dir(ep: Episode) -> str:
@@ -208,8 +204,6 @@ class EpisodeWriter:
             meta["profile"] = ep.profile
         if ep.memory_passes:
             meta["memory_passes"] = ep.memory_passes
-        if ep.memory_pins:
-            meta["memory_pins"] = ep.memory_pins
         actions = []
         for a in ep.actions:
             row = r.obj(asdict(a))

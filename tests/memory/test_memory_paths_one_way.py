@@ -1,11 +1,10 @@
 """One way to reach the library, the same for every agent allowed it, with the harness resolving where things are.
 
-In real boxes (the actor, and a teammate it starts; ``UNIFY_MEMORY=on`` and ``in_episode``; ``real_request_box``):
+In real boxes (the actor, and a teammate it starts; ``UNIFY_MEMORY=on``; ``real_request_box``):
 
 * ``tools.read`` and ``tools.grep`` open the library copy the box mounts, by either name the texts give it
   (``/memory-library``, and ``/memory`` as the librarian and the writer name it), and read what a cell's own
-  ``open()`` reads there; ``memory.get`` takes the same paths. Under in_episode both names are the copy served now,
-  and a cell's own file calls find it behind the link the guide's location line names.
+  ``open()`` reads there; ``memory.get`` takes the same paths.
 * Every path and handle the agent is shown (its memory section, first message, cards, ``memory.ask``'s answer, the
   refusals of read and grep) opens with its own ``tools.read`` or ``memory.get``.
 * A teammate's ``tools.request()`` and ``memory.request()`` are the actor's request, never its own task.
@@ -41,7 +40,7 @@ def _session(core_world, monkeypatch, role: str, mode: str) -> dict:  # noqa: F8
     return state
 
 
-ROLES_MODES = [(r, m) for r in ("actor", "teammate") for m in ("on", "in_episode")]
+ROLES_MODES = [(r, "on") for r in ("actor", "teammate")]
 
 
 @needs_box
@@ -57,16 +56,11 @@ def test_read_and_grep_open_the_copy_the_box_mounts_by_every_name(role, mode, co
     assert probe["reads"][f"/memory/{B.NOTE_ID}"][1] == note
     # the same bytes a cell's own open() reads where the guide says the copy is
     assert probe["own_open"][0] == "ok" and "Dates are YYYY-MM-DD." in probe["own_open"][1], probe["own_open"]
-    # the library's root lists the copy itself (INDEX.md, memory/, notes/), in either mode
+    # the library's root lists the copy itself (INDEX.md, memory/, notes/)
     listing = probe["reads"]["/memory-library"][1]
     assert "INDEX.md" in listing and "notes/" in listing and "memory/" in listing, listing
     assert probe["reads"]["/memory"][1] == listing
-    if mode == "in_episode":
-        assert probe["reads"][f"/memory-library/current/{B.NOTE_ID}"][1] == note
-        # the package's own files are in the episode's pin, inside the mount: that path opens too
-        assert probe["package root"].startswith("/memory-library/.pins/"), probe["package root"]
-    else:
-        assert probe["package root"] == "/memory-library", probe["package root"]
+    assert probe["package root"] == "/memory-library", probe["package root"]
     for path, (status, text) in probe["greps"].items():
         assert status == "ok" and f"/memory-library/{B.LONG_NOTE_ID}:" in text, (path, status, text)
     for path, (status, got) in probe["gets"].items():
@@ -90,8 +84,6 @@ def test_every_printed_path_opens(role, mode, core_world, monkeypatch):  # noqa:
     assert {"/workspace", "/memory-library"} <= set(printed["refusal of read /etc/hostname"][0])
     if role == "actor":
         assert B.FUNCTION_ID in printed["first message"][1], shown["first message"][-1500:]
-    if mode == "in_episode":
-        assert "/memory-library/current" in guide_paths, shown["memory section"][-600:]
     opened = state["opened"]
     assert opened, state.get("open output")
     failed = {k: v for k, v in opened.items() if v != "ok"}
@@ -126,7 +118,7 @@ def test_a_path_outside_every_root_is_refused_with_the_roots_the_agent_has(role,
 @needs_box
 @needs_bwrap
 @pytest.mark.timeout(1500)
-@pytest.mark.parametrize("mode", ["on", "in_episode"])
+@pytest.mark.parametrize("mode", ["on"])
 def test_a_teammate_works_on_the_actors_request_not_its_own_task(mode, core_world, monkeypatch):  # noqa: F811
     state = _session(core_world, monkeypatch, "teammate", mode)
     probe = state["probe"]
@@ -205,7 +197,7 @@ def test_natural_forms_resolve(tmp_path):
     assert got["outside"][0] == "NotFound", got["outside"]
 
     # the actor's and a teammate's read: either box name is the copy the box mounts
-    view = H.LibraryView(mount=root, copy=root, link="", mounts=())
+    view = H.LibraryView(mount=root, mounts=())
     places = {H._library_place(view, f) for f in forms[2:]}
     assert len(places) == 1
     shown, host_root, _ = places.pop()
@@ -256,7 +248,7 @@ async def test_helper_ask(tmp_path, monkeypatch):
     assert [f["id"] for f in json.loads(got.text)["fits"]] == [A.TOTAL] and len(turn.calls) == 1
 
     # the bound: the actor's and its first teammates' sessions are open; a later teammate's question is refused
-    full = SimpleNamespace(copy_root=A._copy(tmp_path / "bound"), episode_id=None, pin=None, in_episode=None,
+    full = SimpleNamespace(copy_root=A._copy(tmp_path / "bound"), episode_id=None, pin=None,
                            librarian_sessions=[SimpleNamespace(mode="ask")] * librarian.MAX_ASK_SESSIONS)  # fmt: skip
     monkeypatch.setattr(RQ, "current", lambda: full)
     late = SimpleNamespace(agent="teammate", state=H.ActorRequestState(

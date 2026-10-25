@@ -67,18 +67,11 @@ def _all_text(body: dict) -> str:
     return json.dumps(body.get("messages") or [], ensure_ascii=False)
 
 
-def is_segment(body: dict) -> bool:
-    """A segment fork's request (a pause in the episode's work), not the episode-end fork's."""
-    return "This is a pause in your work" in _all_text(body)
-
-
-def fork_by_request(procedure_reply: str, *, when: str, segment_reply: str = FORK_REPLY, other: str = FORK_REPLY):
+def fork_by_request(procedure_reply: str, *, when: str, other: str = FORK_REPLY):
     """The fork's script: the procedure reply for the episode-end fork of an episode whose record mentions *when*, a
-    summary-only reply for a segment fork or any other episode."""
+    summary-only reply for any other episode."""
 
     def answer(body: dict) -> str:
-        if is_segment(body):
-            return segment_reply
         return procedure_reply if when in _all_text(body) else other
 
     return answer
@@ -130,14 +123,11 @@ TOOL_FORK_REPLY_B = (
 )
 
 
-def fork_sorting(*, segment_reply: str = FORK_REPLY):
+def fork_sorting():
     """The fork's script when two requests sort the inbox: the second procedure for the request that writes
-    :data:`SECOND_FILE`, the first for any other request on the inbox, a summary-only reply otherwise (and
-    *segment_reply* for a segment fork)."""
+    :data:`SECOND_FILE`, the first for any other request on the inbox, a summary-only reply otherwise."""
 
     def answer(body: dict) -> str:
-        if is_segment(body):
-            return segment_reply
         text = _all_text(body)
         if SECOND_FILE in text:
             return TOOL_FORK_REPLY_B
@@ -165,7 +155,7 @@ OUTCOME_SOLVED = {"solved": True, "checks": [{"name": "rows", "passed": True, "r
 def decide_code(ids: list[str], *, land: bool = True) -> str:
     """A writer cell that decides each handed entry from its kind: the ``new_experience`` entries of a pass (the
     related captures it was handed together) land the note while it is not in the library (one ``new_item``
-    decision closing them all, citing their episodes, or their segments ``<episode>.s<n>``); a
+    decision closing them all, citing their episodes); a
     ``late_evidence`` while it is retires it (``retire``); every other entry is ``nothing_to_keep``, each decided on
     its own (so one the ledger refuses holds no other back); then the manifest and ``tools.finish``."""
     return (
@@ -189,11 +179,7 @@ def decide_code(ids: list[str], *, land: bool = True) -> str:
         "    os.makedirs('/memory/notes/files', exist_ok=True)\n"
         f"    open(note, 'w').write({NOTE_TEXT!r})\n"
         f"    open('/memory/notes/files/README.md', 'w').write({NOTE_README!r})\n"
-        "    def cited(r):\n"
-        "        refs = r.get('refs') or {}\n"
-        "        seg = refs.get('segment')\n"
-        "        return [f'{e}.s{seg}' if seg else e for e in refs.get('episodes') or []]\n"
-        "    eps = sorted({e for r in land for e in cited(r)})\n"
+        "    eps = sorted({e for r in land for e in (r.get('refs') or {}).get('episodes') or []})\n"
         f"    items = [{{'item': {NOTE_ID!r}, 'kind': 'note', 'source_episodes': eps, 'form': 'checklist'}}]\n"
         "os.makedirs('/memory/.pass', exist_ok=True)\n"
         "json.dump({'items': items, 'support': [], 'why': 'as decided', 'summary': 'as decided'},"
@@ -272,7 +258,7 @@ def fork_mesh(body: dict):
     question (the fake lane holds each wait turn 2 s while the writer is idle), answers it, then writes its blocks."""
     import time as _t
 
-    if is_segment(body) or "inbox.csv" not in _all_text(body):
+    if "inbox.csv" not in _all_text(body):
         return FORK_REPLY
     if SECOND_FILE in _all_text(body):
         return TOOL_FORK_REPLY_B  # the second sorting episode's fork writes its blocks and says nothing on the record
@@ -302,7 +288,7 @@ def writer_mesh(body: dict) -> dict:
             code += (
                 "import json\n"
                 "idx = json.load(open('/inputs/attention/index.json'))\n"
-                "eps = [e for r in idx['entries'] if r['kind'] == 'new_experience' and not (r.get('refs') or {}).get('segment')"
+                "eps = [e for r in idx['entries'] if r['kind'] == 'new_experience'"
                 " for e in (r.get('refs') or {}).get('episodes') or []]\n"
                 "if eps:\n"
                 f"    print(tools.delegate(task={HELPER_TASK!r}.format(ep=eps[0]), episodes=[eps[0]]))\n"

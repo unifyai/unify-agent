@@ -102,9 +102,8 @@ def test_the_ask_tool_is_on_the_actors_allow_list_whenever_the_run_has_memory(mo
     """Rev 2: the librarian has no switch of its own; the actor is offered ``ask`` whenever the run has memory."""
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "off")
     assert ASK_TOOL not in actor_allow()
-    for mode in ("on", "in_episode"):
-        monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", mode)
-        assert ASK_TOOL in actor_allow(), mode
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    assert ASK_TOOL in actor_allow()
 
 
 # --- the brief -------------------------------------------------------------------------------------------------

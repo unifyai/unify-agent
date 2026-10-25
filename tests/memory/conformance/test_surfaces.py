@@ -1,11 +1,10 @@
-"""The redesign's conformance suite: four synthetic surfaces that name no world,
+"""The redesign's conformance suite: three synthetic surfaces that name no world,
 each run end to end through the CLI with ``UNIFY_MEMORY_PROFILE=redesign``, the writer service in its own process and
 every memory lane scripted (:mod:`.fake_lanes`, :mod:`.scripts`):
 
 1. a conversation with follow-up messages and no reward;
 2. a tool API with read and write calls and no returned value, with an outcome at the episode's end;
-3. one long episode with checkpoints (a compaction and an actor call);
-4. a request whose outcome arrives two requests later.
+3. a request whose outcome arrives two requests later.
 
 Every surface ends as a kit ends a cell (the drain, verified) and is checked (:func:`.harness.check_run`): no world
 vocabulary in what the memory agents were sent, the coverage guarantee, metering sums (A3), verified termination
@@ -15,16 +14,14 @@ vocabulary in what the memory agents were sent, the coverage guarantee, metering
   helper delegation and a helper -> writer reply, all on one record;
 * A2 (all): one service, its passes, ``Terminated.verified`` and no process left in its group;
 * A3 (all): the entries' shares plus the unread zeros equal the passes' known USD exactly; ids on every memory call
-  (``X-Unify-Pass-Id`` and ``-Entries`` on the writer's, ``-Episode`` / ``-Segment`` on the fork's);
+  (``X-Unify-Pass-Id`` and ``-Entries`` on the writer's, ``-Episode`` on the fork's);
 * traced captures (surface 2): the capture record's form, trace, value, own check and outcome from signals;
-* the attention ledger (all): every entry closed, unreadable or not reached; a late signal makes ``late_evidence`` (surface 4);
+* the attention ledger (all): every entry closed, unreadable or not reached; a late signal makes ``late_evidence`` (surface 3);
 * labelled items (surface 2): a landed item is served;
-* in-episode memory (surfaces 1, 3, which set the in-episode arm's switch on): every pause (a new message, an actor call,
-  a compaction) starts a segment fork, whose experience is an entry, or an occurrence of the entry with the same
-  capture; a commit landed while the episode runs is served from the next cell with one notice;
-* serving on evidence (surfaces 2, 4): served items carry their evidence; an item the writer retires in a pass leaves every
+* one fork per episode (surface 1): a follow-up message makes no entry of its own; the episode's end makes one;
+* serving on evidence (surfaces 2, 3): served items carry their evidence; an item the writer retires in a pass leaves every
   listing and stays on record, retired by the writer's decision, its file still in the library;
-* inferred regimes (surfaces 1, 2, 4): each episode's regime is inferred from its own signals (``none`` with none, ``dense``
+* inferred regimes (surfaces 1, 2, 3): each episode's regime is inferred from its own signals (``none`` with none, ``dense``
   with a verdict that names the answer it judged, changed and logged by a late one), never defaulted; a hidden grader
   decides nothing.
 """
@@ -45,7 +42,7 @@ from tests.memory.conformance import scripts as SX
 # the writer's lane refuses while unillm records OTel spans, which the test runner turns on for every session; the
 # fixture takes UNILLM_OTEL out of the environment, so the service and the fork worker start with it off too
 from tests.memory.test_writer_route import _otel_off_unless_a_test_turns_it_on  # noqa: F401 - an autouse fixture
-from tests.scripted_model import Always, ScriptedModel, cell, reply
+from tests.scripted_model import ScriptedModel, cell, reply
 from tests.memory.arrivals import read_arrivals, regime_changes
 from tests.memory import store_reads
 
@@ -117,7 +114,7 @@ def _served(home: Path, seen: list, text: str = "Noted."):
 
 
 def _check_ids_on_calls(lanes: FL.Lanes, *, writer_ran: bool = True) -> None:
-    """A3: every writer call carries its pass and entries; every fork call its episode (and a segment's, its number).
+    """A3: every writer call carries its pass and entries; every fork call its episode.
     *writer_ran* False: the surface left no capture to write up, so no writer call was made at all."""
     writer = lanes.of("writer")
     if not writer_ran:
@@ -127,9 +124,6 @@ def _check_ids_on_calls(lanes: FL.Lanes, *, writer_ran: bool = True) -> None:
     assert all(all(ID16.fullmatch(e) for e in c.meta.get("x-unify-entries", "").split(".")) for c in writer)
     forks = lanes.of("fork")
     assert forks and all(c.meta.get("x-unify-episode") for c in forks), [c.meta for c in forks][:3]
-    for c in forks:
-        if SX.is_segment(c.body):
-            assert re.fullmatch(r"[1-9][0-9]*", c.meta.get("x-unify-segment", "")), c.meta
 
 
 def _entries(home: Path) -> list:
@@ -161,7 +155,6 @@ def check_mesh(home: Path) -> dict:
 @pytest.mark.asyncio
 @pytest.mark.timeout(900)
 async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world, monkeypatch, lanes):  # noqa: F811
-    H.apply_settings(monkeypatch, H.in_episode_env())
     home = Path(core_world["state"])
     _forever(lanes, "fork", SX.FORK_REPLY)
     _forever(lanes, "writer", SX.writer_policy(land=False))
@@ -182,11 +175,10 @@ async def test_surface_1_a_conversation_with_follow_ups_and_no_reward(core_world
     print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
     # nothing arrived for the episode, so its regime is none, by that rule (never a default)
     assert store_reads.regime_record(_stores(home).evidence, s.episode_id) == ("none", "nothing")
-    # the follow-up message after a cell is a pause: a segment fork and its entry; the episode's end, another
+    # the episode's end forks once, and its experience is one entry; a follow-up message makes none of its own
     entries = _entries(home)
-    segs = sorted(e.refs.segment for e in entries if e.kind == "new_experience" and e.refs.segment)
-    ends = [e for e in entries if e.kind == "new_experience" and not e.refs.segment]
-    assert segs == [1] and len(ends) == 1, [(e.kind, e.refs.row()) for e in entries]
+    ends = [e for e in entries if e.kind == "new_experience"]
+    assert len(ends) == 1 and ends[0].refs.episodes == (s.episode_id,), [(e.kind, e.refs.row()) for e in entries]
     # a conversation leaves no procedure: the harness closes each entry, and no writer pass runs on nothing
     assert all(e.state == "closed" and e.decision == "nothing_to_keep" for e in entries)
     assert all(e.reason_ref == "no_capture" for e in entries)
@@ -282,116 +274,10 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
 # --- surface 3 -------------------------------------------------------------------------------------------------------
 
 
-async def _wait_for_item_served(home: Path, item: str, timeout_s: float = 300.0) -> str | None:
-    """Wait (without blocking the request's event loop) until the commit requests now pin (``served_head``: what the
-    next cell re-pins to) holds *item* (its path in the memory); that commit, or None when it was not served in time.
-    The service lands on main and publishes ``served`` after it, and under load it can group the segment entries into
-    fewer passes, so neither main moving nor the item on main is enough: the wait is for the item where cells read it.
-    A segment's capture is written up with the related capture an earlier request left."""
-    import asyncio
-    import time
-
-    from unify.memory import writer_service as ws
-    from unify.memory.gitio import Repo
-    from unify.memory.integration.paths import Paths
-    from unify.memory.memory_writer import served_head
-
-    repo = Repo(Paths.under(home).memory)
-    end = time.monotonic() + timeout_s
-    while time.monotonic() < end:
-        head = served_head(repo)
-        if repo.run("ls-tree", "--name-only", head, "--", item).strip() == item:
-            return head
-        await asyncio.sleep(0.25)
-    return None
-
-
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(1200)
-async def test_surface_3_a_long_episode_with_checkpoints(core_world, monkeypatch, lanes):  # noqa: F811
-    from unify.memory.gitio import Repo
-    from unify.memory.integration.paths import Paths
-
-    H.apply_settings(monkeypatch, H.in_episode_env())
-    home = Path(core_world["state"])
-    paths = Paths.under(home)
-    (Path(core_world["workspace"]) / "inbox.csv").write_text(SX.INBOX)
-    _forever(lanes, "fork", SX.fork_sorting(segment_reply=SX.TOOL_FORK_REPLY))
-    _forever(lanes, "writer", SX.writer_policy())
-    # an earlier request did the same kind of work: its capture is the history the first segment's capture is
-    # written up with, while the long episode runs
-    earlier = f"Sort the rows of inbox.csv by id into {SX.SECOND_FILE}."
-    e0 = await H.cli_session(core_world, monkeypatch, ScriptedModel(actor=[
-        reply(calls=[cell("import csv\nrows = sorted(csv.DictReader(open('inbox.csv')), key=lambda r: int(r['id']))\n"
-                          f"open({SX.SECOND_FILE!r}, 'w').write(str(rows))\n")]),
-        reply("Sorted.")]), earlier, H.replies())
-    assert e0.code == 0, e0.lines[-5:]
-    H.wait_until_settled(home)
-    sort_code = ("import csv\n"
-                 "rows = sorted(csv.DictReader(open('inbox.csv')), key=lambda r: int(r['id']))\n"
-                 "w = csv.DictWriter(open('sorted.csv', 'w', newline=''), fieldnames=['id', 'amount'])\n"
-                 "w.writeheader(); w.writerows(rows)\nprint(len(rows))\n")
-    start: dict = {}
-
-    def first_cell(call):
-        start["head"] = Repo(paths.memory).run("rev-parse", "main").strip()
-        return reply(calls=[cell(sort_code)])
-
-    async def after_pause(call):
-        # the pause's segment fork runs now; the service lands from it while the episode goes on
-        start["landed"] = await _wait_for_item_served(home, SX.NOTE_ID)
-        return reply(calls=[cell("total = sum(float(r['amount']) for r in rows)\nprint(total)")])
-
-    model = ScriptedModel(
-        actor=[
-            first_cell,
-            reply(calls=[cell("print(tools.checkpoint(note='rows sorted'))")]),
-            after_pause,
-            # a context-full turn: the loop compacts before the next call, a pause of its own
-            reply(calls=[cell("print('totals done')")], prompt_tokens=900_000),
-            reply(calls=[cell("print('checked')")]),
-            reply("Sorted, totalled and checked."),
-        ],
-        # rev 2: over the compaction point the loop compacts before the next call, with no forced turn
-        compression_fork=Always(reply(SX.SUMMARY)),
-    )
-    first = "Sort the rows of inbox.csv by id, then total the amounts."
-    s = await H.cli_session(core_world, monkeypatch, model, first, H.replies())
-    assert s.code == 0, s.lines[-5:]
-    H.wait_until_settled(home)
-    facts = H.check_run(home, lanes, actor_model=model, own_texts=[earlier, first, SX.SUMMARY])
-    print("CONFORMANCE", json.dumps(H.run_facts(home, lanes, facts), default=str, sort_keys=True)[:3000])
-    assert "compression_fork" in model.kinds()
-    # the actor's call and the compaction each started a segment fork; the compaction's fork captured the same
-    # procedure as the actor call's, so its experience joins that entry (one entry per capture: a ref while the
-    # entry is open, an occurrence once it is closed)
-    from unify.memory.segments import SEGMENTS_DIR
-
-    entries = _entries(home)
-    checkpoints = [
-        c for c in H._jsonl(paths.state_dir / SEGMENTS_DIR / "checkpoints.jsonl") if c.get("type") == "checkpoint"
-    ]
-    started = [(c.get("segment"), c.get("sources")) for c in checkpoints if c.get("fork") == "started"]
-    assert started[:2] == [(1, ["actor_call"]), (2, ["compaction"])], checkpoints
-    first = [e for e in entries if e.kind == "new_experience" and e.refs.segment == 1]
-    assert len(first) == 1 and first[0].sources, [(e.kind, e.refs.row(), e.sources) for e in entries]
-    # what the service landed from the first segment while the episode ran is served from the next cell, with
-    # one notice naming exactly what changed
-    assert start.get("landed") and start["landed"] != start["head"], "the note was not served while the episode ran"
-    notices = [m for c in model.of("actor") for m in c.messages
-               if m.get("role") == "tool" and "memory changed" in json.dumps(m.get("content"))]
-    assert notices and SX.NOTE_ID in json.dumps(notices[0].get("content")), notices[:1]
-    _check_ids_on_calls(lanes)
-
-
-# --- surface 4 -------------------------------------------------------------------------------------------------------
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(1200)
-async def test_surface_4_an_outcome_that_arrives_two_requests_later(core_world, monkeypatch, lanes):  # noqa: F811
+async def test_surface_3_an_outcome_that_arrives_two_requests_later(core_world, monkeypatch, lanes):  # noqa: F811
     from unify.memory.integration.paths import Paths
 
     home = Path(core_world["state"])

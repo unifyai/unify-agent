@@ -5,7 +5,7 @@ The behaviour settings: ``UNIFY_MEMORY`` and ``UNIFY_MEMORY_CAP_USD``
 
 ``UNIFY_MEMORY`` chooses what memory does, and ``UNIFY_MEMORY_CAP_USD`` how much it may spend. They are the only
 memory behaviour settings; every other setting memory reads is deployment configuration (below). ``UNIFY_MEMORY``
-takes exactly three values:
+takes exactly two values:
 
 ``on`` (the default; also when unset or empty)
     Memory between episodes. Each episode is recorded in the memory home (``<UNIFY_HOME>/memory``). At its end the
@@ -13,19 +13,11 @@ takes exactly three values:
     ledger hands what needs reading to the writer, a detached service per memory home that keeps the library. The
     next episode is served from what the library holds when it starts.
 
-``in_episode``
-    Everything ``on`` does, plus memory during an episode. The actor may pause at a checkpoint
-    (``tools.checkpoint``), and each pause forks the segment so far into a ledger entry. The episode's copy of the
-    library is re-pinned at cell boundaries to what the writer landed meanwhile. It is not the default because of cost
-    and evidence, in any world: each pause adds a fork and a writer read, so an episode costs more than under ``on``,
-    and no world has yet shown a gain within an episode. It pays off only where episodes are long enough for something
-    learned early to be used later in the same one; a deployment turns it on where that is measured.
-
 ``off``
     No memory: no memory home, no writer, no fork and no memory tools. This is the no-memory baseline.
 
-Any other value is refused when the settings are read, and the error lists the three values. The switch is read in
-one place, :func:`memory_mode`; every other reader asks :func:`memory_on` or :func:`in_episode`.
+Any other value is refused when the settings are read, and the error lists the two values. The switch is read in
+one place, :func:`memory_mode`; every other reader asks :func:`memory_on`.
 
 ``UNIFY_MEMORY_CAP_USD`` is memory's spend cap for one run (one ``unify act``, with the writer service it ran), in
 USD as a plain decimal string (default :data:`MEMORY_CAP_DEFAULT`). It covers the writer's and its helpers' calls, as
@@ -58,7 +50,7 @@ does. Where a missing value leaves a part of memory out, the entry says so.
   the lane, the writer's calls go on the controller's own provider route; without prices, such a call stays unpriced
   and is booked at its worst case.
 * Fork lane: ``UNIFY_MEMORY_LIBRARY_FORK_BASE_URL`` and ``UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD``, the route of the
-  episode-end and segment forks. Without it no fork runs (``refused: no fork lane``), so no capture is made.
+  episode-end forks. Without it no fork runs (``refused: no fork lane``), so no capture is made.
 * Helper lane: ``UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL`` and ``UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD``, the route of
   the writer's helpers. Without it the writer is not offered ``delegate``, and its brief and tools leave helpers out.
 * Embeddings (:mod:`unify.common.embeddings`): ``UNIFY_EMBED_URL`` with ``UNIFY_EMBED_TOKEN_FD`` (the embedding lane,
@@ -103,9 +95,8 @@ from unify.process_secrets import register_secret
 SWITCH = "UNIFY_MEMORY"
 OFF = "off"
 ON = "on"
-IN_EPISODE = "in_episode"
 #: The values :data:`SWITCH` takes, in the order the refusal lists them.
-MEMORY_MODES = (OFF, ON, IN_EPISODE)
+MEMORY_MODES = (OFF, ON)
 #: An unset or empty ``UNIFY_MEMORY``: memory between episodes.
 MEMORY_DEFAULT = ON
 
@@ -115,8 +106,8 @@ def _stripped(v: Any) -> str:
 
 
 def parse_memory(v: Any) -> str:
-    """``UNIFY_MEMORY``: ``off``, ``on`` or ``in_episode``; unset or empty is ``on``. Anything else is refused, and the
-    refusal lists the three values."""
+    """``UNIFY_MEMORY``: ``off`` or ``on``; unset or empty is ``on``. Anything else is refused, and the refusal lists
+    the two values."""
     value = _stripped(v).lower() or MEMORY_DEFAULT
     if value not in MEMORY_MODES:
         raise ValueError(
@@ -126,19 +117,13 @@ def parse_memory(v: Any) -> str:
 
 
 def memory_mode(settings: Any) -> str:
-    """The run's memory mode: ``off``, ``on`` or ``in_episode`` (the one read of ``UNIFY_MEMORY``)."""
+    """The run's memory mode: ``off`` or ``on`` (the one read of ``UNIFY_MEMORY``)."""
     return parse_memory(getattr(settings, SWITCH, ""))
 
 
 def memory_on(settings: Any) -> bool:
-    """Whether the run has memory (``on`` or ``in_episode``)."""
+    """Whether the run has memory (``on``)."""
     return memory_mode(settings) != OFF
-
-
-def in_episode(settings: Any) -> bool:
-    """Whether memory also changes during an episode (``in_episode``): checkpoints, segment forks and re-pins at cell
-    boundaries."""
-    return memory_mode(settings) == IN_EPISODE
 
 
 # --- the writer's model and memory's spend cap ---------------------------------------------------------------------------

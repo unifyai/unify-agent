@@ -39,7 +39,7 @@ CORRECTIONS: tuple[Correction, ...] = (
     Correction("A14", r"^actor/.*/library_line$", "memory.ask() shows the ones that apply", "memory.ask() names the best fit"),
     Correction("A16", r"^(actor|teammate)/off/refusal/(read|grep)/not_found$",
                "; /inputs/attention/index.json lists your entries' material, and memory.items() the library's items", ""),
-    Correction("A16", r"^(actor|teammate)/(on|in_episode)/refusal/(read|grep)/not_found$",
+    Correction("A16", r"^(actor|teammate)/on/refusal/(read|grep)/not_found$",
                "/inputs/attention/index.json lists your entries' material, and memory.items() the library's items",
                "memory.items() lists the library's items"),
     Correction("A16", r"^librarian/on/refusal/(read|grep)/not_found$",

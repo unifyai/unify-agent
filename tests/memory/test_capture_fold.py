@@ -1,5 +1,4 @@
-"""Rev 2, item 6: captures fold by their shape, nothing is run to classify them, and a pause that computed nothing
-starts no fork.
+"""Rev 2, item 6: captures fold by their shape and nothing is run to classify them.
 
 The shape address comes from a procedure's syntax alone: docstrings, comments and local names do not count; literals,
 helpers, tool calls and the form do. Same shape: one capture, every occurrence kept (raw bytes included), one ledger
@@ -20,7 +19,7 @@ from tests.memory.test_capture_trace import _ep, _staging
 from unify.memory import capture_shape as cs
 from unify.memory import capture_trace as ct
 from unify.memory import captures as cp
-from unify.memory.episodes import Action, Cell
+from unify.memory.episodes import Action
 
 # three worlds, each a procedure and a variant that differs only in prose and local names
 WORLDS = {
@@ -178,7 +177,7 @@ def test_two_occurrences_of_one_shape_are_one_capture_with_both_sources_kept(tmp
     store = cp.store_dir(tmp_path)
     rows = [
         cp.capture_trace_step(_staging(tmp_path, eid, {"procedure.py": src}), _episode(world, eid), store)  # fmt: skip
-        for eid, src in (("e1", a), ("e2.s1", b))
+        for eid, src in (("e1", a), ("e2", b))
     ]
     first, second = rows
     assert first["capture_id"] == cp.capture_id(a) and not first["folded"]
@@ -188,14 +187,14 @@ def test_two_occurrences_of_one_shape_are_one_capture_with_both_sources_kept(tmp
     assert dirs == [first["capture_id"]]  # no second capture directory
     d = store / first["capture_id"]
     rec = json.loads((d / cp.RECORD_FILE).read_text())
-    assert rec["occurrences"] == 2 and rec["shape"] == first["shape"] and rec["episodes"] == ["e1", "e2.s1"]
+    assert rec["occurrences"] == 2 and rec["shape"] == first["shape"] and rec["episodes"] == ["e1", "e2"]
     assert rec["own_check"] == ct.NOT_RUN and all(c["run"] == "not run" for c in rec["cases"])
     assert (d / cp.PROCEDURE_FILE).read_text() == a  # the first occurrence's bytes are the capture's
     assert (d / cp.OCCURRENCES_DIR / "2" / cp.PROCEDURE_FILE).read_text() == b  # the fold's bytes, kept as evidence
     occ = cp.occurrences(store, first["capture_id"])
     assert [(o["n"], o["staging"], o["folded"], o["source_capture_id"]) for o in occ] == [
         (1, "e1", False, cp.capture_id(a)),
-        (2, "e2.s1", True, cp.capture_id(b)),
+        (2, "e2", True, cp.capture_id(b)),
     ]
     assert cp.shape_index(store) == {first["shape"]: first["capture_id"]}
 
@@ -219,7 +218,7 @@ def test_d1_no_own_check_runs_and_no_entry_comes_from_one(tmp_path, nothing_runs
     row = cp.capture_trace_step(_staging(tmp_path, "e1", {"procedure.py": WORLDS["shell"][0]}), _episode("shell", "e1"), store)  # fmt: skip
     assert row["own_check"] == {"ran": False, "why": "a capture is never run to classify it"}
     # even a row from before rev 2 whose own check failed makes no entry now
-    old = {"capture_id": "c" * 16, "episode": "e2", "segment": None, "outcome": "none",
+    old = {"capture_id": "c" * 16, "episode": "e2", "outcome": "none",
            "own_check": {"ran": True, "error": "ValueError"}}  # fmt: skip
     led = _ledger(tmp_path / "led")
     made = led.sync(Fake(captures={"e2": old}))
@@ -230,7 +229,7 @@ def test_d1_no_own_check_runs_and_no_entry_comes_from_one(tmp_path, nothing_runs
 
 
 def _row(cid, eid, outcome="none"):
-    return {"v": 2, "capture_id": cid, "episode": eid, "segment": None, "outcome": outcome, "own_check": ct.NOT_RUN}
+    return {"v": 2, "capture_id": cid, "episode": eid, "outcome": outcome, "own_check": ct.NOT_RUN}
 
 
 def test_one_entry_per_fold_a_repeat_is_counted_and_a_contrary_occurrence_reopens(tmp_path):
@@ -259,65 +258,3 @@ def test_one_entry_per_fold_a_repeat_is_counted_and_a_contrary_occurrence_reopen
     e = led.get(entry.entry)
     assert e.state == "open" and e.why == "contrary_occurrence" and "e4" in e.refs.episodes
     assert [x.entry for x in led.hand("p3", 4)] == [entry.entry]
-
-
-# --- a pause that did no work starts no fork -----------------------------------------------------------------------------
-
-
-def test_only_cells_with_no_computation_and_no_environment_call_do_no_work():
-    def cells(*codes, language="python"):
-        return [Cell(i, c, "", language=language) for i, c in enumerate(codes)]
-
-    # no work: literal calls of the harness's read-only names or of builtins, and expressions that call nothing
-    assert not cs.computes(cells('memory.items("grid")', 'print("hi")', "state.last", 'display("x")'))
-    # rev 2.1: a call into the environment or through an action surface is work, even with literal arguments (in
-    # action and tool worlds a run of literal action calls is the work), as fixed_answer counts an action
-    for code in ("env.files.list()", 'env.chat.say("hi", n=-1)', 'env.board.step("left")',
-                 'primitives.mail.send("a@b.c", "hi")', "tools.note(3)", "tools.wait()",
-                 'tools.files.read("a.txt")'):  # fmt: skip
-        assert cs.computes(cells(code)), code
-    for code in ("x = 1", "print(state.last)", "for r in rows: pass", "[r for r in rows]", "def f(): pass",
-                 "env.files.write(path, text)", "if ok: env.a.b()", "import json", "env.a.b(*args)"):  # fmt: skip
-        assert cs.computes(cells('print("hi")', code)), code
-    assert cs.computes(cells("ls -la", language="bash"))  # another language: counted as computing
-    assert cs.computes(cells("def broken(:"))  # does not parse: counted as computing
-
-
-def test_work_and_acting_agree_on_the_action_surfaces():
-    """A cell that calls an action surface did work exactly when a procedure making that call acts."""
-    from unify.memory.fixed_answer import ACTION_SURFACES
-
-    assert not cs.HARNESS_NAMES & ACTION_SURFACES
-    for surface in sorted(ACTION_SURFACES):
-        assert cs.computes([Cell(0, f'{surface}.x.y("literal")', "", language="python")]), surface
-
-
-def test_a_pause_with_no_work_starts_no_fork_and_its_cells_wait_for_the_next(tmp_path, monkeypatch):
-    from tests.memory.integration import test_in_episode as TIE
-    from unify.memory.integration import fork as fork_mod
-    from unify.memory.integration import in_episode as ie_mod
-
-    monkeypatch.setattr(ie_mod, "_ensure_service", lambda home: None)
-    forks = TIE._Forks()
-    monkeypatch.setattr(fork_mod, "start", forks.start)
-    run, ie = TIE._ie(tmp_path, {TIE.C1: TIE._tree(TIE.LIB)})
-    for code in ('print("checking")', 'memory.items("grid")'):
-        run.code.append(code)
-        ie.cell_done()
-    ie.mark("actor_call")
-    event = ie.at_boundary(object())
-    assert event["skipped"] == "no computation" and "segment" not in event and forks.calls == []
-    row = json.loads((run.paths.state_dir / "memory-segments" / "checkpoints.jsonl").read_text().splitlines()[-1])
-    assert row["skipped"] == "no computation"
-    # mixed cells fork, and the fork covers the cells the skipped pause left
-    run.code.append("x = 1")
-    ie.cell_done()
-    ie.mark("actor_call")
-    event = ie.at_boundary(object())
-    assert event["segment"] == 1 and event["cells"] == [0, 2] and len(forks.calls) == 1
-    # rev 2.1: a pause whose only cell is a literal call into the environment did work, and forks
-    run.code.append('env.board.step("left")')
-    ie.cell_done()
-    ie.mark("actor_call")
-    event = ie.at_boundary(object())
-    assert event["segment"] == 2 and event["cells"] == [3, 3] and len(forks.calls) == 2

@@ -149,7 +149,6 @@ META_FIELDS = {
     "x-unify-pass-id": "pass_id",
     "x-unify-entries": "entries",
     "x-unify-episode": "episode",
-    "x-unify-segment": "segment",
 }
 META_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
 META_COUNT = re.compile(r"[0-9]{1,9}")
@@ -496,7 +495,7 @@ def request_metadata(headers) -> dict | None:
             flags.append(f"{field}: repeated")
             continue
         text = values[0].strip()
-        if field in ("request", "msg_count", "segment"):
+        if field in ("request", "msg_count"):
             ok = META_COUNT.fullmatch(text) is not None
             value = int(text) if ok else None
         elif field == "pass_id":

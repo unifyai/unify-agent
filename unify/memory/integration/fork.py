@@ -38,7 +38,7 @@ so a host whose sandbox ends every process of the controller with it never cuts 
 it. That wait is bounded by :data:`WAIT_GUARD_S`, an operational guard reported in ``fork.json``, not a design limit.
 
 **Spend.** The calls carry ``x-unify-call-kind: actor_fork``, ``x-unify-session: fork.<episode>`` (what separates
-their spend), ``x-unify-parent: <episode>`` and ``x-unify-episode`` (and a segment fork's ``x-unify-segment``). There
+their spend), ``x-unify-parent: <episode>`` and ``x-unify-episode``. There
 is no token cap; the lane's cap bounds the money.
 """
 
@@ -47,7 +47,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -184,46 +183,6 @@ INSTRUCTION = (
     "a line of three backticks, open and close its block with four. Example:\n\n"
     + FORMAT_EXAMPLE
 )
-#: A segment fork's instruction (``UNIFY_MEMORY=in_episode``, at a checkpoint inside the episode): the same summary and
-#: capture contract, in a short form, for the cells since the last checkpoint; the work goes on after it.
-SEGMENT_FORMAT_EXAMPLE = (
-    "```path: summary.md\n"
-    "## Asked\n"
-    "Read a table of numbers from a text file and report its size.\n"
-    "## Approach\n"
-    '- Parsed the first line as the size (`cell:0` "int(lines[0])").\n'
-    "## Worked\n"
-    "- none so far\n"
-    "## Failed\n"
-    '- Reading the size from the first line, which was a header (`cell:0` "ValueError: invalid literal for int()").\n'
-    "## Outcome\n"
-    "Not finished: the work goes on (`cell:0` \"int(lines[0])\").\n"
-    "```\n"
-    "\n"
-    "```path: broke.md\n"
-    '- `cell:0`: the first line is a header, not the size ("ValueError: invalid literal for int()").\n'
-    "```"
-)
-SEGMENT_INSTRUCTION = (
-    "This is a pause in your work on this request, which goes on after it; nothing you write now changes it. Write "
-    "down what you choose to keep from the part of the work since the last pause: the cells "
-    "{cells}. Write each file as a fenced block in your reply, in the format below. " + RECORD_CALLS_ONLY + "\n\n"
-    "What to write:\n"
-    "- `summary.md`: a short account of this part of the episode for a reader who has not seen it, in the format "
-    "below; its Outcome says the work is not finished, and what the record shows so far.\n"
-    + CAPTURE_BULLETS
-    + "\n"
-    + SUMMARY_FORMAT
-    + "\n\n"
-    + NUMBERING
-    + "\n\n"
-    f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. A reply that calls a "
-    f"tool gets another turn, up to {TURN_GUARD} turns in all.\n\n"
-    "Format: each file is one fenced block. Its opening line is three backticks followed by `path: ` and the "
-    "file's relative path; then the file's full content; then a line of three backticks. If a file itself contains "
-    "a line of three backticks, open and close its block with four. Example:\n\n"
-    + SEGMENT_FORMAT_EXAMPLE
-)
 WORKER_FILE = Path(__file__).resolve().parent / "fork_worker.py"
 BOX_WORKER = "/s/fork_worker.py"
 STAGING_IN_BOX = "/staging"
@@ -233,17 +192,6 @@ WRITE_GUARD_S = 120.0
 def fork_instruction() -> str:
     """The fixed instruction appended to the actor's conversation for the fork (:data:`INSTRUCTION`)."""
     return INSTRUCTION
-
-
-def segment_instruction(first_cell: int | None, last_cell: int | None) -> str:
-    """A segment fork's instruction (:data:`SEGMENT_INSTRUCTION`) for the cells from *first_cell* to *last_cell*."""
-    if first_cell is None or last_cell is None:
-        cells = "since the last pause (no cell ran in it)"
-    elif first_cell == last_cell:
-        cells = f"`cell:{first_cell}`"
-    else:
-        cells = f"`cell:{first_cell}` to `cell:{last_cell}`"
-    return SEGMENT_INSTRUCTION.replace("{cells}", cells)
 
 
 def _first_line(text: object) -> str:
@@ -280,10 +228,10 @@ def part_list(ep: Any) -> str:
     return "\n".join(lines)
 
 
-def fork_message(parts: str | None = None, instruction: str | None = None) -> str:
-    """The user message the fork's request ends with: :func:`fork_instruction` (or *instruction*: a segment fork's,
-    :func:`segment_instruction`), then the episode's part list when there is one. Both follow the cached prefix."""
-    text = fork_instruction() if instruction is None else instruction
+def fork_message(parts: str | None = None) -> str:
+    """The user message the fork's request ends with: :func:`fork_instruction`, then the episode's part list when there
+    is one. Both follow the cached prefix."""
+    text = fork_instruction()
     return f"{text}\n\n{parts}" if parts else text
 
 
@@ -330,22 +278,15 @@ def request_doc(
     url: str,
     key: str,
     parts: str | None = None,
-    instruction: str | None = None,
 ) -> tuple[dict | None, str | None]:
-    """The fork's request, from the session's last request as sent, or why the session cannot be forked; *instruction*
-    replaces :func:`fork_instruction` (a segment fork's, :func:`segment_instruction`)."""
+    """The fork's request, from the session's last request as sent, or why the session cannot be forked."""
     from unify.actor.code_act_actor import _session_fork_source
 
     inner = getattr(handle, "_inner", None) or handle
-    from .switch import in_episode
-
-    # UNIFY_MEMORY=in_episode: a compaction was a pause (its segment fork covered the cells before it), so the forks
-    # after it continue the compacted conversation; off, a compacted session is not forked, as built
-    kw = {"allow_compressed": True} if in_episode(_settings()) else {}
-    source, why = _session_fork_source(inner, getattr(handle, "_actor", None), **kw)
+    source, why = _session_fork_source(inner, getattr(handle, "_actor", None))
     if source is None:
         return None, why
-    return request_from_source(eid, source, url, key, parts=parts, instruction=instruction)
+    return request_from_source(eid, source, url, key, parts=parts)
 
 
 def as_sent(message: Any) -> Any:
@@ -374,13 +315,11 @@ def request_from_source(
     token: str,
     *,
     parts: str | None = None,
-    instruction: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """``(request document, None)`` for the fork from a conversation *source* (``client``, ``sent_messages``,
     ``tools`` and optionally ``tool_choice``, as the actor's session reader gives them), or ``(None, why)`` when it
     cannot be forked: the messages as the actor sent them (:func:`as_sent`) and the tool schemas unchanged, then
-    :func:`fork_message` (the instruction, or *instruction* in its place, and *parts*, the episode's part list from
-    :func:`part_list`, when given).
+    :func:`fork_message` (the instruction, and *parts*, the episode's part list from :func:`part_list`, when given).
     *base_url* is the fork lane's URL (``/chat/completions`` is added when it is not already there); *token* goes only
     into the headers, which reach the worker on its stdin."""
     eid = episode_id
@@ -398,7 +337,7 @@ def request_from_source(
         "model": model,
         "messages": [
             *(as_sent(m) for m in source["sent_messages"]),
-            {"role": "user", "content": fork_message(parts, instruction)},
+            {"role": "user", "content": fork_message(parts)},
         ],
         "tools": source["tools"],
     }
@@ -602,12 +541,10 @@ def start(
     progress: Callable[[str], None] = lambda _m: None,
     reservation: Reservation | None = None,
     parts: str | None = None,
-    instruction: str | None = None,
 ) -> Fork | None:
     """Start the episode's fork, or record why not; never raises. Without a *reservation* (made before the episode was
     recorded), one is made here. *parts* is the recorded episode's part list (:func:`part_list`), which follows the
-    instruction; without it the fork names parts by :data:`NUMBERING` alone. *instruction* replaces the episode
-    fork's (a segment fork's, :func:`segment_instruction`; ``UNIFY_MEMORY=in_episode``)."""
+    instruction; without it the fork names parts by :data:`NUMBERING` alone."""
     if reservation is not None and reservation.eid != eid:
         reservation.abandon("error: reserved for another episode")
         reservation = None
@@ -626,18 +563,14 @@ def start(
         lines = prompt_lines(on_record[1], "fork")
         parts = f"{parts}\n\n{lines}" if parts else lines
         if r is not None:
-            doc, why = request_doc(handle, eid, *r, parts=parts, instruction=instruction)
+            doc, why = request_doc(handle, eid, *r, parts=parts)
         if doc is None:
             _leave(on_record)
             reservation.abandon(f"refused: {why}")
             progress(f"memory: fork refused: {why}")
             return None
-        # metering: the fork's calls carry its episode, and a segment fork its segment (ids only), for the lane's
-        # journal
-        episode, segment = split_segment(eid)
-        doc["headers"]["x-unify-episode"] = episode
-        if segment is not None:
-            doc["headers"]["x-unify-segment"] = str(segment)
+        # metering: the fork's calls carry its episode (an id only), for the lane's journal
+        doc["headers"]["x-unify-episode"] = eid
         box = box_argv(staging, die_with_parent=True)
         log = Path(paths.state_dir) / "fork-worker.log"
         # the relay starts the box with --comms and answers its comms calls from the run record
@@ -713,25 +646,14 @@ def run_record_name(paths: Any, eid: str) -> tuple[Any, str]:
     from unify.agents.run_record import join_run_record
 
     record = join_run_record(paths.home)
-    episode, segment = split_segment(eid)
     for _ in range(20):
-        name = record.unique_name("fork", episode, "" if segment is None else f"-s{segment}")
+        name = record.unique_name("fork", eid)
         try:
-            record.join(name, "fork", episode=episode)
+            record.join(name, "fork", episode=eid)
             return record, name
         except PostRefused:
             continue
     raise PostRefused("no free name for the fork on the run record")
-
-
-#: A segment's staging name (in-episode memory): ``<episode>.s<n>``.
-_SEGMENT = re.compile(r"(.+)\.s([0-9]+)")
-
-
-def split_segment(eid: str) -> tuple[str, int | None]:
-    """``(episode, segment)`` of a staging name: a segment fork's ``<episode>.s<n>``, else ``(eid, None)``."""
-    m = _SEGMENT.fullmatch(eid or "")
-    return (m.group(1), int(m.group(2))) if m else (eid, None)
 
 
 def _leave(on_record: tuple[Any, str] | None) -> None:

@@ -58,8 +58,7 @@ GUARD_MODULES = (
     "unify/memory/trust.py",
     # the redesign's agent-facing texts (REDESIGN-BUILD-PLAN-20261020): the run record, its tools and the fork's relay
     # (the run record), the writer service's notices, metering's labels, the capture trace, the attention ledger's
-    # refusals and tools, the writer's stated tests and item labels, in-episode memory's notices and the
-    # segment records
+    # refusals and tools, the writer's stated tests and item labels
     "unify/agents/run_record.py",
     "unify/agents/run_record_tools.py",
     "unify/agents/fork_relay.py",
@@ -71,8 +70,6 @@ GUARD_MODULES = (
     "unify/memory/attention_tools.py",
     "unify/memory/writer_tests.py",
     "unify/memory/item_label.py",
-    "unify/memory/integration/in_episode.py",
-    "unify/memory/segments.py",
     # the cards and help(memory) of the library helper, the land_capture texts and replies, the manifest's texts, the
     # gate's label lines, the captures' and the capture groups' texts, the index header, the judge's brief, the ask
     # call's texts and the when-to-use shapes

@@ -85,7 +85,7 @@ SCHEMA_REPAIRS = 1
 #: What the summary after a compaction says of the files (the memory agents' restart pointer, for this box).
 RESTART_POINTER = "Nothing under /memory changed: open an item again with memory.get when you need it."
 def enabled() -> bool:
-    """Whether the run has the librarian: whenever it has memory (``UNIFY_MEMORY`` is ``on`` or ``in_episode``)."""
+    """Whether the run has the librarian: whenever it has memory (``UNIFY_MEMORY=on``)."""
     from unify.memory.integration.switch import memory_on
     from unify.settings import SETTINGS
 
@@ -1534,7 +1534,7 @@ def opener(
         if mode not in MODES:
             raise ValueError(f"mode is one of {', '.join(MODES)}")
         run = _request.current()
-        # the copy as cells read it (UNIFY_MEMORY=in_episode: its link to the current pin), else the export itself
+        # the copy as cells read it, else the export itself
         copy = getattr(run, "copy_root", None) or getattr(getattr(run, "paths", None), "checkout", None)
         if run is None or copy is None:
             raise Unavailable("no library is mounted in this request")
@@ -1555,7 +1555,7 @@ def opener(
             start=start,
             on_event=on_event,
             request_id=request_id,
-            library=getattr(getattr(run, "in_episode", None), "current", None) or getattr(run, "pin", None),
+            library=getattr(run, "pin", None),
             run_record=record,
             name=name,
         )

@@ -181,21 +181,15 @@ def fork_sum_reply() -> str:
             + "```path: broke.md\nnone\n```\n")
 
 
-SEGMENT_REPLY = _summary("Part of a piece of work.", "Worked on it") + "```path: broke.md\nnone\n```\n"
+SUMMARY_REPLY = _summary("Part of a piece of work.", "Worked on it") + "```path: broke.md\nnone\n```\n"
 
 
 def _all_text(body: dict) -> str:
     return json.dumps(body.get("messages") or [], ensure_ascii=False)
 
 
-def is_segment(body: dict) -> bool:
-    return "This is a pause in your work" in _all_text(body)
-
-
 def fork_script(body: dict) -> str:
-    """The fork's model: a summary for a segment fork; the procedure of the world whose request the episode holds."""
-    if is_segment(body):
-        return SEGMENT_REPLY
+    """The fork's model: the procedure of the world whose request the episode holds; a summary for any other."""
     text = _all_text(body)
     if "to tally.json once more" in text:
         return fork_tally_reply().replace(TALLY_PROC, TALLY_PROC_B)
@@ -214,7 +208,7 @@ def fork_script(body: dict) -> str:
         return fork_words_reply(f"mark{m.group(1)}")
     if "Reverse each word" in text:
         return fork_words_reply("reverse")
-    return SEGMENT_REPLY
+    return SUMMARY_REPLY
 
 
 # ── the writer lane: the kinship judge and the writer's passes ────────────────────────────────────────────────────

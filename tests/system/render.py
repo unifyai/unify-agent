@@ -1,6 +1,6 @@
 """Every static text an agent of a memory run is shown, rendered from the tree's own functions, per role and mode.
 
-The keys are ``<role>/<mode>/<what>``: the actor and a teammate in ``off``, ``on`` and ``in_episode`` (their flags
+The keys are ``<role>/<mode>/<what>``: the actor and a teammate in ``off`` and ``on`` (their flags
 are the ones :func:`unify.actor.tool_handlers.actor_flags` gives each mode), and the memory roles (writer, writer's
 helper, librarian, fork, kinship judge) in ``on``. ``what`` is ``tools_list``, ``help/<tool>``,
 ``refusal/<tool>/<form>`` (a template filled with ``<field>`` markers), ``common_section``, a brief, a
@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Iterator
 
 ACTOR_ROLES = ("actor", "teammate")
-MODES = ("off", "on", "in_episode")
+MODES = ("off", "on")
 MEMORY_ROLES = ("writer", "helper", "librarian", "fork", "judge")
 
 
@@ -127,7 +127,6 @@ def render_all() -> dict[str, str]:
         out["librarian/on/question"] = LB.question_message("<question>", rows=3)
         out["librarian/on/evidence_question"] = LB.evidence_question_message("<question>", "<last message>", rows=3)
         out["fork/on/instruction"] = FK.fork_instruction()
-        out["fork/on/segment_instruction"] = FK.segment_instruction(1, 4)
         out["judge/on/brief"] = KN.BRIEF
         out["cards/on/by_hand"] = LH.BY_HAND.format(cid="capture:<id>")
         out["memory_help/on/package"] = _memory_help(librarian=True)

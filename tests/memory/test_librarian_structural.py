@@ -67,9 +67,9 @@ def _captures() -> dict[str, bytes]:
     out: dict[str, bytes] = {}
     for cid, (form, src) in PROCS.items():
         rec = {"v": 2, "entry_point": {"form": form}, "outcome": "none", "occurrences": 2,
-               "episodes": ["e1", "e2.s1"],
-               "cases": [{"episode": "e1", "segment": None, "outcome": "positive"},
-                         {"episode": "e2", "segment": 1, "outcome": "none"}]}  # fmt: skip
+               "episodes": ["e1", "e2"],
+               "cases": [{"episode": "e1", "outcome": "positive"},
+                         {"episode": "e2", "outcome": "none"}]}  # fmt: skip
         out[f".memory/captures/{cid}/record.json"] = json.dumps(rec).encode()
         out[f".memory/captures/{cid}/procedure.py"] = src.encode()
         out[f".memory/captures/{cid}/signature.json"] = json.dumps({"input": None}).encode()
@@ -90,7 +90,7 @@ def test_every_capture_form_gets_a_structural_row():
                           "provenance"}  # fmt: skip
         assert r["kind"] == "capture-shape" and r["occurrences"] == 2
         assert r["outcomes"] == {"positive": 1, "contrary": 0, "none": 1}
-        assert r["provenance"] == {"episodes": 2, "segments": 1}  # counts, never an id
+        assert r["provenance"] == {"episodes": 2}  # counts, never an id
     env = rows["capture:" + "c" * 16]
     assert env["calls"] == ["env.files.list", "env.files.write"]
     assert rows["capture:" + "a" * 16]["applies_text"].startswith("def applies(value):")

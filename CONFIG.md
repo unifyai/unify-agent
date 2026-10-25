@@ -14,7 +14,7 @@ per run). `UNIFY_MEMORY=off` makes none.
 
 | Variable | Values | Default | What it does |
 |---|---|---|---|
-| `UNIFY_MEMORY` | `off`, `on`, `in_episode` | `on` | `on` keeps memory between episodes. `in_episode` adds memory during an episode as well; each pause adds a fork and a writer read, so it costs more than `on`, with no gain shown yet in any world. `off` is the no-memory baseline. Any other value is refused, and the error lists the three. See [docs/memory.md](docs/memory.md). |
+| `UNIFY_MEMORY` | `off`, `on` | `on` | `on` keeps memory between episodes. `off` is the no-memory baseline. Any other value is refused, and the error lists the two. See [docs/memory.md](docs/memory.md). |
 
 ## Models and the provider
 

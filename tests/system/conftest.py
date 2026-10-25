@@ -1,6 +1,6 @@
 """Fixtures of the system suite: a fresh memory home per test, the real harness end to end, every model scripted.
 
-``system`` gives a :class:`tests.system.drive.System` for the test's ``mode`` (``off``, ``on`` or ``in_episode``,
+``system`` gives a :class:`tests.system.drive.System` for the test's ``mode`` (``off`` or ``on``,
 from the test's own parametrisation): the lanes' loopback server (fork, writer, helper and the embedding route), the
 run's settings as a launcher gives them, the lanes settled as a controller settles them, and at the end the kit's
 drain (verified termination of the writer service). Nothing of the unit under test is replaced.

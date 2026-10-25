@@ -2,7 +2,7 @@
 
 :func:`run_session` runs the actor (or a teammate the actor starts) in its real sandboxed worker with
 ``InCodeTools`` and the real handlers, the models scripted (keyless), the library copy exported as a run exports it
-(``RequestRun._open_library``) under ``UNIFY_MEMORY=on`` or ``in_episode``. The agent's cells are, in order:
+(``RequestRun._open_library``) under ``UNIFY_MEMORY=on``. The agent's cells are, in order:
 
 1. :data:`HELP_CELL`, the first cell: what ``memory`` is and ``help(memory)``, before any other use of it;
 2. :func:`probe_cell`: reads and searches of the library by every name the texts give it, ``memory.get`` of paths, the
@@ -87,13 +87,9 @@ def setup_library(core_world: dict, monkeypatch, mode: str) -> Any:
 
 def probe_cell(tag: str, mode: str) -> str:
     """The cell that reads the library by every name, gathers the texts the agent is shown and the refusals."""
-    current = "/memory-library/current" if mode == "in_episode" else None
     reads = ["/memory-library", "/memory-library/INDEX.md", f"/memory-library/{NOTE_ID}", "/memory", f"/memory/{NOTE_ID}"]
     gets = [f"/memory-library/{NOTE_ID}", f"/memory/{NOTE_ID}", NOTE_ID]
-    if current:
-        reads += [current, f"{current}/{NOTE_ID}"]
-        gets += [f"{current}/{NOTE_ID}"]
-    own = f"{current or '/memory-library'}/{NOTE_ID}"
+    own = f"/memory-library/{NOTE_ID}"
     refused = [
         ("read", ["/workspace/none.txt"]),
         ("read", ["/memory-library/notes/none.md"]),
@@ -121,7 +117,7 @@ for _p in ("/memory-library", "/memory"):
 for _p in {gets!r}:
     _out["gets"][_p] = _try(lambda: memory.get(_p).id)
 _out["own_open"] = _try(lambda: open({own!r}).read())
-# the copy as the package itself names it (a traceback names its files so): under in_episode a pin in the mount
+# the copy as the package itself names it (a traceback names its files so)
 import os as _os
 _root = _os.path.dirname(_os.path.dirname(memory.__file__))
 _out["package root"] = _root

@@ -41,7 +41,7 @@ from ..signals import (
 #: Every signal's arrival, one JSON object per line, under the harness-only state directory.
 ARRIVALS_FILE = "signal-arrivals.jsonl"
 #: An episode id, in the build's one grammar for episode ids (a request names its episode
-#: ``%Y%m%dT%H%M%S-<8 hex>``; a segment ``<episode>.s<n>``).
+#: ``%Y%m%dT%H%M%S-<8 hex>``).
 EPISODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: The checker labels a late verdict may carry.
 LABELS = ("pass", "fail")

@@ -7,6 +7,7 @@ import json
 
 
 from unify.memory import batch_map, pool, library_prompts as pv
+from unify.memory.attention import HomeSources
 from tests.memory.library_example_world import library_example_world  # noqa: F401 - a fixture
 from tests.memory import library_example_world as w
 from tests.memory.test_pool import EMPTY, INDEX, _defer, _finish_with, _open, _Stores
@@ -340,12 +341,36 @@ def _named_inputs(text: str) -> set[str]:
     return out
 
 
+class _ForksOnly(HomeSources):
+    """The home's settled forks, and nothing else the ledger reads (no evidence store in these tests)."""
+
+    def capture_rows(self):
+        return {}
+
+    def use_failures(self):
+        return []
+
+    def late_signals(self):
+        return []
+
+    def episode_calls(self):
+        return []
+
+    def episode_items(self, episode):
+        return ()
+
+    def gate_refusals(self):
+        return []
+
+    def record_entries(self):
+        return []
+
+
 def _attention_pass(tmp_path, turns, **cfg):
     """Rev 2's one kind of writer pass: an attention WRITE pass handed the ledger's entry for e1's settled fork (as
     the service hands it), with the forks' staging under the home's state dir."""
     import asyncio
 
-    from tests.memory.integration.test_in_episode import _ForksOnly
     from tests.memory.test_writer_pass import Turns
     from unify.memory.attention import Ledger
     from unify.memory.integration.paths import Paths

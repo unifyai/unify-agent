@@ -78,7 +78,7 @@ def _ctx(tmp_path, home, entries):
 
 
 def _forks():
-    return [SettledFork(n, n, None, True, False, None) for n in ("e1", "e2", "e3")]
+    return [SettledFork(n, n, True, False, None) for n in ("e1", "e2", "e3")]
 
 
 def test_the_writer_always_has_the_attention_and_test_tools():

@@ -1,6 +1,6 @@
 """The memory run of the request in progress (one request per CLI process; integration Task 25).
 
-``RequestRun.begin`` opens a run while memory is on (``UNIFY_MEMORY`` ``on`` or ``in_episode``): it takes the request
+``RequestRun.begin`` opens a run while memory is on (``UNIFY_MEMORY=on``): it takes the request
 lock, applies the writer's landed passes, writes the read-only copy of memory ``main`` the worker mounts, notes its
 items (for the use record), renders the memory section the system prompt ends with (the librarian's constant
 pointer, :func:`.prompt.render_memory_section`), takes the work tree's before snapshot, and opens the scope the
@@ -779,59 +779,6 @@ def with_runtime_calls(record: dict, runtime: Any) -> dict:
     return record
 
 
-class _Peeking:
-    """A tool recorder whose ``drain`` only peeks (``RecordingObserver.peek``): the actions recorded so far, kept for
-    the episode's own record at its end; nothing when the recorder cannot peek."""
-
-    def __init__(self, observer: Any) -> None:
-        self._observer = observer
-
-    def drain(self) -> Any:
-        peek = getattr(self._observer, "peek", None)
-        return peek() if callable(peek) else []
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._observer, name)
-
-
-class _Undrained:
-    """A request run as :func:`.trajectory.assemble` reads it, with its tool recorder only peeked (:class:`_Peeking`):
-    an episode read as it stands, before it ends (``UNIFY_MEMORY=in_episode``), leaves the recorder as it was."""
-
-    def __init__(self, run: Any) -> None:
-        self._run = run
-        observer = getattr(run, "observer", None)
-        self.observer = _Peeking(observer) if observer is not None else None
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._run, name)
-
-
-def with_pins(record: Any, pin_counts: Mapping[str, Mapping[str, Mapping[str, int]]], cell_pins: list[str]) -> Any:
-    """*record* (a use record) with the pin each use was served under (``UNIFY_MEMORY=in_episode``): each item row gains
-    ``pins`` (pin -> its observed calls, {ok, refused, error}), each tracked call, ``Item.fits`` and
-    ``memory.ask`` row (``run_rows``, ``match_rows``, ``ask_rows``) its cell's ``pin``, and the record the pins it
-    served (``pins_served``). Unchanged when it is not a use record."""
-    if not isinstance(record, dict) or "error" in record:
-        return record
-    rows = record.get("items")
-    if not isinstance(rows, dict):
-        rows = record["items"] = {}
-    for pin, items in sorted(pin_counts.items()):
-        for item, counts in sorted(items.items()):
-            row = rows.get(item)
-            if not isinstance(row, dict):
-                row = rows[item] = {}
-            row.setdefault("pins", {})[pin] = dict(counts)
-    for key in ("run_rows", "match_rows", "ask_rows"):
-        for r in record.get(key) or []:
-            cell = r.get("cell") if isinstance(r, dict) else None
-            if isinstance(cell, int) and 0 <= cell < len(cell_pins):
-                r["pin"] = cell_pins[cell]
-    record["pins_served"] = sorted(set(cell_pins))
-    return record
-
-
 def memory_use(
     ep: Any,
     item_ids: list[str],
@@ -1004,13 +951,6 @@ class RequestRun:
         self._lock: int | None = None
         self._scope = contextlib.ExitStack()
         self._closed = False
-        # UNIFY_MEMORY=in_episode (set at open): the episode's pins, checkpoints and segment forks (in_episode.py)
-        self.in_episode: Any = None
-        # the actor's session handle (hooks.attach_handle), which a segment fork continues
-        self.handle: Any = None
-        # per cell whose audit records arrived, the pin served while it ran; and per pin, each item's observed calls
-        self.cell_pins: list[str] = []
-        self.pin_counts: dict[str, dict[str, dict[str, int]]] = {}
         self._consolidate_mod: Any = None
         self._landed: list[dict] = []  # the writer's results applied at open, reported at finish
         #: what ensure_service found at the request's start
@@ -1177,27 +1117,13 @@ class RequestRun:
         """Writes the read-only copy of the pin: no tests, plus the generated helper, INDEX.md and links.json
         (:func:`.checkout.export_actor_library_mode`). The memory section is the librarian's constant pointer. No
         memory.diff is recorded, because the copy cannot be written.
-
-        Under ``UNIFY_MEMORY=in_episode`` the copy is the first pin of the episode, in a directory of its own behind
-        the link ``<checkout>/current`` (:mod:`.in_episode`), so a commit landed while the episode runs can be swapped in
-        at a cell boundary; every reader of the copy reads it at :attr:`copy_root`.
         """
         from ..analysis import use
         from .prompt import render_memory_section
 
         paths = self.paths
         self._consolidate_mod = consolidate
-        from unify.settings import SETTINGS
-
-        from .switch import in_episode
-
-        if in_episode(SETTINGS):
-            from .in_episode import InEpisode
-
-            self.in_episode = InEpisode(self, self._export_copy)
-            self.in_episode.open(self.pin)
-        else:
-            self._export_copy(self.pin, paths.checkout, at_open=True)
+        self._export_copy(self.pin, paths.checkout)
         copy = self.copy_root
         self.item_ids = pinned_items(copy)
         # the worker binds ``memory`` in every cell when the copy holds the package (hooks.worker_globals)
@@ -1206,32 +1132,19 @@ class RequestRun:
         except (OSError, ValueError):
             self.memory_bound = False
         self.export_roots = _export_roots(copy)
-        if self.in_episode is not None:
-            # every pin of the episode sits under the export's directory, as the cells' reads of a later pin do
-            self.export_roots += [r for r in use.roots_of(paths.checkout) if r not in self.export_roots]
         self.surface = use.library_surface(copy)  # re-exports for the use record
         self.index, self.shown = render_memory_section(copy)
 
-    def repinned(self, tree: Path) -> None:
-        """``UNIFY_MEMORY=in_episode``: the copy now serves the pin at *tree*; the use record's items are those of
-        every pin the episode served."""
-        try:
-            self.item_ids = sorted(set(self.item_ids or []) | set(pinned_items(tree)))
-        except Exception as exc:  # noqa: BLE001 - the record then lists the first pin's items only
-            logger.warning("memory: the new pin's items not read (%s)", type(exc).__name__)
-
     @property
     def copy_root(self) -> Path:
-        """The actor's library copy as cells and host readers reach it: the checkout itself, or under
-        ``UNIFY_MEMORY=in_episode`` its link to the current pin (``<checkout>/current``)."""
-        ie = getattr(self, "in_episode", None)
-        return ie.copy_root if ie is not None else Path(self.paths.checkout)
+        """The actor's library copy as cells and host readers reach it: the checkout itself."""
+        return Path(self.paths.checkout)
 
-    def _export_copy(self, sha: str, dest: Path, at_open: bool = False) -> None:
+    def _export_copy(self, sha: str, dest: Path) -> None:
         """Write the actor's read-only copy of memory commit *sha* into *dest*: the commit's library, its generated
         files with the item records at that commit, the capture store's snapshot as it is now (withdrawn captures left
-        out; every other capture served the same way, whatever its code looks like) and the librarian's files. At the
-        request's open (*at_open*) it also records what serving changed in the copy, and the generated files."""
+        out; every other capture served the same way, whatever its code looks like) and the librarian's files. It also
+        records what serving changed in the copy, and the generated files."""
         from ..shape_rows import lookup_from
         from .checkout import export_actor_library_mode
 
@@ -1278,22 +1191,20 @@ class RequestRun:
                 type(exc).__name__,
             )
             captured = {}
-        if at_open:
-            gone = withdrawn or {}
-            # counts, and the items offered in a withdrawn capture's place (the pool holds which capture each replaced)
-            self.capture_serving = {
-                "withdrawn": len(gone),
-                "withdrawn_replaced": sum(1 for row in gone.values() if row.get("by")),
-                "offered_in_place": sorted({row["by"] for row in gone.values() if row.get("by")}),
-            }
+        gone = withdrawn or {}
+        # counts, and the items offered in a withdrawn capture's place (the pool holds which capture each replaced)
+        self.capture_serving = {
+            "withdrawn": len(gone),
+            "withdrawn_replaced": sum(1 for row in gone.values() if row.get("by")),
+            "offered_in_place": sorted({row["by"] for row in gone.values() if row.get("by")}),
+        }
         from ..library_export import staging_summaries
         from ..library_search import backend
 
         summary_of = staging_summaries(Path(paths.state_dir) / "memory-staging")
         # the search index's vectors: each request the embedder sends is booked once the request's cost record opens
-        # (_open), or at once when it is open (a re-pin)
-        costs = getattr(self, "costs", None)
-        book = costs.add_embedding if (costs is not None and not at_open) else self.export_embedding_calls.append
+        # (_open)
+        book = self.export_embedding_calls.append
         generated = export_actor_library_mode(
             paths.memory,
             sha,
@@ -1306,8 +1217,7 @@ class RequestRun:
             search=backend(on_call=book),
             serving=self._serving(records, status_of(records)),
         )
-        if at_open or not self.generated:
-            self.generated = generated
+        self.generated = generated
 
     def _serving(self, records: Mapping[str, dict], status_of: Callable[[str], str]) -> Callable[[Path], dict]:
         """What the export computes from the copy it materialised: each item's evidence (its failure record,
@@ -1338,7 +1248,7 @@ class RequestRun:
         return compute
 
     def _shape_rows(self, consolidate: Any, sha: str | None = None) -> dict:
-        """The pinned commit's input-shape rows (or *sha*'s: a re-pin), frozen on first export
+        """The pinned commit's input-shape rows (or *sha*'s), frozen on first export
         (:func:`..shape_rows.shapes_at`); functions without recorded shapes are backfilled from the evidence store's
         covers.
         """
@@ -1409,41 +1319,6 @@ class RequestRun:
         the cell's result then settles (:func:`add_library_failures`)."""
         add_runtime_calls(self.runtime_calls, drained, self.export_roots)
         add_library_failures(self.failures, drained)
-        ie = self.in_episode
-        if ie is not None and isinstance(drained, dict):
-            # UNIFY_MEMORY=in_episode: each observed call under the pin whose code it ran (the audit hook's
-            # ``pins``: a name bound before a re-pin keeps its old pin's code), the rest under the pin the cell was
-            # served (it never changes mid-cell)
-            pin = ie.current or self.pin
-            self.cell_pins.append(pin)
-            calls = drained.get("calls") if isinstance(drained.get("calls"), dict) else {}
-            counts = calls.get("counts") if isinstance(calls.get("counts"), dict) else {}
-            by_pin = calls.get("pins") if isinstance(calls.get("pins"), dict) else {}
-            left = {
-                item: {k: _count(row.get(k)) for k in RUNTIME_OUTCOMES}
-                for item, row in counts.items()
-                if isinstance(item, str) and isinstance(row, dict)
-            }
-            for name, rows in sorted(by_pin.items()):
-                commit = ie.commit_of(name) if isinstance(name, str) else None
-                if commit is None or not isinstance(rows, dict):
-                    continue
-                for item, row in rows.items():
-                    if item not in left or not isinstance(row, dict):
-                        continue
-                    for k in RUNTIME_OUTCOMES:
-                        n = min(_count(row.get(k)), left[item][k])  # never more than the cell's own count
-                        left[item][k] -= n
-                        self._add_pin_count(commit, item, k, n)
-            for item, row in left.items():
-                for k in RUNTIME_OUTCOMES:
-                    self._add_pin_count(pin, item, k, row[k])
-
-    def _add_pin_count(self, pin: str, item: str, outcome: str, n: int) -> None:
-        if n <= 0:
-            return
-        have = self.pin_counts.setdefault(pin, {}).setdefault(item, dict.fromkeys(RUNTIME_OUTCOMES, 0))
-        have[outcome] += n
 
     def note_failure(self, call_id: Any, exc: BaseException) -> None:
         """Keep that a code cell's tool call raised instead of returning (``hooks.tool_result``): its
@@ -1531,9 +1406,6 @@ class RequestRun:
         entry = {"label": raw["label"], "obs": self._observations_now(), "at": _now(), "about": about}
         self.checker_seen.append(entry)
         self._tell_listeners(entry)
-        if self.in_episode is not None:
-            # UNIFY_MEMORY=in_episode: an in-episode signal is a pause; its segment fork starts at the next turn
-            self.in_episode.mark("signal")
         return {
             "type": "checker",
             "accepted": True,
@@ -1699,9 +1571,6 @@ class RequestRun:
 
             # after the reply and the lock: hand over the request, and wait for the fork
             await asyncio.to_thread(_fork.finish, fork, progress)
-        if self.in_episode is not None:
-            # UNIFY_MEMORY=in_episode: the segment forks still running are handed over (and waited for) the same way
-            await asyncio.to_thread(self.in_episode.finish, progress)
 
     def _index_similar(self, progress: Callable[[str], None]) -> None:
         """The ``similar`` tool's index entry for the episode just recorded, built here once, under its time limit, so no
@@ -1769,21 +1638,6 @@ class RequestRun:
                 reservation.abandon(f"error: {type(exc).__name__}")
             return None
 
-    def partial_episode(self) -> tuple[Any, Any]:
-        """The episode as it stands now (``UNIFY_MEMORY=in_episode``: a checkpoint's segment record): its transcript so
-        far, folded as at the end (its cells, messages and replies, and its dialogue actions), with no work-tree change
-        (the capture of the work tree ends only with the episode). Returns ``(episode, redactor)``; nothing is
-        written."""
-        from unify import transcripts
-
-        from . import trajectory
-
-        lines = trajectory.read_jsonl(
-            transcripts.transcripts_dir() / f"{self.episode_id}.jsonl",
-        )
-        extra = recorded_dialogue(lines, self.redactor())
-        return trajectory.assemble(_Undrained(self), lines, _now(), extra_actions=extra)
-
     def _record_episode(self) -> tuple[str, str]:
         from unify import transcripts
 
@@ -1824,10 +1678,6 @@ class RequestRun:
             failures=self.failures,
             librarian=self.librarian_sessions,
         )
-        if self.in_episode is not None:
-            # UNIFY_MEMORY=in_episode: the episode's pins, and every use under the pin served when it was called
-            ep.memory_pins = self.in_episode.pin_rows()
-            ep.memory_use = with_pins(ep.memory_use, self.pin_counts, self.cell_pins)
         # the regime from this episode's own signals and use record, before it is written, so the meta, the index and
         # every signal posted below carry it (never a default)
         basis, visible = self._infer_regime(ep, lines)

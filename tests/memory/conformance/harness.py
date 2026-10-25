@@ -72,11 +72,6 @@ def redesign_env(port: int) -> dict[str, str]:
     }
 
 
-def in_episode_env() -> dict[str, str]:
-    """Memory during an episode as well (``UNIFY_MEMORY=in_episode``), on top of :func:`redesign_env`."""
-    return {"UNIFY_MEMORY": "in_episode"}
-
-
 def apply_settings(monkeypatch: Any, env: dict[str, str]) -> None:
     """Set *env* for this process's settings object and for every child it starts (the fork worker, the service):
     the environment first, then each field copied from a settings object built from it (so types are the model's)."""

@@ -2866,10 +2866,7 @@ class WriterPass:
             return None
         if eid in self._episodes:
             return self._episodes[eid]
-        from . import segments as _segments
-
-        # a segment of an episode (UNIFY_MEMORY=in_episode) is read from its own record, never indexed
-        if eid not in self._recorded_ids() and not _segments.is_segment_name(eid):
+        if eid not in self._recorded_ids():
             return None
         try:
             ep = self.load(eid)

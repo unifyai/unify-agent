@@ -156,6 +156,5 @@ credential values are replaced before a line is written. The log files go to `UN
 
 **Files:** `unify/memory/`, `unify/memory/integration/hooks.py`; see `docs/memory.md`.
 
-`UNIFY_MEMORY` is `off`, `on` (the default) or `in_episode`. Off is no memory of any kind. On, each request reads a
-pinned copy of the library and its index, and after the request the writer turns what happened into tested library
-items. In episode, memory also changes while a request runs.
+`UNIFY_MEMORY` is `off` or `on` (the default). Off is no memory of any kind. On, each request reads a pinned copy of
+the library and its index, and after the request the writer turns what happened into tested library items.

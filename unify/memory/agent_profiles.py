@@ -88,8 +88,6 @@ _ACTOR_IN_CODE = [
     "ask_library",
     "sh",
     "check_examples",
-    # only with UNIFY_MEMORY=in_episode (registry flag "checkpoint")
-    "checkpoint",
 ]
 _TEAMMATE_IN_CODE = [
     "read",

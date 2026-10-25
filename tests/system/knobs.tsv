@@ -21,7 +21,7 @@ UNIFY_LOCAL_ROOT	deployment	path
 UNIFY_LOG_DIR	deployment	path
 UNIFY_MAX_OUTPUT_TOKENS	deployment	actor limit
 UNIFY_MAX_TOOL_LOOP_STEPS	deployment	actor limit
-UNIFY_MEMORY	memory-switch	off / on / in_episode
+UNIFY_MEMORY	memory-switch	off / on
 UNIFY_MEMORY_CAP_USD	memory-switch	memory's spend cap (decimal string)
 UNIFY_MEMORY_LIBRARY_FORK_BASE_URL	deployment	audit H4: changes memory's behaviour in practice: without the fork lane no fork runs and nothing is captured
 UNIFY_MEMORY_LIBRARY_FORK_TOKEN	deployment	the fork lane token (name only; never logged)

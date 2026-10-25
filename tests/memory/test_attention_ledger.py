@@ -88,16 +88,14 @@ def _ledger(tmp_path, clock=None):
 
 
 def _fork(name, *, output=True, procedure=True):
-    ep, seg = at.split_staging_name(name)
-    return SettledFork(name, ep, seg, output, procedure, None)
+    return SettledFork(name, name, output, procedure, None)
 
 
 def _cap(name, cid, **own):
     check = {"ran": True, "error": None, "refused": False, "deterministic": True, "value_match": "not_applicable",
              "calls": {"mode": "replay", "matched": 2, "differed": 0, "missing": 0, "unrecorded": 0}}  # fmt: skip
     check.update(own)
-    ep, seg = at.split_staging_name(name)
-    return {"v": 2, "capture_id": cid, "episode": ep, "segment": seg, "own_check": check, "outcome": "none"}
+    return {"v": 2, "capture_id": cid, "episode": name, "own_check": check, "outcome": "none"}
 
 
 def _kinds(entries):
@@ -497,8 +495,8 @@ def test_material_names_what_each_kind_owes(tmp_path):
     m = at.material(e("new_experience", episodes=("e1",), captures=("c" * 16,)))
     assert [(p.name, p.required) for p in m] == [("summary", True), ("procedure.py", True), ("episode", False)]
     assert "/inputs/captures/" + "c" * 16 + "/procedure.py" in m[1].paths
-    seg = at.material(e("new_experience", episodes=("e1",), segment=2))
-    assert seg[0].paths == ("/inputs/staging/e1.s2/summary.md",)
+    bare = at.material(e("new_experience", episodes=("e1",)))
+    assert bare[0].paths == ("/inputs/staging/e1/summary.md",)
     assert at.item_box_paths("memory.pkg.mod:total") == ("/memory/memory/pkg/mod.py",)
     assert at.item_box_paths("notes/a/b.md") == ("/memory/notes/a/b.md",)
     assert at.item_box_paths("capture:" + "c" * 16) == ("/inputs/captures/" + "c" * 16 + "/procedure.py",)
@@ -507,11 +505,10 @@ def test_material_names_what_each_kind_owes(tmp_path):
         "/inputs/attention/" + "a" * 16 + "/note.json",
         "/inputs/drafts/p1/gate.md",
     )
-    assert at.pass_episodes([e("new_experience", episodes=("e1",), segment=1), e("late_evidence", episodes=("e2",))]) == [
-        "e1.s1",
+    assert at.pass_episodes([e("new_experience", episodes=("e1",)), e("late_evidence", episodes=("e2",))]) == [
+        "e1",
         "e2",
     ]
-    assert at.split_staging_name("e1.s12") == ("e1", 12) and at.split_staging_name("e.sx") == ("e.sx", None)
 
 
 def test_export_material_writes_ids_and_harness_facts(tmp_path):

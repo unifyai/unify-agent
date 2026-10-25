@@ -34,11 +34,9 @@ def test_a_cell_that_prints_a_traceback_without_raising_is_not_marked_raised():
 
 
 def test_the_fork_instruction_names_where_the_record_section_is_and_does_not_steer_what_is_kept():
-    for text in (fork_mod.fork_instruction(), fork_mod.segment_instruction(0, 2)):
-        flat = " ".join(text.split())
-        assert "the record's section in your first message" in flat and "section below" not in flat
-        assert "could be reused" not in flat.lower()
     flat = " ".join(fork_mod.fork_instruction().split())
+    assert "the record's section in your first message" in flat and "section below" not in flat
+    assert "could be reused" not in flat.lower()
     assert "one of the `run(state, env)` form is not run that way" in flat
 
 

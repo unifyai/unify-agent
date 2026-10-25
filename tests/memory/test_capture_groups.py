@@ -176,7 +176,7 @@ def test_a_judges_kin_row_relates_two_captures_and_unknown_ids_are_left_out(tmp_
 def test_an_entry_whose_episode_left_no_capture_is_closed_by_the_harness_and_runs_no_pass(tmp_path):
     clock = Clock()
     led = Ledger(tmp_path / "home", clock=clock)
-    led.sync(Fake(forks=[SettledFork("e1", "e1", None, True, False, None)]))
+    led.sync(Fake(forks=[SettledFork("e1", "e1", True, False, None)]))
     (e,) = led.entries().values()
     assert e.refs.captures == ()
     assert led.hand("p1", 4, grouping=lambda entries: cg.groups(entries, lambda x: _p(x.entry), now=clock())) == []
@@ -196,11 +196,11 @@ def test_a_group_with_a_member_in_a_running_pass_is_not_due():
 
 
 def _fork(name):
-    return SettledFork(name, name, None, True, True, None)
+    return SettledFork(name, name, True, True, None)
 
 
 def _cap(name, cid):
-    return {"v": 2, "capture_id": cid, "episode": name, "segment": None, "own_check": {"ran": False}, "outcome": "none"}
+    return {"v": 2, "capture_id": cid, "episode": name, "own_check": {"ran": False}, "outcome": "none"}
 
 
 def test_the_ledger_hands_other_kinds_first_then_one_due_group_with_its_row(tmp_path):
@@ -327,7 +327,7 @@ def _home(tmp_path):
 def test_a_closed_entry_is_taken_read_only_and_stays_closed(tmp_path):
     home = _home(tmp_path)
     led = Ledger(home)
-    led.sync(Fake(forks=[SettledFork(n, n, None, True, False, None) for n in ("e1", "e2")]))
+    led.sync(Fake(forks=[SettledFork(n, n, True, False, None) for n in ("e1", "e2")]))
     (e1,) = led.hand("p0", 1)
     reads = at.PassReads(frozenset({"/inputs/staging/e1/summary.md"}))
     led.decide("p0", [e1.entry], "nothing_to_keep", [], "nothing transfers", reads=reads,

@@ -119,22 +119,10 @@ def actor_flags(agent: str, *, librarian: Optional[bool] = None) -> frozenset:
     return frozenset(
         {"helper"}
         | ({_registry.LIBRARIAN_FLAG} if librarian and agent in ("actor", "teammate") else set())
-        # UNIFY_MEMORY=in_episode: the actor marks the pauses of its work (tools.checkpoint)
-        | ({_registry.CHECKPOINT_FLAG} if agent == "actor" and _in_episode(SETTINGS) else set())
         # a world whose requests give examples offers the example check (UNIFY_ACTOR_EXAMPLES_CHECK)
         | ({_registry.EXAMPLES_FLAG} if agent in ("actor", "teammate") and SETTINGS.UNIFY_ACTOR_EXAMPLES_CHECK
            else set()),
     )
-
-
-def _in_episode(settings: Any) -> bool:
-    """Whether ``UNIFY_MEMORY=in_episode`` is on for this run (with memory on); False when it cannot be read."""
-    try:
-        from unify.memory.integration.switch import in_episode, memory_on
-
-        return memory_on(settings) and in_episode(settings)
-    except Exception:  # noqa: BLE001 - a setting that cannot be read offers nothing new
-        return False
 
 
 def actor_binding(
@@ -212,16 +200,11 @@ MEMORY_ALIAS = "/memory"
 class LibraryView:
     """The library copy as the workspace sandbox mounts it for this request's cells.
 
-    *mount* is the host directory the sandbox binds read-only at :data:`LIBRARY` (``unify.sandbox.late_readonly_mounts``
-    of the worker's own late mounts, so a read sees exactly what a cell sees), *mounts* those mounts, and *copy* the host
-    directory of the request's copy: the mount itself, or under ``UNIFY_MEMORY=in_episode`` the pin its link *link*
-    (inside the mount) points to now. A box path under :data:`LIBRARY` or ``/memory`` names the copy; under
-    in_episode a path through the link names the copy too, and one under another entry of the mount (the pins) names
-    that entry as a cell sees it."""
+    *mount* is the host directory of the request's copy, which the sandbox binds read-only at :data:`LIBRARY`
+    (``unify.sandbox.late_readonly_mounts`` of the worker's own late mounts, so a read sees exactly what a cell sees),
+    and *mounts* those mounts. A box path under :data:`LIBRARY` or ``/memory`` names the copy."""
 
     mount: Path
-    copy: Path
-    link: str
     mounts: tuple
 
 
@@ -238,23 +221,7 @@ def library_view(policy: Any) -> Optional[LibraryView]:
     mount = next((Path(host) for host, at in mounts if at == LIBRARY), None)
     if mount is None or not mount.is_dir():
         return None
-    copy, link = mount, ""
-    root = getattr(hooks._run(), "copy_root", None)
-    if root is not None:
-        # the copy's link inside the mount, named as the box names it (its own name, never followed here)
-        named = Path(os.path.realpath(os.path.dirname(os.fspath(root)))) / os.path.basename(os.fspath(root))
-        real = Path(os.path.realpath(root))
-        rel = os.path.relpath(named, mount)
-        if (
-            named != mount
-            and "/" not in rel
-            and rel not in (".", "..")
-            and real.is_dir()
-            and real != mount
-            and real.is_relative_to(mount)
-        ):
-            copy, link = real, rel
-    return LibraryView(mount, copy, link, mounts)
+    return LibraryView(mount, mounts)
 
 
 def _library_place(view: LibraryView, vpath: str) -> Optional[tuple[str, Path, str]]:
@@ -265,26 +232,9 @@ def _library_place(view: LibraryView, vpath: str) -> Optional[tuple[str, Path, s
 
     if not (vpath in (LIBRARY, MEMORY_ALIAS) or vpath.startswith((LIBRARY + "/", MEMORY_ALIAS + "/"))):
         return None
-    prefix, parts = _safe.split(vpath, [LIBRARY, MEMORY_ALIAS])
-    if prefix == LIBRARY and view.link and parts:
-        if parts[0] == view.link:
-            parts = parts[1:]
-        elif parts[0] in _mount_entries(view):
-            # an entry of the mount besides the copy's link (in_episode: the pins), as a cell sees it
-            shown = _safe.virtual(LIBRARY, parts)
-            return shown, view.mount, shown
+    _prefix, parts = _safe.split(vpath, [LIBRARY, MEMORY_ALIAS])
     shown = _safe.virtual(LIBRARY, parts)
-    return shown, view.copy, shown
-
-
-def _mount_entries(view: LibraryView) -> frozenset:
-    """The names directly in the mount other than the copy's link (empty when the copy is the mount)."""
-    if not view.link:
-        return frozenset()
-    try:
-        return frozenset(n for n in os.listdir(view.mount) if n != view.link)
-    except OSError:
-        return frozenset()
+    return shown, view.mount, shown
 
 
 def _host_of(root: Path, shown: str) -> Path:

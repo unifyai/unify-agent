@@ -1,8 +1,7 @@
 """Rev 2, item 5: a writer pass never asks for an episode that is still running, and no failed pass is silent.
 
 An entry names episodes (a message posted mid-episode names its sender's running episode). It is handed only once each
-can be read: a recorded (indexed) episode, or a running one through its latest in-episode segment record. Until then
-it waits ``open`` (one ``wait`` row, no hand, so no miss). A pass that does fail says why on its pass row: the class of
+can be read: a recorded (indexed) episode. Until then it waits ``open`` (one ``wait`` row, no hand, so no miss). A pass that does fail says why on its pass row: the class of
 what it raised and where (``file:line:function``), never the message. No model, network or key.
 """
 
@@ -15,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from unify.memory import attention, metering, segments
+from unify.memory import attention, metering
 from unify.memory import writer_service as ws
 from unify.memory.integration import async_pass as ap
 from tests.memory import store_reads
@@ -23,8 +22,8 @@ from tests.memory import store_reads
 HERE = Path(__file__).name
 
 
-def _resolver(state_dir, recorded):
-    return attention.episode_resolver(state_dir, lambda e: e in recorded)
+def _resolver(recorded):
+    return attention.episode_resolver(lambda e: e in recorded)
 
 
 def _ready(resolve):
@@ -35,12 +34,6 @@ def _ops(led, op):
     return [r for r in led.rows() if r.get("op") == op]
 
 
-def _segment_record(state_dir, name, doc=None):
-    p = segments.snapshot_path(state_dir, name)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(doc or {}))
-
-
 # --- the ledger: an entry waits for its episode, without a miss --------------------------------------------------------
 
 
@@ -49,42 +42,17 @@ def test_a_message_naming_a_running_episode_waits_without_a_miss_and_is_handed_o
     eid = led.create("message", attention.Refs(episodes=("ep-run",), record_seq=7), 7)
     recorded: set[str] = set()
     for pid in ("p1", "p2", "p3"):  # the service asks each turn, with a fresh resolver
-        assert led.hand(pid, 4, ready=_ready(_resolver(led.state_dir, recorded))) == []
+        assert led.hand(pid, 4, ready=_ready(_resolver(recorded))) == []
     e = led.get(eid)
     assert e.state == "open" and e.misses == 0 and e.hand_count == 0
     assert _ops(led, "hand") == [] and _ops(led, "return") == []
     (wait,) = _ops(led, "wait")  # one wait row, however many turns asked
     assert wait["entry"] == eid and wait["episodes"] == ["ep-run"] and wait["why"] == "episode_not_recorded"
     recorded.add("ep-run")
-    resolve = _resolver(led.state_dir, recorded)
+    resolve = _resolver(recorded)
     handed = led.hand("p4", 4, ready=_ready(resolve))
     assert [x.entry for x in handed] == [eid]
     assert attention.pass_episodes(handed, resolve=resolve) == ["ep-run"]
-
-
-def test_a_running_episode_with_segment_records_is_read_from_its_latest(tmp_path):
-    led = attention.Ledger(tmp_path / "home")
-    eid = led.create("message", attention.Refs(episodes=("ep-run",), record_seq=7), 7)
-    for name in ("ep-run.s1", "ep-run.s3", "ep-runx.s9"):  # another episode's segment shares the prefix only
-        _segment_record(led.state_dir, name)
-    (Path(led.state_dir) / segments.SEGMENTS_DIR / "ep-run.s4").mkdir()  # a segment dir with no record yet
-    resolve = _resolver(led.state_dir, set())
-    assert resolve("ep-run", None) == "ep-run.s3"
-    handed = led.hand("p1", 4, ready=_ready(resolve))
-    assert [x.entry for x in handed] == [eid] and _ops(led, "wait") == []
-    assert attention.pass_episodes(handed, resolve=resolve) == ["ep-run.s3"]
-
-
-def test_a_segment_entry_reads_its_own_segment_record(tmp_path):
-    state = tmp_path / "state"
-    entry = attention.AttentionEntry(
-        "a" * 16, "new_experience", "open", "2026-10-21T00:00:00Z", attention.Refs(episodes=("ep",), segment=2)
-    )
-    assert attention.entry_ready(entry, _resolver(state, set())) is False  # no record, not recorded: waits
-    assert attention.pass_episodes([entry], resolve=_resolver(state, {"ep"})) == ["ep.s2"]  # as before
-    _segment_record(state, "ep.s2")
-    resolve = _resolver(state, set())
-    assert attention.entry_ready(entry, resolve) and attention.pass_episodes([entry], resolve=resolve) == ["ep.s2"]
 
 
 def test_ready_entries_are_handed_past_a_waiting_one(tmp_path):
@@ -92,7 +60,7 @@ def test_ready_entries_are_handed_past_a_waiting_one(tmp_path):
     waiting = led.create("message", attention.Refs(episodes=("ep-run",), record_seq=1), 1)
     rest = [led.create("message", attention.Refs(record_seq=s), s) for s in (2, 3)]
     rest.append(led.create("message", attention.Refs(episodes=("ep-done",), record_seq=4), 4))
-    handed = led.hand("p1", 4, ready=_ready(_resolver(led.state_dir, {"ep-done"})))
+    handed = led.hand("p1", 4, ready=_ready(_resolver({"ep-done"})))
     # every ready entry, in the ledger's own hand order (entries made in the same second are ordered by their ids)
     assert sorted(x.entry for x in handed) == sorted(rest)
     assert led.get(waiting).state == "open" and led.get(waiting).misses == 0
@@ -108,7 +76,7 @@ def test_without_a_readiness_check_the_hand_is_as_before(tmp_path):
 def test_what_still_waits_at_the_run_end_is_not_reached(tmp_path):
     led = attention.Ledger(tmp_path / "home")
     eid = led.create("message", attention.Refs(episodes=("ep-run",), record_seq=1), 1)
-    led.hand("p1", 4, ready=_ready(_resolver(led.state_dir, set())))
+    led.hand("p1", 4, ready=_ready(_resolver(set())))
     assert led.mark_not_reached("run_ended") == [eid]
     assert led.get(eid).state == "not_reached" and store_reads.guaranteed(led.report())
 
@@ -124,7 +92,7 @@ def test_a_failed_index_read_says_not_recorded_yet():
 # --- the attention pass: no episode that cannot be read is asked for ---------------------------------------------------
 
 
-def _pass(tmp_path, monkeypatch, refs, *, writer_run=None, segment_of=None):
+def _pass(tmp_path, monkeypatch, refs, *, writer_run=None):
     """One run_attention_pass over a message entry with *refs*, handed without a readiness check (as a pass resumed
     from before it was handed so); the recorded episode ``e1`` exists. Returns (the episodes the writer was asked
     for, the report)."""
@@ -137,9 +105,6 @@ def _pass(tmp_path, monkeypatch, refs, *, writer_run=None, segment_of=None):
     stores = tc._stores(tmp_path)
     tc._record(stores, "e1")
     home = stores.paths.home
-    if segment_of is not None:  # a running episode's segment record, as its checkpoint wrote it
-        ep = consolidate.EpisodeLookup(stores).episode("e1")
-        segments.write_snapshot(stores.paths.state_dir, segment_of, ep)
     ledger = attention.Ledger(home)
     ledger.create("message", refs, 1)
     pid = "ef" * 8
@@ -177,13 +142,6 @@ def test_a_pass_never_asks_for_a_running_episode(tmp_path, monkeypatch):
     writer asked the index for it and the pass died on KeyError before its first call."""
     asked, report = _pass(tmp_path, monkeypatch, attention.Refs(episodes=("e-running", "e1"), record_seq=1))
     assert asked and all(a == ["e1"] for a in asked)
-    assert report.ended != "error" and report.error_class is None
-
-
-def test_a_pass_reads_a_running_episode_from_its_latest_segment_record(tmp_path, monkeypatch):
-    refs = attention.Refs(episodes=("e-running", "e1"), record_seq=1)
-    asked, report = _pass(tmp_path, monkeypatch, refs, segment_of="e-running.s2")
-    assert asked and all(a == ["e-running.s2", "e1"] for a in asked)
     assert report.ended != "error" and report.error_class is None
 
 

@@ -19,7 +19,7 @@ does*.
 - **The run record** (`unify/agents/`). One append-only record per run that the actor, its teammates, the requester,
   the librarian and the harness post to. Its own tools are `send`, `messages`, `wait` and `who`, the same for every
   agent (`unify/agents/run_record_tools.py`).
-- **Memory** (`unify/memory/`). One switch, `UNIFY_MEMORY`: `off`, `on` (the default) or `in_episode`. With memory
+- **Memory** (`unify/memory/`). One switch, `UNIFY_MEMORY`: `off` or `on` (the default). With memory
   on, each request is recorded as an episode, a fork of the actor's conversation captures what it did (a capture is
   never run), a detached writer service keeps the library under a gate that labels and only refuses for safety, and
   later requests read the library as the `memory` package and ask the librarian (`memory.ask`).

@@ -156,20 +156,20 @@ def test_memory_has_exactly_one_switch():
     }
 
 
-@pytest.mark.parametrize("value", ["off", "on", "in_episode", "", "ON", " In_Episode "])
-def test_the_switch_takes_its_three_values(value):
+@pytest.mark.parametrize("value", ["off", "on", "", "ON", " Off "])
+def test_the_switch_takes_its_two_values(value):
     from unify.memory.integration import switch
 
     assert switch.parse_memory(value) == (value.strip().lower() or "on")
 
 
-@pytest.mark.parametrize("value", ["yes", "1", "repin", "paper", "true", "on,in_episode"])
-def test_any_other_value_is_refused_with_the_three_values(value):
+@pytest.mark.parametrize("value", ["yes", "1", "in_episode", " In_Episode ", "paper", "true", "on,off"])
+def test_any_other_value_is_refused_with_the_two_values(value):
     from unify.memory.integration import switch
 
     with pytest.raises(ValueError) as exc:
         switch.parse_memory(value)
-    assert "off, on, in_episode" in str(exc.value)
+    assert "UNIFY_MEMORY must be one of off, on (empty means on)" in str(exc.value)
 
 
 def test_the_default_is_memory_between_episodes(monkeypatch):
@@ -181,16 +181,16 @@ def test_the_default_is_memory_between_episodes(monkeypatch):
     monkeypatch.delenv("UNIFY_MEMORY", raising=False)
     assert ProductionSettings.model_fields["UNIFY_MEMORY"].default == "on"
     assert switch.memory_mode(SimpleNamespace()) == "on"
-    for value, on, ep in (("off", False, False), ("on", True, False), ("in_episode", True, True)):
+    for value, on in (("off", False), ("on", True)):
         s = SimpleNamespace(UNIFY_MEMORY=value)
-        assert (switch.memory_mode(s), switch.memory_on(s), switch.in_episode(s)) == (value, on, ep)
+        assert (switch.memory_mode(s), switch.memory_on(s)) == (value, on)
 
 
 def test_the_settings_refuse_another_value(monkeypatch):
     from unify.settings import ProductionSettings
 
-    monkeypatch.setenv("UNIFY_MEMORY", "repin")
-    with pytest.raises(ValueError, match="off, on, in_episode"):
+    monkeypatch.setenv("UNIFY_MEMORY", "in_episode")
+    with pytest.raises(ValueError, match="must be one of off, on "):
         ProductionSettings()
 
 

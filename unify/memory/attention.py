@@ -11,7 +11,7 @@ and from nothing else: no world name, label, id of a request, stream position or
 =====================  ==================================================================================================
 kind                   created when
 =====================  ==================================================================================================
-``new_experience``     an episode's (or a segment's) fork settled with any output: the summary, plus the procedure
+``new_experience``     an episode's fork settled with any output: the summary, plus the procedure
 ``own_check_failed``   never made under rev 2 (no capture is run to classify it); kept so an older ledger still folds
 ``use_went_badly``     a use of an item was failed (an error, ``holds`` false, a contrary signal after it) or refused (the
                        item refused the call, ``MemoryInputError``), or an actor wrote to the writer about it on the run
@@ -43,10 +43,9 @@ start hands every entry still owed again (those a stopped pass held go back with
 the service did not end held, found at the next start, with ``service_restart``).
 
 **Waiting for an episode.** An entry is handed only when every episode it names can be read (:func:`episode_resolver`):
-an episode is readable once it is recorded (indexed), and a running one through its latest in-episode segment record
-(``<episode>.s<n>``) when it has one. An entry naming a running episode with no segment record (a message posted
-mid-episode cites its sender's episode) stays ``open``, with one ``wait`` row as its evidence: it is not handed, so no
-pass can miss it, and it is handed once the episode is recorded. What still waits at the run's end is ``not_reached``.
+an episode is readable once it is recorded (indexed). An entry naming a running episode (a message posted mid-episode
+cites its sender's episode) stays ``open``, with one ``wait`` row as its evidence: it is not handed, so no pass can
+miss it, and it is handed once the episode is recorded. What still waits at the run's end is ``not_reached``.
 
 **Hand order** (:data:`HAND_ORDER`): bad news first, then the time-sensitive messages, oldest first within each kind.
 The age backstop: when the oldest open entry of any kind is older than the 90th-percentile age-at-hand of the entries
@@ -194,7 +193,6 @@ class Refs:
     """What an entry points at, ids only."""
 
     episodes: tuple[str, ...] = ()
-    segment: int | None = None
     captures: tuple[str, ...] = ()
     items: tuple[str, ...] = ()
     signals: tuple[str, ...] = ()
@@ -204,7 +202,6 @@ class Refs:
     def row(self) -> dict:
         return {
             "episodes": list(self.episodes),
-            "segment": self.segment,
             "captures": list(self.captures),
             "items": list(self.items),
             "signals": list(self.signals),
@@ -220,10 +217,9 @@ class Refs:
             v = row.get(key)
             return tuple(dict.fromkeys(x for x in v if isinstance(x, str))) if isinstance(v, list) else ()
 
-        seg, seq = row.get("segment"), row.get("record_seq")
+        seq = row.get("record_seq")
         return cls(
             ids("episodes"),
-            seg if isinstance(seg, int) and not isinstance(seg, bool) else None,
             ids("captures"),
             ids("items"),
             ids("signals"),
@@ -232,14 +228,13 @@ class Refs:
         )
 
     def merged(self, more: "Refs") -> "Refs":
-        """These refs with *more*'s ids appended (no duplicates; the first segment and record seq kept)."""
+        """These refs with *more*'s ids appended (no duplicates; the first record seq kept)."""
 
         def join(a: tuple[str, ...], b: tuple[str, ...]) -> tuple[str, ...]:
             return tuple(dict.fromkeys((*a, *b)))
 
         return Refs(
             join(self.episodes, more.episodes),
-            self.segment if self.segment is not None else more.segment,
             join(self.captures, more.captures),
             join(self.items, more.items),
             join(self.signals, more.signals),
@@ -476,11 +471,6 @@ class Part:
         }
 
 
-def staging_name(episode: str, segment: int | None) -> str:
-    """The staging directory of an episode, or of one of its segments (``<episode>.s<n>``)."""
-    return episode if segment is None else f"{episode}.s{int(segment)}"
-
-
 def _summary_paths(names: Iterable[str]) -> tuple[str, ...]:
     return tuple(f"{STAGING_INPUTS}/{n}/summary.md" for n in names)
 
@@ -497,7 +487,7 @@ def material(
     by one route, its capture's ``procedure.py`` (the staging copy is left out of the inputs when the capture holds
     it), and a staged ``procedure.py`` is named only for an entry with no capture, where it exists."""
     r = entry.refs
-    names = [staging_name(e, r.segment) for e in r.episodes]
+    names = list(r.episodes)
     own = f"{ATTENTION_INPUTS}/{entry.entry}"
     proc_paths = tuple(f"{CAPTURES_INPUTS}/{c}/procedure.py" for c in r.captures) or tuple(
         f"{STAGING_INPUTS}/{n}/procedure.py" for n in names if has_procedure(n)
@@ -743,7 +733,6 @@ class SettledFork:
 
     name: str
     episode: str
-    segment: int | None
     output: bool
     procedure: bool
     settled_at: str | None
@@ -970,7 +959,6 @@ class Ledger:
                 cid = cap.get("capture_id") if isinstance(cap, Mapping) else None
                 refs = Refs(
                     episodes=(f.episode,),
-                    segment=f.segment,
                     captures=(cid,) if isinstance(cid, str) and cid else (),
                 )
                 contrary = isinstance(cap, Mapping) and cap.get("outcome") in ("contrary", "failed")
@@ -1333,7 +1321,7 @@ class Ledger:
         from .captures import asked
 
         for ep in e.refs.episodes:
-            p = self.state_dir / "memory-staging" / staging_name(ep, e.refs.segment) / "summary.md"
+            p = self.state_dir / "memory-staging" / ep / "summary.md"
             try:
                 if stat.S_ISREG(os.lstat(p).st_mode):
                     text = asked(p.read_text(encoding="utf-8", errors="replace"))
@@ -1677,68 +1665,36 @@ def _distance(a: str, b: str) -> int:
 # --- what a pass is given ------------------------------------------------------------------------------------------------
 
 
-def pass_episodes(
-    entries: Iterable[AttentionEntry], *, resolve: Callable[[str, int | None], str | None] | None = None
-) -> list[str]:
-    """The recorded episodes (and segments, as ``<episode>.s<n>``) whose records and staging an attention pass exports
-    for *entries*, in hand order. With *resolve* (:func:`episode_resolver`) each is the name it can be read by now, and
-    one that cannot be read yet is left out (it is never asked for, so no pass breaks on it)."""
+def pass_episodes(entries: Iterable[AttentionEntry], *, resolve: Callable[[str], str | None] | None = None) -> list[str]:
+    """The recorded episodes whose records and staging an attention pass exports for *entries*, in hand order. With
+    *resolve* (:func:`episode_resolver`) each is the name it can be read by now, and one that cannot be read yet is left
+    out (it is never asked for, so no pass breaks on it)."""
     out: list[str] = []
     for e in entries:
         for ep in e.refs.episodes:
-            name = resolve(ep, e.refs.segment) if resolve is not None else staging_name(ep, e.refs.segment)
+            name = resolve(ep) if resolve is not None else ep
             if name is not None:
                 out.append(name)
     return list(dict.fromkeys(out))
 
 
-def episode_resolver(
-    state_dir: Path | str, indexed: Callable[[str], bool]
-) -> Callable[[str, int | None], str | None]:
-    """The name an episode (or one of its segments) can be read by now, or None while it cannot (module docstring:
-    waiting for an episode). *indexed* says whether an episode is recorded (the evidence index). A segment
-    (``<episode>.s<n>``) reads from its own record, which its checkpoint wrote; an episode with no segment named reads
-    from its record once recorded, and while it runs from its latest segment record, if it has one. Its answers are
-    kept for the resolver's life (one handing or one pass); both only ever become readable."""
-    from . import segments
+def episode_resolver(indexed: Callable[[str], bool]) -> Callable[[str], str | None]:
+    """The name an episode can be read by now, or None while it cannot (module docstring: waiting for an episode).
+    *indexed* says whether an episode is recorded (the evidence index); an episode reads from its record once recorded.
+    Its answers are kept for the resolver's life (one handing or one pass); an episode only ever becomes readable."""
+    seen: dict[str, str | None] = {}
 
-    root = Path(state_dir) / segments.SEGMENTS_DIR
-    seen: dict[tuple[str, int | None], str | None] = {}
-
-    def has_record(name: str) -> bool:
-        try:
-            return stat.S_ISREG(os.lstat(segments.snapshot_path(state_dir, name)).st_mode)
-        except OSError:
-            return False
-
-    def latest(episode: str) -> str | None:
-        try:
-            names = os.listdir(root)
-        except OSError:
-            return None
-        best: tuple[int, str] | None = None
-        for name in names:
-            head, n = segments.split_staging_name(name)
-            if head == episode and n is not None and (best is None or n > best[0]) and has_record(name):
-                best = (n, name)
-        return best[1] if best else None
-
-    def resolve(episode: str, segment: int | None) -> str | None:
-        key = (episode, segment)
-        if key not in seen:
-            if segment is not None:
-                name = staging_name(episode, segment)
-                seen[key] = name if has_record(name) or indexed(episode) else None
-            else:
-                seen[key] = episode if indexed(episode) else latest(episode)
-        return seen[key]
+    def resolve(episode: str) -> str | None:
+        if episode not in seen:
+            seen[episode] = episode if indexed(episode) else None
+        return seen[episode]
 
     return resolve
 
 
-def entry_ready(entry: AttentionEntry, resolve: Callable[[str, int | None], str | None]) -> bool:
+def entry_ready(entry: AttentionEntry, resolve: Callable[[str], str | None]) -> bool:
     """Whether every episode *entry* names can be read now (:func:`episode_resolver`); an entry naming none is ready."""
-    return all(resolve(ep, entry.refs.segment) is not None for ep in entry.refs.episodes)
+    return all(resolve(ep) is not None for ep in entry.refs.episodes)
 
 
 def indexed_by(evidence: Any) -> Callable[[str], bool]:
@@ -1996,10 +1952,9 @@ class HomeSources:
             self._stores = open_stores(self.paths, busy_timeout_s=60.0)
         return self._stores
 
-    def resolver(self) -> Callable[[str, int | None], str | None]:
-        """:func:`episode_resolver` for this home: recorded episodes from the evidence index, segment records under
-        the state dir."""
-        return episode_resolver(self.state_dir, indexed_by(self.stores().evidence))
+    def resolver(self) -> Callable[[str], str | None]:
+        """:func:`episode_resolver` for this home: recorded episodes from the evidence index."""
+        return episode_resolver(indexed_by(self.stores().evidence))
 
     def settled_forks(self) -> list[SettledFork]:
         from . import staging as _staging
@@ -2020,12 +1975,10 @@ class HomeSources:
             view = _staging.read(root, name)
             if view is None:
                 continue
-            episode, segment = split_staging_name(name)
             out.append(
                 SettledFork(
                     name,
-                    episode,
-                    segment,
+                    name,
                     bool(view.finished and view.files),
                     "procedure.py" in (view.files or {}),
                     None,
@@ -2175,7 +2128,7 @@ class HomeSources:
         except Exception:  # noqa: BLE001
             pass
         for name, row in self.capture_rows().items():
-            if split_staging_name(name)[0] == episode and isinstance(row.get("capture_id"), str) and row["capture_id"]:
+            if name == episode and isinstance(row.get("capture_id"), str) and row["capture_id"]:
                 used.add(CAPTURE_PREFIX + row["capture_id"])
         return tuple(sorted(used))
 
@@ -2253,10 +2206,3 @@ def _pass_episodes(events: Path) -> dict[str, list[str]]:
             if isinstance(eps, list):
                 out[r["pass_id"]] = [e for e in eps if isinstance(e, str)]
     return out
-
-
-def split_staging_name(name: str) -> tuple[str, int | None]:
-    """``(episode, segment)`` of a staging dir name (``<episode>`` or ``<episode>.s<n>``; :mod:`.segments`)."""
-    from .segments import split_staging_name as split
-
-    return split(name)

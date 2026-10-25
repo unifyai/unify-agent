@@ -5,9 +5,9 @@
 ``tools.help(name)`` (for the actor and a teammate with and without memory), every refusal template as each agent
 reads it, the run record's common section and each role's roster lines, the writer's brief under every input it can
 have, its first messages (an attention pass with and without a group), the reference files beside its inputs, the
-helper's brief, the fork's and a segment fork's instructions, the guides, the librarian's prompts, the kinship judge's
-brief and a card it is shown, the land_capture reply lines, the re-pin notice, and the gate's own lines as real merges
-write them (refusal reasons, notes and item labels).
+helper's brief, the fork's instruction, the guides, the librarian's prompts, the kinship judge's brief and a card it is
+shown, the land_capture reply lines, and the gate's own lines as real merges write them (refusal reasons, notes and
+item labels).
 """
 
 from __future__ import annotations
@@ -75,10 +75,9 @@ def _others(out: dict[str, str], tmp: Path) -> None:
     from unify.agents import run_record as rr
     from unify.memory import kinship, librarian
     from unify.memory import library_prompts as lp
-    from unify.memory.integration import fork, in_episode
+    from unify.memory.integration import fork
 
     out["rendered:fork"] = fork.fork_message("`request`: (a request)") + "\n" + fork.fork_instruction()
-    out["rendered:segment_instruction"] = fork.segment_instruction(2, 5) + "\n" + fork.segment_instruction(None, None)
     out["rendered:guide"] = lp.GUIDE_LIBRARIAN
     out["rendered:librarian"] = librarian.system_prompt() + "\n" + lp.GUIDE_LIBRARIAN
     out["rendered:librarian_evidence"] = (
@@ -86,8 +85,6 @@ def _others(out: dict[str, str], tmp: Path) -> None:
     )
     for role in rr.AGENT_ROLES:
         out[f"rendered:record_lines:{role}"] = rr.prompt_lines(f"{role}-1", role, spawner="actor-1")
-    out["rendered:repin_notice"] = in_episode.notice(
-        "a" * 40, ["notes/a.md"], ["notes/b.md"], [("notes/c.md", "retired")], True)
     cap = tmp / "judge-capture"
     cap.mkdir(parents=True, exist_ok=True)
     (cap / "procedure.py").write_text('def run(value):\n    """Count the rows."""\n    return len(value)\n')

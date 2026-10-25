@@ -74,17 +74,8 @@ cell raised any::
               "records_dropped": int,  # calls counted but not listed
               "malformed": int,        # events whose arguments were not
                                        # an item id, a hex digest and an outcome
-              "helpers": {helper_id: {"ok": n, "refused": n, "error": n}},
+              "helpers": {helper_id: {"ok": n, "refused": n, "error": n}}}
                                        # only when a helper call was seen
-              "pins": {pin: {item_id: {"ok": n, "refused": n, "error": n}}}}
-                                       # only when a call's code came from a
-                                       # pin directory (below)
-
-A library copy whose commits change during an episode (``UNIFY_MEMORY=in_episode``) keeps each commit in its own
-directory, ``.../.pins/<k>-<12 hex>/``, and the worker imports each pin from its own directory: a call whose event
-was raised by code loaded from one (the frame that called ``sys.audit``) is also counted under that pin's name, so a
-function bound before a re-pin is counted under the pin its code came from. Like everything here, the file name
-of a frame is the cell's own report.
 
 The package's own calls raise ``memory.helper_call`` with the same
 arguments, under the ids ``memory:get`` and ``memory:items`` (lookups),
@@ -280,10 +271,6 @@ _KEY_SHAPED = re.compile(
     r"|AKIA[0-9A-Z]{16}",
 )
 _KEY_MASK = "<redacted:key-shaped>"
-#: A pin directory of the library copy in a code file's name (``.../.pins/<k>-<12 hex>/...``).
-_PIN_DIR = re.compile(r"/\.pins/([0-9]{1,6}-[0-9a-f]{12})/")
-#: Pins one cell's calls are counted under, at most.
-MAX_CALL_PINS = 64
 _ITEM_ID = re.compile(r"memory(?:\.[A-Za-z_][A-Za-z0-9_]*)+:[A-Za-z_][A-Za-z0-9_]*")
 _EXCEPTION_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}")
 _HEX_DIGEST = re.compile(r"[0-9a-f]{1,64}")
@@ -407,7 +394,6 @@ class CellAudit:
         self.match_records: list = []
         self.run_records: list = []
         self.ask_records: list = []
-        self.pin_counts: dict = {}
 
     @staticmethod
     def prefixes(roots: Iterable[str]) -> tuple:
@@ -508,17 +494,6 @@ class CellAudit:
                 return
             counts = self.call_counts[item] = dict.fromkeys(CALL_OUTCOMES, 0)
         counts[outcome] += 1
-        pin = _caller_pin()
-        if pin is not None:
-            by_pin = self.pin_counts.get(pin)
-            if by_pin is None and len(self.pin_counts) < MAX_CALL_PINS:
-                by_pin = self.pin_counts[pin] = {}
-            if by_pin is not None:
-                row = by_pin.get(item)
-                if row is None and len(by_pin) < MAX_CALL_ITEMS:
-                    row = by_pin[item] = dict.fromkeys(CALL_OUTCOMES, 0)
-                if row is not None:
-                    row[outcome] += 1
         if len(self.call_records) >= MAX_CALL_RECORDS:
             self.call_records_dropped += 1
             return
@@ -923,26 +898,9 @@ class CellAudit:
                 out["calls"]["runs"] = self.run_records
             if self.ask_records:
                 out["calls"]["asks"] = self.ask_records
-            if self.pin_counts:
-                out["calls"]["pins"] = self.pin_counts
         self.records, self.dropped, self.failed, self.bytes = [], 0, 0, 0
         self._reset_calls()
         return out
-
-
-def _caller_pin() -> Optional[str]:
-    """The pin directory (``<k>-<12 hex>``) the code that raised the event being handled was loaded from: the first
-    frame outside this file; None when it is not under a pin directory or cannot be read."""
-    try:
-        here = _caller_pin.__code__.co_filename
-        frame = sys._getframe(1)
-        while frame is not None and frame.f_code.co_filename == here:
-            frame = frame.f_back
-        name = frame.f_code.co_filename if frame is not None else None
-    except Exception:  # noqa: BLE001 - an audit never changes the cell
-        return None
-    found = _PIN_DIR.search(name) if type(name) is str else None
-    return found.group(1) if found is not None else None
 
 
 _INSTALL_LOCK = threading.Lock()

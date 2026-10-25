@@ -1355,39 +1355,18 @@ def _topic_of(iid: str) -> str:
 
 
 def _shown_root() -> str:
-    """The library's root as this box's texts name it: :data:`SANDBOX_LIBRARY` in a box that mounts the copy there
-    (whichever pin of it this package was imported from), else the copy's own root."""
+    """The library's root as this box's texts name it: :data:`SANDBOX_LIBRARY` in a box that mounts the copy there,
+    else the copy's own root."""
     root = _ROOT.rstrip("/")
-    if root == SANDBOX_LIBRARY or root.startswith(SANDBOX_LIBRARY + "/"):
+    if root == SANDBOX_LIBRARY:
         return SANDBOX_LIBRARY
     return root
 
 
-def _copy_links() -> tuple[str, ...]:
-    """The links in the box's library mount that point to this copy (one copy behind a link that is swapped between
-    pins), as box paths; none when the copy is the mount itself."""
-    root = _ROOT.rstrip("/")
-    if not root.startswith(SANDBOX_LIBRARY + "/"):
-        return ()
-    try:
-        names = sorted(os.listdir(SANDBOX_LIBRARY))
-    except OSError:
-        return ()
-    out = []
-    for name in names:
-        path = f"{SANDBOX_LIBRARY}/{name}"
-        try:
-            if os.path.islink(path) and os.path.realpath(path) == os.path.realpath(root):
-                out.append(path)
-        except OSError:
-            continue
-    return tuple(out)
-
-
 def _relative(text: str) -> str | None:
-    """*text* as a path inside the copy, when it is a path under the copy's root, under a link to it in the box's
-    library mount, under :data:`SANDBOX_LIBRARY` or under ``/memory`` (each names the copy)."""
-    roots = (_ROOT.rstrip("/"), *_copy_links(), SANDBOX_LIBRARY, LIBRARY_ROOT)
+    """*text* as a path inside the copy, when it is a path under the copy's root, under :data:`SANDBOX_LIBRARY` or under
+    ``/memory`` (each names the copy)."""
+    roots = (_ROOT.rstrip("/"), SANDBOX_LIBRARY, LIBRARY_ROOT)
     for root in dict.fromkeys(r + "/" for r in roots):
         if text.startswith(root):
             return text[len(root) :]

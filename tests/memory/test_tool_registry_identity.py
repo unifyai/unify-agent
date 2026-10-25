@@ -394,8 +394,6 @@ ADDED_TOOLS = (
     "decide",
     "find",
     "test",
-    # the actor's pause (UNIFY_MEMORY_IN_EPISODE)
-    "checkpoint",
     # the librarian's notes for its later instances
     "keep_note",
 )

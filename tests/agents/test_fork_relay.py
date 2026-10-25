@@ -377,9 +377,8 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
     monkeypatch.setattr(
         fork,
         "request_doc",
-        # extra keywords (a segment fork's instruction) pass through as the real request_doc passes them
-        lambda handle, e, url, key, parts=None, **kw: fork.request_from_source(
-            e, source, url, key, parts=parts, **kw
+        lambda handle, e, url, key, parts=None: fork.request_from_source(
+            e, source, url, key, parts=parts
         ),
     )
     started = []
@@ -424,80 +423,6 @@ def test_with_the_run_record_on_the_fork_starts_through_its_relay_with_the_commo
     assert (
         roster["fork-3f9a"]["role"] == "fork" and roster["fork-3f9a"]["episode"] == eid
     )
-
-
-def test_a_segment_fork_is_named_for_its_segment_and_its_calls_carry_episode_and_segment(
-    tmp_path,
-    monkeypatch,
-):
-    """A segment's fork (in-episode memory) is ``fork-<hex>-s<n>`` on the roster with its episode, and under metering its
-    calls carry ``X-Unify-Episode`` and ``X-Unify-Segment`` (ids only)."""
-    assert fork.split_segment("20261020T210311-3f9a0c1d.s2") == (
-        "20261020T210311-3f9a0c1d",
-        2,
-    )
-    assert fork.split_segment("20261020T210311-3f9a0c1d") == (
-        "20261020T210311-3f9a0c1d",
-        None,
-    )
-    settings = SimpleNamespace(
-        UNIFY_MEMORY="on",
-    )
-    paths = Paths.under(tmp_path / "home")
-    sid = "20261020T210311-3f9a0c1d.s2"
-    monkeypatch.setattr(
-        fork, "route", lambda: (("http://127.0.0.1:9/fork/v1", TOKEN), None)
-    )
-    monkeypatch.setattr(
-        fork,
-        "box_argv",
-        lambda staging, die_with_parent: [
-            "bwrap",
-            "--",
-            "/usr/bin/python3",
-            "-I",
-            fork.BOX_WORKER,
-        ],
-    )
-    source = {
-        "client": SimpleNamespace(
-            endpoint="openai/gpt-6-luna@openrouter", reasoning_effort=None
-        ),
-        "sent_messages": [{"role": "user", "content": "the request"}],
-        "tools": R.json_tools("actor"),
-    }
-    monkeypatch.setattr(
-        fork,
-        "request_doc",
-        # extra keywords (a segment fork's instruction) pass through as the real request_doc passes them
-        lambda handle, e, url, key, parts=None, **kw: fork.request_from_source(
-            e, source, url, key, parts=parts, **kw
-        ),
-    )
-    started = []
-
-    class Proc:
-        pid = 4243
-
-    def popen(argv, **kw):
-        started.append((argv, kw))
-        p = Proc()
-        p.stdin = SimpleNamespace(
-            write=lambda data: started.append(data), close=lambda: None
-        )
-        return p
-
-    got = fork.start(paths, object(), sid, popen=popen)
-    assert got is not None
-    got.writer.join(5)
-    spec = json.loads(started[1])
-    assert spec["name"] == "fork-3f9a-s2"
-    assert spec["doc"]["headers"]["x-unify-episode"] == "20261020T210311-3f9a0c1d"
-    assert spec["doc"]["headers"]["x-unify-segment"] == "2"
-    row = next(
-        r for r in read_roster(paths.home)["agents"] if r["name"] == "fork-3f9a-s2"
-    )
-    assert row["episode"] == "20261020T210311-3f9a0c1d" and row["role"] == "fork"
 
 
 IGNORES_TERM = (

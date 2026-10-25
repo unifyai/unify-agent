@@ -6,7 +6,7 @@ handed, took, read (verified), closed and returned; the items it landed, changed
 (the writer lane's journal window when it was read, else the pass's own turns), its unpriced calls with their booking at
 the worst case of one writer call, its killed turns (each once); its tokens, turns, and the record messages its agents
 sent and were given. Every call of the pass carries the pass and entry ids as request metadata (ids only:
-:func:`unify.common.llm_client.attribution`), and the fork's calls its episode (and segment).
+:func:`unify.common.llm_client.attribution`), and the fork's calls its episode.
 
 **Per entry** (``metering/entries.jsonl``): a pass's known USD is split equally over the entries it *read*, exactly in
 Decimal (the remainder of the division goes to the last share, so the shares sum to the pass's USD); an entry handed
@@ -608,8 +608,8 @@ def lane_total(lane: str, journal: Path | str, worst_case_usd: Decimal) -> LaneT
 
 
 def fork_by_episode(journal: Path | str, worst_case_usd: Decimal) -> dict[str, dict]:
-    """The fork lane's spend per episode (its segment forks included), from the journal's request metadata: the
-    episode a fork call names (``episode``), else its session (``fork.<episode>``, segments ``<episode>.s<n>``).
+    """The fork lane's spend per episode, from the journal's request metadata: the episode a fork call names
+    (``episode``), else its session (``fork.<episode>``).
     Each episode's known USD, its unpriced calls, and its booking at the worst case; calls that name none are under
     ``unknown``."""
     last: dict[str, Optional[Decimal]] = {}
@@ -623,9 +623,6 @@ def fork_by_episode(journal: Path | str, worst_case_usd: Decimal) -> dict[str, d
         if not isinstance(episode, str) or not episode:
             session = meta.get("session")
             episode = session[len("fork.") :] if isinstance(session, str) and session.startswith("fork.") else None
-        if isinstance(episode, str) and ".s" in episode:
-            base, _, seg = episode.rpartition(".s")
-            episode = base if seg.isdigit() else episode
         if episode:
             owner.setdefault(rid, episode)
         charge = _dec(row.get("account_charge"))
@@ -713,7 +710,7 @@ def run_report(
         },
         "writer_post_stream_usd": usd(post),
         "writer_post_stream_passes": post_passes,
-        # segment forks multiply the fork's calls on long episodes: the fork lane's spend per episode
+        # the fork lane's spend per episode
         "fork_by_episode": (
             fork_by_episode(journals["fork"], Decimal(worst_case_usd["fork"]))
             if "fork" in journals

@@ -517,8 +517,6 @@ class Act:
             persist=args.persist,
             clarification_enabled=clarify,
         )
-        # UNIFY_MEMORY=in_episode: a segment fork continues this session at a checkpoint (inert otherwise)
-        _mv2.attach_handle(self._handle)
         from unify.agents.cli_bridge import attach_bridge
 
         self._bridge = attach_bridge(self._handle, self._emit_record)

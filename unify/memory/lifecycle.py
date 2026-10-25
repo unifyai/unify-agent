@@ -334,40 +334,6 @@ def item_outcome(
     return trust.apply_outcome(level, prior_trust, uses), trust.track(uses)
 
 
-def served(f: EpisodeUse, item: str, versions: set[str], pins: Mapping[tuple[str, str], list] | None) -> bool:
-    """Whether episode *f* used the version of *item* whose commits are *versions*: by the pins its calls were served
-    under when the episode recorded them (``UNIFY_MEMORY=in_episode``, :func:`use_pins`), else by the episode's first
-    pin."""
-    got = (pins or {}).get((f.episode_id, item))
-    if got:
-        return any(row[0] in versions for row in got)
-    return f.memory_main in versions
-
-
-def version_use(f: EpisodeUse, item: str, versions: set[str], pins: Mapping[tuple[str, str], list] | None) -> EpisodeUse:
-    """*f* with *item*'s use restricted to the calls served under the version whose commits are *versions*, when its
-    calls were served under more than one pin and some of them are another version's (memory changed during the
-    episode, ``UNIFY_MEMORY=in_episode``): its observed calls (ok, refused, error) are those under that version's pins,
-    so the episode's other version's calls never count for this one. Otherwise *f* unchanged."""
-    rows = (pins or {}).get((f.episode_id, item))
-    u = f.items.get(item)
-    if not rows or u is None or all(r[0] in versions for r in rows):
-        return f
-    ok = sum(r[1] for r in rows if r[0] in versions)
-    refused = sum(r[2] for r in rows if r[0] in versions)
-    error = sum(r[3] for r in rows if r[0] in versions)
-    mine = replace(
-        u,
-        used=ok > 0,
-        refused=refused > 0,
-        errored=error > 0,
-        seen=u.seen or bool(ok + refused + error),
-        basis=RUNTIME,
-        calls=(ok, refused, error),
-    )
-    return replace(f, items={**f.items, item: mine})
-
-
 def _labels(
     records: dict[str, dict],
     items: Mapping[str, str],
@@ -375,11 +341,9 @@ def _labels(
     since: Mapping[str, set[str]],
     inputs: Mapping[str, Any],
     verification: Mapping[str, dict],
-    pins: Mapping[tuple[str, str], list] | None = None,
 ) -> None:
-    """Each record's evidence label (:func:`.item_label.build`): its current version's stated tests and uses (a use
-    counted under the version served when it was called, *pins*), and its failure record (every failed use, each
-    with that version)."""
+    """Each record's evidence label (:func:`.item_label.build`): its current version's stated tests and uses, and its
+    failure record (every failed use, each with that version)."""
     from . import item_label
 
     tests = inputs.get("tests") or {}
@@ -393,7 +357,7 @@ def _labels(
             t for t in tests.get(item, []) if landed_at is None or order.get(t.get("pass_id"), -1) >= landed_at
         ]
         versions = since.get(item, set())
-        mine = [version_use(f, item, versions, pins) for f in facts if item in f.items and served(f, item, versions, pins)]
+        mine = [f for f in facts if item in f.items and f.memory_main in versions]
         uses = [x for f in mine for x in trust_uses(f, f.items[item])]
         rec["label"] = item_label.build(
             kind=items[item],
@@ -743,15 +707,9 @@ def next_records(
     unknown_version: Iterable[str] = (),
     landed: Mapping[str, Mapping] | None = None,
     label_inputs: Mapping[str, Any] | None = None,
-    pins: Mapping[tuple[str, str], list] | None = None,
     writer_decisions: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """The map of every item of the tree (*items*: id -> kind) and the status changes against *prev*.
-
-    With *pins* (``UNIFY_MEMORY=in_episode``: (episode, item) -> the pins its calls were served under, with their
-    counts, :func:`use_pins`) an item's use counts for its current version when it was served under one of that
-    version's commits, wherever the episode started (:func:`served`), and only its calls under those commits
-    (:func:`version_use`); without them, by the episode's first pin, as built.
 
     With *writer_decisions* (item -> what the writer's latest decision naming it
     says, :func:`.attention.item_decisions`) an item the writer retired is ``retired`` (rule ``writer``) and one an
@@ -900,9 +858,9 @@ def next_records(
             # the writer's decisions are read again each time: a status they gave is never carried over
             prior, prior_rule = None, None
         mine = [
-            version_use(_as_item(f, item, group), item, since.get(item, set()), pins)
+            _as_item(f, item, group)
             for f in facts
-            if served(f, item, since.get(item, set()), pins)
+            if f.memory_main in since.get(item, set())
         ]
         status, rule, reason, evidence = decide_status(item, prior, mine, prior_rule)
         # the record per kind of signal and what an adoption rests on (trust.py); the level moves only when the
@@ -956,7 +914,7 @@ def next_records(
             status_evidence=evidence,
         )
     if label_inputs is not None:
-        _labels(records, items, facts, since, label_inputs, verification or {}, pins)
+        _labels(records, items, facts, since, label_inputs, verification or {})
     changes = {
         i: r["status"]
         for i, r in records.items()
@@ -984,19 +942,6 @@ def _writer_decisions(stores: Any) -> dict[str, dict]:
     from . import attention
 
     return attention.item_decisions(stores.paths.home, state_dir=stores.paths.state_dir)
-
-
-def use_pins(ev: EvidenceStore) -> dict[tuple[str, str], list[tuple[str, int, int, int]]]:
-    """(episode, item) -> each pin its calls were served under with their (ok, refused, error) counts, from
-    ``item_use_pins`` (``UNIFY_MEMORY=in_episode``); {} when the store has none."""
-    out: dict[tuple[str, str], list[tuple[str, int, int, int]]] = {}
-    if not ev.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_use_pins'").fetchone():
-        return out
-    for item, eid, pin, ok, refused, error in ev.db.execute(
-        "SELECT item, episode_id, pin, ok, refused, error FROM item_use_pins ORDER BY rowid",
-    ):
-        out.setdefault((eid, item), []).append((pin, int(ok or 0), int(refused or 0), int(error or 0)))
-    return out
 
 
 def label_inputs(stores: Any) -> dict[str, Any]:
@@ -1172,8 +1117,6 @@ def consolidate_records(
         landed=landed_items(captures),
         # each record's evidence label
         label_inputs=label_inputs(stores),
-        # UNIFY_MEMORY=in_episode: the pin each use was served under (none recorded: as built)
-        **({"pins": pins} if (pins := use_pins(ev)) else {}),
         # what the writer's decisions retired or superseded
         writer_decisions=_writer_decisions(stores),
     )

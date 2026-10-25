@@ -80,12 +80,12 @@ _ALL = (_A, _T, _W, _H)
 ROLE_MARKER = "For you:"
 #: The texts :attr:`RegisteredTool.role_text` and :attr:`RegisteredTool.off_text` may give an agent or a run of its own.
 TEXT_FIELDS = ("summary", "description", "help_description", "refusals", "examples", "when")
-#: The roles a run has only with memory on (``UNIFY_MEMORY`` on or in_episode).
+#: The roles a run has only with memory on (``UNIFY_MEMORY=on``).
 MEMORY_ROLES = ("writer", "fork", "librarian")
 
 
 def memory_is_on() -> bool:
-    """Whether this run has memory (``UNIFY_MEMORY`` on or in_episode), so its writer, forks and librarian can exist.
+    """Whether this run has memory (``UNIFY_MEMORY=on``), so its writer, forks and librarian can exist.
     Read when a text is built, never cached; a setting that cannot be read counts as on (the full texts)."""
     try:
         from unify.memory.integration.switch import memory_on
@@ -1169,8 +1169,6 @@ CHECK_EXAMPLES = RegisteredTool(
 
 # --- the attention ledger's tools and the writer's stated tests (unify/memory/attention_tools.py) ---
 
-#: the flag ``checkpoint`` needs: ``UNIFY_MEMORY=in_episode``
-CHECKPOINT_FLAG = "checkpoint"
 _ATT = "unify.memory.attention_tools:"
 _REFUSED_REASON = {"refused": "{reason}"}
 
@@ -1342,33 +1340,6 @@ TEST = RegisteredTool(
     deadline_s=120.0,
     blocking=True,
 )
-
-CHECKPOINT = RegisteredTool(
-    name="checkpoint",
-    summary="mark a pause in your work: what you did since the last pause is written down for memory.",
-    description=(
-        "Mark a natural pause in your work on this request. The harness writes down what your cells since the last "
-        "pause did, as memory can use it later, while you go on; what memory learns may reach you before this "
-        "request ends, at the start of a later cell. The note says what the pause is (optional)."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {"note": {"type": "string", "description": "What this pause is, in a few words (optional)."}},
-        "required": [],
-        "additionalProperties": False,
-    },
-    refusals=_REFUSED_REASON,
-    requires=CHECKPOINT_FLAG,
-    roles=(_A,),
-    returns="a line saying the pause is marked.",
-    examples=('tools.checkpoint("the input is read; the report comes next")',),
-    when="At a natural pause in a long piece of work: a part is done and the next has not started.",
-    kind="action",
-    handler="unify.memory.integration.in_episode:checkpoint",
-    deadline_s=60.0,
-    blocking=False,
-)
-
 
 # --- what the in-code surface adds to each moved tool: help texts, kinds, handlers and the actor's arguments ---
 
@@ -2184,7 +2155,6 @@ _REGISTRY: tuple[RegisteredTool, ...] = (
     DECIDE,
     FIND,
     TEST,
-    CHECKPOINT,
 )
 
 
