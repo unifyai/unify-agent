@@ -16,13 +16,16 @@ Memory lets later requests use what earlier ones learned. One setting controls i
    the procedure into a **capture**: the procedure plus a signature and a record the harness computes, with the
    outcome taken from the signals the actor could see (`positive`, `none` or `contrary`). **Nothing is ever run in
    order to classify, deduplicate or rank a capture.** A capture is served at once to later requests, before any
-   writer pass has read it.
+   writer pass has read it. The fork needs a fork lane, which `unify act` starts with memory on and
+   `OPENROUTER_API_KEY` set (or a launcher gives). Without one no fork runs and no capture is made, so
+   `ANTHROPIC_API_KEY` alone stores none.
 3. **The ledger says what needs reading.** The attention ledger opens an entry for each piece of new experience:
    - a settled fork;
    - a use of a library item that went badly;
    - a signal that arrived after its episode ended;
    - an item called again in new episodes;
-   - a run-record message to the writer.
+   - a run-record message to the writer;
+   - an entry the writer deferred, or a draft the gate refused.
 
    An entry stays open until a writer pass decides it. A new capture waits until its **capture group** is due.
    Captures are related when their records show they make the same calls, when they use the same library items, or
@@ -52,8 +55,8 @@ Memory lets later requests use what earlier ones learned. One setting controls i
 
    A gate checks every candidate before it lands. Safety, paths and syntax refuse a candidate. Every other finding
    is recorded on the item's label. The gate runs no code: the only code that runs is a test the writer states
-   and runs itself (`tools.test`). Every item shows what it rests on: its kind (a curated item, a recorded
-   procedure or a fixed answer), how many episodes it comes from and how many uses confirmed it. An item's status
+   and runs itself (`tools.test`). Every item shows what it rests on: its kind (a curated item or a recorded
+   procedure), how many episodes it comes from and how many uses confirmed it. An item's status
    follows its uses: it starts `on-trial`, becomes `adopted` after clean uses in at least three episodes with no
    failed use, and is `retired` after failed uses in at least two episodes, or by the writer's decision.
 5. **The next episode is served from the library.** An episode starts with a read-only copy of the library as it is

@@ -21,7 +21,8 @@ one place, :func:`memory_mode`; every other reader asks :func:`memory_on`.
 
 ``UNIFY_MEMORY_CAP_USD`` is memory's spend cap for one run (one ``unify act``, with the writer service it ran), in
 USD as a plain decimal string (default :data:`MEMORY_CAP_DEFAULT`). It covers the writer's and its helpers' calls, as
-recorded in the home's ``spend.jsonl`` since the service started; a lane relay holds the episode-end forks' calls to
+recorded in the home's ``spend.jsonl``, counted from the controller's first memory request and across any restart of
+the service within the run; a lane relay holds the episode-end forks' calls to
 the same cap. It fails closed:
 
 - a pass starts only when the room left under the cap holds one call at its worst case;

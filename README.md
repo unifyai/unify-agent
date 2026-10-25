@@ -95,15 +95,19 @@ Packages a program needs are installed into one shared environment under
 
 1. **A capture.** A confined copy of the actor's conversation, a fork, is asked
    to write down what it did: a small runnable procedure, what it was for, and
-   which parts of the task it rests on.
+   which parts of the task it rests on. The fork needs a fork lane, which
+   `unify act` starts with memory on and `OPENROUTER_API_KEY` set (or a
+   launcher gives). Without one no fork runs and no capture is made;
+   `ANTHROPIC_API_KEY` alone stores none.
 2. **The writer.** A background writer reads the captures and failures that
    need attention, and keeps a library in a git repository at
    `~/.unify/memory`: tested functions, and notes that link to the functions
    they use (and back). It states tests for what it writes, and the harness
    runs them in a sandbox. A gate checks every change and records what it
-   finds as labels on the item. The writer spends under memory's cap,
-   outlives the `unify act` command, and stops by itself once idle for 30
-   minutes.
+   finds as labels on the item. The writer spends under memory's cap.
+   With the lane relay, `unify act` stops the writer when it ends: a pass in
+   flight gets up to 5 minutes, and what it held stays owed for the next run.
+   A writer service that no run owns exits after 30 idle minutes.
 3. **The librarian.** At the start of a later task, a librarian agent reads
    the library and tells the actor which items fit; the actor can ask it
    again with `memory.ask("...")`. Each item comes with a recorded example
@@ -145,6 +149,7 @@ Lines your program writes to its stdin:
 | `{"cancel": true}` | Ends the running turn at once and keeps the session. |
 | `{"quit": true}` | Ends the session. |
 | `{"outcome": {"solved": true, ...}}` | Your verdict on the work, so memory learns what worked. The full form is in `unify/outcome.py`. |
+| `{"checker": {"label": "pass"}}` | With memory on: a verdict the environment showed the actor during the request, `"pass"` or `"fail"`. It may also carry `about` (an action or item) and `episode` (an earlier episode's id). |
 
 Lines it writes to stdout, each with a `type`:
 

@@ -1,8 +1,8 @@
 """The memory agents' models have a context window. unillm registers one for the writer's model and the helpers'
 model on OpenRouter (``WRITER_MODEL``, ``HELPER_MODEL``), so the compaction trigger
-(:func:`.writer_pass.compaction_due`, which reads the window) sees it for the writer, the curator and each
+(:func:`.writer_pass.compaction_due`, which reads the window) sees it for the writer and each
 helper. The window reaches them on the model turn: :func:`.writer_pass.unillm_turn` sets ``turn.max_input_tokens`` from
-``unillm.get_max_input_tokens``. The values and their source are recorded in docs/design/model-windows-20261012.md.
+``unillm.get_max_input_tokens``. The values are OpenRouter's ``context_length`` for each model, as unillm registers it.
 No test makes a model call.
 """
 
