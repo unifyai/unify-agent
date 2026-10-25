@@ -189,7 +189,7 @@ async def test_inline_log_file_paths(unify_logs, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_thinking_log_fallback_without_log_dir(llm_config, unify_logs):
+async def test_thinking_log_fallback_without_log_dir(llm_config, unify_logs, monkeypatch):
     """
     When UNILLM_LOG_DIR is NOT set, the async tool loop should still emit
     plain "🧠 LLM thinking…" lines (without a filepath) as a fallback.
@@ -198,9 +198,13 @@ async def test_thinking_log_fallback_without_log_dir(llm_config, unify_logs):
     lines are emitted with a scripted transport too.
     """
     import unillm.logger as unillm_logger
+    from unillm import settings as unillm_settings
 
     old_env = os.environ.get("UNILLM_LOG_DIR")
     os.environ.pop("UNILLM_LOG_DIR", None)
+    # unillm falls back to its settings' UNILLM_LOG_DIR, read when it was imported: a process that inherited the
+    # variable (an xdist worker gets the session's from the controller) still has it there
+    monkeypatch.setattr(unillm_settings.SETTINGS, "UNILLM_LOG_DIR", "")
     unillm_logger.configure_log_dir(None)
 
     try:
