@@ -44,6 +44,7 @@ async def _accepted_words_episode(s, words, op="reverse"):
 @pytest.mark.parametrize("mode", MEMORY_MODES)
 async def test_a_capture_is_served_at_once_reused_with_no_arguments_and_its_use_is_recorded(system, mode):
     s = system
+    s.writer.plan = "keep"  # the writer keeps nothing from its pass: what is served is the capture itself
     # ── request 1: accepted work; the fork captures it ──
     r1 = await _accepted_words_episode(s, ["stone", "river"])
     cid = s.capture_of(r1.episode_id)
@@ -54,8 +55,9 @@ async def test_a_capture_is_served_at_once_reused_with_no_arguments_and_its_use_
     # it keeps the code the fork wrote (R11.1), and nothing ran it to classify it (H7)
     assert "return [w[::-1].upper() for w in value]" in (s.captures()[cid].get("procedure") or ""), cid
     assert (cases[0].get("own_check") or {}).get("ran") is False, cases[0]
-    # no writer pass has run: what follows is served with no pass (0R.1)
-    assert not s.writer.pass_bodies
+    # its request has ended, so it was handed to a pass, which kept nothing: what follows is served with nothing a
+    # pass wrote (0R.1)
+    assert s.writer.pass_bodies and not s.library_main_has(SW.NOTE_ID)
 
     # ── request 2: the start block names it; the actor calls it with no arguments on the NEW request ──
     w2 = ["glass", "cloud", "ember"]

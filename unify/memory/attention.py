@@ -1184,7 +1184,10 @@ class Ledger:
         With *grouping* (:func:`.capture_groups.groups` over the fold), the grouped kinds
         (:data:`.capture_groups.GROUPED_KINDS`) wait for their group: every other open entry is handed first, as
         above; else the first due group's open members, oldest first, up to *k*, with one ``group`` row naming the
-        group, why it is due and its related closed entries (the pass reads it, :func:`.attention_tools.group_of`)."""
+        group, why it is due and its related closed entries (the pass reads it, :func:`.attention_tools.group_of`).
+        A capture with no related capture is due once its request has ended (:data:`.capture_groups.ENDED`): those
+        due now are handed with the pass that runs now (``by: with_pass``), or, when no other pass runs, together in
+        one pass of their own (its ``group`` row names no group)."""
         if not isinstance(pass_id, str) or not pass_id:
             raise LedgerError("pass_id is the pass's id, a non-empty string")
         if isinstance(k, bool) or not isinstance(k, int) or k < 1:
@@ -1205,8 +1208,9 @@ class Ledger:
             if not pending:
                 return []
             group_row: dict | None = None
+            ended: list[AttentionEntry] = []
             if grouping is not None:
-                from .capture_groups import GROUPED_KINDS, NO_CAPTURE
+                from .capture_groups import ENDED, GROUPED_KINDS, NO_CAPTURE
 
                 # an episode that left no capture has nothing to write up with others: the harness closes its entry,
                 # and no pass runs on it
@@ -1227,10 +1231,12 @@ class Ledger:
                 for wid in waiting_ids:
                     now_state.pop(wid, None)  # an entry waiting for its episode is not part of a group's pass yet
                 immediate = [e for e in pending if e.kind not in GROUPED_KINDS]
-                if not immediate:
-                    due = [g for g in grouping(now_state) if g.due]
-                    if not due:
-                        return []
+                due = [g for g in grouping(now_state) if g.due]
+                # a capture with no related capture is due once its request has ended: all of them at this moment go
+                # to one pass, or along with the pass that runs now anyway (handed as ``with_pass``)
+                ended = [e for g in due if g.due == ENDED for e in g.open if e in pending]
+                due = [g for g in due if g.due != ENDED]
+                if not immediate and due:
                     # a group whose members came back from earlier passes yields to the others (stable otherwise), so
                     # a group the writer cannot finish never holds later groups up
                     due.sort(key=lambda g: max((e.misses + e.undecided for e in g.open), default=0))
@@ -1244,6 +1250,13 @@ class Ledger:
                                  "context": [e.entry for e in g.context],
                                  "reasons": _group_reasons(g), "at": self.now()}  # fmt: skip
                     pending = members
+                elif not immediate and ended:
+                    group_row = {"op": "group", "pass_id": pass_id, "group": None, "due": ENDED,
+                                 "members": [e.entry for e in ended], "context": [], "reasons": {},
+                                 "at": self.now()}  # fmt: skip
+                    pending, ended = ended, []
+                elif not immediate:
+                    return []
                 else:
                     pending = immediate
             alone = [e for e in pending if e.misses >= ALONE_AFTER_MISSES or e.undecided >= ALONE_AFTER_MISSES]
@@ -1269,7 +1282,13 @@ class Ledger:
             handed = [
                 {"op": "hand", "entry": e.entry, "pass_id": pass_id, "at": at, "hand_count": e.hand_count + 1}
                 for e in chosen
+            ] + [
+                # a capture with no related capture whose request has ended, handed with the pass that runs now
+                {"op": "hand", "entry": e.entry, "pass_id": pass_id, "at": at, "hand_count": e.hand_count + 1,
+                 "by": "with_pass"}
+                for e in ended if e not in chosen
             ]
+            chosen = chosen + [e for e in ended if e not in chosen]
             self._write(handed + ([group_row] if group_row is not None else []))
             got = fold([*rows, *handed])
         return [got[e.entry] for e in chosen]

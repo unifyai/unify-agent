@@ -44,6 +44,10 @@ def _actor_prep(acting: str):
 #: Paths the writer's brief names for what exists only in some passes: a refused earlier pass's drafts and gate
 #: results, and what a launched helper staged (the brief says when each exists).
 WRITER_CONDITIONAL = ("/inputs/gate/", "/inputs/drafts/", "/inputs/helpers/")
+#: The files of instruction blocks that recur across a pass's requests: they exist only in a pass whose batch map
+#: lists such blocks, which needs two or more requests' episodes in one pass (here every request settles before the
+#: next, so each pass holds one); tests/memory/test_shared_text.py opens them where they exist.
+WRITER_SHARED = "/inputs/shared"
 
 
 def _writer_prep(body: dict) -> str:
@@ -61,6 +65,10 @@ def _writer_prep(body: dict) -> str:
         "}\n"
         f"MISSING = {SW.PROBED_MISSING!r}\n"
         f"CONDITIONAL = {WRITER_CONDITIONAL!r}\n"
+        "try:\n    _bm = str(tools.read('/inputs/batch_map.json'))\nexcept BaseException as _e:\n"
+        "    _bm = 'RAISED ' + str(_e)\n"
+        "out['shared_blocks'] = '\"shared_blocks\"' in _bm\n"
+        f"if not out['shared_blocks']:\n    CONDITIONAL = CONDITIONAL + ({WRITER_SHARED!r},)\n"
     )
     return SW.probe_json(gather + SW.OPEN_PREP)
 
@@ -97,11 +105,14 @@ async def test_every_path_and_handle_shown_opens_and_refusals_name_a_working_cal
     s = system
     s.writer.plan = "land"
     s.writer.probe = SW.SteppedProbe(_writer_prep)  # step cells only while something is left to open
-    await s.accepted_words(["stone", "river"], "reverse")
-    await s.accepted_words(["glass", "cloud"], "upper")  # the group's pass: the writer probes its own box
+    first = await s.accepted_words(["stone", "river"], "reverse")
+    # the second request calls the first one's capture, a real relation, so its pass is the group's
+    await s.accepted_words(["glass", "cloud"], "upper", uses=s.capture_of(first.episode_id))
     acting = "capture:" + s.capture_of((await s.accepted_tally()).episode_id)
-    assert s.writer.probes, "no writer pass ran"
-    problems = _problems("writer", SW.marked(s.writer.probes[0]))
+    # every pass is probed: the first request's own pass and the group's
+    seen = [SW.marked(p) for p in s.writer.probes]
+    assert len(seen) >= 2, "the first request's pass and the group's did not both run"
+    problems = [p for o in seen for p in _problems("writer", o)]
 
     actor: dict = {}
     lib: dict = {}

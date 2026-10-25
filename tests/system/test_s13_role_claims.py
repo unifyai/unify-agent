@@ -105,7 +105,8 @@ async def test_a_writers_helper_has_the_box_and_roots_its_texts_state(system, mo
 
 # ── the writer's capture tools ────────────────────────────────────────────────────────────────────────────────────
 
-PASS1 = SW.probe_json(
+#: Every pass: land the accepted capture it was handed, try an unknown id and a failed capture, find, overview.
+PASS1 = (
     SW.GATHER_REFUSALS
     + "import json, os, shutil\n"
     "idx = json.load(open('/inputs/attention/index.json'))\n"
@@ -134,8 +135,8 @@ PASS1 = SW.probe_json(
     "if os.path.exists('/memory/.pass/manifest.json'):\n"
     "    os.remove('/memory/.pass/manifest.json')\n"
 )
-PASS2 = SW.probe_json(
-    "import json\n"
+#: A pass with decided entries as history: take a closed one.
+PASS2 = (
     "g = json.load(open('/inputs/attention/group.json'))\n"
     "closed = [m['entry'] for m in g.get('related_closed') or []]\n"
     "out['closed'] = closed\n"
@@ -144,7 +145,7 @@ PASS2 = SW.probe_json(
 
 
 def _capture_tools_probe(body: dict) -> str:
-    return PASS2 if "an earlier pass decided" in SW._first_user(body) else PASS1
+    return SW.probe_json(PASS1 + (PASS2 if "an earlier pass decided" in SW._first_user(body) else ""))
 
 
 @needs_bwrap
@@ -161,19 +162,25 @@ async def test_the_writers_capture_tools_do_what_their_texts_state(system, mode)
     s.writer.plan = "keep"
     s.writer.probe = _capture_tools_probe
     s.writer.kin = "same_world"
+    # each request's capture is handed once its request has ended; a later pass holds the decided ones as history
     await _failed_words(s, ["moss"], "title")
-    await s.accepted_words(["stone"], "reverse")  # pass 1: the failed and the accepted capture together
-    await s.accepted_words(["glass"], "upper")  # pass 2: a new capture with the decided ones as history
-    assert len(s.writer.probes) >= 2, (len(s.writer.probes), s.writer.passes)
-    one, two = SW.marked(s.writer.probes[0]), SW.marked(s.writer.probes[1])
-    assert "positive" in one["outcomes"].values(), one["outcomes"]
+    await s.accepted_words(["stone"], "reverse")
+    await s.accepted_words(["glass"], "upper")
+    seen = [SW.marked(p) for p in s.writer.probes]
+    assert len(seen) >= 2, (len(seen), s.writer.passes)
+    one = next((o for o in seen if "positive" in o["outcomes"].values()), None)
+    assert one, [o["outcomes"] for o in seen]
+    bad = next((o for o in seen if {"negative", "contrary"} & set(o["outcomes"].values())), None)
+    assert bad, [o["outcomes"] for o in seen]
+    two = next((o for o in seen if "take" in o), None)
+    assert two, "no pass held a decided entry as history"
     assert not one["land"].startswith("RAISED"), one["land"]
     files = one["landed_files"]
     assert any(f.endswith("readers.py") for f in files) and any(f.endswith("procedures.py") for f in files), files
     assert any("test_reverse_words" in f for f in files), files
     assert "reverse_words" in one["manifest"], one["manifest"][:600]
     assert "not a capture of the store" in one["unknown"] and not one["unknown_wrote"], one["unknown"]
-    assert "failed or retired attempt" in one["failed"] and not one["failed_wrote"], one["failed"]
+    assert "failed or retired attempt" in bad["failed"] and not bad["failed_wrote"], bad["failed"]
     found = one["find"]
     assert isinstance(found, dict) and {"scope", "ranked", "hits", "of"} <= set(found), found
     assert found["hits"] and all({"id", "kind", "path", "score", "card"} <= set(h) for h in found["hits"]), found

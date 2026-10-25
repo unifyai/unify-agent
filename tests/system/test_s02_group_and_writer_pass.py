@@ -1,7 +1,8 @@
 """S2: a related second capture forms a group with real history; a writer pass reads both; the item it lands links to
-the captures it generalises and they link back, and both captures stay served.
+the capture it generalises and that capture links back, and both captures stay served.
 
-Design: change 0.2 (a pass is due for a new capture with related history, never alone; the pass reads both instances),
+Design: change 0.2 (a pass is due for a new capture with related history; a capture with no related capture is written
+up once its request has ended; the group's pass reads both instances),
 0.6 (the ``group`` row carries the members, the history and the reasons), 0R.5 and S4.3 (``generalises`` /
 ``generalised by`` links; the writer never silently hides a capture), P (history bounded at 8); spec R1.1, R1.2,
 R1.5, R3.5, R4.1, R4.3, R6.6, R6.7.
@@ -25,10 +26,14 @@ from tests.system.drive import MEMORY_MODES
 @pytest.mark.parametrize("mode", MEMORY_MODES)
 async def test_a_related_capture_forms_a_group_the_pass_lands_an_item_linked_both_ways(system, mode):
     s = system
-    s.writer.plan = "land"
+    s.writer.plan = "keep"
     r1 = await s.accepted_words(["stone", "river"], "reverse")
     a = s.capture_of(r1.episode_id)
-    assert not s.writer.pass_bodies, "a lone capture was written up alone"
+    # alone, it is written up once its request has ended (in a pass of its own, or with the pass that runs then
+    # anyway); that pass keeps nothing here
+    first = [e.entry for e in s.entries() if a in (e.refs.captures or ())]
+    assert any(r.get("entry") in first for r in s.ledger_rows("hand")), s.ledger_rows("hand")
+    s.writer.plan = "land"
     # the second episode used the first capture: a used item relates them (the same input shape alone never
     # does: every request of this world reads the same shape)
     words = ["glass", "cloud"]
@@ -55,9 +60,11 @@ async def test_a_related_capture_forms_a_group_the_pass_lands_an_item_linked_bot
 
     # ── the pass read both instances and landed one item citing both episodes ──
     assert s.writer.pass_bodies, "no writer pass ran for the group"
-    handed = set(SW.handed(s.writer.pass_bodies[0]))
-    first = SW._first_user(s.writer.pass_bodies[0])
-    assert (set(entry[b]) & handed) and (set(entry[a]) & handed or a in first), (handed, first[:1500])
+    handed = set(SW.handed(s.writer.pass_bodies[-1]))
+    first = SW._first_user(s.writer.pass_bodies[-1])
+    assert set(entry[b]) & handed, (handed, first[:1500])
+    # the first capture is read with it: a member, or the history its group row names
+    assert set(entry[a]) & set((g.get("members") or []) + (g.get("context") or [])), g
     landed = [p for p in s.pass_results() if SW.NOTE_ID in ((p.get("items") or {}).get("landed") or [])]
     assert landed, s.pass_results()
     assert s.library_main_has(SW.NOTE_ID)
@@ -75,7 +82,8 @@ async def test_a_related_capture_forms_a_group_the_pass_lands_an_item_linked_bot
     out = sink["out"]
     assert ids["a"] in out["items"] and ids["b"] in out["items"] and SW.NOTE_ID in out["items"], out["items"]
     note_card = out["note"].lower()
-    assert ids["a"] in note_card and ids["b"] in note_card and "generalis" in note_card, out["note"][:2000]
-    for k in ("a", "b"):
-        assert SW.NOTE_ID in out[k] and "generalised by" in out[k].lower(), out[k][:2000]
+    # the note is built from the new capture of its pass; the first capture, written up in its own pass (which kept
+    # nothing), was read as history
+    assert ids["b"] in note_card and "generalis" in note_card, out["note"][:2000]
+    assert SW.NOTE_ID in out["b"] and "generalised by" in out["b"].lower(), out["b"][:2000]
 

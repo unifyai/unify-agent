@@ -219,7 +219,7 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
     s = await H.cli_session(core_world, monkeypatch, model, first, host)
     assert s.code == 0, s.lines[-5:]
     H.wait_until_settled(home)
-    # one capture alone is never written up: the same kind of work again gives it a related capture, and the pass
+    # the same kind of work again gives the first capture a related capture, and the pass
     again = f"Sort the rows of inbox.csv by id into {SX.SECOND_FILE}."
     again_code = code.split("print(tools.send(")[0].replace("sorted.csv", SX.SECOND_FILE)
     s1b = await H.cli_session(core_world, monkeypatch,
@@ -260,10 +260,16 @@ async def test_surface_2_a_tool_api_with_reads_and_writes_and_an_outcome_at_the_
     assert seen and SX.NOTE_ID in seen[0]["items"] and seen[0]["evidence"] is not None
     landed = [p for p in H._jsonl(paths.state_dir / "pass-results.jsonl") if (p.get("items") or {}).get("landed")]
     assert landed and SX.NOTE_ID in landed[0]["items"]["landed"]
-    # the pass that landed it read the two related captures together
-    groups = [r for r in H._jsonl(paths.state_dir / "memory-attention" / "ledger.jsonl") if r.get("op") == "group"]
-    assert groups and all(len(r["members"]) + len(r["context"]) >= 2 for r in groups), groups
-    assert groups[0]["reasons"]["sequence"] >= 1, groups
+    # the first capture was written up once its request had ended (in a pass of its own, or with the pass that ran
+    # then anyway; that pass landed the note); the related second capture's pass read it as history
+    rows = H._jsonl(paths.state_dir / "memory-attention" / "ledger.jsonl")
+    groups = [r for r in rows if r.get("op") == "group"]
+    first = [r for r in rows if r.get("op") == "create" and s.episode_id in ((r.get("refs") or {}).get("episodes") or [])
+             and (r.get("refs") or {}).get("captures")]  # fmt: skip
+    assert first and any(r.get("op") == "hand" and r.get("entry") == first[0]["entry"] for r in rows), rows[-20:]
+    related = [r for r in groups if r["due"] != "ended"]
+    assert related and all(len(r["members"]) + len(r["context"]) >= 2 for r in related), groups
+    assert related[0]["reasons"]["sequence"] >= 1, groups
     # A1: the five exchanges, on one record
     mesh = check_mesh(home)
     assert mesh["fork_to_writer"] >= 1 and mesh["writer_to_fork"] >= 1 and mesh["fork_answer"] == 1, mesh
@@ -290,15 +296,8 @@ async def test_surface_3_an_outcome_that_arrives_two_requests_later(core_world, 
             "w = csv.DictWriter(open('sorted.csv', 'w', newline=''), fieldnames=['id', 'amount'])\n"
             "w.writeheader(); w.writerows(rows)\nprint(len(rows))\n")
     texts = ["Sort the rows of inbox.csv by id into sorted.csv.", "How many rows were there?", "Thanks.",
-             "Anything else?", f"Sort the rows of inbox.csv by id into {SX.SECOND_FILE}."]
-    # request 0: the same kind of work earlier, so request 1's capture has a related capture to be written up with
-    z = await H.cli_session(core_world, monkeypatch,
-                            ScriptedModel(actor=[reply(calls=[cell(code.replace("sorted.csv", SX.SECOND_FILE))]),
-                                                 reply("Sorted.")]),
-                            texts[4], H.replies())
-    assert z.code == 0
-    H.wait_until_settled(home)
-    # request 1: the work, and no verdict
+             "Anything else?"]
+    # request 1: the work, and no verdict (its capture is written up once its request has ended)
     a = await H.cli_session(core_world, monkeypatch, ScriptedModel(actor=[reply(calls=[cell(code)]), reply("Sorted.")]),
                             texts[0], H.replies())
     assert a.code == 0 and a.episode_id

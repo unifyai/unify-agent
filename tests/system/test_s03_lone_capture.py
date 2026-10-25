@@ -1,7 +1,8 @@
-"""S3: a lone capture is never written up alone; it waits, stays servable, and the run's end counts it as never grouped.
+"""S3: a lone capture is written up once its request has ended, in one pass, and stays servable.
 
-Design: change 0.2 (a pass is due only for a new capture with related history; a lone capture waits and stays
-servable; the end of run records it as ``never_grouped``), 0R.1; spec R1.1, R1.6, R1.7.
+Design: a pass is due for a new capture with related history; a capture with no related capture is due once its own
+request has ended, all such at one moment in one pass (or with a pass that runs then anyway), whatever outcome the
+world gave; nothing else (no count, no idle time) makes a pass due.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from tests.system.drive import MEMORY_MODES
 @pytest.mark.asyncio
 @pytest.mark.timeout(1500)
 @pytest.mark.parametrize("mode", MEMORY_MODES)
-async def test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped(system, mode):
+async def test_a_lone_capture_is_written_up_once_its_request_ends_and_stays_servable(system, mode):
     s = system
     words = ["stone", "river"]
     keep = "open('/workspace/kept-from-request-1.txt', 'w').write('kept')\n"  # "it persists across tasks"
@@ -30,11 +31,16 @@ async def test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped(
         SW.accepted_host())
     s.settle()
     cid = s.capture_of(r1.episode_id)
-    # never written up alone: no pass, no judge (nothing to compare it with)
-    assert not s.writer.pass_bodies and not s.writer.judge_bodies
+    # its request has ended: the lone capture is handed, in a pass of its own or with the pass that runs then anyway
+    # (the fork's message's); no judge (nothing to compare it with)
+    assert s.writer.pass_bodies and not s.writer.judge_bodies
+    led = H.ledger(s.home)
     mine = [e for e in s.entries() if cid in (e.refs.captures or ())]
-    assert mine and all(e.state == "open" for e in mine), [(e.kind, e.state) for e in mine]
-    # still servable on the next request, with no pass
+    (hand,) = [r for r in led.rows() if r.get("op") == "hand" and r.get("entry") in {e.entry for e in mine}]
+    row = led.group_of(hand["pass_id"])
+    assert hand.get("by") == "with_pass" or (row["group"] is None and row["due"] == "ended"), (hand, row)
+    assert all(e.state != "open" for e in mine), [(e.kind, e.state) for e in mine]
+    # still servable on the next request
     sink: dict = {}
     item = f"capture:{cid}"
     code = SW.probe_json("_try('kept', lambda: open('/workspace/kept-from-request-1.txt').read())\n"
@@ -49,15 +55,12 @@ async def test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped(
         if e.kind == "new_experience" and not e.refs.captures:
             assert e.state == "closed" and e.reason_ref == "no_capture", (e.kind, e.state, e.reason_ref)
     s.settle()
-    # the run's end: the drain hands no lone capture and the coverage report counts it never grouped
+    # the run's end: nothing is left that was never reached
     report = H.drain(s.home)
     H.check_terminated(report, s.home)
-    assert not s.writer.pass_bodies, "the drain handed a lone capture to a pass"
     rows = H.ledger(s.home).never_grouped()
-    assert any(cid in json.dumps(r) for r in rows), rows
-    assert H.ledger(s.home).report().never_grouped >= 1
+    assert not any(cid in json.dumps(r) for r in rows), rows
     assert (s.captures().get(cid) or {}).get("procedure"), "the capture's files stay on record"
-
 
 @needs_bwrap
 @pytest.mark.asyncio

@@ -2,9 +2,10 @@
 
 Membership comes from the harness's records only (the same ordered sequence of tool calls or a shared run of calls,
 shared library items, the same input shape of the same form, a judge's ``kin`` rows), never from an id, a word, a
-request's text or a stream position, and nothing runs. A new capture is handed only with another related capture (a
-new one, or its history); a capture with no related capture is never handed alone, an entry with no capture is closed
-by the harness, and every other kind of entry is handed at once.
+request's text or a stream position, and nothing runs. A new capture is handed with its related captures (new ones,
+or its history); a capture with no related capture is handed once its request has ended, all such at one moment in one
+pass or with the pass that runs then anyway; an entry with no capture is closed by the harness, and every other kind
+of entry is handed at once.
 """
 
 from __future__ import annotations
@@ -79,7 +80,7 @@ def _groups(entries, profiles, now=NOW):
     return cg.groups({e.entry: e for e in entries}, lambda e: profiles[e.entry], now=now)
 
 
-def test_two_related_open_captures_form_a_due_group_and_an_unrelated_one_waits():
+def test_two_related_open_captures_form_a_due_group_and_an_unrelated_one_is_due_as_ended():
     es = [_e("a" * 16), _e("b" * 16), _e("c" * 16)]
     profiles = {"a" * 16: _p("a" * 16, sequence=STEP), "b" * 16: _p("b" * 16, sequence=STEP),
                 "c" * 16: _p("c" * 16, sequence=("env.files.read", "env.files.write"))}  # fmt: skip
@@ -87,7 +88,7 @@ def test_two_related_open_captures_form_a_due_group_and_an_unrelated_one_waits()
     formed = [g for g in got if g.due == "formed"]
     assert len(formed) == 1 and [e.entry for e in formed[0].open] == ["a" * 16, "b" * 16]
     alone = [g for g in got if [e.entry for e in g.open] == ["c" * 16]]
-    assert alone and alone[0].due is None  # no related capture: it waits, never written up alone
+    assert alone and alone[0].due == cg.ENDED  # no related capture: written up once its request has ended
 
 
 def test_the_same_input_structure_alone_groups_nothing_and_beside_another_relation_is_listed():
@@ -99,8 +100,8 @@ def test_the_same_input_structure_alone_groups_nothing_and_beside_another_relati
                 "d" * 16: _p("d" * 16, form="value", shape={"[].n:int"}, items={"memory.t.m:f"})}  # fmt: skip
     got = _groups(es, profiles)
     assert sorted((tuple(e.entry for e in g.open), g.due) for g in got) == [
-        (("a" * 16,), None), (("b" * 16,), None), (("c" * 16, "d" * 16), "formed")]
-    (formed,) = [g for g in got if g.due]
+        (("a" * 16,), cg.ENDED), (("b" * 16,), cg.ENDED), (("c" * 16, "d" * 16), "formed")]
+    (formed,) = [g for g in got if g.due == "formed"]
     assert formed.relations == [{"a": "c" * 16, "b": "d" * 16, "why": ["items: memory.t.m:f", "input"]}]
 
 
@@ -111,16 +112,18 @@ def test_a_new_capture_related_to_a_decided_one_joins_its_group():
     assert g.due == "history" and [e.entry for e in g.context] == ["a" * 16] and g.relations
 
 
-def test_a_capture_with_no_related_capture_is_never_due_whatever_comes_or_however_long():
-    """No count of later, unrelated captures and no idle time hands a capture alone: transfer needs two instances."""
+def test_a_capture_with_no_related_capture_is_due_as_ended_and_no_count_or_time_changes_that():
+    """A capture with no related capture is due because its request has ended (its entry exists only then): no count
+    of later, unrelated captures and no idle time changes why or when."""
     first = _e("0" * 16)
     later = [_e(f"{i:x}" * 16, at_=f"2026-10-20T00:00:{10 + i:02d}.000Z") for i in range(1, 12)]
     profiles = {first.entry: _p(first.entry, sequence=("env.a.b", "env.a.c"))}
     profiles.update({e.entry: _p(e.entry, sequence=(f"env.other{i}.x", f"env.other{i}.y")) for i, e in enumerate(later)})
     got = {tuple(e.entry for e in g.open): g.due for g in _groups([first, *later], profiles)}
-    assert got[(first.entry,)] is None
+    assert got[(first.entry,)] == cg.ENDED
+    assert _groups([first], {first.entry: _p(first.entry)})[0].due == cg.ENDED
     a_year_later = NOW + dt.timedelta(days=365)
-    assert _groups([first], {first.entry: _p(first.entry)}, now=a_year_later)[0].due is None
+    assert _groups([first], {first.entry: _p(first.entry)}, now=a_year_later)[0].due == cg.ENDED
 
 
 def test_the_history_is_the_most_related_closed_captures_at_most_history_max():
@@ -164,7 +167,8 @@ def test_a_judges_kin_row_relates_two_captures_and_unknown_ids_are_left_out(tmp_
     def grouping(entries):
         return cg.groups(entries, cg.HomeProfiles(led.state_dir), now=clock())
 
-    assert led.hand("p0", 4, grouping=grouping) == []  # nothing relates them yet
+    # nothing relates them yet: each is alone (due because its request ended), in no group with the other
+    assert sorted(g.due for g in grouping(led.entries())) == [cg.ENDED, cg.ENDED]
     assert led.record_kin(ids["2" * 16], ["f" * 16], "unknown") is False
     assert led.record_kin(ids["2" * 16], [ids["1" * 16]], "both sort rows by a column") is True
     assert led.get(ids["2" * 16]).kin == (ids["1" * 16],)
@@ -217,16 +221,19 @@ def test_the_ledger_hands_other_kinds_first_then_one_due_group_with_its_row(tmp_
         return cg.groups(entries, lambda e: _p(e.entry, sequence=seqs[e.refs.captures[0]]), now=clock())
 
     first = led.hand("p1", 4, grouping=grouping)
-    assert [e.kind for e in first] == ["late_evidence"] and led.group_of("p1") is None
+    # the late evidence's pass runs anyway: e3 (related to nothing, its request ended) is handed with it
+    assert [e.kind for e in first] == ["late_evidence", "new_experience"] and led.group_of("p1") is None
+    assert first[1].refs.captures == ("3" * 16,)
+    (row,) = [r for r in led.rows() if r.get("op") == "hand" and r.get("entry") == first[1].entry]
+    assert row["by"] == "with_pass"
     second = led.hand("p2", 4, grouping=grouping)
     assert sorted(e.refs.captures[0] for e in second) == ["1" * 16, "2" * 16]
     row = led.group_of("p2")
     assert row["due"] == "formed" and sorted(row["members"]) == sorted(e.entry for e in second)
-    # e3 relates to nothing: it waits, however long, and is never handed alone
+    # nothing is left, however long: no time makes a pass due
     assert led.hand("p3", 4, grouping=grouping) == []
     clock.tick(10**6)
-    assert led.hand("p4", 4, grouping=grouping) == [] and led.get(next(
-        e.entry for e in led.entries().values() if e.refs.captures == ("3" * 16,))).state == "open"
+    assert led.hand("p4", 4, grouping=grouping) == []
     # without a grouping the ledger hands as before (every kind at once)
     assert Ledger(tmp_path / "home2", clock=clock).hand("q", 4) == []
 
@@ -462,3 +469,44 @@ def test_a_group_row_logs_why_the_group_formed(tmp_path):
     assert row["reasons"] == {"pairs": 2, "sequence": 1, "subsequence": 0, "items": 1, "input": 0, "judged": 0}
     assert cg.reasons([{"why": ["sequence: a > b", "input"]}, {"why": ["items: x", "judged"]}]) == {
         "pairs": 2, "sequence": 1, "subsequence": 0, "items": 1, "input": 1, "judged": 1}
+
+
+def _ledger_with(tmp_path, names, seqs):
+    clock = Clock()
+    led = Ledger(tmp_path / "home", clock=clock)
+    cids = {n: f"{i + 1:x}" * 16 for i, n in enumerate(names)}
+    led.sync(Fake(forks=[_fork(n) for n in names], captures={n: _cap(n, cids[n]) for n in names}))
+
+    def grouping(entries):
+        return cg.groups(entries, lambda e: _p(e.entry, sequence=seqs[e.refs.episodes[0]]), now=clock())
+
+    return led, grouping
+
+
+def test_captures_with_no_related_capture_whose_requests_ended_go_to_one_pass_together(tmp_path):
+    seqs = {"e1": ("env.a.x", "env.a.y"), "e2": ("env.b.x", "env.b.y"), "e3": ("env.c.x", "env.c.y")}
+    led, grouping = _ledger_with(tmp_path, ("e1", "e2", "e3"), seqs)
+    got = led.hand("p1", 1, grouping=grouping)  # k bounds a group's members, never how many ended captures are handed
+    assert sorted(e.refs.episodes[0] for e in got) == ["e1", "e2", "e3"]
+    row = led.group_of("p1")
+    assert row["group"] is None and row["due"] == cg.ENDED and sorted(row["members"]) == sorted(e.entry for e in got)
+    assert led.hand("p2", 4, grouping=grouping) == []  # one pass for all of them, none for each
+
+
+def test_a_capture_with_no_related_capture_rides_with_a_due_groups_pass(tmp_path):
+    seqs = {"e1": STEP, "e2": STEP, "e3": ("env.files.read", "env.files.write")}
+    led, grouping = _ledger_with(tmp_path, ("e1", "e2", "e3"), seqs)
+    got = led.hand("p1", 4, grouping=grouping)
+    assert sorted(e.refs.episodes[0] for e in got) == ["e1", "e2", "e3"]
+    row = led.group_of("p1")
+    assert row["due"] == "formed" and sorted(row["members"]) == sorted(e.entry for e in got if e.refs.episodes[0] != "e3")
+    by = {r["entry"]: r.get("by") for r in led.rows() if r.get("op") == "hand"}
+    assert [by[e.entry] for e in got if e.refs.episodes[0] == "e3"] == ["with_pass"]
+    assert led.hand("p2", 4, grouping=grouping) == []
+
+
+def test_a_capture_in_a_running_pass_is_not_handed_again(tmp_path):
+    seqs = {"e1": ("env.a.x", "env.a.y")}
+    led, grouping = _ledger_with(tmp_path, ("e1",), seqs)
+    assert len(led.hand("p1", 4, grouping=grouping)) == 1
+    assert led.hand("p2", 4, grouping=grouping) == []

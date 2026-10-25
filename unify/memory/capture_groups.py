@@ -1,10 +1,10 @@
 """Capture groups: which captures the writer reads together, and when a group is due.
 
 A writer pass reads related captures together with the library items they touch, and decides what the library keeps
-from them. A pass is handed a new capture only together with its **history**: earlier captures related to it. A capture
-with no related capture is never written up alone; it stays served (the library exports every capture as soon as it
-is stored) and waits until a related capture arrives. An entry whose episode left no capture is closed by
-the harness (:data:`NO_CAPTURE`) and never runs a pass.
+from them. A pass is handed a new capture together with its **history**: earlier captures related to it. A capture with no
+related capture is written up once its own request has ended (:data:`ENDED`), with whatever outcome the world
+recorded for it: all such captures at one moment go to one pass, or along with a pass that runs then anyway. An entry
+whose episode left no capture is closed by the harness (:data:`NO_CAPTURE`) and never runs a pass.
 
 **Membership** comes from the harness's records, never from an id, a word, a request's text or a stream position, and
 nothing is run. Two captures are related when their records show at least one of:
@@ -35,8 +35,9 @@ The outcome each member's signals gave is carried to the writer as a fact of the
 
 **When a group is due** (counters only, the same in every world): a group of related captures with at least one open
 (new, not yet written) capture is due when it holds at least two captures, the new ones and their history; at most one
-pass per group at a time (a group with a member handed to a running pass is not due). There is no due-alone rule: no
-count of later captures and no idle time hands a capture with no related capture.
+pass per group at a time (a group with a member handed to a running pass is not due). A capture with no related
+capture, open and not in a running pass, is due once its request has ended (its entry exists only once its episode is
+recorded): :data:`ENDED`. No count of later captures and no idle time makes anything due.
 
 Every other kind of entry (bad news, late evidence, a message, a deferral, a repeated use) is handed at once, as
 before: it is about an item that exists, which is its history.
@@ -65,6 +66,8 @@ HISTORY_MAX = 8
 SEQUENCE_MIN = 2
 #: The reason the harness closes an entry whose episode left no capture: nothing to write up, no pass.
 NO_CAPTURE = "no_capture"
+#: Why a capture with no related capture is due: its own request has ended.
+ENDED = "ended"
 #: The reason the harness closes a capture entry of a group no pass finished (:data:`.attention.GIVEN_UP`).
 GIVEN_UP = "group_given_up"
 #: The entry kinds that wait for their group; every other kind is handed at once.
@@ -260,6 +263,8 @@ def groups(
             g.due = "formed"
         elif g.context:
             g.due = "history"
+        elif not g.relations:
+            g.due = ENDED
         out.append(g)
     return sorted(out, key=lambda g: (g.open[0].created_at, g.open[0].entry))
 

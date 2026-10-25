@@ -14,6 +14,7 @@ import json
 import pytest
 
 from tests.actor.code_act.sandbox_world import needs_bwrap
+from tests.memory.conformance import harness as H
 from tests.scripted_model import Always, ScriptedModel, cell, reply
 from tests.system import sysworld as SW
 from tests.system.drive import MEMORY_MODES
@@ -74,7 +75,8 @@ async def test_a_call_of_a_capture_relates_the_calling_episodes_capture_to_it(sy
 @pytest.mark.parametrize("mode", MEMORY_MODES)
 async def test_an_item_only_served_relates_nothing(system, mode):
     """Two captures of unrelated work, from two requests that were both served the same library item and never
-    called it: no relation, no group, no pass (R1.2: used items, never served ones; the pre-ff01d6158 root cause)."""
+    called it: no relation, no group, and no pass hands them together; each is handed alone once its own request
+    has ended (R1.2: used items, never served ones; the pre-ff01d6158 root cause)."""
     s = system
     s.writer.plan = "land"
     s.writer.kin = False
@@ -97,7 +99,21 @@ async def test_an_item_only_served_relates_nothing(system, mode):
     s.settle()
     n = s.capture_of(r.episode_id)
     assert not _groups_with(s, _entries(s, c), _entries(s, n)), [g.get("reasons") for g in s.ledger_rows("group")]
-    assert len(s.writer.passes) == passes, "a pass ran for captures that no real relation ties"
+    assert len(s.writer.passes) - passes <= 2, "more than one pass for each request that left a capture"
+    led = H.ledger(s.home)
+    ec, en = set(_entries(s, c)), set(_entries(s, n))
+    handed: dict = {}
+    for row in led.rows():
+        if row.get("op") == "hand" and row.get("entry") in ec | en:
+            handed.setdefault(row["pass_id"], []).append(row)
+    assert ec <= {r["entry"] for rows in handed.values() for r in rows}, "a capture was never handed"
+    assert en <= {r["entry"] for rows in handed.values() for r in rows}, "a capture was never handed"
+    for pass_id, rows in handed.items():
+        got = {r["entry"] for r in rows}
+        assert not (got & ec and got & en), "a pass ran for captures that no real relation ties"
+        row = led.group_of(pass_id)
+        assert all(r.get("by") == "with_pass" for r in rows) or (row["group"] is None and row["due"] == "ended"), \
+            (rows, row)
 
 
 @needs_bwrap
