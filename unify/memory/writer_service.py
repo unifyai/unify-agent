@@ -27,10 +27,11 @@ it books that whole room, no call of its writer or helpers starts past it, count
 worst case, and it settles after it from the writer lane's journal plus its helpers' priced calls, or its own figures,
 or, when it ended with no report, its turn files), and each pass's wall clock. A lane relay's cap applies
 independently: a call the lane refuses for its own cap (a 403 whose refusal body's reason says it is the lane's cap)
-is the cap reached; a refusal for now (another call in flight, a rate limit, a server error) is tried again, bounded,
-and never stops the service. Any other budget refusal (a key proxy's budget or reserve refusal with no lane-cap reason,
-HTTP 402) is not the lane's cap: the next pass waits :data:`PROXY_BACKOFF_S`, doubled after each such pass in a row,
-and after :data:`PROXY_RETRIES` of them the next one is the cap reached.
+is the cap reached, and so is HTTP 402 (the account is out of credit); a refusal for now (another call in flight, a
+rate limit, a server error) is tried again, bounded, and never stops the service. Any other budget refusal (a key
+proxy's budget or reserve refusal with no lane-cap reason) is not the lane's cap: the next pass waits
+:data:`PROXY_BACKOFF_S`, doubled after each such pass in a row, and after :data:`PROXY_RETRIES` of them the next one is
+the cap reached.
 
 **Resumable passes.** Before each model call of a pass (the writer's and each helper's), ``turns/<pass>/<n>.json`` is
 written ``pending`` with the conversation so far and the pass's inputs; after it, ``done`` with the reply and its
@@ -1363,8 +1364,9 @@ def _ended_by(report: Any, categories: frozenset) -> bool:
 
 
 def _proxy_refused(report: Any) -> bool:
-    """Whether a pass ended because a writer call was refused for the writer's lane's own cap: a 403 whose refusal
-    body's reason says it is the lane's cap (:data:`.writer_pass.CAP_CATEGORIES`). A 403 for a call in flight, a rate
+    """Whether a pass ended because a writer call was refused for the writer's lane's own cap, a 403 whose refusal
+    body's reason says it is the lane's cap, or with HTTP 402, the account out of credit
+    (:data:`.writer_pass.CAP_CATEGORIES`). A 403 for a call in flight, a rate
     limit or a server error is not the cap (the pass tried it again, bounded), and neither is a 403 whose body says
     nothing, nor any other budget refusal (:func:`_budget_refused`)."""
     from .writer_pass import CAP_CATEGORIES
@@ -1374,8 +1376,8 @@ def _proxy_refused(report: Any) -> bool:
 
 def _budget_refused(report: Any) -> bool:
     """Whether a pass ended because a writer call was refused for a budget that is not the lane's own cap: a key
-    proxy's budget or reserve refusal with no lane-cap reason, or HTTP 402 (:data:`.writer_pass.BUDGET_CATEGORIES`).
-    Room may come back once that proxy's calls in flight settle."""
+    proxy's budget or reserve refusal with no lane-cap reason (:data:`.writer_pass.BUDGET_CATEGORIES`). Room may come
+    back once that proxy's calls in flight settle."""
     from .writer_pass import BUDGET_CATEGORIES
 
     return _ended_by(report, BUDGET_CATEGORIES)

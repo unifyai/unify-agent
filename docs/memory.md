@@ -75,9 +75,10 @@ writer at what it wrote, and how the actor tells the writer that a served item w
 ran. The run's count starts when the `unify act` makes its first memory request; a writer service that stops and starts
 again within the run (its 36-hour lifetime, a crash) keeps counting. A pass has no cap of its own. Every call is
 booked at its worst case until it is priced. Once the cap is reached, the library stops changing for
-the rest of the run, and requests are still served from it. A refusal that is not the writer's lane's own cap (a key
-proxy's refusal for its own budget or reserve, or HTTP 402) does not stop the writer at once: its next pass waits 1, 2,
-4 and then 8 minutes after each such refusal in a row, and a fifth refusal in a row stops it as the cap does.
+the rest of the run, and requests are still served from it. HTTP 402 (the account is out of credit) stops the writer
+the same way. A key proxy's refusal for its own budget or reserve, which is not the writer's lane's own cap, does not
+stop it at once: its next pass waits 1, 2, 4 and then 8 minutes after each such refusal in a row, and a fifth refusal
+in a row stops it as the cap does.
 
 The writer service is started by the harness, at a request's start and end. A harness that must own it (for example
 one whose requests run in sandboxes that end with them) may run it as its own foreground process,

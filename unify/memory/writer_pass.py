@@ -4430,12 +4430,12 @@ REFUSED_BUDGET = "http_403_budget"
 REFUSED_BUSY = "http_403_busy"
 #: The categories a later attempt may not get: the route busy, a rate limit, a server error.
 TRANSIENT_CATEGORIES = frozenset({REFUSED_BUSY, "http_429"} | {f"http_{s}" for s in range(500, 600)})
-#: The category that is the writer's lane's own cap reached: a 403 whose body's reason says so.
-CAP_CATEGORIES = frozenset({REFUSED_CAP})
-#: The categories that are a budget refusal that is not the lane's own cap: HTTP 402 (the lane relay never sends it),
-#: and :data:`REFUSED_BUDGET`. The writer service tries a later pass, a bounded number of times
-#: (``writer_service.PROXY_RETRIES``).
-BUDGET_CATEGORIES = frozenset({"http_402", REFUSED_BUDGET})
+#: The categories that stop the writer at once: HTTP 402 (the account is out of credit, which waiting does not fix), and
+#: a 403 whose body's reason says the writer's lane's own cap is reached.
+CAP_CATEGORIES = frozenset({"http_402", REFUSED_CAP})
+#: The category that is a budget refusal that is not the lane's own cap (:data:`REFUSED_BUDGET`). The writer service
+#: tries a later pass, a bounded number of times (``writer_service.PROXY_RETRIES``).
+BUDGET_CATEGORIES = frozenset({REFUSED_BUDGET})
 #: A transient failure is tried again at most this many times in a row, waiting TRANSIENT_BACKOFF_S, then twice
 #: that, and so on (2 + 4 + 8 + 16 s), never past the pass's deadline.
 TRANSIENT_RETRIES = 4

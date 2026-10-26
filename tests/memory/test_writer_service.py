@@ -833,13 +833,13 @@ class FirstRefused(Recording):
         return await super().__call__(home, pass_id, handed, **kw)
 
 
-@pytest.mark.parametrize("status, body", [(403, _LANE_CAP_BODY)], ids=["lane-cap-reason"])
+@pytest.mark.parametrize("status, body", [(403, _LANE_CAP_BODY), (402, "{}")], ids=["lane-cap-reason", "http-402"])
 def test_a_writer_call_the_proxy_refuses_for_its_cap_is_the_cap_reached(
     svc, monkeypatch, status, body
 ):
     """The two caps disagree: the service reserved under its own, the lane refused for its own cap (its refusal body's
-    reason says so). The service reads that as the cap reached: the entries still owed are not reached (spend_cap) and
-    no pass follows.
+    reason says so), or the account is out of credit (HTTP 402, which waiting does not fix). The service reads that as
+    the cap reached at once: the entries still owed are not reached (spend_cap) and no pass follows.
     """
     ids = _open_entry(svc.home, 6)
     runner = Recording(reasons=[_refused_reason(status, body)])
@@ -883,13 +883,13 @@ class Timed(Recording):
         return await super().__call__(home, pass_id, handed, **kw)
 
 
-_BUDGET = [(403, _CELL_BODY), (403, _CAP_BODY), (402, "{}")]
-_BUDGET_IDS = ["cell-budget", "reserve-no-reason", "http-402"]
+_BUDGET = [(403, _CELL_BODY), (403, _CAP_BODY)]
+_BUDGET_IDS = ["cell-budget", "reserve-no-reason"]
 
 
 @pytest.mark.parametrize("status, body", _BUDGET, ids=_BUDGET_IDS)
 def test_a_budget_refusal_that_is_not_the_lanes_cap_is_tried_again_after_a_wait(svc, monkeypatch, status, body):
-    """A key proxy refused one writer call for its own budget or reserve (no lane-cap reason; or HTTP 402), as one did
+    """A key proxy refused one writer call for its own budget or reserve (no lane-cap reason), as one did
     on office with the writer's lane far below its cap. That is not the cap: the pass's entries go back with no miss,
     the next pass waits PROXY_BACKOFF_S on the service's clock, and reads them; nothing is marked not reached. (Before,
     the first such refusal stopped every pass for the rest of the run.)"""
