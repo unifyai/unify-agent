@@ -50,6 +50,8 @@ GUARD_MODULES = (
     "unify/memory/integration/fork.py",
     "unify/memory/integration/prompt.py",
     "unify/memory/integration/hooks.py",
+    # the standing-note digest the actor's first message carries (rev 2.4)
+    "unify/memory/standing_notes.py",
     "unify/actor/prompt_builders.py",
     # the cards, catalogue and search rows an agent reads about each item, and the status texts they carry
     "unify/memory/library_export.py",

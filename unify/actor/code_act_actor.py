@@ -232,10 +232,19 @@ class CodeActActor:
         # What opens the session's first user message: with memory on, the
         # size of the library copy, then the record's section.
         first_message_parts: list[str] = []
+        digest = None
         if _memory.enabled():
             first_message_parts.append(
                 _memory.library_line(actor=agents.name == agents.pool.record.root),
             )
+            # The library's standing notes (preferences, rules, cautions),
+            # with no fit judgement; a persistent session re-sends them only
+            # when they change.
+            digest = _memory.standing_digest(
+                actor=agents.name == agents.pool.record.root,
+            )
+            if digest is not None:
+                first_message_parts.append(digest.update() or "")
         run_meter = new_run_meter()
         meter_token = current_run_meter.set(run_meter)
         in_code = None
@@ -281,6 +290,8 @@ class CodeActActor:
         finally:
             current_run_meter.reset(meter_token)
         handle.run_meter = run_meter  # type: ignore[attr-defined]
+        if persist:
+            _memory.digest_on_submit(handle, digest)
 
         result_of_loop = handle.result
         loop_handle = handle

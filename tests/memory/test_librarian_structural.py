@@ -87,7 +87,7 @@ def test_every_capture_form_gets_a_structural_row():
     assert {r["form"] for r in rows.values()} == {"value", "state", "state_env"}
     for r in rows.values():
         assert set(r) == {"id", "kind", "form", "signature", "applies_text", "calls", "occurrences", "outcomes",
-                          "provenance"}  # fmt: skip
+                          "provenance", "record"}  # fmt: skip
         assert r["kind"] == "capture-shape" and r["occurrences"] == 2
         assert r["outcomes"] == {"positive": 1, "contrary": 0, "none": 1}
         assert r["provenance"] == {"episodes": 2}  # counts, never an id

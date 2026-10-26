@@ -28,8 +28,10 @@ and asking for one by its id gives what replaced it.
 
 Ids, labels, counts and the items' own stated text only: nothing here reads a world, a request's text or a stream
 position. No test result (the writer's stated tests, the gate's findings) and no judgement of an item's code (pure or
-not, acting or not, a fixed answer or not) is read: an item is served on its uses' outcomes and its source episodes
-only.
+not, acting or not) is read: an item's status rests on its uses' outcomes and its source episodes only. The one label
+read from a capture's code, record or procedure (:func:`.capture_shape.record_kind`), changes what its card says it
+is, never its status or its trust. Every card states its use counts beside its status
+(:func:`.library_helper.use_counts_text`: ``used N times: M positive, K negative``).
 """
 
 from __future__ import annotations
