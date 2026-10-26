@@ -391,6 +391,9 @@ class Act:
                 line = raw.decode(errors="replace").strip()
                 if not line:
                     continue
+                # the world marks a message that starts a new request of the session ({"message": ..., "request":
+                # "new"}); a plain message is more of the same request (an observation, feedback on the same task)
+                new_request = False
                 if self._args.jsonl:
                     try:
                         item = json.loads(line)
@@ -445,6 +448,7 @@ class Act:
                         if not isinstance(message, str) or not message:
                             continue
                         line = message
+                        new_request = item.get("request") == "new"
                 if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED
 
@@ -453,8 +457,9 @@ class Act:
                     await self._handle.stop(SESSION_ENDED)
                     return
                 mark = getattr(self._mv2, "mark_request", None)
-                if callable(mark):
-                    # the session's next request begins: a verdict line now bears on the request it followed
+                if new_request and callable(mark):
+                    # the world says the session's next request begins: a verdict line now bears on the request it
+                    # followed
                     mark()
                 if self._bridge is not None:
                     # A record post, read at the next boundary.

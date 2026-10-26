@@ -33,7 +33,7 @@ memory (UNIFY_MEMORY) ── the library the next request reads
 
 `unify act "request"` builds one `CodeActActor` over the environments the process registered, runs the request and
 prints the result. `--persist` keeps the session open: each further line is a new request in the same interpreter.
-`--jsonl` speaks newline-delimited JSON for a program driving the actor: stdin lines are `{"message": ...}`,
+`--jsonl` speaks newline-delimited JSON for a program driving the actor: stdin lines are `{"message": ...}` (optionally `"request": "new"`: it starts a new request),
 `{"cancel": true}`, `{"quit": true}` and, with memory on, `{"outcome": ...}` and
 `{"checker": {"label": "pass"|"fail"}}` (optionally with `text`, `about` and `episode`); stdout lines are `result`, `response`,
 `record` and `ended`. A cancel ends the running request and keeps the session. When stdin is not a terminal it is

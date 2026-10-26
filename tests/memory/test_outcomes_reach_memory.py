@@ -314,8 +314,7 @@ class _MarkRun(_Run):
         self.log.append(("mark_request",))
 
 
-def test_the_cli_marks_each_submitted_message_as_the_next_request(monkeypatch):
-    """The boundary is the CLI's submitted message (a typed line), after the verdict line that precedes it."""
+def _drive_marks(monkeypatch, stdin: bytes) -> list:
     from tests.memory.integration import test_request
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
@@ -328,10 +327,39 @@ def test_the_cli_marks_each_submitted_message_as_the_next_request(monkeypatch):
     code, out, log, handle = _drive(
         monkeypatch,
         ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "first request"],
-        b'{"checker": {"label": "fail", "text": "it went wrong"}}\n{"message": "second request"}\n{"quit": true}\n',
+        stdin,
         _MarkRun(log),
     )
     assert code == 0
-    kinds = [e[0] for e in log]
-    assert kinds.count("mark_request") == 1
-    assert kinds.index("take_checker") < kinds.index("mark_request")
+    return [e[0] for e in log]
+
+
+def test_the_cli_marks_a_new_request_only_on_the_worlds_typed_marker(monkeypatch):
+    """The world says where a request starts: ``{"message": ..., "request": "new"}``. A plain message is more of the
+    same request (an observation, feedback on the same task) and marks nothing."""
+    plain = _drive_marks(
+        monkeypatch,
+        b'{"checker": {"label": "fail"}}\n{"message": "your answer was wrong"}\n'
+        b'{"checker": {"label": "fail"}}\n{"message": "wrong again"}\n{"quit": true}\n',
+    )
+    assert plain.count("mark_request") == 0 and plain.count("take_checker") == 2
+    marked = _drive_marks(
+        monkeypatch,
+        b'{"checker": {"label": "fail", "text": "it went wrong"}}\n'
+        b'{"message": "second request", "request": "new"}\n{"message": "more on it"}\n{"quit": true}\n',
+    )
+    assert marked.count("mark_request") == 1
+    assert marked.index("take_checker") < marked.index("mark_request")
+
+
+def test_plain_follow_up_messages_keep_the_visit_wide_exclusion(run):
+    """No marker (every world but a driver that marks requests): one request, the episode-wide behaviour as before."""
+    run.note_calls(_calls(ITEM))
+    assert run.take_checker({"label": "fail"})["accepted"] is True
+    run.note_calls(_calls(OTHER))  # a later turn of the same request
+    assert run.take_checker({"label": "fail"})["accepted"] is True
+    assert run.checker_seen[1]["used_before"] == sorted([ITEM, OTHER])
+    run.note_calls(_calls(LATER))
+    assert run.requests == 0
+    assert tool_handlers._memory_run_failed() == sorted([ITEM, OTHER])
+    assert _ask(run)["failed"] == sorted([ITEM, OTHER])

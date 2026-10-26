@@ -1499,7 +1499,8 @@ class RequestRun:
         }
 
     def mark_request(self) -> None:
-        """A persistent session begins its next request (the CLI calls it for each message it submits): from here a
+        """A persistent session begins its next request (the CLI calls it for a message the world marks so:
+        ``{"message": ..., "request": "new"}``; a plain follow-up message is more of the same request): from here a
         verdict bears on this request's uses (:meth:`used_so_far`), and an in-request exclusion lasts from the verdict
         to the end of the request after the one it followed (:meth:`failed_after_verdicts`). An episode of one request
         is never marked."""

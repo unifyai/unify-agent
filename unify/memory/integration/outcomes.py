@@ -14,7 +14,7 @@ episode are judged again (:func:`..captures.rejudge_episode`). Item records are 
 the next pass (:func:`.consolidate.after_passes`), which the attention ledger makes due: every signal's arrival is a
 row of :data:`ARRIVALS_FILE` (ids and labels only), from which the ledger creates its ``late_evidence`` entries.
 
-In an episode that held several requests (a persistent session; the CLI marks each submitted message), a late
+In an episode that held several requests (a persistent session whose driver marks each new request: ``{"message": ..., "request": "new"}``), a late
 verdict bears on the items of that episode's last request only (``EvidenceStore.last_request_items``), as an
 in-episode verdict bears on the request it followed.
 
