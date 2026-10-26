@@ -64,3 +64,5 @@ module:unify/memory/librarian.py	decimal strings for money	the librarian's spend
 module:unify/memory/integration/fork.py	bounds the money	the fork lane's spend cap
 module:unify/memory/writer_service.py	may have cost money	a failed model call's possible spend
 module:unify/memory/metering.py	Money is a decimal string	metering's spend record
+*	unless the task or its environment	the actor prompt's clock line: the current piece of work, whose own stated date governs it
+*	governs the task	the actor prompt's clock line: the current piece of work

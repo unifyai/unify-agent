@@ -111,14 +111,16 @@ def _sandbox_section() -> str:
 
 
 def _clock() -> str:
-    """The current time, sampled when the prompt is built: the clock a cell's own reading never overrides."""
+    """The host clock, sampled when the prompt is built: it gives "today" unless the task or its environment states its
+    own current date, which then governs the task."""
     from unify.common import prompt_helpers
 
     return textwrap.dedent(f"""
         ### Current Time
 
-        The current date and time is **{prompt_helpers.now()}**. Use this
-        clock for "today" and similar, not a clock read in a cell.
+        The host clock reads **{prompt_helpers.now()}**. Use it for "today"
+        unless the task or its environment states its own current date; then
+        that date governs the task.
     """).strip()
 
 

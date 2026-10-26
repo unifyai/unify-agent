@@ -65,3 +65,19 @@ def test_a_structured_answer_adds_its_section():
     structured = build_code_act_prompt(environments={}, structured=True)
     assert "### Answer" not in plain
     assert "### Answer" in structured
+
+
+@pytest.mark.timeout(30)
+def test_the_clock_is_the_host_clock_and_a_tasks_own_date_governs():
+    """The prompt states the clock it was built at as the host's, for "today", and says that a date the task or its
+    environment states as its own current date governs the task. It never says to use the host clock for "today" over
+    such a date: a request dated in its own world would then meet two "todays" and the host's would win."""
+    from unify.common import prompt_helpers
+
+    prompt = build_code_act_prompt(environments={})
+    section = prompt.split("### Current Time", 1)[1].split("###", 1)[0]
+    text = " ".join(section.split())
+    assert f"The host clock reads **{prompt_helpers.now()}**." in text, text
+    assert 'Use it for "today" unless the task or its environment states its own current date' in text, text
+    assert "then that date governs the task." in text, text
+    assert "The current date and time is" not in text and 'Use this clock for "today"' not in text, text
