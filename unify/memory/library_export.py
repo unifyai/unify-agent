@@ -44,7 +44,7 @@ from .layout import (
     module_bodies,
     module_of,
 )
-from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
+from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, RECORD_CARD, SHAPES_FILE, use_counts_text
 from .example_view import ReadFile, example_text, examples_of, tree_reader
 from .item_records import (
     level_of,
@@ -135,7 +135,8 @@ def _bodies(repo: Repo, rev: str | None, path: str) -> dict[str, str]:
 
 def item_history(repo: Repo, sha: str, *, scan: int = HISTORY_SCAN) -> History:
     """item id -> ``"<sha12> <subject>"`` of each of the newest *scan* commits up to *sha* that changed it
-    (newest first), and whether that scan reached every such commit.
+    (newest first), and whether that scan reached every such commit. The mapping's keys are in the order of each
+    item's newest change, newest first (commits are read newest first; one commit's items by id).
 
     A function changes when its unparsed definition differs from its parent's (what ``git log -L`` follows,
     computed by AST instead of git's function-name heuristics). A note changes when its file changes.
@@ -221,10 +222,15 @@ def items_data(
         if rid:
             recipes[item] = recipes[rid] = rid
 
+    # each item's place in the order of its newest change, newest first (item_history's keys are in that order):
+    # what the standing-note digest orders by after status and trust (None: beyond the scanned history)
+    order = {item: i for i, item in enumerate(history)}
+
     def common(item: str) -> dict:
         h = history.get(item, [])
         rec = records.get(item) if records else None
         return {
+            "changed_order": order.get(item),
             "status": _status(status_of, item),
             "status_reason": (
                 rec.get("status_reason") if rec else None
@@ -516,6 +522,16 @@ def _track_line(rec: Mapping | None) -> str:
     return ", ".join(f"{k} {totals[k]}" for k in sorted(totals))
 
 
+def record_why(rec: Mapping | None) -> str:
+    """Why an exported capture record is a record (its ``kind``, :func:`.capture_shape.record_kind`), or '' when it is
+    a procedure or carries no label."""
+    kind = rec.get("kind") if isinstance(rec, Mapping) else None
+    if not isinstance(kind, Mapping) or kind.get("kind") != "record":
+        return ""
+    why = kind.get("why")
+    return why if isinstance(why, str) and why else "it never reads its input"
+
+
 def _capture_docs(captures: Mapping[str, bytes] | None) -> dict[str, dict]:
     """The exported captures (``.memory/captures/<id>/<file>`` -> bytes, :func:`.captures.export_files`) by id:
     their ``signature``, ``record``, ``procedure`` source and ``broke`` text, each None when absent or unreadable."""
@@ -608,6 +624,14 @@ def failure_line(row: Mapping[str, Any] | None) -> str:
         for r in rows
     ]
     return f"{len(rows)}: " + "; ".join(parts)
+
+
+def _used(serving: Mapping[str, Any] | None, iid: str) -> str:
+    """``, used N times: M positive, K negative`` for item *iid* (:func:`.library_helper.use_counts_text` of its
+    evidence row's counts), shown beside its status; '' with the switch off."""
+    if not serving:
+        return ""
+    return ", " + use_counts_text((_evidence_row(serving, iid) or {}).get("counts"))
 
 
 def _serving_lines(serving: Mapping[str, Any] | None, iid: str) -> list[str]:
@@ -727,7 +751,8 @@ def catalogue_text(
         lines += _item_in_place_lines(replaced_items.get(f.item_id), docs)
         input_line = signature_text(sig) if isinstance(sig, dict) else ""
         lines.append(
-            f"Evidence: {support_text('curated item', support(rec))}; status {status[f.item_id]}; "
+            f"Evidence: {support_text('curated item', support(rec))}; status {status[f.item_id]}"
+            f"{_used(serving, f.item_id)}; "
             f"reader {reader or _no_reader(rec)}; "
             f"applies: {'yes' if _applies_stated(sig) else 'no'}\n",
         )
@@ -763,7 +788,7 @@ def catalogue_text(
             f"\n### {n.item_id}\n"
             + (f"{_one_line(n.title)}\n" if n.title else "")
             + (f"{_one_line(about)}\n" if about else "")
-            + f"Status: {status[n.item_id]}; "
+            + f"Status: {status[n.item_id]}{_used(serving, n.item_id)}; "
             + support_text("curated item", support(records.get(n.item_id) if records else None))
             + "\n"
             + "".join(_serving_lines(serving, n.item_id))
@@ -778,6 +803,10 @@ def catalogue_text(
         rec = doc["record"] if isinstance(doc["record"], dict) else {}
         failed = rec.get("outcome") in ("failed", "contrary")
         lines = [f"\n### {CAPTURE_PREFIX}{cid}\n"]
+        why = record_why(rec)
+        if why and not failed:
+            # a record (capture_shape.record_kind): what was done last time, never a fit for a different request
+            lines.append(RECORD_CARD.format(why=why) + "\n")
         run_doc = _one_line(_first_paragraph(_docstring_of(doc["procedure"])))
         if run_doc:
             lines.append(f"{run_doc}\n")
@@ -786,7 +815,8 @@ def catalogue_text(
         lines += _in_place_lines(replaced.get(CAPTURE_PREFIX + cid))
         input_line = signature_text(sig)
         lines.append(
-            f"Evidence: {support_text('recorded procedure', capture_support(serving, cid, rec))}; "
+            f"Evidence: {support_text('record' if why else 'recorded procedure', capture_support(serving, cid, rec))}"
+            + f"{_used(serving, CAPTURE_PREFIX + cid)}; "
             + _capture_reader(rec, doc.get("procedure"))
             + f"; applies: {'yes' if _applies_stated(sig) else 'no'}"
             + ("; tried and failed: never offered to run" if failed else "")
@@ -909,7 +939,8 @@ def dispatch_data(
     """``.memory/dispatch.json``: the structural catalogue, one row per stored procedure, from the code's
     syntax and the harness's records only (nothing is run to make it, and nothing reads it to run anything):
 
-    ``{id, kind, form, signature, applies_text, calls, occurrences, outcomes, provenance}``:
+    ``{id, kind, form, signature, applies_text, calls, occurrences, outcomes, provenance}``, and for a capture
+    ``record`` (why it is a record, :func:`.capture_shape.record_kind`, else None):
     ``kind`` is ``function`` or ``capture-shape``; ``form`` a capture's entry form (``value``, ``state``,
     ``state_env``) or ``function``; ``signature`` the input line (:func:`.library_index.signature_text`) and
     ``applies_text`` the ``applies`` source, both as written; ``calls`` from the syntax (:func:`_code_facts`); for a
@@ -971,6 +1002,8 @@ def dispatch_data(
                 "provenance": {
                     "episodes": len({c.get("episode") for c in cases if c.get("episode")}) or len(episodes),
                 },
+                # why it is a record (what was done last time, never a fit for a different request), else None
+                "record": record_why(rec) or None,
             },
         )
     return {"version": 2, "procedures": rows}

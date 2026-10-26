@@ -171,6 +171,34 @@ def library_line(actor: bool = True) -> str | None:
     )
 
 
+def standing_digest(actor: bool = True) -> Any:
+    """The session's standing-note digest (:class:`..standing_notes.StandingDigest`): the library copy's preferences,
+    rules and cautions, shown at every request start without a fit judgement, re-sent only when it changes. Only for
+    the actor (*actor*), with the library bound in its cells (the digest names ``memory.items`` and ``memory.get``);
+    None otherwise, and while the switch is off."""
+    if not actor or "memory" not in worker_globals():
+        return None
+    from unify.memory.standing_notes import StandingDigest
+
+    return StandingDigest(_copy)
+
+
+def digest_on_submit(handle: Any, digest: Any) -> None:
+    """Make a persistent session's *handle* open each message it is handed (the next request, once the session is
+    parked) with the standing-note digest when it has changed since it was last sent (*digest*,
+    :func:`standing_digest`), as the first message opens with it; an unchanged digest adds nothing, so the session's
+    prompt prefix stays as cached."""
+    if digest is None or handle is None:
+        return
+    submit = handle.submit
+
+    async def submit_with_digest(text: str) -> None:
+        changed = digest.update()
+        await submit(f"{changed}\n\n---\n\n{text}" if changed else text)
+
+    handle.submit = submit_with_digest
+
+
 def worker_mounts() -> list[Path]:
     """Paths the worker's sandbox binds read-write: none (the library copy is bound read-only,
     :func:`worker_readonly_mounts`)."""

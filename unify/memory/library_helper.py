@@ -445,6 +445,30 @@ def _count_text(counts: Any, names: tuple[str, ...]) -> str:
     return ", ".join(parts) or "none"
 
 
+def use_counts_text(counts: Any) -> str:
+    """How an item's uses were judged, as every card states it beside its status: ``used N times: M positive, K
+    negative`` (N counts every use, the neutral ones too; M the clean ones, K the failed ones, :mod:`.trust`), or
+    ``not used yet``. *counts* is an evidence row's ``counts`` (``{"clean", "failed", "neutral"}``)."""
+    rows = counts if isinstance(counts, dict) else {}
+
+    def n(key: str) -> int:
+        v = rows.get(key)
+        return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else 0
+
+    used = n("clean") + n("failed") + n("neutral")
+    if not used:
+        return "not used yet"
+    return f"used {used} time{'' if used == 1 else 's'}: {n('clean')} positive, {n('failed')} negative"
+
+
+def _used(evidence: dict | None, iid: str) -> str:
+    """:func:`use_counts_text` of item *iid*'s evidence row; '' without the harness's evidence."""
+    if evidence is None:
+        return ""
+    row = evidence.get(iid) if isinstance(evidence.get(iid), dict) else {}
+    return use_counts_text(row.get("counts"))
+
+
 def _label_lines(label: Any, served_evidence: bool) -> list[str]:
     """A card's lines from the item's evidence label (the harness's record of what it is and what its tests and uses
     showed; never a filter): its form and declared effects, the episodes it covers,
@@ -1427,6 +1451,31 @@ BY_HAND = (
 )
 
 
+#: What a record's card says it is (its record's ``kind``, :func:`.capture_shape.record_kind`, read from its code's
+#: syntax when it was captured): what was done last time, never a procedure for a different request.
+RECORD_CARD = (
+    "A record of what was done last time, not a procedure: {why}, so it gives the same result whatever request it is "
+    "called on. Use it as what was done for the request it was saved from, never as a fit for a different request."
+)
+#: How a record that acts through its episode's tools is read from here: what :data:`BY_HAND` says of ``env`` and its
+#: code, and that its calls hold the fixed values that request used (never how to redo them on the current request).
+RECORD_BY_HAND = (
+    BY_HAND.split("; making the same calls", 1)[0]
+    + ": the calls that request made, with the fixed values it used, not values read from a request "
+    "(memory.request() gives the current request's text)"
+)
+#: How a record of another form behaves when called.
+RECORD_CALL = "Calling it gives that same result again: it is not computed from the current request."
+
+
+def _record_why(rec: dict) -> str:
+    """Why a recorded procedure is a record (its record's ``kind``), or '' when it is a procedure or not labelled."""
+    kind = rec.get("kind") if isinstance(rec, dict) else None
+    if not isinstance(kind, dict) or kind.get("kind") != "record":
+        return ""
+    return _str(kind.get("why"), "it never reads its input")
+
+
 def _capture_facts(capture_id: str) -> tuple[dict, dict]:
     """A recorded procedure's record (what the capture step saw) and its evidence row (its uses, what it rests on and
     its status, from the harness's evidence store); {} for either when it is not here."""
@@ -1498,6 +1547,14 @@ def _capture_lines(iid: str, rec: dict) -> list[str]:
     from here (:data:`BY_HAND`)."""
     if rec.get("outcome") in _NEGATIVE:
         return ["A recorded attempt; its episode failed."]
+    form = _capture_form(iid[len(CAPTURE_PREFIX) :])
+    why = _record_why(rec)
+    if why:
+        how = RECORD_CALL
+        if form == "state_env":
+            how = RECORD_BY_HAND.format(cid=iid)
+            how = how[0].upper() + how[1:] + "."
+        return [RECORD_CARD.format(why=why), how]
     support = rec.get("support") if isinstance(rec.get("support"), dict) else {}
     accepted = support.get("accepted") if isinstance(support.get("accepted"), int) else 0
     what = (
@@ -1505,7 +1562,6 @@ def _capture_lines(iid: str, rec: dict) -> list[str]:
         if accepted
         else "A recorded procedure: it re-runs the work of an earlier request (no outcome of that request is on record)."
     )
-    form = _capture_form(iid[len(CAPTURE_PREFIX) :])
     if form in ("value", "state"):
         how = "Calling it with no arguments runs it on the current request, in a separate confined process."
     elif form == "state_env":
@@ -2218,9 +2274,12 @@ class _Catalog:
         first. A function's card is at most :data:`CARD_CHARS` characters (:func:`_bounded_card`)."""
         status = _status_of(row)
         function = row["kind"] == "function"
+        # how its uses were judged, beside its status (never the status alone): "used N times: M positive, K negative"
+        used = _used(_evidence(), wanted)
+        shown = f"{status}, {used}" if used else status
         if function:
             rests = _support_line("curated item", row.get("support"))
-            out = [f"{row.get('signature') or wanted}  [{status}" + (f", {rests}" if rests else "") + "]"]
+            out = [f"{row.get('signature') or wanted}  [{shown}" + (f", {rests}" if rests else "") + "]"]
             example = row.get("example")
             if isinstance(example, dict) and example.get("call"):
                 out.append(f"Example (from {example.get('test')}): {example['call']}")
@@ -2229,7 +2288,7 @@ class _Catalog:
                 out.append(f"Applies to the current request: {_recipe_call(row['recipe'])}")
         else:
             rests = _support_line("curated item", row.get("support"))
-            out = [f"{wanted}  [{status}" + (f", {rests}" if rests else "") + "]"
+            out = [f"{wanted}  [{shown}" + (f", {rests}" if rests else "") + "]"
                    + (f"  {row['title']}" if row.get("title") else "")]
         if status in _HIDDEN_STATUSES:
             out.append(f"Not in the index: {row.get('status_reason') or 'its status is ' + status}.")
@@ -2283,9 +2342,10 @@ class _Catalog:
             text=text or "",
             links=(),
             history=(),
-            support=_support_line("recorded procedure", _capture_support(rec, row)),
+            support=_support_line("record" if _record_why(rec) else "recorded procedure", _capture_support(rec, row)),
         )
-        out = [f"{iid}  [{built.support}]", *_capture_lines(iid, rec)]
+        used = _used(_evidence(), iid)
+        out = [f"{iid}  [{built.support}" + (f", {used}" if used else "") + "]", *_capture_lines(iid, rec)]
         by = self.generalised_by(iid, rec)
         if by:
             out.append("Generalised by: " + ", ".join(by))
