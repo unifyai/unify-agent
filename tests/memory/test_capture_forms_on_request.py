@@ -102,7 +102,7 @@ def test_each_form_runs_on_a_request_or_refuses_cleanly(tmp_path):
         name, message = got[key]
         assert name == "WrongCall" and "nothing was run: " in message, got[key]
         assert f"print(memory.get('{cap['env']}').text) shows its code" in message, message
-        assert "no call can pass it tools" in message and "exec(" not in message, message
+        assert "nothing here supplies env" in message and "exec(" not in message, message
     assert cap["env"] not in got["calls"] and sorted(got["calls"]) == sorted([cap["state"], cap["value"]])
 
 
@@ -118,7 +118,7 @@ def test_a_card_says_only_what_the_record_shows(tmp_path):
     assert "Calling it with no arguments runs it on the current request" in cards["state"]
     assert "accepted" not in cards["value"] and "no outcome of that request is on record" in cards["value"]
     assert "Calling it with no arguments" not in cards["env"]
-    assert "no call can pass it tools, so a call does not run it here" in cards["env"]
+    assert "no call runs it here: nothing here supplies env" in cards["env"]
     assert f"print(memory.get('capture:{ids['env']}').text) shows its code" in cards["env"]
 
 

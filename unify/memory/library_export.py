@@ -829,8 +829,10 @@ def _capture_reader(rec: Mapping, source: Any) -> str:
         )
     if form == "state_env":
         return (
-            "acts through the episode's tools (run(state, env)): no call runs it; print(memory.get(id).text) shows the "
-            "code whose tool calls, made in a cell with the agent's own tools, do its work"
+            "acts through the episode's tools (run(state, env)): no call runs it and nothing supplies env; "
+            "env.<name>.<method>(...) in its code stands for a call its request made of <name> through whatever "
+            "reached <name> there (not necessarily a harness tool); print(memory.get(id).text) shows the code whose "
+            "calls, made in a cell through whatever reaches <name> here, do its work"
         )
     if form == "state":
         return "reader: the request's state (.request, .messages, .last, .data); a no-argument call runs it on the request"

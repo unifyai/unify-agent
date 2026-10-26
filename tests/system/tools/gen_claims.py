@@ -55,7 +55,7 @@ ROUND4 = [
  (r"^What each entry owes a read is in /inputs/attention/index\.json", "checked", S05, ""),
  (r"^(name = tools\.delegate|hits = tools\.grep|page = tools\.read)|is asked to read each item it names", "nonfactual", "", ""),
  (r"best fit and at most one fallback|best fit first and at most one fallback|names the best fit|names the one that fits best|stored item fits your current request best|the librarian's answer for the current request|^When: Call it once per question|^# question\): the best fit", "checked", S07, ""),
- (r"is not run by any call|acts through its episode's|acts through the tools of the episode|from here \(its card says the same\)|^<path> does not exist in the library|^Library files: `/memory-library`|^\| WrongCall|^not_in_library:", "checked", S05, ""),
+ (r"is not run by any call|acts through its episode's|acts through the tools of the episode|stands for a call that request made|from here \(its card says the same\)|^<path> does not exist in the library|^Library files: `/memory-library`|^\| WrongCall|^not_in_library:", "checked", S05, ""),
  (r"^/inputs/episodes/<episode>\.json|/inputs/blobs/<id>", "checked", S13E, ""),
  (r"bounded summary with no code|bounded and with no code|whole code\), and the card ends|docstring and the names of its functions|^An :class:`Item` is a frozen record|^A procedure's card shows the one call|shows on its card the one call|^``'captures'``; None|^\| ``print\(item\)`` shows its card", "checked", S11C, ""),
  (r"^A capture is a library entry from the moment|^Every item's brackets also say|^`memory\.get` opens an item|The harness runs no capture|^\| With no arguments, a procedure that takes the request|^\| \(its refusal is its own|its later uses|use record", "checked", S01, ""),

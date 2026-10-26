@@ -1,11 +1,12 @@
 """What a recorded procedure's card, its call and the librarian say of it can be done with what an agent has.
 
-A procedure that acts through its episode's tools (``run(state, env)``) is not run by any call: a call cannot pass it
-tools, and no cell has ``exec`` or a ``state``. Its card, a call's refusal and the librarian's brief say so, show its
-code with ``memory.get(id).text``, and say that the same tool calls made in a cell with the agent's own tools do its
-work; the librarian's answer cannot offer a call of it. A card prints no code at all and at most ``CARD_CHARS``
-characters, ending with the call that prints the code. The package's ``memory.ask`` prints one best fit and at most one
-fallback, never a menu, with the words the request-start block uses.
+A procedure that acts through its episode's tools (``run(state, env)``) is not run by any call: nothing in the box
+supplies ``env``, and no cell has ``exec`` or a ``state``. Its card, a call's refusal and the librarian's brief say so,
+say what ``env`` stands for in its code (each call the earlier request made, through whatever reached it there, which
+need not be a harness tool), show its code with ``memory.get(id).text``, and say that the same calls made in a cell
+through what reaches the same thing here do its work; the librarian's answer cannot offer a call of it. A card prints
+no code at all and at most ``CARD_CHARS`` characters, ending with the call that prints the code. The package's
+``memory.ask`` prints one best fit and at most one fallback, never a menu, with the words the request-start block uses.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ def test_an_acting_capture_is_not_run_by_any_call_and_its_card_says_how_its_work
     for text in [got["card"], *(c[1] for c in got["calls"])]:
         assert f"print(memory.get({aid!r}).text)" in text and "memory.request()" in text
         assert "exec(" not in text and "ns['run']" not in text
-    assert "a call does not run it here" in got["card"]
+    assert "no call runs it here" in got["card"]
     assert got["text"].startswith('"""Write the summary file')
     # the same words in the catalogue line the librarian reads, and in the help of a call
     assert "no call runs it" in _capture_reader({"entry_point": {"form": "state_env"}}, None)
@@ -47,6 +48,29 @@ def test_an_acting_capture_is_not_run_by_any_call_and_its_card_says_how_its_work
     doc = inspect.getdoc(lh.Item.__call__)
     assert "of the value or state form" in doc and "is not run by any call" in doc
     assert "exec(" not in lh.BY_HAND
+
+
+def test_an_acting_captures_card_says_what_env_is_and_that_nothing_supplies_it(tmp_path):
+    """The card of a procedure recorded as ``run(state, env)``, a call's refusal and the librarian's catalogue line say
+    that nothing here supplies ``env`` and what ``env.<name>.<method>(...)`` stands for: a call the earlier request made
+    through whatever reached that name there, which need not be a harness tool. None of them sends the agent to its
+    own tools as if ``env`` were among them: an agent that finds no ``env.<name>`` in ``tools.list()`` must not read
+    that as the world having no such thing."""
+    _, store, _cid, acting = _store_two_captures(tmp_path / "home")
+    root, _ = _export(tmp_path / "copy", store, None)
+    aid = "capture:" + acting
+    got = _cell(root, f"item = memory.get({aid!r})\nprint(json.dumps({{'card': str(item), 'call': err(item)}}))\n")
+    assert got["call"][0] == "WrongCall"
+    for text in (" ".join(got["card"].split()), got["call"][1]):
+        assert "nothing here supplies env" in text, text
+        assert "env is not an object you have" in text, text
+        assert "env.<name>.<method>(...) stands for a call that request made" in text, text
+        assert "which tools.list() need not show" in text, text
+        assert "with your own tools" not in text and "tool calls in a cell" not in text, text
+        assert f"print(memory.get({aid!r}).text) shows its code" in text and "memory.request()" in text, text
+    line = _capture_reader({"entry_point": {"form": "state_env"}}, None)
+    assert "nothing supplies env" in line and "not necessarily a harness tool" in line, line
+    assert "agent's own tools" not in line, line
 
 
 def test_a_capture_card_prints_no_code_is_bounded_and_ends_with_the_call_that_prints_the_code(tmp_path):
@@ -109,4 +133,3 @@ def test_ask_prints_one_best_fit_and_one_fallback_with_the_blocks_words():
     assert "every item" not in doc and "at most one fallback" in doc
     assert "every item" not in (inspect.getdoc(library_ask.Answer) or "")
     assert "every item it judges applicable" not in lh.__doc__ and "at most one fallback" in lh.__doc__
-

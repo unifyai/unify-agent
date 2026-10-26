@@ -1412,12 +1412,18 @@ def _capture_form(capture_id: str) -> str:
 
 
 #: What a recorded procedure that acts through tools is, and how its work is done from here, as its card and a call's
-#: refusal say it: no call runs it (a call cannot pass it the tools it acts through), its code is shown, and the
-#: same tool calls made in a cell with the agent's own tools do its work.
+#: refusal say it: no call runs it (nothing here supplies the ``env`` its code takes: :meth:`Item.__call__` refuses
+#: before running anything), what ``env`` stands for in its code (the fork writes each call its episode made as
+#: ``env.<channel>.<method>(...)``, :data:`.integration.fork.CAPTURE_BULLETS`, whatever reached that channel: an
+#: application namespace, a global API, a module or client the episode imported), its code is shown, and the same
+#: calls made in a cell through what reaches the same thing here do its work.
 BY_HAND = (
-    "it acts through the tools of the episode it came from (run(state, env)), and no call can pass it tools, so "
-    "a call does not run it here; print(memory.get({cid!r}).text) shows its code, and making the same tool calls "
-    "in a cell with your own tools, on the current request (memory.request() gives its text), does its work"
+    "it records an earlier request's work as run(state, env), and no call runs it here: nothing here supplies env. "
+    "In its code, env is not an object you have: env.<name>.<method>(...) stands for a call that request made of "
+    "<method> on <name>, through whatever reached <name> there (an environment namespace such as primitives.<name>, "
+    "a global API object, or a module or client it imported), which tools.list() need not show. "
+    "print(memory.get({cid!r}).text) shows its code; making the same calls in a cell, through whatever reaches <name> "
+    "here, on the current request (memory.request() gives its text), does its work"
 )
 
 
