@@ -157,10 +157,13 @@ SHOULD_MENTION: dict[str, tuple[dict[str, str], ...]] = {
             "when": "a served item was wrong, misleading, or something you needed was missing",
         },
     ),
+    # the fork's staged files reach the writer as its episode's own entry; a post adds a pass only with something of
+    # its own (a typed item ref: ``attention.carries_content``), so it never posts that nothing is worth keeping
     "fork": (
         {
             "who": "writer",
-            "when": "to point at your summary and drafts, and to say what you were unsure of",
+            "when": "to point at a `procedure.py`, candidate or note you wrote and say what you were unsure of, or to "
+            "correct a served item, naming it as `item:<id>`; only then, never to say there is nothing to keep",
         },
     ),
     "writer": (

@@ -195,6 +195,8 @@ def render_index(
         about = (
             n.description if not n.error else f"(front matter unreadable: {n.error})"
         )
+        if n.scope and not n.error:
+            about += f" ({n.scope})"
         line = f"- `{n.item_id}` — {about} [{status[n.item_id]}{_support(support_of, n.item_id)}]"
         fns = _linked(links, n.item_id, "function", shown)
         if fns:

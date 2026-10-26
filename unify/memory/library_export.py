@@ -265,6 +265,9 @@ def items_data(
             "path": n.item_id,
             "title": n.title,
             "description": n.description,
+            # its scope (front matter ``applies_to``/``stated_by``), shown wherever the note is served
+            "applies_to": n.applies_to,
+            "stated_by": n.stated_by,
             "error": n.error,
             **common(n.item_id),
         }
@@ -763,6 +766,7 @@ def catalogue_text(
             f"\n### {n.item_id}\n"
             + (f"{_one_line(n.title)}\n" if n.title else "")
             + (f"{_one_line(about)}\n" if about else "")
+            + (f"Scope: {n.scope}\n" if n.scope and not n.error else "")
             + f"Status: {status[n.item_id]}; "
             + support_text("curated item", support(records.get(n.item_id) if records else None))
             + "\n"

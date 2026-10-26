@@ -130,6 +130,8 @@ def rows(
         except (OSError, UnicodeDecodeError):
             body = ""
         about = _one_line(n.description) or _one_line(n.title)
+        if n.scope:
+            about += f" ({n.scope})"
         text = _section_line(wtu.note_section(body)) or about
         card = about + " | " + support_text("curated item", support(records.get(n.item_id) if records else None))
         out.append({"id": n.item_id, "kind": "note", "path": n.item_id, "card": card, "text": text})
