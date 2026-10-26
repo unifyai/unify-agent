@@ -22,14 +22,17 @@ import pytest
 
 from tests.memory.test_checker_visible import _arc_lines
 from tests.memory.test_episodes import _ep
+from tests.memory.integration.test_request import _Run, _drive
 from tests.memory.test_inferred_regime import ENDED, ITEM, _record, _run
 from unify import transcripts
 from unify.actor import tool_handlers
 from unify.memory import attention as at
+from unify.memory import lifecycle, trust
 from unify.memory.episodes import EpisodeWriter
 from unify.memory.integration import outcomes
 from unify.memory.integration import request as request_mod
 from unify.memory.redact import Redactor
+from unify.settings import SETTINGS
 
 CAPTURE = "capture:0123456789abcdef"
 LATER = "memory.reports.totals:sum_columns"
@@ -204,3 +207,131 @@ def test_a_late_verdict_with_text_is_late_evidence_on_the_episode_and_its_items_
     assert (row["signal"], row["label"], row["timing"], row["text"]) == (sid, "fail", "after_episode", TEXT)
     # the ledger's own rows still hold ids and kinds only
     assert TEXT not in led.path.read_text()
+
+
+# --- 4. a persistent session of several requests: a verdict bears on the request it followed ------------------------
+
+OTHER = "memory.reports.totals:count_rows"
+
+
+def _judged(stores, eid: str) -> dict:
+    """Each item's trust verdict in episode *eid*, from the evidence (``lifecycle.trust_uses``)."""
+    (f,) = [f for f in lifecycle.facts_from_evidence(stores.evidence) if f.episode_id == eid]
+    return {i: [trust.judge(u)[:2] for u in lifecycle.trust_uses(f, u)] for i, u in f.items.items()}
+
+
+def _uses(*items) -> dict:
+    return {
+        "items": {i: {"imported": 1, "called": 1, "refused": 0, "errored": 0} for i in items},
+        "outcomes_known": True,
+    }
+
+
+def test_a_fail_after_request_two_marks_only_request_ones_items(run):
+    # request 1 (the session's first): a lookup and a call; then its feedback arrives with request 2's message
+    _write(run, _cell("c1", f"card = memory.get({CAPTURE!r})"))
+    run.note_calls(_calls(ITEM))
+    assert run.take_checker({"label": "fail", "text": TEXT})["accepted"] is True
+    assert run.checker_seen[0]["used_before"] == sorted([CAPTURE, ITEM])
+    run.mark_request()  # the CLI submits request 2
+    # request 2 calls another item (and ITEM is not called again); its feedback comes before request 3
+    _write(run, [*_cell("c1", f"card = memory.get({CAPTURE!r})"), *_cell("c2", "print(1)")])
+    run.note_calls(_calls(LATER))
+    assert run.take_checker({"label": "fail"})["accepted"] is True
+    assert run.checker_seen[1]["used_before"] == [LATER]
+    run.mark_request()  # request 3: uses OTHER, and no verdict follows it
+    run.note_calls(_calls(OTHER))
+    # recorded: each verdict bears on its own request's items; OTHER, used in request 3, is not judged by either
+    ep = _ep(episode_id=run.episode_id, ended_at="2999-01-01T00:00:00Z", regime="none")
+    ep.memory_use = _uses(ITEM, LATER, OTHER)
+    basis, visible = run._infer_regime(ep, _arc_lines())
+    sha = EpisodeWriter(run.stores.episodes, run.stores.blobs, Redactor()).write(ep)
+    run.stores.evidence.index_episode(ep, sha)
+    run._post_inferred(ep, sha, ep.ended_at, basis, visible)
+    scoped = run.stores.evidence.signal_items(run.episode_id)
+    assert sorted(scoped.values(), key=len) == [frozenset({LATER}), frozenset({CAPTURE, ITEM})]
+    judged = _judged(run.stores, run.episode_id)
+    assert judged[ITEM] == [(trust.FAILED, "negative")]
+    assert judged[LATER] == [(trust.FAILED, "negative")]
+    assert judged[OTHER] == [(trust.CLEAN, None)]
+    # the session's last request is kept for a verdict that arrives after it ended
+    assert run.stores.evidence.last_request_items(run.episode_id) == frozenset({OTHER})
+
+
+def test_the_in_request_exclusion_resets_at_the_next_request(run):
+    run.note_calls(_calls(ITEM))
+    assert run.take_checker({"label": "fail"})["accepted"] is True
+    assert tool_handlers._memory_run_failed() == [ITEM]  # the request it was taken in
+    run.mark_request()
+    assert tool_handlers._memory_run_failed() == [ITEM]  # the request that shows it
+    assert _ask(run)["failed"] == [ITEM]
+    run.mark_request()
+    assert tool_handlers._memory_run_failed() == []  # never later
+    assert "failed" not in _ask(run)
+
+
+def test_a_late_verdict_on_a_session_bears_on_its_last_request_only(run, tmp_path):
+    _record(run.stores, "e1", regime="none", minute=0, ended=ENDED, also=(LATER,))
+    run.stores.evidence.record_regime("e1", "none", "nothing", ENDED)
+    run.stores.evidence.set_last_request("e1", 3, [LATER])
+    assert run.take_checker({"label": "fail", "text": TEXT}, episode="e1")["accepted"] is True
+    ep = _ep(episode_id=run.episode_id, ended_at="2999-01-01T00:00:00Z", regime="none")
+    basis, visible = run._infer_regime(ep, [])
+    sha = EpisodeWriter(run.stores.episodes, run.stores.blobs, Redactor()).write(ep)
+    run.stores.evidence.index_episode(ep, sha)
+    run._post_inferred(ep, sha, ep.ended_at, basis, visible)
+    judged = _judged(run.stores, "e1")
+    assert judged[LATER] == [(trust.FAILED, "negative")] and judged[ITEM] == [(trust.CLEAN, None)]
+    src = at.HomeSources(run.paths.home, state_dir=run.paths.state_dir)
+    led = at.Ledger(run.paths.home)
+    led.sync(src)
+    late = [e for e in led.hand("p1", at.K) if e.kind == "late_evidence"]
+    assert len(late) == 1 and late[0].refs.items == (LATER,)
+
+
+def test_an_episode_of_one_request_keeps_the_episode_wide_verdict(run):
+    """ARC's label-only line in an episode the CLI never marked: unchanged, the verdict bears on the whole episode."""
+    run.note_calls(_calls(ITEM))
+    assert run.take_checker({"label": "fail"})["accepted"] is True
+    ep = _ep(episode_id=run.episode_id, ended_at="2999-01-01T00:00:00Z", regime="none")
+    ep.memory_use = _uses(ITEM, OTHER)
+    basis, visible = run._infer_regime(ep, _arc_lines())
+    sha = EpisodeWriter(run.stores.episodes, run.stores.blobs, Redactor()).write(ep)
+    run.stores.evidence.index_episode(ep, sha)
+    run._post_inferred(ep, sha, ep.ended_at, basis, visible)
+    assert run.stores.evidence.signal_items(run.episode_id) == {}
+    assert run.stores.evidence.last_request_items(run.episode_id) is None
+    judged = _judged(run.stores, run.episode_id)
+    assert judged[ITEM] == judged[OTHER] == [(trust.FAILED, "negative")]
+
+
+class _MarkRun(_Run):
+    def take_checker(self, raw, **where):
+        self.log.append(("take_checker", raw))
+        return {"type": "checker", "accepted": True, "label": raw["label"], "count": 1}
+
+    def mark_request(self):
+        self.log.append(("mark_request",))
+
+
+def test_the_cli_marks_each_submitted_message_as_the_next_request(monkeypatch):
+    """The boundary is the CLI's submitted message (a typed line), after the verdict line that precedes it."""
+    from tests.memory.integration import test_request
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    log: list = []
+
+    async def submit(self, text):
+        log.append(("submit", text))
+
+    monkeypatch.setattr(test_request._Handle, "submit", submit, raising=False)
+    code, out, log, handle = _drive(
+        monkeypatch,
+        ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "first request"],
+        b'{"checker": {"label": "fail", "text": "it went wrong"}}\n{"message": "second request"}\n{"quit": true}\n',
+        _MarkRun(log),
+    )
+    assert code == 0
+    kinds = [e[0] for e in log]
+    assert kinds.count("mark_request") == 1
+    assert kinds.index("take_checker") < kinds.index("mark_request")

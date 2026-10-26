@@ -149,7 +149,7 @@ Lines your program writes to its stdin:
 | `{"cancel": true}` | Ends the running turn at once and keeps the session. |
 | `{"quit": true}` | Ends the session. |
 | `{"outcome": {"solved": true, ...}}` | Your verdict on the work, so memory learns what worked. The full form is in `unify/outcome.py`. |
-| `{"checker": {"label": "pass"}}` | With memory on: a verdict the environment showed the actor during the request, `"pass"` or `"fail"`, optionally with `"text"`: the verdict's text exactly as the actor was shown it, kept for the writer (the label is the verdict). It may also carry `about` (an action or item) and `episode` (an earlier episode's id). A `"fail"` within the request counts as a failed use of every item the request used before it, so `memory.ask` does not offer those again in it; one naming an earlier episode is late evidence on that episode and the items it used. |
+| `{"checker": {"label": "pass"}}` | With memory on: a verdict the environment showed the actor during the request, `"pass"` or `"fail"`, optionally with `"text"`: the verdict's text exactly as the actor was shown it, kept for the writer (the label is the verdict). It may also carry `about` (an action or item) and `episode` (an earlier episode's id). A `"fail"` counts as a failed use of the items the current request used before it (in a persistent session each submitted message starts a request), so `memory.ask` does not offer them again in that request or the next; it bears on those items only for trust. One naming an earlier episode is late evidence on that episode, and on its last request's items when it held several requests. |
 
 Lines it writes to stdout, each with a `type`:
 

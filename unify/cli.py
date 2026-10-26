@@ -452,6 +452,10 @@ class Act:
                     self._stop_requested = True
                     await self._handle.stop(SESSION_ENDED)
                     return
+                mark = getattr(self._mv2, "mark_request", None)
+                if callable(mark):
+                    # the session's next request begins: a verdict line now bears on the request it followed
+                    mark()
                 if self._bridge is not None:
                     # A record post, read at the next boundary.
                     await self._bridge.user_message(line)

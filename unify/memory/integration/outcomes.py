@@ -14,6 +14,10 @@ episode are judged again (:func:`..captures.rejudge_episode`). Item records are 
 the next pass (:func:`.consolidate.after_passes`), which the attention ledger makes due: every signal's arrival is a
 row of :data:`ARRIVALS_FILE` (ids and labels only), from which the ledger creates its ``late_evidence`` entries.
 
+In an episode that held several requests (a persistent session; the CLI marks each submitted message), a late
+verdict bears on the items of that episode's last request only (``EvidenceStore.last_request_items``), as an
+in-episode verdict bears on the request it followed.
+
 A checker line may also carry the verdict's text exactly as the environment showed it to the actor
 (``{"checker": {"label": "fail", "text": "..."}}``). The harness never reads that text for a verdict (the label is
 the verdict); it keeps it beside the signal (:data:`TEXTS_FILE`, :func:`log_text`) so that the writer, handed the
@@ -241,6 +245,10 @@ def post_late(
     log_arrival(state_dir, sig, regime_before=before, regime_after=regime)
     if isinstance(entry.get("text"), str):
         log_text(state_dir, sig.signal_id, entry["text"])
+    # an episode of several requests (a persistent session): the verdict bears on its last request's items only
+    last = stores.evidence.last_request_items(eid)
+    if last is not None:
+        stores.evidence.add_signal_items(sig.signal_id, last)
     changed = captures.rejudge_episode(
         captures.store_dir(state_dir),
         eid,

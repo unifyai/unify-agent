@@ -48,6 +48,14 @@ _TIMING_TABLE = (
     "CREATE TABLE IF NOT EXISTS signal_timing(signal_id TEXT PRIMARY KEY, arrived_at TEXT, episode_ended_at TEXT, "
     "timing TEXT, about TEXT)"
 )
+# The items a verdict bears on, when a session of several requests scoped it to the request it followed (or, for a
+# late verdict, to its episode's last request), and each such episode's last-request items. Created by the first such
+# write, so a store whose episodes are one request each keeps the schema above.
+_SCOPE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS signal_items(signal_id TEXT, item TEXT, PRIMARY KEY(signal_id, item));
+CREATE TABLE IF NOT EXISTS episode_last_request(episode_id TEXT, item TEXT, PRIMARY KEY(episode_id, item));
+CREATE TABLE IF NOT EXISTS episode_requests(episode_id TEXT PRIMARY KEY, n INTEGER)
+"""
 _REGIME_SCHEMA = """
 CREATE TABLE IF NOT EXISTS episode_regimes(episode_id TEXT PRIMARY KEY, regime TEXT, basis TEXT, at TEXT);
 CREATE TABLE IF NOT EXISTS regime_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT, at TEXT,
@@ -626,6 +634,51 @@ class EvidenceStore:
         return (
             self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
             is not None
+        )
+
+    def add_signal_items(self, signal_id: str, items) -> None:
+        """Scope signal *signal_id* to *items* (possibly none): it then bears on those items of its episode only."""
+        with self.db:
+            self.db.executescript(_SCOPE_SCHEMA)
+            self.db.execute("INSERT OR REPLACE INTO signal_items VALUES(?, '')", (signal_id,))
+            self.db.executemany(
+                "INSERT OR REPLACE INTO signal_items VALUES(?,?)",
+                [(signal_id, str(i)) for i in sorted(set(items)) if i],
+            )
+
+    def signal_items(self, eid: str) -> dict[str, frozenset]:
+        """Each scoped signal of *eid* with the items it bears on (:meth:`add_signal_items`); an unscoped signal is
+        absent ({} when no signal was ever scoped)."""
+        if not self._has_table("signal_items"):
+            return {}
+        out: dict[str, set] = {}
+        for sid, item in self.db.execute(
+            "SELECT i.signal_id, i.item FROM signal_items i JOIN signals s ON s.signal_id=i.signal_id "
+            "WHERE s.episode_id=?",
+            (eid,),
+        ):
+            out.setdefault(sid, set()).update([item] if item else [])
+        return {k: frozenset(v) for k, v in out.items()}
+
+    def set_last_request(self, eid: str, requests: int, items) -> None:
+        """Keep that episode *eid* held *requests* requests (more than one) and the items its last one used."""
+        with self.db:
+            self.db.executescript(_SCOPE_SCHEMA)
+            self.db.execute("INSERT OR REPLACE INTO episode_requests VALUES(?,?)", (eid, int(requests)))
+            self.db.executemany(
+                "INSERT OR REPLACE INTO episode_last_request VALUES(?,?)",
+                [(eid, str(i)) for i in sorted(set(items)) if i],
+            )
+
+    def last_request_items(self, eid: str) -> frozenset | None:
+        """The items episode *eid*'s last request used, when it held several requests (:meth:`set_last_request`);
+        None for an episode of one request (or a store that never kept one)."""
+        if not self._has_table("episode_requests"):
+            return None
+        if self.db.execute("SELECT 1 FROM episode_requests WHERE episode_id=?", (eid,)).fetchone() is None:
+            return None
+        return frozenset(
+            r[0] for r in self.db.execute("SELECT item FROM episode_last_request WHERE episode_id=?", (eid,))
         )
 
     def _timing_rows(self, eid: str) -> dict[str, dict]:

@@ -1002,7 +1002,10 @@ class Ledger:
                 out += self._create_rows(state, "use_went_badly", refs, (u.episode, u.item))
             # late evidence, which reopens the closed entries naming what its episode used or produced
             for s in sources.late_signals():
-                items = sources.episode_items(s.episode)
+                # a verdict scoped to one request of a session bears on that request's items only
+                scope = getattr(sources, "signal_scope", None)
+                scoped = scope(s.episode, s.signal_id) if callable(scope) else None
+                items = tuple(sorted(scoped)) if scoped is not None else sources.episode_items(s.episode)
                 refs = Refs(episodes=(s.episode,), signals=(s.signal_id,), items=tuple(items))
                 made = self._create_rows(state, "late_evidence", refs, (s.signal_id,), at=None)
                 out += made
@@ -2149,6 +2152,13 @@ class HomeSources:
                 if timing == "after_episode":
                     out.append(LateSignal(s.signal_id, eid, arrived, getattr(s, "about", None)))
         return out
+
+    def signal_scope(self, episode: str, signal_id: str) -> frozenset | None:
+        """The items a scoped signal bears on (``EvidenceStore.signal_items``), or None when it bears on its episode."""
+        try:
+            return self.stores().evidence.signal_items(episode).get(signal_id)
+        except Exception:  # noqa: BLE001 - unreadable: the episode's items
+            return None
 
     def signal_rows(self, ids: Iterable[str]) -> list[dict]:
         from .integration.outcomes import signal_texts

@@ -298,16 +298,16 @@ def _count(value: Any) -> int:
 MAX_GET_ID = 300
 
 
-def cells_get_ids(lines: Any) -> list[str]:
+def cells_get_ids(lines: Any, start: int = 0) -> list[str]:
     """The constants the transcript's cells passed to ``memory.get`` (``memory.get('<id>')``, its first argument as a
-    string literal), in order of first appearance, from the cells that have a result (``analysis.use.transcript_cells``).
-    Parsed as code, never matched as text: a cell that does not parse names nothing."""
+    string literal), in order of first appearance, from the cells that have a result (``analysis.use.transcript_cells``),
+    from cell *start* on. Parsed as code, never matched as text: a cell that does not parse names nothing."""
     import ast
 
     from ..analysis import use
 
     out: list[str] = []
-    for cell in use.transcript_cells(lines):
+    for cell in use.transcript_cells(lines)[start:]:
         try:
             tree = ast.parse(cell.get("code") or "")
         except (SyntaxError, ValueError):
@@ -982,6 +982,10 @@ class RequestRun:
         # request is recorded (outcomes.post_late); and the callables told of each verdict taken within this episode,
         # with its arrival row's fields.
         self.late_checkers: list[dict] = []
+        # The requests a persistent session submitted after its first (:meth:`mark_request`), and the library use when
+        # the current one began (None: the episode's start), so a verdict bears on the request it followed.
+        self.requests = 0
+        self._mark: dict | None = None
         self.signal_listeners: list[Callable[[dict], None]] = []
         #: this request's role dispatcher (:func:`start_role_dispatcher`), running on the loop; None when none runs
         self.role_task: Any = None
@@ -1455,6 +1459,7 @@ class RequestRun:
         entry = {"label": raw["label"], "obs": self._observations_now(), "at": _now(), "about": about}
         if text is not None:
             entry["text"] = text
+        entry["request"] = self.requests
         if raw["label"] == "fail":
             entry["used_before"] = self.used_so_far()
         self.checker_seen.append(entry)
@@ -1466,38 +1471,75 @@ class RequestRun:
             "count": len(self.checker_seen),
         }
 
-    def used_so_far(self) -> list[str]:
-        """The library items this request's cells have used so far, in id order: each item a cell called (the
-        runtime's call counts and tracked runs) and each id a cell passed to ``memory.get`` as a constant, from the
-        cells whose results this request's transcript holds (:func:`cells_get_ids`). Ids only; [] when nothing can be
-        read."""
-        runtime = self.runtime_calls if isinstance(self.runtime_calls, dict) else {}
-        counts = runtime.get("counts") if isinstance(runtime.get("counts"), dict) else {}
-        used = {
-            item
-            for item, row in counts.items()
-            if isinstance(item, str) and isinstance(row, dict) and any(_count(v) for v in row.values())
-        }
-        used |= {
-            r["target"] for r in runtime.get("runs") or [] if isinstance(r, dict) and isinstance(r.get("target"), str)
-        }
+    def _transcript_lines(self) -> list:
         from unify import transcripts
 
         from . import trajectory
 
+        return trajectory.read_jsonl(transcripts.transcripts_dir() / f"{self.episode_id}.jsonl")
+
+    def _usage_now(self) -> dict:
+        """The library use so far, as :meth:`used_so_far` counts it: calls per item, tracked runs and executed cells."""
+        runtime = self.runtime_calls if isinstance(self.runtime_calls, dict) else {}
+        counts = runtime.get("counts") if isinstance(runtime.get("counts"), dict) else {}
         try:
-            lines = trajectory.read_jsonl(transcripts.transcripts_dir() / f"{self.episode_id}.jsonl")
-            used |= set(cells_get_ids(lines))
+            from ..analysis import use
+
+            cells = len(use.transcript_cells(self._transcript_lines()))
+        except Exception:  # noqa: BLE001 - unreadable: every cell counts as later
+            cells = 0
+        return {
+            "counts": {
+                item: sum(_count(v) for v in row.values())
+                for item, row in counts.items()
+                if isinstance(item, str) and isinstance(row, dict)
+            },
+            "runs": len(runtime.get("runs") or []),
+            "cells": cells,
+        }
+
+    def mark_request(self) -> None:
+        """A persistent session begins its next request (the CLI calls it for each message it submits): from here a
+        verdict bears on this request's uses (:meth:`used_so_far`), and an in-request exclusion lasts from the verdict
+        to the end of the request after the one it followed (:meth:`failed_after_verdicts`). An episode of one request
+        is never marked."""
+        self._mark = self._usage_now()
+        self.requests += 1
+
+    def used_so_far(self) -> list[str]:
+        """The library items the current request's cells have used so far (since :meth:`mark_request`, else since the
+        episode began), in id order: each item a cell called (the runtime's call counts and tracked runs) and each id
+        a cell passed to ``memory.get`` as a constant, from the cells whose results the transcript holds
+        (:func:`cells_get_ids`). Ids only; [] when nothing can be read."""
+        mark = self._mark or {"counts": {}, "runs": 0, "cells": 0}
+        runtime = self.runtime_calls if isinstance(self.runtime_calls, dict) else {}
+        counts = runtime.get("counts") if isinstance(runtime.get("counts"), dict) else {}
+        before = mark["counts"]
+        used = {
+            item
+            for item, row in counts.items()
+            if isinstance(item, str)
+            and isinstance(row, dict)
+            and sum(_count(v) for v in row.values()) > before.get(item, 0)
+        }
+        used |= {
+            r["target"]
+            for r in (runtime.get("runs") or [])[mark["runs"] :]
+            if isinstance(r, dict) and isinstance(r.get("target"), str)
+        }
+        try:
+            used |= set(cells_get_ids(self._transcript_lines(), mark["cells"]))
         except Exception as exc:  # noqa: BLE001 - the runtime's calls still count
             logger.warning("memory: the cells' lookups were not read (%s)", type(exc).__name__)
         return sorted(used)
 
     def failed_after_verdicts(self) -> list[str]:
-        """The items this request used before a visible ``fail`` verdict it took within this episode (each
-        ``used_before``), in id order: failed uses in this request, never stored as such."""
+        """The items a visible ``fail`` verdict taken within this episode bears on (each ``used_before``: the uses of
+        the request it followed), in id order, while it holds: through the request it was taken in and the next one
+        (the request that shows it), never later. Failed uses in this request, never stored as such."""
         out: set[str] = set()
         for entry in self.checker_seen:
-            if entry.get("label") == "fail":
+            if entry.get("label") == "fail" and entry.get("request", 0) >= self.requests - 1:
                 out.update(i for i in entry.get("used_before") or () if isinstance(i, str))
         return sorted(out)
 
@@ -1846,6 +1888,19 @@ class RequestRun:
             text = self._checker_text(sig) if sig is not hidden else None
             if text is not None:
                 outcomes.log_text(self.paths.state_dir, sig.signal_id, text)
+            entry = self._checker_entry(sig) if sig is not hidden else None
+            if self.requests and entry is not None and entry.get("label") == "fail":
+                # a session of several requests: the verdict bears on the request it followed
+                try:
+                    stores.evidence.add_signal_items(sig.signal_id, entry.get("used_before") or ())
+                except Exception as exc:  # noqa: BLE001 - logged, value-free; it then bears on the episode
+                    consolidate._error(stores, f"verdict scope {sig.signal_id}: {type(exc).__name__}")
+        if self.requests:
+            # and a verdict on this episode that arrives later bears on its last request (outcomes.post_late)
+            try:
+                stores.evidence.set_last_request(eid, self.requests + 1, self.used_so_far())
+            except Exception as exc:  # noqa: BLE001 - logged, value-free
+                consolidate._error(stores, f"last request of {eid}: {type(exc).__name__}")
         if not self.late_checkers:
             return
         lookup = consolidate.EpisodeLookup(stores)
@@ -1862,12 +1917,18 @@ class RequestRun:
             except Exception as exc:  # noqa: BLE001 - logged, value-free; the request goes on
                 consolidate._error(stores, f"late verdict {n} on {entry.get('episode')}: {type(exc).__name__}")
 
-    def _checker_text(self, sig: Any) -> str | None:
-        """The verdict text of the checker line a visible signal of this episode was posted from
-        (``<episode>.checker.<n>``, :func:`.consolidate.visible_checker_signals`), or None."""
+    def _checker_entry(self, sig: Any) -> dict | None:
+        """The checker line a visible signal of this episode was posted from (``<episode>.checker.<n>``,
+        :func:`.consolidate.visible_checker_signals`), or None."""
         try:
-            entry = self.checker_seen[int(str(sig.signal_id).rsplit(".", 1)[1]) - 1]
+            return self.checker_seen[int(str(sig.signal_id).rsplit(".", 1)[1]) - 1]
         except (IndexError, ValueError):
+            return None
+
+    def _checker_text(self, sig: Any) -> str | None:
+        """The verdict text of the checker line a visible signal of this episode was posted from, or None."""
+        entry = self._checker_entry(sig)
+        if entry is None:
             return None
         text = entry.get("text")
         return text if isinstance(text, str) else None
