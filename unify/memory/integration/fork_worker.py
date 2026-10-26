@@ -64,7 +64,8 @@ ALLOWED = (
     re.compile(r"candidates/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.py"),
     re.compile(r"cases/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.json"),
     re.compile(r"notes\.md"),
-    re.compile(r"notes/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.md"),
+    # a note candidate; ``summary`` stays the episode's own summary's name, never a note's
+    re.compile(r"notes/(?!summary\.md\Z)[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.md"),
     re.compile(r"procedure\.py"),
     re.compile(r"broke\.md"),
 )

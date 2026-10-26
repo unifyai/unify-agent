@@ -17,7 +17,7 @@ an occurrence of the first, its raw bytes kept beside it as evidence, nothing de
 Nothing is run, imported or evaluated, and no world name, word, task id or value is read: the address is a function of
 the procedure's syntax only. A procedure that does not parse has no address (it is not captured anyway).
 
-**Record or procedure** (:func:`record_kind`, rev 2.4): a captured procedure whose ``run`` never reads its input, or
+**Record or procedure** (:func:`record_kind`): a captured procedure whose ``run`` never reads its input, or
 whose every ``return`` gives a literal, is labelled a ``record`` when it is captured: what was done last time, served as
 such and never as a fit for a different request. The same syntax-only reading: no word, value or task id.
 """

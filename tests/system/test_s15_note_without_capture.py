@@ -1,7 +1,7 @@
 """S15: an episode that left no capture but left a note candidate reaches the writer, which lands a note with its scope;
 the scope is shown wherever the note is served.
 
-Design (rev 2.4, P1): an episode whose fork staged lessons (``notes.md``) or a note candidate (``notes/<name>.md``) is
+Design: an episode whose fork staged lessons (``notes.md``) or a note candidate (``notes/<name>.md``) is
 not closed unseen for want of a procedure: its entry waits for its group as a capture does, with the same standing, and
 its lessons reach the writer as its material. The fork's brief lets it keep a note candidate (a stated preference or
 rule with who stated it and what it applies to, a correction, an outcome, a caution) with no ``procedure.py``. The
@@ -54,11 +54,14 @@ async def test_a_note_candidate_with_no_capture_reaches_the_writer_and_lands_a_s
     sink: dict = {}
     code = SW.probe_json(f"_try('get', lambda: str(memory.get({SW.NOTE_ID!r})))\n"
                          "_try('items', lambda: str(memory.items(kind='note')))\n")
+    # the request's copy of the library exists only while its request runs (it is removed at the request's end), so
+    # its index is read on the actor's first turn
     await s.request(SW.words_request(["elm"]), ScriptedModel(
-        actor=SW.probe_turns(code, sink), librarian=Always(lambda c: SW.librarian_answer([], nearest=[]))))
+        actor=SW.probe_turns(code, sink, on_first=lambda call: (s.copy() / "INDEX.md").read_text()),
+        librarian=Always(lambda c: SW.librarian_answer([], nearest=[]))))
     out = sink["out"]
     assert f"applies_to: {SW.PREF_SCOPE}" in out["get"] and f"stated_by: {SW.PREF_WHO}" in out["get"], out["get"]
     assert "kind: preference" in out["get"], out["get"]
     assert f"applies to: {SW.PREF_SCOPE[:20]}" in out["items"], out["items"]
-    index = (s.copy() / "INDEX.md").read_text()  # the index of the copy that request mounted
+    index = sink["seen"]  # the index of the copy that request mounted
     assert f"applies to: {SW.PREF_SCOPE}; stated by: {SW.PREF_WHO}" in index, index[-2000:]

@@ -1,4 +1,4 @@
-"""Lessons, not only procedures (rev 2.4, P1, with R7): what an episode showed reaches the writer without a capture.
+"""Lessons, not only procedures: what an episode showed reaches the writer without a capture.
 
 * An episode whose fork staged lessons (``notes.md``) or a note candidate (``notes/<name>.md``) and no procedure is not
   closed unseen: its entry carries them (``refs.notes``), waits for its group as a capture does, and owes their read.
@@ -66,6 +66,8 @@ def test_the_fork_brief_offers_a_note_candidate_with_no_procedure_and_its_parser
     assert note["status"] == "parsed" and note["kind"] == "note" and note["content"].startswith("---\nkind: caution\napplies_to: ")
     assert fork_worker.allowed("notes/header_line.md") is None
     assert fork_worker.allowed("notes/a/b.md") is not None and fork_worker.allowed("notes/x.py") is not None
+    # the episode's summary keeps its own name: a note is never staged as notes/summary.md
+    assert fork_worker.allowed("notes/summary.md") is not None and "is not `summary`" in fork.NOTE_BULLET
 
 
 def test_the_fork_mentions_the_writer_only_with_something_to_point_at_or_to_correct():
@@ -83,7 +85,7 @@ def test_an_episode_with_lessons_and_no_capture_is_handed_for_them_and_one_witho
     home = tmp_path / "home"
     clock = Clock()
     led = Ledger(home, clock=clock)
-    _stage(home, "e1", {"summary.md": "## Asked\nSend the report.\n", "notes.md": "- The lead wants a .tsv file.\n",
+    _stage(home, "e1", {"summary.md": "## Asked\nSend the report.\n", "notes.md": "- The requester wants a .tsv file.\n",
                         "notes/tsv.md": NOTE_CANDIDATE, "broke.md": "none\n"})
     _stage(home, "e2", {"summary.md": "## Asked\nSay hello.\n", "notes.md": "\n  \n", "broke.md": "none\n"})
     made = {e.refs.episodes[0]: e for e in led.sync(Staged(home))}

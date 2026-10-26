@@ -1,4 +1,4 @@
-"""Rev 2.4 (P4): a captured procedure that ignores its input is labelled a record, not a procedure.
+"""A captured procedure that ignores its input is labelled a record, not a procedure.
 
 The label is read from the code's syntax alone (``capture_shape.record_kind``: no read of an input parameter, or every
 return a literal), never from a word, a value or a task id, and nothing is run. It is stored when the capture lands in

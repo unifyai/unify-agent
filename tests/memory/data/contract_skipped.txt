@@ -41,6 +41,7 @@ writer	memory/<package>/tests/data/<module>.<function>.inputs.jsonl
 writer	memory/<package>/tests/test_<module>.py
 writer	memory/<package>/tests/test_<module>.py::test_<case>
 writer	notes/
+writer	notes/<name>.md
 writer	notes/<topic>/
 writer	notes/<topic>/<slug>.md
 writer	pool:<id>

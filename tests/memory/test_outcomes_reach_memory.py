@@ -1,4 +1,4 @@
-"""Rev 2.4 P3: the outcomes a world shows the actor reach memory.
+"""The outcomes a world shows the actor reach memory.
 
 * Within a request, a visible ``fail`` verdict (a ``{"checker": ...}`` line, with or without the verdict's text) that
   follows the use of an item (its call, or ``memory.get('<id>')`` in a cell) counts as a failed use of that item in this

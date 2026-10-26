@@ -1,4 +1,4 @@
-"""Rev 2.4 (P2, R6): the standing-note digest at every request start, and use counts on every card.
+"""The standing-note digest at every request start, and use counts on every card.
 
 The digest lists the library's preference, rule and caution notes and no others (a note written before the ``kind``
 field is left out), with what each applies to and who stated it when its front matter says so; lessons, retired and withdrawn
@@ -256,7 +256,7 @@ def test_the_actor_opens_each_request_with_the_digest():
     assert hooks.digest_on_submit(None, None) is None  # inert without a digest
 
 
-# --- R6: use counts on every card ------------------------------------------------------------------------------------
+# --- use counts on every card -----------------------------------------------------------------------------------------
 
 
 def test_use_counts_text():

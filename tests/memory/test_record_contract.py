@@ -93,7 +93,7 @@ REGISTRY: dict[str, dict] = {
             "effects_seen": [],
             "shape": [],
             "occurrences": ["unify.memory.library_export:dispatch_data"],
-            # record or procedure, from the code's syntax when it was captured (capture_shape.record_kind; rev 2.4)
+            # record or procedure, from the code's syntax when it was captured (capture_shape.record_kind)
             "kind": [
                 "unify.memory.captures:listed_record",
                 "unify.memory.library_helper:_record_why",
@@ -148,7 +148,7 @@ REGISTRY: dict[str, dict] = {
         "writer": "unify.memory.capture_groups:group_doc (attention_tools.export_group writes it)",
         "fields": ["v", "group", "due", "members", "related_closed", "relations", "library_items"],
         "member_fields": ["entry", "kind", "episodes", "captures", "form", "outcome", "effects", "sequence",
-                          "used_items"],
+                          "used_items", "notes"],
         "closed_member_fields": ["decision", "decided_items"],
         "readers": ["the writer, through /inputs/attention/group.json"],
     },
@@ -311,7 +311,7 @@ def test_a_captures_uses_reach_its_card_the_catalogue_the_search_rows_the_librar
     later = "2 calls in 1 episode: 1 returned, 1 raised"
     card = _cell(root, f"print(json.dumps(str(memory.get({'capture:' + cid!r}))))\n")
     assert f"Later uses: {later}" in card and "Recorded failures: 1: error in episode e2" in card
-    # its uses beside what it rests on (rev 2.4: "used N times: M positive, K negative")
+    # its uses beside what it rests on ("used N times: M positive, K negative")
     assert card.startswith(f"capture:{cid}  [recorded procedure from 1 episode, used 2 times: 1 positive, 1 negative]")
     catalogue = files[".memory/catalogue.md"].decode()
     section = catalogue.split(f"### capture:{cid}\n", 1)[1].split("###", 1)[0]

@@ -1,7 +1,7 @@
 """Syntax helpers for recorded procedures: an entry function, a literal value, a ``return`` that hands back a value.
 
 Nothing here judges a procedure. The one syntax-only judgement serving reads, record or procedure, is
-:func:`.capture_shape.record_kind` (rev 2.4: a capture that never reads its input, or returns only literals, is served
+:func:`.capture_shape.record_kind` (a capture that never reads its input, or returns only literals, is served
 as a record of what was done last time); no ranking, trust, grouping or gate rests on it. The helpers read syntax only
 and run nothing: :func:`_entry` (the entry function: ``run``, else ``main``, else the only
 function, else the first public one), :func:`is_literal`, :func:`returns_a_value` (used by the writer's own test

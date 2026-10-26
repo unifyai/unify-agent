@@ -1,4 +1,4 @@
-"""A note's scope (rev 2.4, P1): its front matter takes ``applies_to`` (what it holds for) and ``stated_by`` (who stated
+"""A note's scope: its front matter takes ``applies_to`` (what it holds for) and ``stated_by`` (who stated
 it, by name or role), and every place that serves the note shows them: the library's index, its search rows, the items
 data ``memory.get`` and ``memory.items`` read, and an item's one line. Real readers on a real library tree.
 """

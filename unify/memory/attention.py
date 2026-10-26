@@ -361,8 +361,9 @@ def fold(rows: Iterable[Mapping[str, Any]]) -> dict[str, AttentionEntry]:
         if op == "create":
             if not is_entry_id(eid) or eid in out or row.get("kind") not in KINDS or at is None:
                 continue
-            out[eid] = AttentionEntry(eid, row["kind"], "open", at, Refs.from_row(row.get("refs")),
-                                      carries=row.get("carries") is not False)  # fmt: skip
+            # only a message's row says whether it carries something of its own (an older row: it does)
+            carries = row.get("carries") is not False if row["kind"] == "message" else True
+            out[eid] = AttentionEntry(eid, row["kind"], "open", at, Refs.from_row(row.get("refs")), carries=carries)
             continue
         e = out.get(eid) if isinstance(eid, str) else None
         if e is None:
@@ -1081,10 +1082,12 @@ class Ledger:
                 record_seq=seq,
             )
             made = self._create_rows(state, "message", refs, (seq,), at=r.get("ts") if isinstance(r.get("ts"), str) else None)
-            if made and made[0]["op"] == "create" and not carries_content(r, writer_seqs):
-                # nothing of its own for a pass: it rides along with the next pass that runs for other entries
-                made[0]["carries"] = False
-                state[made[0]["entry"]] = replace(state[made[0]["entry"]], carries=False)
+            if made and made[0]["op"] == "create":
+                # whether it carries something of its own; with nothing, it goes along with the next pass that runs
+                # for other entries
+                carries = carries_content(r, writer_seqs)
+                made[0]["carries"] = carries
+                state[made[0]["entry"]] = replace(state[made[0]["entry"]], carries=carries)
             out += made
             pid = delivered.get(seq)
             if made and made[0]["op"] == "create" and isinstance(pid, str) and pid:

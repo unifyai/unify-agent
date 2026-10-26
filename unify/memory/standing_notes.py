@@ -1,4 +1,4 @@
-"""The standing-note digest: the library's preferences, rules and cautions, at the start of every request (rev 2.4).
+"""The standing-note digest: the library's preferences, rules and cautions, at the start of every request.
 
 Notes that state how work is to be done (a preference someone stated, a rule, a caution an episode proved) hold
 whatever the request is, so they are shown to the actor at every request start, with no fit judgement: the librarian

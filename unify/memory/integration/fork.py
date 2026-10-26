@@ -159,7 +159,8 @@ CAPTURE_BULLETS = (
 NOTE_BULLET = (
     "- `notes/<name>.md`: a note worth keeping for later requests, from what this episode showed: a preference or "
     "rule someone stated, a correction, an outcome, or a caution this episode proved. It needs no `procedure.py`. "
-    "One note per file; <name> uses only letters, digits and underscores. The file starts with a `---` line, then "
+    "One note per file; <name> uses only letters, digits and underscores, and is not `summary`. The file starts "
+    "with a `---` line, then "
     "`kind:` (which of these it is: `preference` or `rule` for what someone stated, `caution` for a caution, "
     "`lesson` for a correction or an outcome), then "
     "`applies_to:` (what the note holds for: the requests, people or work), then `stated_by:` (who stated it, by "
