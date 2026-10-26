@@ -765,7 +765,7 @@ class Recording:
         )
 
 
-def _in_process(home, runner, monkeypatch, **over):
+def _in_process(home, runner, monkeypatch, clock=None, **over):
     from unify.memory.integration import request
 
     monkeypatch.setattr(request, "actor_effort", lambda: "low")
@@ -781,6 +781,7 @@ def _in_process(home, runner, monkeypatch, **over):
                 poll_s=0.0,
                 idle_exit_s=3,
                 monotonic=Clock(),
+                **({"clock": clock} if clock is not None else {}),
             ),
         )
     finally:
@@ -796,6 +797,16 @@ _BUSY_BODY = (
 _CAP_BODY = (
     '{"error": {"code": 403, "type": "benchmark_lane_budget_exhausted", "message": "benchmark budget: the spend plus '
     "one call's reserve reached this cell's ceiling of USD 210.00\"}}"
+)
+#: A key proxy's refusal for its whole budget, as one ended a writer pass on office (no reason: not the lane's own cap)
+_CELL_BODY = (
+    '{"error": {"message": "benchmark budget: this cell\'s model calls reached its cap of USD 1.97", '
+    '"type": "benchmark_cell_budget_exhausted", "code": 403}}'
+)
+#: The writer's lane's own cap: the lane relay's refusal body past the cap (``unify/lanes/relay_server.py``)
+_LANE_CAP_BODY = (
+    '{"error": {"code": 403, "type": "writer_budget_exhausted", "message": "the memory spend cap is reached: the '
+    'booked spend plus this call\'s worst case is over it", "reason": "writer_cap_reached"}}'
 )
 
 
@@ -822,13 +833,13 @@ class FirstRefused(Recording):
         return await super().__call__(home, pass_id, handed, **kw)
 
 
-@pytest.mark.parametrize("status, body", [(403, _CAP_BODY), (402, "{}")], ids=["refusal-body-cap", "http-402"])
+@pytest.mark.parametrize("status, body", [(403, _LANE_CAP_BODY)], ids=["lane-cap-reason"])
 def test_a_writer_call_the_proxy_refuses_for_its_cap_is_the_cap_reached(
     svc, monkeypatch, status, body
 ):
-    """The two caps disagree: the service reserved under its own, the proxy refused for its lane's cap (its refusal
-    body says so, or HTTP 402). The service reads that as the cap reached: the entries still owed are not reached
-    (spend_cap) and no pass follows.
+    """The two caps disagree: the service reserved under its own, the lane refused for its own cap (its refusal body's
+    reason says so). The service reads that as the cap reached: the entries still owed are not reached (spend_cap) and
+    no pass follows.
     """
     ids = _open_entry(svc.home, 6)
     runner = Recording(reasons=[_refused_reason(status, body)])
@@ -843,6 +854,79 @@ def test_a_writer_call_the_proxy_refuses_for_its_cap_is_the_cap_reached(
         and {e.state for e in left} == {"not_reached"}
         and {e.why for e in left} == {"spend_cap"}
     )
+
+
+class Later:
+    """The service's UTC clock, injected: each look moves it on *step* seconds, so a wait passes in a few turns."""
+
+    def __init__(self, step: float = 5.0):
+        self.now = datetime(2026, 10, 26, tzinfo=timezone.utc)
+        self.step = timedelta(seconds=step)
+
+    def __call__(self) -> datetime:
+        self.now += self.step
+        return self.now
+
+
+class Timed(Recording):
+    """A Recording that also notes the service's clock at each pass's start; *refused* passes end on *reasons*, every
+    later pass reads and decides what it is handed."""
+
+    def __init__(self, clock: Later, reasons=(), refused: int = 1):
+        super().__init__(reasons=reasons)
+        self.clock, self.refused, self.started_at = clock, refused, []
+
+    async def __call__(self, home, pass_id, handed, **kw):
+        self.started_at.append(self.clock.now)
+        if len(self.passes) >= self.refused:
+            self.reasons, self.decide = [], True
+        return await super().__call__(home, pass_id, handed, **kw)
+
+
+_BUDGET = [(403, _CELL_BODY), (403, _CAP_BODY), (402, "{}")]
+_BUDGET_IDS = ["cell-budget", "reserve-no-reason", "http-402"]
+
+
+@pytest.mark.parametrize("status, body", _BUDGET, ids=_BUDGET_IDS)
+def test_a_budget_refusal_that_is_not_the_lanes_cap_is_tried_again_after_a_wait(svc, monkeypatch, status, body):
+    """A key proxy refused one writer call for its own budget or reserve (no lane-cap reason; or HTTP 402), as one did
+    on office with the writer's lane far below its cap. That is not the cap: the pass's entries go back with no miss,
+    the next pass waits PROXY_BACKOFF_S on the service's clock, and reads them; nothing is marked not reached. (Before,
+    the first such refusal stopped every pass for the rest of the run.)"""
+    ids = _open_entry(svc.home, 6)
+    clock = Later()
+    runner = Timed(clock, reasons=[_refused_reason(status, body)])
+    assert _in_process(svc.home, runner, monkeypatch, clock=clock) == "idle-exit"
+    assert _events(svc.home, "cap-reached") == []
+    (waited,) = _events(svc.home, "proxy-refused")
+    assert (waited["refusals"], waited["retries"], waited["wait_s"]) == (1, ws.PROXY_RETRIES, ws.PROXY_BACKOFF_S)
+    assert len(runner.passes) >= 2 and set(runner.passes[0][1]) <= {e for _p, h, _r in runner.passes[1:] for e in h}
+    assert runner.started_at[1] - runner.started_at[0] >= timedelta(seconds=ws.PROXY_BACKOFF_S)
+    first = runner.passes[0][0]
+    back = [r for r in attention.Ledger(svc.home).rows() if r.get("op") == "return" and r.get("pass_id") == first]
+    assert back and {r["why"] for r in back} == {"suspend"}, back
+    entries = attention.Ledger(svc.home).entries()
+    assert {entries[i].state for i in ids} == {"closed"}, {entries[i].state for i in ids}
+
+
+@pytest.mark.parametrize("status, body", _BUDGET, ids=_BUDGET_IDS)
+def test_budget_refusals_past_the_bounded_retries_are_the_cap_reached(svc, monkeypatch, status, body):
+    """The retries are bounded: each budget refusal in a row doubles the wait (60, 120, 240, 480 s), and the pass after
+    PROXY_RETRIES of them, refused the same way, is the cap reached as before: the entries still owed are not reached
+    (spend_cap) and no pass follows."""
+    ids = _open_entry(svc.home, 6)
+    clock = Later()
+    runner = Timed(clock, reasons=[_refused_reason(status, body)], refused=10**6)
+    assert _in_process(svc.home, runner, monkeypatch, clock=clock) == "idle-exit"
+    assert len(runner.passes) == ws.PROXY_RETRIES + 1
+    waits = [r["wait_s"] for r in _events(svc.home, "proxy-refused")]
+    assert waits == [ws.PROXY_BACKOFF_S * 2**i for i in range(ws.PROXY_RETRIES)]
+    gaps = [b - a for a, b in zip(runner.started_at, runner.started_at[1:])]
+    assert all(g >= timedelta(seconds=w) for g, w in zip(gaps, waits)), gaps
+    (capped,) = _events(svc.home, "cap-reached")
+    assert capped["by"] == "proxy" and capped["refusals"] == ws.PROXY_RETRIES + 1
+    entries = attention.Ledger(svc.home).entries()
+    assert {(entries[i].state, entries[i].why) for i in ids} == {("not_reached", "spend_cap")}
 
 
 @pytest.mark.parametrize(
@@ -1375,7 +1459,7 @@ def test_without_the_writers_route_the_service_environment_is_unchanged(monkeypa
     monkeypatch.setattr(async_pass, "_route_token", lambda settings: None)
     monkeypatch.setattr(switch, "helper_lane_route", lambda: (None, "no helper lane"))
     env, fds = ws._token_pipes()
-    assert fds == [] and env["OPENROUTER_API_KEY"] == "placeholder-not-a-key"
+    assert fds == [] and env["OPENROUTER_API_KEY"] == "placeholder-not-a-key"  # pragma: allowlist secret
 
 
 def test_a_service_restart_within_a_run_keeps_the_runs_spend_total(svc, monkeypatch):

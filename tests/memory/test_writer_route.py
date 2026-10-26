@@ -1721,7 +1721,7 @@ def test_a_status_dropped_by_a_client_re_raise_is_found_in_the_chain():
     assert (name, category, detail) == ("Exception", "http_403", "")
 
 
-# --- the route's refusals: busy for now, or its cap, told apart by the refusal body only ----------------------------
+# --- the route's refusals: busy for now, the lane's cap, or another budget, told apart by the refusal body only -------
 
 #: The key proxy's writer-lane refusals in the shape it sends them (HTTP 403 with this body)
 _IN_FLIGHT = {
@@ -1733,6 +1733,13 @@ _CAP = {
     "code": 403,
     "type": "benchmark_lane_budget_exhausted",
     "message": "benchmark budget: the spend plus one call's reserve reached this cell's ceiling of USD 210.00",
+}
+#: The lane relay's refusal for the lane's own cap (its reason says so)
+_LANE_CAP = {
+    "code": 403,
+    "type": "writer_budget_exhausted",
+    "message": "the memory spend cap is reached: the booked spend plus this call's worst case is over it",
+    "reason": "writer_cap_reached",
 }
 _RACE = {
     "code": 403,
@@ -1763,11 +1770,12 @@ def _category(exc: BaseException) -> str:
     [
         # the model client's text, the body as JSON (litellm's provider error)
         (_status_error(403, "litellm.PermissionDeniedError: OpenrouterException - " + json.dumps({"error": _IN_FLIGHT})), "http_403_busy"),
-        (_status_error(403, "litellm.PermissionDeniedError: OpenrouterException - " + json.dumps({"error": _CAP})), "http_403_cap"),
+        (_status_error(403, "litellm.PermissionDeniedError: OpenrouterException - " + json.dumps({"error": _CAP})), "http_403_budget"),
+        (_status_error(403, "litellm.PermissionDeniedError: OpenrouterException - " + json.dumps({"error": _LANE_CAP})), "http_403_cap"),
         # the body as a Python literal (an SDK's "Error code: 403 - {...}")
         (_status_error(403, f"Error code: 403 - {({'error': _IN_FLIGHT})!r}"), "http_403_busy"),
         # the client's parsed body (its inner error object) and its response
-        (_status_error(403, "denied", body=dict(_CAP)), "http_403_cap"),
+        (_status_error(403, "denied", body=dict(_CAP)), "http_403_budget"),
         (_status_error(403, "denied", response=SimpleNamespace(json=lambda: {"error": _IN_FLIGHT})), "http_403_busy"),
         # an explicit reason field wins over the message
         (_status_error(403, json.dumps({"error": {**_CAP, "reason": "lane_in_flight"}})), "http_403_busy"),
@@ -1787,11 +1795,11 @@ def _category(exc: BaseException) -> str:
         (_status_error(429, "slow down"), "http_429"),
     ],
     ids=[
-        "json-text-busy", "json-text-cap", "literal-text-busy", "body-cap", "response-busy", "reason-busy",
+        "json-text-busy", "json-text-budget", "json-text-lane-cap", "literal-text-busy", "body-budget", "response-busy", "reason-busy",
         "reason-cap", "reason-only-race", "reason-only-cap", "reason-only-in-flight", "reason-other", "release-race", "no-body", "body-without-refusal-type", "unreadable-response", "402", "429",
     ],
 )
-def test_a_403_is_busy_or_the_cap_only_by_its_refusal_body(exc, want):
+def test_a_403_is_busy_the_cap_or_a_budget_only_by_its_refusal_body(exc, want):
     assert _category(exc) == want
 
 
@@ -1808,12 +1816,13 @@ def test_a_refusal_body_dropped_with_its_code_by_a_client_re_raise_is_found_in_t
 
 def test_a_refused_routed_call_says_only_its_kind_and_whether_it_cost_anything(monkeypatch, restore_unillm):
     """The refusal's text (which a route could make echo anything) never reaches the error: only the category, and
-    the flags the pass books it by: busy is transient and cost nothing; the cap cost nothing and is not retried; a 503
-    is transient and may have cost money."""
+    the flags the pass books it by: busy is transient and cost nothing; the lane's cap and a key proxy's budget refusal
+    cost nothing and are not retried within the pass; a 503 is transient and may have cost money."""
     secretish = f"Bearer {WRITER_TOKEN}"
     cases = [
         ({"error": {**_IN_FLIGHT, "echo": secretish}}, 403, "http_403_busy", True, True),
-        ({"error": {**_CAP, "echo": secretish}}, 403, "http_403_cap", False, True),
+        ({"error": {**_CAP, "echo": secretish}}, 403, "http_403_budget", False, True),
+        ({"error": {**_LANE_CAP, "echo": secretish}}, 403, "http_403_cap", False, True),
         ({"error": {"echo": secretish}}, 503, "http_503", True, False),
     ]
     for body, status, category, transient, no_cost in cases:
@@ -1862,13 +1871,18 @@ def refusing_route(monkeypatch, actor_gateway, restore_unillm):
 
 @pytest.mark.parametrize(
     "body, category",
-    [({"error": _IN_FLIGHT}, "http_403_busy"), ({"error": _CAP}, "http_403_cap"), ({"error": {"code": 403}}, "http_403")],
-    ids=["call-in-flight", "cap", "no-refusal-body"],
+    [
+        ({"error": _IN_FLIGHT}, "http_403_busy"),
+        ({"error": _CAP}, "http_403_budget"),
+        ({"error": _LANE_CAP}, "http_403_cap"),
+        ({"error": {"code": 403}}, "http_403"),
+    ],
+    ids=["call-in-flight", "budget", "lane-cap", "no-refusal-body"],
 )
 def test_unillms_path_tells_the_proxys_refusals_apart_by_their_body(refusing_route, body, category):
     """The key proxy's 403 bodies as the model client raises them, through unillm's own path (its retries and
-    re-raises included): the refusal body reaches the error chain, so a call in flight is busy for now, the cap is the
-    cap, and a 403 that says neither is only a 403."""
+    re-raises included): the refusal body reaches the error chain, so a call in flight is busy for now, the lane's cap
+    is the cap, a budget refusal with no lane-cap reason is a budget refusal, and a 403 that says none is only a 403."""
     refusing_route.body = body
     turn = unillm_turn(REAL_MODEL, "low", route=WriterRoute(WRITER_BASE, SecretStr(WRITER_TOKEN)))
     with pytest.raises(writer_pass.WriterCallError) as info:

@@ -26,9 +26,11 @@ rewrites ``service.json`` every :data:`HEARTBEAT_S`. Each turn of the loop is :f
 it books that whole room, no call of its writer or helpers starts past it, counting unpriced and in-flight calls at the
 worst case, and it settles after it from the writer lane's journal plus its helpers' priced calls, or its own figures,
 or, when it ended with no report, its turn files), and each pass's wall clock. A lane relay's cap applies
-independently: a call the lane refuses for its cap (HTTP 402, or a 403 whose refusal body says it is the cap) is the
-cap reached; a refusal for now (another call in flight, a rate limit, a server error) is tried again, bounded, and
-never stops the service.
+independently: a call the lane refuses for its own cap (a 403 whose refusal body's reason says it is the lane's cap)
+is the cap reached; a refusal for now (another call in flight, a rate limit, a server error) is tried again, bounded,
+and never stops the service. Any other budget refusal (a key proxy's budget or reserve refusal with no lane-cap reason,
+HTTP 402) is not the lane's cap: the next pass waits :data:`PROXY_BACKOFF_S`, doubled after each such pass in a row,
+and after :data:`PROXY_RETRIES` of them the next one is the cap reached.
 
 **Resumable passes.** Before each model call of a pass (the writer's and each helper's), ``turns/<pass>/<n>.json`` is
 written ``pending`` with the conversation so far and the pass's inputs; after it, ``done`` with the reply and its
@@ -97,6 +99,11 @@ TERM_S = 10.0
 SETTLE_S = 5.0
 #: How often the idle loop looks at the ledger (a new entry makes a pass due within this).
 POLL_S = 2.0
+#: A pass a budget refusal that is not the lane's own cap ended (:data:`.writer_pass.BUDGET_CATEGORIES`) is followed
+#: by a wait of PROXY_BACKOFF_S before the next pass, doubled after each such pass in a row (60, 120, 240 and 480 s);
+#: the pass after PROXY_RETRIES of them, refused the same way, is the cap reached.
+PROXY_RETRIES = 4
+PROXY_BACKOFF_S = 60.0
 #: How long :func:`ensure_service` waits for a service it started to say it is up.
 START_WAIT_S = 10.0
 #: How long :func:`ensure_service` waits for a lock whose holder is exiting (no live process holds it) to free.
@@ -122,6 +129,7 @@ EVENTS = (
     "resume",
     "killed-turn",
     "cap-reached",
+    "proxy-refused",
     "lifetime",
     "pass",
     "refused",
@@ -1245,6 +1253,9 @@ class Service:
     staging_seen: Optional[tuple] = None
     #: the cap's event was written (once per service)
     cap_noted: bool = False
+    #: passes in a row a budget refusal that is not the lane's own cap ended, and when the next pass may start
+    proxy_refusals: int = 0
+    held_until: Optional[datetime] = None
     #: record the group's processes (``members``); False for a step, which runs in its caller's process: nothing of
     #: the caller's is ever recorded as the service's, so nothing of it is ever signalled
     record_members: bool = True
@@ -1343,23 +1354,63 @@ def check_writer_settings(settings: Any) -> None:
     writer_settings(settings)
 
 
-def _proxy_refused(report: Any) -> bool:
-    """Whether a pass ended because the key proxy refused a writer call for its cap: HTTP 402, or a 403 whose refusal
-    body says it is the cap (:data:`.writer_pass.CAP_CATEGORIES`). A 403 for a call in flight, a rate limit or a
-    server error is not the cap (the pass tried it again, bounded), and neither is a 403 whose body says nothing."""
-    from .writer_pass import CAP_CATEGORIES
-
+def _ended_by(report: Any, categories: frozenset) -> bool:
+    """Whether a pass's reasons or notes name a writer call failure of one of *categories*."""
     outcome = getattr(report, "outcome", None)
     text = " ".join(str(r) for r in (getattr(outcome, "reasons", None) or ()))
     text += " " + " ".join(str(n) for n in (getattr(report, "notes", None) or ()))
-    return any(f"({category})" in text for category in CAP_CATEGORIES)
+    return any(f"({category})" in text for category in categories)
+
+
+def _proxy_refused(report: Any) -> bool:
+    """Whether a pass ended because a writer call was refused for the writer's lane's own cap: a 403 whose refusal
+    body's reason says it is the lane's cap (:data:`.writer_pass.CAP_CATEGORIES`). A 403 for a call in flight, a rate
+    limit or a server error is not the cap (the pass tried it again, bounded), and neither is a 403 whose body says
+    nothing, nor any other budget refusal (:func:`_budget_refused`)."""
+    from .writer_pass import CAP_CATEGORIES
+
+    return _ended_by(report, CAP_CATEGORIES)
+
+
+def _budget_refused(report: Any) -> bool:
+    """Whether a pass ended because a writer call was refused for a budget that is not the lane's own cap: a key
+    proxy's budget or reserve refusal with no lane-cap reason, or HTTP 402 (:data:`.writer_pass.BUDGET_CATEGORIES`).
+    Room may come back once that proxy's calls in flight settle."""
+    from .writer_pass import BUDGET_CATEGORIES
+
+    return _ended_by(report, BUDGET_CATEGORIES)
+
+
+def _after_budget_refusal(service: "Service", ledger: Any, pass_id: str, clock: Callable[[], datetime]) -> None:
+    """A pass a budget refusal that is not the lane's own cap ended: the next pass waits (:data:`PROXY_BACKOFF_S`,
+    doubled for each such pass in a row); after :data:`PROXY_RETRIES` of them, one more is the cap reached, as the lane
+    relay's cap refusal is (every entry still owed is ``not_reached: spend_cap``)."""
+    service.proxy_refusals += 1
+    n = service.proxy_refusals
+    if n > PROXY_RETRIES:
+        service.capped = True
+        if not service.cap_noted:
+            event(service.home, "cap-reached", by="proxy", pass_id=pass_id, refusals=n)
+            service.cap_noted = True
+        ledger.mark_not_reached("spend_cap")
+        return
+    wait = PROXY_BACKOFF_S * 2 ** (n - 1)
+    service.held_until = clock() + timedelta(seconds=wait)
+    event(service.home, "proxy-refused", pass_id=pass_id, refusals=n, retries=PROXY_RETRIES, wait_s=wait)
 
 
 async def _run_pass(
-    service: Service, pass_id: str, handed: list, *, resume: bool, runner: Runner
+    service: Service,
+    pass_id: str,
+    handed: list,
+    *,
+    resume: bool,
+    runner: Runner,
+    clock: Callable[[], datetime] = _now,
 ) -> Any:
     """One pass under the service: the reservation, the pass (under its attribution), the settle, the read checks and
-    the returns; returns the runner's report."""
+    the returns; returns the runner's report. A pass a budget refusal that is not the lane's own cap ended had no
+    fair turn: its entries go back with no miss, and the next pass waits (:func:`_after_budget_refusal`, on *clock*)."""
     from unify.common.llm_client import attribution
 
     from .attention import Ledger
@@ -1470,8 +1521,10 @@ async def _run_pass(
 
     reads = report.reads if report.reads is not None else PassReads()
     read = ledger.verify_reads(pass_id, reads, list(report.delivered or ()))
-    # a pass the service was asked to stop during (a drain or an operator's stop) gives its entries back with no miss
-    returned = ledger.return_unread(pass_id, stopped=stopping_marker(home) is not None)
+    # a pass the service was asked to stop during (a drain or an operator's stop), or one a budget refusal that is not
+    # the lane's own cap ended, gives its entries back with no miss
+    budget = not _proxy_refused(report) and _budget_refused(report)
+    returned = ledger.return_unread(pass_id, stopped=stopping_marker(home) is not None or budget)
     report.read, report.returned = sorted(read), sorted(returned)
     pass_doc.update(state="ended", ended_at=stamp(_now()))
     _atomic_json(pass_doc_path, pass_doc)
@@ -1492,6 +1545,10 @@ async def _run_pass(
             event(home, "cap-reached", by="proxy", pass_id=pass_id)
             service.cap_noted = True
         ledger.mark_not_reached("spend_cap")
+    elif budget:
+        _after_budget_refusal(service, ledger, pass_id, clock)
+    else:
+        service.proxy_refusals = 0
     return report
 
 
@@ -1614,8 +1671,8 @@ async def _iteration(
     cap (every entry still owed is ``not_reached: spend_cap``), the lifetime's margin for a new pass, and one pass
     over up to K handed entries (one due capture group, or the other kinds of entry at once). Returns what it did
     (:func:`_turn_result`): ``stop`` names why the service must stop (None: go on); ``why_idle`` why no pass ran
-    (``stopping``, ``lifetime``, ``lease``, ``refused``, ``nothing_open``, ``spend_cap``, ``nothing_handed`` or
-    ``busy``)."""
+    (``stopping``, ``lifetime``, ``lease``, ``refused``, ``nothing_open``, ``spend_cap``, ``proxy_wait`` (the wait
+    after a budget refusal that is not the lane's own cap), ``nothing_handed`` or ``busy``)."""
     from .attention import K
     from .integration.switch import PASS_WALL_S
 
@@ -1636,7 +1693,7 @@ async def _iteration(
     if resumable:
         pass_id = resumable.pop(0)
         handed = ledger.in_pass(pass_id)
-        report = await _run_pass(service, pass_id, handed, resume=True, runner=runner)
+        report = await _run_pass(service, pass_id, handed, resume=True, runner=runner, clock=clock)
         return _passed(out, ledger, pass_id, handed, report, resumed=True)
     _capture_if_new(service)
     ledger.sync()
@@ -1671,6 +1728,9 @@ async def _iteration(
         ledger.mark_not_reached("spend_cap")
         out["why_idle"] = "spend_cap"
         return out
+    if service.held_until is not None and clock() < service.held_until:
+        out["why_idle"] = "proxy_wait"
+        return out
     if clock() + timedelta(seconds=float(PASS_WALL_S)) > end:
         # a pass started now could run past the service's end (its lifetime): no new pass; the service stops
         event(home, "lifetime", why="lifetime", refused_pass=True)
@@ -1692,7 +1752,7 @@ async def _iteration(
     if not handed:
         out["why_idle"] = "nothing_handed"
         return out
-    report = await _run_pass(service, pass_id, handed, resume=False, runner=runner)
+    report = await _run_pass(service, pass_id, handed, resume=False, runner=runner, clock=clock)
     return _passed(out, ledger, pass_id, handed, report, resumed=False)
 
 

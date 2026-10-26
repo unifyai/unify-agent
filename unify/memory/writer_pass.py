@@ -4414,20 +4414,28 @@ class WriterCallError(RuntimeError):
         super().__init__(text)
         self.category = category
         self.transient = transient_category(category)
-        self.no_cost = category in (REFUSED_BUSY, REFUSED_CAP)
+        self.no_cost = category in (REFUSED_BUSY, REFUSED_CAP, REFUSED_BUDGET)
         self.counted = False
 
 
-#: A 403 whose body is the route's refusal for its cap (``reason`` ``*_cap_reached``, or a ``*_budget_exhausted``
-#: refusal that is not about a call in flight): the route's spend cap, as HTTP 402 is.
+#: A 403 whose body is the refusal for the writer's lane's own cap (``reason`` ``<lane>_cap_reached``: the lane relay's
+#: refusal past memory's spend cap, or a key proxy's for the lane it serves the writer on).
 REFUSED_CAP = "http_403_cap"
+#: A 403 whose body is a ``*_budget_exhausted`` refusal with no ``reason`` and not about a call in flight: a key proxy
+#: in front of the route refused for its own budget or reserve, which may have room again once its calls in flight
+#: settle.
+REFUSED_BUDGET = "http_403_budget"
 #: A 403 whose body is the route's refusal because another call is in flight (``reason`` ``*_in_flight`` or
 #: ``*_race``, or a ``*_budget_exhausted`` refusal for a call in flight or a reserve not yet released): for now only.
 REFUSED_BUSY = "http_403_busy"
 #: The categories a later attempt may not get: the route busy, a rate limit, a server error.
 TRANSIENT_CATEGORIES = frozenset({REFUSED_BUSY, "http_429"} | {f"http_{s}" for s in range(500, 600)})
-#: The categories that are the route's spend cap reached: HTTP 402, and a 403 whose body says it is the cap.
-CAP_CATEGORIES = frozenset({"http_402", REFUSED_CAP})
+#: The category that is the writer's lane's own cap reached: a 403 whose body's reason says so.
+CAP_CATEGORIES = frozenset({REFUSED_CAP})
+#: The categories that are a budget refusal that is not the lane's own cap: HTTP 402 (the lane relay never sends it),
+#: and :data:`REFUSED_BUDGET`. The writer service tries a later pass, a bounded number of times
+#: (``writer_service.PROXY_RETRIES``).
+BUDGET_CATEGORIES = frozenset({"http_402", REFUSED_BUDGET})
 #: A transient failure is tried again at most this many times in a row, waiting TRANSIENT_BACKOFF_S, then twice
 #: that, and so on (2 + 4 + 8 + 16 s), never past the pass's deadline.
 TRANSIENT_RETRIES = 4
@@ -4491,12 +4499,13 @@ def _objects_in_text(text: str) -> Iterator[dict]:
 
 
 def _route_refusal(exc: BaseException) -> str | None:
-    """``"busy"`` or ``"cap"`` when *exc*, or an exception it was raised from or during, carries the route's refusal
-    body (``{"error": {"type", "message", "reason"?}}``, from the client's parsed body, its response, or its text);
-    else None. Read from the body, never from the status code: its ``reason`` first (``*_in_flight`` or ``*_race``
-    busy, ``*_cap_reached`` the cap), then, for a body without one of those, a ``*_budget_exhausted`` type, busy when
-    its message is about a call in flight or a reserve not yet released, else the cap. Only the kind is returned; no
-    text of the body is kept."""
+    """``"busy"``, ``"cap"`` or ``"budget"`` when *exc*, or an exception it was raised from or during, carries a
+    refusal body (``{"error": {"type", "message", "reason"?}}``, from the client's parsed body, its response, or its
+    text); else None. Read from the body, never from the status code: its ``reason`` first (``*_in_flight`` or
+    ``*_race`` busy, ``*_cap_reached`` the lane's own cap), then, for a body without one of those, a
+    ``*_budget_exhausted`` type, busy when its message is about a call in flight or a reserve not yet released, else a
+    budget refusal that is not the lane's own cap (a key proxy's budget or reserve). Only the kind is returned; no text
+    of the body is kept."""
     seen: set[int] = set()
     e: BaseException | None = exc
     while e is not None and id(e) not in seen:
@@ -4536,7 +4545,7 @@ def _refusal_kind(obj: dict) -> str | None:
     if isinstance(kind, str) and kind.endswith("_budget_exhausted"):
         message = obj.get("message")
         text = message.lower() if isinstance(message, str) else ""
-        return "busy" if ("in flight" in text or "release race" in text) else "cap"
+        return "busy" if ("in flight" in text or "release race" in text) else "budget"
     return None
 
 
@@ -4636,9 +4645,10 @@ def _call_failure(exc: BaseException) -> tuple[str, str, str]:
     ):
         category = f"http_{status}"
         if status == 403:
-            # the route's own refusal, told apart by its body only (never by the status code): busy for now, or the cap
+            # a refusal, told apart by its body only (never by the status code): busy for now, the lane's own cap, or
+            # a budget refusal that is not the lane's own cap
             kind = _route_refusal(exc)
-            category = {"busy": REFUSED_BUSY, "cap": REFUSED_CAP}.get(kind or "", category)
+            category = {"busy": REFUSED_BUSY, "cap": REFUSED_CAP, "budget": REFUSED_BUDGET}.get(kind or "", category)
     elif "timeout" in lowered:
         category = "timeout"
     elif "connect" in lowered:
@@ -4866,7 +4876,7 @@ def unillm_turn(
     in this context refuses (no call made) unless it sends to the route; the same preparation serves every
     retry. A failed call on the route raises :class:`WriterCallError` naming only the exception's class and a
     fixed category (``http_<status>``, ``timeout``, ``connection``, ``rate_limit``, ``auth``, ``other``; a 403
-    whose body is the route's own refusal is :data:`REFUSED_BUSY` or :data:`REFUSED_CAP`), so
+    whose body is a refusal is :data:`REFUSED_BUSY`, :data:`REFUSED_CAP` or :data:`REFUSED_BUDGET`), so
     no error text (an echoed header, say) reaches pass notes, error rows or logs. unillm's own copies of that
     text are redacted too: its ``unillm.retry`` warnings by a filter on that logger, and the writer's per-call log
     file (``UNILLM_LOG_DIR``) by a rewrite once unillm finalises it; the route refuses to start while unillm
