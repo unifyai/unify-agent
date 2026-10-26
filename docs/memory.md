@@ -11,8 +11,12 @@ Memory lets later requests use what earlier ones learned. One setting controls i
    episodes and every use of a library item.
 2. **A fork writes down what it did.** When the episode ends, the actor's own conversation is continued once, on the
    fork lane, with a fixed instruction. The fork writes a summary (`summary.md`) and, where the episode computed
-   something, a procedure that redoes it (`procedure.py`) with what broke on the way (`broke.md`). It may also post to
-   `@writer` on the run record, to point at its summary and drafts and to say what it was unsure of. The harness turns
+   something, a procedure that redoes it (`procedure.py`) with what broke on the way (`broke.md`). It also writes its
+   lessons (`notes.md`) and, with no procedure needed, **note candidates** (`notes/<name>.md`): a preference or rule
+   someone stated, a correction, an outcome or a caution the episode proved, each with what it applies to
+   (`applies_to`) and, when someone stated it, who (`stated_by`). It posts to `@writer` on the run record only to point
+   at a procedure, candidate or note it wrote, or to correct a served item (named as `item:<id>`); never to say there is
+   nothing to keep. The harness turns
    the procedure into a **capture**: the procedure plus a signature and a record the harness computes, with the
    outcome taken from the signals the actor could see (`positive`, `none` or `contrary`). **Nothing is ever run in
    order to classify, deduplicate or rank a capture.** A capture is served at once to later requests, before any
@@ -27,14 +31,20 @@ Memory lets later requests use what earlier ones learned. One setting controls i
    - a run-record message to the writer;
    - an entry the writer deferred, or a draft the gate refused.
 
-   An entry stays open until a writer pass decides it. A new capture waits until its **capture group** is due.
+   An entry stays open until a writer pass decides it. A new capture waits until its **capture group** is due. An
+   episode that left no capture but left lessons or note candidates is an entry with the same standing: it joins a
+   group through the library items its episode used (or a judge's reading), or is due on its own once its request has
+   ended, and its lessons reach the writer as note candidates. An episode that left neither is closed by the harness
+   and no pass runs on it.
    Captures are related when their records show they make the same calls, when they use the same library items, or
    when the writer's model, asked as a judge, reads them as the same kind of work; a shared shape of input alone never
    relates two captures, and no id, word or order is read. A group is due once two of its captures are open, or once
    a new one relates to captures an earlier pass decided. A capture with no related capture is due once its own
    request has ended: it goes with the pass that runs then, or, when none runs, in one pass with every other such
    capture. No count of later captures and no idle time makes anything due. Every other kind of entry is handed at
-   once.
+   once, except a run-record message that carries nothing of its own (no `item:`, `capture:` or `entry:` ref and no
+   answer to the writer, posted by a fork or the harness): it makes no pass, and goes along with the next pass that
+   runs for other entries.
 4. **The writer keeps the library.** The writer is a detached service, one per memory home. It hands open entries to
    writer passes, and each pass is a model with tools in a confined box (no network, no credentials):
    - it reads the entries' material: for a capture group, its members together with the related captures earlier
@@ -43,8 +53,11 @@ Memory lets later requests use what earlier ones learned. One setting controls i
    - it lands new library items, changes or renames existing ones, and decides each entry.
 
    The library, `<UNIFY_HOME>/memory`, is a git repository of **functions** (`memory/<package>/<module>.py`, each with
-   its tests) and **notes** (`notes/<topic>/<slug>.md`). Notes and functions link both ways: a note lists the
-   functions it uses in its `uses:` front matter, and a function's docstring names its notes on a `Notes:` line.
+   its tests) and **notes** (`notes/<topic>/<slug>.md`). A note needs no capture behind it. Its front matter may
+   carry its scope: `applies_to` (what it holds for) and `stated_by` (who stated it, by name or role), shown wherever
+   the note is served (`memory.get`, `memory.items()`, the index and search). Notes and functions link both ways when
+   they are related: a note lists the functions it uses in its `uses:` front matter, and a function's docstring names
+   its notes on a `Notes:` line; a note that is about no function stands on its own.
    Every copy also carries generated files that are never committed: `INDEX.md` and `links.json`, which show both
    directions of every link, and the package files that bind the library as `memory`.
 

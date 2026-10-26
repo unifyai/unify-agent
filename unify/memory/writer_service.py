@@ -1699,7 +1699,10 @@ async def _iteration(
         return _passed(out, ledger, pass_id, handed, report, resumed=True)
     _capture_if_new(service)
     ledger.sync()
-    if not any(e.state == "open" for e in ledger.entries().values()):
+    from .attention import wants_pass
+
+    # a message with nothing of its own makes no pass (it goes along with the next one): it alone leaves nothing open
+    if not any(wants_pass(e) for e in ledger.entries().values()):
         out["why_idle"] = "nothing_open"
         return out
     try:
