@@ -592,7 +592,10 @@ _WRITE_RULES_IN_CODE = (
     "so. "
     "A pass may also change only notes, only tests, or the expected values in the tests of a function you did not "
     "change; such tests need only pass. Retire an item whose recorded uses fail and that no change can repair; the "
-    "usage table counts every call, including calls made through `memory.get`.\n"
+    "usage table counts every call, including calls made through `memory.get`. An item is stale when a later "
+    "outcome contradicts it: a verdict that arrived after an episode that used it (its entry's signal, with the "
+    "verdict's text when the environment gave one), or a failed use after it was served. Change a stale item to "
+    "what the later outcome shows, or retire it when nothing recorded shows the change.\n"
     "5. Write the tests first, against trusted expected values, "
     + _TRUST
     + " At least one call returns on arguments loaded from fixtures made with `tools.fixture`, or computed in the "

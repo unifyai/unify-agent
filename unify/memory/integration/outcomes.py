@@ -14,6 +14,11 @@ episode are judged again (:func:`..captures.rejudge_episode`). Item records are 
 the next pass (:func:`.consolidate.after_passes`), which the attention ledger makes due: every signal's arrival is a
 row of :data:`ARRIVALS_FILE` (ids and labels only), from which the ledger creates its ``late_evidence`` entries.
 
+A checker line may also carry the verdict's text exactly as the environment showed it to the actor
+(``{"checker": {"label": "fail", "text": "..."}}``). The harness never reads that text for a verdict (the label is
+the verdict); it keeps it beside the signal (:data:`TEXTS_FILE`, :func:`log_text`) so that the writer, handed the
+signal as late evidence, reads what the later outcome said (:func:`signal_texts`).
+
 Nothing here reads a world, a request's text or a stream position; a signal is attached to an episode by its id.
 """
 
@@ -45,6 +50,23 @@ ARRIVALS_FILE = "signal-arrivals.jsonl"
 EPISODE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 #: The checker labels a late verdict may carry.
 LABELS = ("pass", "fail")
+#: The verdict texts a checker line carried, one JSON object per line (``{"signal_id", "text"}``), under the
+#: harness-only state directory: the environment's own words as the actor was shown them, for the writer.
+TEXTS_FILE = "signal-texts.jsonl"
+#: The longest verdict text a checker line may carry, in characters; a longer one is refused, never cut.
+MAX_TEXT = 16000
+
+
+def check_text(text: Any) -> tuple[str | None, str]:
+    """A checker line's optional verdict text checked: ``(text, "")`` (None when absent) or ``(None, why)``. The answer
+    never quotes the text."""
+    if text is None:
+        return None, ""
+    if not isinstance(text, str) or not text.strip():
+        return None, "text must be the verdict's text as the actor was shown it, a non-empty string"
+    if len(text) > MAX_TEXT:
+        return None, f"text is longer than {MAX_TEXT} characters"
+    return text, ""
 
 
 def now() -> str:
@@ -117,10 +139,16 @@ def log_arrival(state_dir: Path | str, sig: Signal, *, regime_before: str | None
         os.close(fd)
 
 
-def late_entry(raw_label: Any, episode: Any, about: Any, *, current: str, exists: Any) -> tuple[dict | None, str]:
-    """A late checker line checked: ``(entry, "")`` with ``{"episode", "label", "about", "at"}``, or ``(None, why)``.
-    *episode* must be another recorded episode's id (*exists* tells), *about* empty or one ref of
-    :data:`..signals.ABOUT`. The answer never quotes the line."""
+def late_entry(
+    raw_label: Any, episode: Any, about: Any, *, current: str, exists: Any, text: Any = None
+) -> tuple[dict | None, str]:
+    """A late checker line checked: ``(entry, "")`` with ``{"episode", "label", "about", "at"}`` (and ``text`` when the
+    line carried the verdict's text, :func:`check_text`), or ``(None, why)``. *episode* must be another recorded
+    episode's id (*exists* tells), *about* empty or one ref of :data:`..signals.ABOUT`. The answer never quotes the
+    line."""
+    text, bad = check_text(text)
+    if bad:
+        return None, bad
     if raw_label not in LABELS:
         return None, 'a checker line is exactly {"label": "pass"} or {"label": "fail"}'
     if not isinstance(episode, str) or not EPISODE_ID.fullmatch(episode):
@@ -132,7 +160,41 @@ def late_entry(raw_label: Any, episode: Any, about: Any, *, current: str, exists
         return None, "about must be action:<n>, item:<id> or capture:<16 hex digits>"
     if not exists(episode):
         return None, "no recorded episode has that id"
-    return {"episode": episode, "label": raw_label, "about": about, "at": now()}, ""
+    entry = {"episode": episode, "label": raw_label, "about": about, "at": now()}
+    if text is not None:
+        entry["text"] = text
+    return entry, ""
+
+
+def log_text(state_dir: Path | str, signal_id: str, text: str) -> None:
+    """Keep the verdict text a posted signal's line carried (:data:`TEXTS_FILE`, ``O_APPEND`` and an ``fsync``)."""
+    path = Path(state_dir) / TEXTS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = json.dumps({"v": 1, "signal_id": signal_id, "text": text}, sort_keys=True) + "\n"
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        os.write(fd, row.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def signal_texts(state_dir: Path | str, ids: Iterable[str]) -> dict[str, str]:
+    """The verdict texts kept for the signals *ids* (:func:`log_text`), by signal id; an unreadable line is skipped."""
+    want = set(ids)
+    out: dict[str, str] = {}
+    try:
+        lines = (Path(state_dir) / TEXTS_FILE).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("signal_id") in want and isinstance(row.get("text"), str):
+            out[row["signal_id"]] = row["text"]
+    return out
 
 
 def post_late(
@@ -177,6 +239,8 @@ def post_late(
     sig.regime = regime
     post_signal(sig, stores.episodes, sha, stores.evidence)
     log_arrival(state_dir, sig, regime_before=before, regime_after=regime)
+    if isinstance(entry.get("text"), str):
+        log_text(state_dir, sig.signal_id, entry["text"])
     changed = captures.rejudge_episode(
         captures.store_dir(state_dir),
         eid,
@@ -202,11 +266,16 @@ __all__ = [
     "AFTER_EPISODE",
     "ARRIVALS_FILE",
     "IN_EPISODE",
+    "MAX_TEXT",
+    "TEXTS_FILE",
+    "check_text",
     "implicit_evidence",
     "infer",
     "late_entry",
     "log_arrival",
+    "log_text",
     "now",
     "post_late",
+    "signal_texts",
     "timed",
 ]

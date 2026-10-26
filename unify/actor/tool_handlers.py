@@ -635,8 +635,9 @@ async def ask_library(ctx: Any, args: dict) -> Any:
         isinstance(i, str) and 0 < len(i) <= 300 for i in failed
     ):
         return _refused(_refusal(ctx, "ask_library", "bad_failed"))
-    # the items whose call failed in this request: those the asking cell's package saw, and those the request's earlier
-    # cells recorded; none is offered again in this request (a use outcome, never stored as one)
+    # the items that failed in this request: those the asking cell's package saw, those the request's earlier cells
+    # recorded, and those used before a visible fail verdict; none is offered again in this request (a use outcome,
+    # never stored as one)
     failed = sorted(set(failed) | set(_memory_run_failed()))
     state = ctx.state
     session = getattr(state, "librarian", None)
@@ -709,8 +710,9 @@ MAX_FAILED_ITEMS = 200
 
 
 def _memory_run_failed() -> list[str]:
-    """The items whose calls raised or refused their input in the memory run's cells so far (its runtime call
-    counts), in id order; [] when no run is open."""
+    """The items that failed in the memory run so far, in id order; [] when no run is open: those whose calls raised
+    or refused their input in its cells (its runtime call counts), and those its cells used before a visible verdict
+    said the work failed (a ``{"checker": {"label": "fail"}}`` line it took, ``RequestRun.failed_after_verdicts``)."""
     try:
         from unify.memory.integration import request as _request
 
@@ -718,13 +720,18 @@ def _memory_run_failed() -> list[str]:
         counts = (getattr(run, "runtime_calls", None) or {}).get("counts") or {}
     except Exception:  # noqa: BLE001 - no memory run here
         return []
-    return sorted(
+    failed = {
         item
         for item, row in counts.items()
         if isinstance(item, str) and isinstance(row, dict) and any(
             isinstance(row.get(k), int) and row[k] > 0 for k in ("refused", "error")
         )
-    )
+    }
+    try:
+        failed.update(i for i in run.failed_after_verdicts() if isinstance(i, str))
+    except Exception:  # noqa: BLE001 - an older run without verdicts: its runtime failures still count
+        pass
+    return sorted(failed)
 
 
 def _memory_run_last_message() -> Optional[str]:
