@@ -26,7 +26,7 @@ from unify.memory.integration import fork, fork_worker
 from tests.memory.test_attention_ledger import Clock, Fake
 
 NOTE_CANDIDATE = (
-    "---\napplies_to: monthly reports for the planning team\nstated_by: the planning lead\n---\n"
+    "---\nkind: preference\napplies_to: monthly reports for the planning team\nstated_by: the planning lead\n---\n"
     'Send reports as tab-separated files. From the reply: "please always send it as a .tsv".\n'
 )
 
@@ -57,13 +57,13 @@ class Staged(Fake):
 def test_the_fork_brief_offers_a_note_candidate_with_no_procedure_and_its_parser_keeps_it():
     text = fork.fork_instruction()
     assert fork.NOTE_BULLET in text and "It needs no `procedure.py`." in text
-    assert "`applies_to:`" in text and "`stated_by:`" in text
+    assert "`applies_to:`" in text and "`stated_by:`" in text and "`kind:`" in text
     # no notes.md is written to say nothing is worth keeping: an empty episode leaves nothing for the writer
     assert "write `notes.md` saying so" not in text and "leave `notes.md` out" in text
     # the brief's own example parses, its note candidate included, as a staged note
     blocks, _record = fork_worker.parse_reply(fork.FORMAT_EXAMPLE)
     (note,) = [b for b in blocks if b["path"] == "notes/header_line.md"]
-    assert note["status"] == "parsed" and note["kind"] == "note" and note["content"].startswith("---\napplies_to: ")
+    assert note["status"] == "parsed" and note["kind"] == "note" and note["content"].startswith("---\nkind: caution\napplies_to: ")
     assert fork_worker.allowed("notes/header_line.md") is None
     assert fork_worker.allowed("notes/a/b.md") is not None and fork_worker.allowed("notes/x.py") is not None
 

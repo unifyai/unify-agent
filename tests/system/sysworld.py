@@ -192,7 +192,7 @@ PREF_ANSWER = ["oak", "ash"]
 PREF_SCOPE = "lists of words a request carries"
 PREF_WHO = "the requester"
 NOTE_CANDIDATE = (
-    "```path: notes/order.md\n---\n"
+    "```path: notes/order.md\n---\nkind: preference\n"
     f"applies_to: {PREF_SCOPE}\nstated_by: {PREF_WHO}\n---\n"
     f'Keep the words in the order given. From the request: "{PREF_STATED}".\n```\n\n'
 )
@@ -259,7 +259,8 @@ NOTE_EVIDENCE = "## Evidence\n" + "".join(f"- case {i}: the list was read after 
                                           for i in range(120))
 NOTE_TEXT = NOTE_RULE + NOTE_WHEN + "\n" + NOTE_EVIDENCE
 #: The same note with its scope in its front matter (what it applies to, who stated it), landed with no capture.
-NOTE_SCOPED_TEXT = NOTE_TEXT.replace("uses: []\n", f"uses: []\napplies_to: {PREF_SCOPE}\nstated_by: {PREF_WHO}\n")
+NOTE_SCOPED_TEXT = NOTE_TEXT.replace("uses: []\n", f"uses: []\nkind: preference\napplies_to: {PREF_SCOPE}\n"
+                                                    f"stated_by: {PREF_WHO}\n")
 #: The same note with no ``## Rule`` section (the gate must refuse it on a raw candidate).
 NOTE_NO_RULE = NOTE_TEXT.replace("## Rule\n- the list follows the line WORDS and ends at END\n"
                                  "- transform every word, keep the order\n\n", "The list follows the line WORDS.\n\n")

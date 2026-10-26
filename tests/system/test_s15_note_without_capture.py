@@ -58,6 +58,7 @@ async def test_a_note_candidate_with_no_capture_reaches_the_writer_and_lands_a_s
         actor=SW.probe_turns(code, sink), librarian=Always(lambda c: SW.librarian_answer([], nearest=[]))))
     out = sink["out"]
     assert f"applies_to: {SW.PREF_SCOPE}" in out["get"] and f"stated_by: {SW.PREF_WHO}" in out["get"], out["get"]
+    assert "kind: preference" in out["get"], out["get"]
     assert f"applies to: {SW.PREF_SCOPE[:20]}" in out["items"], out["items"]
     index = (s.copy() / "INDEX.md").read_text()  # the index of the copy that request mounted
     assert f"applies to: {SW.PREF_SCOPE}; stated by: {SW.PREF_WHO}" in index, index[-2000:]

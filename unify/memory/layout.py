@@ -55,7 +55,10 @@ _PACKAGE = re.compile(rf"^{_NAME}\Z")
 _MODULE_FILE = re.compile(rf"^({_NAME})\.py\Z")
 _TEST_FILE = re.compile(r"^test_[A-Za-z0-9_]*\.py\Z")
 _NOTES_LINE = re.compile(r"^[ \t]*Notes:[ \t]*(.*)$", re.M)
-FRONT_KEYS = ("title", "description", "uses", "stated_by", "applies_to")
+FRONT_KEYS = ("title", "description", "uses", "stated_by", "applies_to", "kind")
+#: What a note keeps (its optional front-matter ``kind``): a stated preference or rule, a caution, or a lesson (what was
+#: tried, corrected or came out). A note with no kind is shown as a note (:mod:`.standing_notes`).
+NOTE_KINDS = ("preference", "rule", "caution", "lesson")
 #: A note's scope keys, optional: who stated what it keeps (a person or a role, when someone did) and what it applies
 #: to. Shown wherever the note is served (:func:`note_scope`).
 SCOPE_KEYS = ("applies_to", "stated_by")
@@ -215,6 +218,7 @@ class NoteMeta:
     body: str
     stated_by: str = ""
     applies_to: str = ""
+    kind: str = ""
 
 
 def _scalar(raw: str) -> str:
@@ -227,7 +231,7 @@ def _scalar(raw: str) -> str:
 def parse_front_matter(text: str) -> NoteMeta:
     """A note's front matter, strictly. The file starts with a ``---`` line. Then come ``title:``
     and ``description:``, and optionally ``uses: [<item>, ...]``, ``stated_by:`` and ``applies_to:`` (its scope:
-    :data:`SCOPE_KEYS`), one line each, each key once and no other key. A closing ``---`` line ends it. Raises
+    :data:`SCOPE_KEYS`) and ``kind:`` (one of :data:`NOTE_KINDS`), one line each, each key once and no other key. A closing ``---`` line ends it. Raises
     :class:`FrontMatterError` naming what is wrong.
     """
     lines = text.split("\n")
@@ -265,6 +269,9 @@ def parse_front_matter(text: str) -> NoteMeta:
         uses = [_scalar(t) for t in inner.split(",")] if inner else []
         if any(not u for u in uses):
             raise FrontMatterError("uses holds an empty entry")
+    kind = _scalar(seen.get("kind", "")).lower()
+    if kind and kind not in NOTE_KINDS:
+        raise FrontMatterError(f"kind is one of {', '.join(NOTE_KINDS)}, or left out")
     return NoteMeta(
         _scalar(seen["title"]),
         _scalar(seen["description"]),
@@ -272,6 +279,7 @@ def parse_front_matter(text: str) -> NoteMeta:
         "\n".join(lines[end + 1 :]),
         stated_by=_scalar(seen.get("stated_by", "")),
         applies_to=_scalar(seen.get("applies_to", "")),
+        kind=kind,
     )
 
 
@@ -320,6 +328,8 @@ class Note:
     error: str = ""  # why its front matter could not be read ("" when it was)
     stated_by: str = ""
     applies_to: str = ""
+    #: what it keeps (:data:`NOTE_KINDS`); '' when its front matter gives none (shown as a note)
+    kind: str = ""
 
     @property
     def scope(self) -> str:
@@ -440,7 +450,15 @@ def discover(tree: Path) -> Library:
             lib.errors.append(f"{rel}: {exc}"[:300])
             continue
         lib.notes.append(
-            Note(rel, meta.title, meta.description, meta.uses, stated_by=meta.stated_by, applies_to=meta.applies_to)
+            Note(
+                rel,
+                meta.title,
+                meta.description,
+                meta.uses,
+                stated_by=meta.stated_by,
+                applies_to=meta.applies_to,
+                kind=meta.kind,
+            )
         )
     lib.packages = dict(sorted(lib.packages.items()))
     return lib

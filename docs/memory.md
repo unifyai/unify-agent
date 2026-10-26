@@ -54,7 +54,8 @@ Memory lets later requests use what earlier ones learned. One setting controls i
 
    The library, `<UNIFY_HOME>/memory`, is a git repository of **functions** (`memory/<package>/<module>.py`, each with
    its tests) and **notes** (`notes/<topic>/<slug>.md`). A note needs no capture behind it. Its front matter may
-   carry its scope: `applies_to` (what it holds for) and `stated_by` (who stated it, by name or role), shown wherever
+   carry its kind (`kind`: `preference`, `rule`, `caution` or `lesson`; optional) and its scope: `applies_to` (what
+   it holds for) and `stated_by` (who stated it, by name or role), shown wherever
    the note is served (`memory.get`, `memory.items()`, the index and search). Notes and functions link both ways when
    they are related: a note lists the functions it uses in its `uses:` front matter, and a function's docstring names
    its notes on a `Notes:` line; a note that is about no function stands on its own.
