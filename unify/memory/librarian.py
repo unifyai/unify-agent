@@ -397,10 +397,13 @@ def sent_to_librarian(
 
 
 def failed_line(failed: list[str]) -> str:
-    """The line of a question that names the items whose call failed in the agent's current request."""
+    """The line of a question that names the items that failed in the agent's current request: a call that failed, or
+    a use the environment's verdict then said failed."""
     return (
-        "Tried and failed in this request (the agent called each and the call failed; never offer one of them again "
-        "in this request, name it as nearest if it is): " + ", ".join(failed) + "."
+        "Tried and failed in this request (the agent used each and the call failed, or the environment's verdict after "
+        "the use said the work failed; never offer one of them again in this request, name it as nearest if it is): "
+        + ", ".join(failed)
+        + "."
     )
 
 

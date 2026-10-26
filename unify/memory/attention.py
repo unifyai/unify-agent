@@ -1743,7 +1743,8 @@ def export_material(
     entries: id, kind, refs, and each part of the material that must be read, as box paths) and, per entry,
     ``<id>/entry.json`` beside the material the harness holds for it outside the episode records: ``use.json`` (the
     failed use), ``signal.json`` (the late signal) and ``note.json`` (a deferral's note or the gate's refusal). Ids and
-    harness facts only, apart from a deferral's own reason text. Returns the index document."""
+    harness facts only, apart from a deferral's own reason text and a signal's verdict text as the environment showed
+    it to the actor (when its checker line carried one). Returns the index document."""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -2111,8 +2112,13 @@ class HomeSources:
         return out
 
     def signal_rows(self, ids: Iterable[str]) -> list[dict]:
+        from .integration.outcomes import signal_texts
+
         want = set(ids)
         ev = self.stores().evidence
+        # the verdict's own text, when its checker line carried it: what the later outcome said (never read for a
+        # verdict; the label is the verdict)
+        texts = signal_texts(self.state_dir, want)
         out = []
         for (eid,) in ev.db.execute("SELECT DISTINCT episode_id FROM signals"):
             for s in ev.signals_for(eid):
@@ -2122,6 +2128,7 @@ class HomeSources:
                         "ts": s.ts, "refers_to": s.refers_to,
                         "arrived_at": getattr(s, "arrived_at", None), "timing": getattr(s, "timing", None),
                         "about": getattr(s, "about", None),
+                        **({"text": texts[s.signal_id]} if s.signal_id in texts else {}),
                     })  # fmt: skip
         return out
 

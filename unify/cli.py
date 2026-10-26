@@ -461,7 +461,9 @@ class Act:
     def _post_checker(self, raw: object, **where: object) -> None:
         """Hand a ``{"checker": ...}`` line to the memory run and answer it (a verdict the
         world showed the actor, kept as an agent-visible checker signal). Without a memory run it is refused.
-        *where*: the line's ``episode`` and ``about`` (a run with memory).
+        The verdict is typed: ``{"label": "pass"|"fail"}``, optionally with ``"text"``, the verdict's text exactly as
+        the world showed it to the actor (kept for the writer; never read for a verdict). *where*: the line's
+        ``episode`` and ``about`` (a run with memory).
         """
         if self._mv2 is None:
             answer = {

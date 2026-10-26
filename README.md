@@ -149,7 +149,7 @@ Lines your program writes to its stdin:
 | `{"cancel": true}` | Ends the running turn at once and keeps the session. |
 | `{"quit": true}` | Ends the session. |
 | `{"outcome": {"solved": true, ...}}` | Your verdict on the work, so memory learns what worked. The full form is in `unify/outcome.py`. |
-| `{"checker": {"label": "pass"}}` | With memory on: a verdict the environment showed the actor during the request, `"pass"` or `"fail"`. It may also carry `about` (an action or item) and `episode` (an earlier episode's id). |
+| `{"checker": {"label": "pass"}}` | With memory on: a verdict the environment showed the actor during the request, `"pass"` or `"fail"`, optionally with `"text"`: the verdict's text exactly as the actor was shown it, kept for the writer (the label is the verdict). It may also carry `about` (an action or item) and `episode` (an earlier episode's id). A `"fail"` within the request counts as a failed use of every item the request used before it, so `memory.ask` does not offer those again in it; one naming an earlier episode is late evidence on that episode and the items it used. |
 
 Lines it writes to stdout, each with a `type`:
 
