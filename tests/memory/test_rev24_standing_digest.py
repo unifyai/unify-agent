@@ -1,7 +1,7 @@
 """Rev 2.4 (P2, R6): the standing-note digest at every request start, and use counts on every card.
 
-The digest lists the library's preference, rule and caution notes (and notes written before the ``kind`` field, as
-``note``), with what each applies to and who stated it when its front matter says so; lessons, retired and withdrawn
+The digest lists the library's preference, rule and caution notes and no others (a note written before the ``kind``
+field is left out), with what each applies to and who stated it when its front matter says so; lessons, retired and withdrawn
 notes are left out. No fit judgement: it is shown whatever the request. It is ordered by status, then trust (positive
 less negative uses), then recency (the export's ``changed_order``), and held to a display limit; every note stays
 reachable through ``memory.items(kind='note')`` and ``memory.get``. A persistent session re-sends it only when it
@@ -135,14 +135,16 @@ def test_the_digest_shows_standing_notes_with_scope_and_owner_in_trust_then_rece
         "(applies to: every change above the limit; stated by: the team lead)",
         "- notes/team/report-format.md: [preference, on-trial] Report format: Reports are tab-separated. "
         "(applies to: reports for the requester; stated by: the requester)",
-        # a note written before the kind field: shown, with no scope or owner
-        "- notes/text/dates.md: [note, on-trial] Dates: How dates are written.",
         # trust below the others: one negative use
         "- notes/team/retry.md: [caution, on-trial] Retries: Retrying a refused change repeats the refusal.",
-        "Showing 4 of 4 standing notes. " + standing_notes.DIGEST_REACH,
+        "Showing 3 of 3 standing notes. " + standing_notes.DIGEST_REACH,
     ]
-    # a lesson and a retired note are not standing notes
-    assert "notes/team/tried.md" not in text and "notes/team/old.md" not in text
+    # a lesson, a retired note and a note with no kind are not standing notes
+    for left_out in ("notes/team/tried.md", "notes/team/old.md", "notes/text/dates.md"):
+        assert left_out not in text
+    # the note with no kind stays reachable through the package
+    got = _cell(tree, "print(json.dumps({'ids': [i.id for i in memory.items(kind='note')]}))\n")
+    assert "notes/text/dates.md" in got["ids"]
 
 
 def test_recency_orders_notes_of_equal_status_and_trust(tmp_path):
@@ -152,7 +154,6 @@ def test_recency_orders_notes_of_equal_status_and_trust(tmp_path):
         "notes/team/approvals.md",
         "notes/team/retry.md",
         "notes/team/report-format.md",
-        "notes/text/dates.md",
     ]
 
 
@@ -177,8 +178,8 @@ def test_the_display_limit_never_hides_a_note_from_memory(tmp_path):
             head.startswith("- notes/rules/r")
             and len(rest) <= standing_notes.ENTRY_CHARS
         )
-    # the twelve rules and the fixture library's note written before the kind field
-    assert lines[-1] == "Showing 8 of 13 standing notes. " + standing_notes.DIGEST_REACH
+    # the twelve rules (the fixture library's note written before the kind field is not a standing note)
+    assert lines[-1] == "Showing 8 of 12 standing notes. " + standing_notes.DIGEST_REACH
     # a display limit only: the package lists and opens every note, the ones the digest does not show too
     got = _cell(
         tree,

@@ -7,8 +7,9 @@ its title and description, what it applies to (``applies_to``) and who stated it
 says so.
 
 **Which notes.** A note whose front matter's ``kind`` is ``preference``, ``rule`` or ``caution``
-(:data:`STANDING_KINDS`). A note with no ``kind`` (one written before the field existed) is shown too, as a ``note``;
-any other kind (``lesson``, the writer's record of what was tried) is not. Retired and withdrawn notes are not.
+(:data:`STANDING_KINDS`) and no other: a note with no ``kind`` (one written before the field existed) and a ``lesson``
+(the writer's record of what was tried) are not shown, and neither are retired and withdrawn notes. Every note stays
+reachable through ``memory.items`` and ``memory.get``, as the digest's last line says.
 
 **Order.** By status (``adopted`` first, then ``on-trial``), then trust (the note's positive uses less its negative
 ones, :mod:`.serving`'s counts), then recency (the newest change first, the export's ``changed_order``), then id.
@@ -34,10 +35,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-#: The note kinds the digest shows (beside notes with no kind).
+#: The note kinds the digest shows, and the only ones.
 STANDING_KINDS = ("preference", "rule", "caution")
-#: How a note with no ``kind`` is named in the digest.
-UNKINDED = "note"
 #: The display limit: entries shown, and characters of each entry after its id.
 DIGEST_ENTRIES = 8
 ENTRY_CHARS = 200
@@ -138,8 +137,8 @@ def standing_notes(copy: Path | str) -> list[dict]:
             text = ""
         front = front_fields(text)
         kind = front.get(KIND, "").lower()
-        if kind and kind not in STANDING_KINDS:
-            continue  # a lesson, or a kind the digest does not show
+        if kind not in STANDING_KINDS:
+            continue  # a lesson, a note with no kind, or a kind the digest does not show
         counts = (
             (evidence.get(iid) or {}).get("counts")
             if isinstance(evidence.get(iid), dict)
@@ -150,7 +149,7 @@ def standing_notes(copy: Path | str) -> list[dict]:
         out.append(
             {
                 "id": iid,
-                "kind": kind or UNKINDED,
+                "kind": kind,
                 "status": status,
                 "title": str(row.get("title") or front.get("title") or ""),
                 "description": str(

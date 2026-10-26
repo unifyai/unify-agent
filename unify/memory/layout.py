@@ -57,7 +57,7 @@ _TEST_FILE = re.compile(r"^test_[A-Za-z0-9_]*\.py\Z")
 _NOTES_LINE = re.compile(r"^[ \t]*Notes:[ \t]*(.*)$", re.M)
 FRONT_KEYS = ("title", "description", "uses", "stated_by", "applies_to", "kind")
 #: What a note keeps (its optional front-matter ``kind``): a stated preference or rule, a caution, or a lesson (what was
-#: tried, corrected or came out). A note with no kind is shown as a note (:mod:`.standing_notes`).
+#: tried, corrected or came out). Only the first three are in the standing-note digest (:mod:`.standing_notes`).
 NOTE_KINDS = ("preference", "rule", "caution", "lesson")
 #: A note's scope keys, optional: who stated what it keeps (a person or a role, when someone did) and what it applies
 #: to. Shown wherever the note is served (:func:`note_scope`).
