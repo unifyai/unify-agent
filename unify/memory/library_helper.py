@@ -1322,6 +1322,18 @@ def _one_line(text: Any) -> str:
     return ""
 
 
+def _note_summary(row: dict) -> str:
+    """A note's one line: its description (or title), then its scope when its front matter gives one: ``(applies to:
+    <scope>; stated by: <who>)``, as the library's index shows it (``layout.note_scope``)."""
+    about = _one_line(row.get("description")) or _one_line(row.get("title"))
+    scope = "; ".join(
+        f"{label}: {_one_line(row.get(key))}"
+        for key, label in (("applies_to", "applies to"), ("stated_by", "stated by"))
+        if _one_line(row.get(key))
+    )
+    return f"{about} ({scope})" if scope else about
+
+
 def _cut(text: str, size: int = _SUMMARY_CHARS) -> str:
     return text if len(text) <= size else text[: size - 1] + "…"
 
@@ -2196,7 +2208,7 @@ class _Catalog:
         built = Item(
             id=iid,
             kind="note",
-            summary=_one_line(row.get("description")) or _one_line(row.get("title")),
+            summary=_note_summary(row),
             applies="",
             evidence="unchecked",
             status=status if status in _STATUSES else _NEW_ITEM_STATUS,
