@@ -502,4 +502,3 @@ def first_message(att: AttentionPass, req: Any, wall: str) -> str:
         "What each owes a read is in /inputs/attention/index.json; decide each with tools.decide.\n"
         f"Wall clock for this pass: {wall} s.\n"
     )
-

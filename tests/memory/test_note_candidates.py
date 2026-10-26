@@ -179,4 +179,3 @@ def test_a_message_with_nothing_of_its_own_makes_no_pass_and_goes_along_with_the
              and r.get("by") == "with_pass"}  # fmt: skip
     assert along == {quiet.entry, made[6].entry}
     assert at.carries_content(_post(7, "fork", refs=["e1/action:3"])) is False  # its own episode's parts: its entry's
-
