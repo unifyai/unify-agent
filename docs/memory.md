@@ -121,7 +121,8 @@ waiting.
 ## `UNIFY_MEMORY=off`
 
 No memory home, no fork, no writer and no memory tools. Every request runs as if nothing had come before it. This is
-the baseline that `on` is measured against.
+the baseline that `on` is measured against. [memory-off.md](memory-off.md) describes it in full: what runs, what is
+switched off and where, and what the actor reads differently.
 
 ## Where to look
 

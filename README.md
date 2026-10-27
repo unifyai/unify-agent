@@ -118,7 +118,8 @@ Packages a program needs are installed into one shared environment under
    another (`@writer`, `@librarian`), so a question reaches the agent that
    can answer it.
 
-[`docs/memory.md`](docs/memory.md) explains the memory in full.
+[`docs/memory.md`](docs/memory.md) explains the memory in full, and
+[`docs/memory-off.md`](docs/memory-off.md) the harness with memory off.
 
 ## Configuration
 

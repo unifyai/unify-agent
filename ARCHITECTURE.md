@@ -166,4 +166,4 @@ credential values are replaced before a line is written. The log files go to `UN
 read-only copy of the library (functions and linked notes, with their generated `INDEX.md` and `links.json`) and the
 captures served beside it. After the request a fork of the actor writes down what it did, and the detached writer
 service turns that into tested library items in passes it runs in a confined box; a gate checks every change before
-it lands. `docs/memory.md` walks through it.
+it lands. `docs/memory.md` walks through it; `docs/memory-off.md` describes the harness with memory off.
