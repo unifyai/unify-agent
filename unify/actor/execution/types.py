@@ -6,7 +6,6 @@ ExecutionResult for LLM-formatted execution results, and helper converters.
 
 from __future__ import annotations
 
-import base64
 from typing import (
     Annotated,
     Any,
@@ -34,8 +33,8 @@ def compact_diagnostic_text(
 ) -> str:
     """Summarize dense PHASE/SKIP/SOFT_FAIL trails for live LLM observations.
 
-    Full text remains on the ExecutionResult / EventBus payload; this only
-    shapes what ``to_llm_content`` shows the live CodeAct loop.
+    The ``ExecutionResult`` keeps the full text; this only shapes what
+    ``to_llm_content`` shows the model.
     """
 
     if not text or not text.strip():
@@ -52,7 +51,7 @@ def compact_diagnostic_text(
     summary = (
         f"[{len(diagnostic)} diagnostic log lines compacted for live context: "
         f"PHASE={phase_n} SKIP={skip_n} SOFT_FAIL={soft_n}; "
-        f"full trail retained in EventBus/Job logs]"
+        f"earlier diagnostic lines omitted]"
     )
     keep_tail = diagnostic[-min(3, len(diagnostic)) :]
     kept_other = other[:max_keep_lines]
@@ -91,22 +90,6 @@ class ImagePart(BaseModel):
 
 # Discriminated union - Pydantic auto-parses based on `type` field
 OutputPart = Annotated[Union[TextPart, ImagePart], Field(discriminator="type")]
-
-
-def _detect_image_mime_from_b64(b64_str: str) -> str:
-    """Detect an image MIME type by inspecting decoded header bytes.
-
-    Returns "image/jpeg" for JPEG, "image/png" for PNG, or "image/png" as fallback.
-    """
-    try:
-        raw = base64.b64decode(b64_str[:32])
-        if raw[:2] == b"\xff\xd8":
-            return "image/jpeg"
-        if raw[:8] == b"\x89PNG\r\n\x1a\n":
-            return "image/png"
-    except Exception:
-        pass
-    return "image/png"
 
 
 def parts_to_text(parts: List[Union[TextPart, ImagePart]]) -> str:
@@ -161,15 +144,7 @@ class ExecutionResult(BaseModel):
     stderr: List[Union[TextPart, ImagePart]] = Field(default_factory=list)
     result: Any = None
     error: Optional[str] = None
-    state_mode: Optional[str] = None
-    session_id: Optional[int] = None
-    session_name: Optional[str] = None
-    session_created: Optional[bool] = None
     duration_ms: Optional[int] = None
-    #: Where the block got to when something steered it mid-flight. Set only
-    #: when an interjection actually reached this execution, so an ordinary
-    #: run carries no extra weight in the transcript.
-    steering: Optional[Dict[str, Any]] = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -187,18 +162,8 @@ class ExecutionResult(BaseModel):
             meta["result"] = self.result
         if self.error is not None:
             meta["error"] = self.error
-        if self.state_mode is not None:
-            meta["state_mode"] = self.state_mode
-        if self.session_id is not None:
-            meta["session_id"] = self.session_id
-        if self.session_name is not None:
-            meta["session_name"] = self.session_name
-        if self.session_created is not None:
-            meta["session_created"] = self.session_created
         if self.duration_ms is not None:
             meta["duration_ms"] = self.duration_ms
-        if self.steering is not None:
-            meta["steering"] = self.steering
 
         # Add metadata block if present
         if meta:
@@ -220,7 +185,7 @@ class ExecutionResult(BaseModel):
 
         # Add stderr with preserved ordering (if non-empty). Compact dense
         # PHASE/SKIP/SOFT_FAIL trails for the live LLM observation; the raw
-        # ``stderr`` field on this object is unchanged for EventBus/Job capture.
+        # ``stderr`` field on this object is unchanged.
         if self.stderr:
             has_content = any(
                 (isinstance(p, TextPart) and p.text.strip()) or isinstance(p, ImagePart)

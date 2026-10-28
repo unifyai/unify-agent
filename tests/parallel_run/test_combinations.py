@@ -10,12 +10,6 @@ flag combinations work correctly with blocking behavior.
 Flag combinations tested:
 - default per-test mode
 - --serial + --match
-- --serial + --eval-only
-- --serial + --symbolic-only
-- --match + --eval-only
-- --match + --symbolic-only
-- --eval-only + --repeat
-- --symbolic-only + --repeat
 - Triple combinations (--timeout, --match, --env, etc.)
 """
 
@@ -63,25 +57,6 @@ class TestBlockingWithOtherFlags:
 
         assert result.exit_code == 0
 
-    def test_with_eval_only(self, runner, fixtures_dir):
-        """Script with --eval-only should block for eval tests only."""
-        result = runner.run(
-            "--eval-only",
-            fixtures_dir,
-        )
-
-        # Should succeed if eval tests pass
-        assert result.exit_code == 0
-
-    def test_with_symbolic_only(self, runner):
-        """Script with --symbolic-only should block for symbolic tests."""
-        result = runner.run(
-            "--symbolic-only",
-            runner.fixture_path("test_symbolic_only.py"),
-        )
-
-        assert result.exit_code == 0
-
     def test_with_repeat(self, runner):
         """Script with --repeat should block for all repeated runs."""
         result = runner.run(
@@ -110,29 +85,6 @@ class TestDefaultModeWithOtherFlags:
             len(result.sessions_created) == 3
         ), f"Expected 3 sessions, got {len(result.sessions_created)}"
 
-    def test_default_with_eval_only(self, runner, fixtures_dir):
-        """Default mode with --eval-only should only run eval test functions."""
-        result = runner.run(
-            "--eval-only",
-            fixtures_dir,
-            wait_for_completion=True,
-        )
-
-        # Should only have eval test functions
-        # test_eval_marked.py has 2 eval tests
-        assert len(result.sessions_created) == 2
-
-    def test_default_with_symbolic_only(self, runner, fixtures_dir):
-        """Default mode with --symbolic-only should exclude eval tests."""
-        result = runner.run(
-            "--symbolic-only",
-            runner.fixture_path("test_symbolic_only.py"),
-            wait_for_completion=True,
-        )
-
-        # test_symbolic_only.py has 2 tests
-        assert len(result.sessions_created) == 2
-
     def test_default_with_repeat(self, runner):
         """Default mode with --repeat should multiply correctly."""
         result = runner.run(
@@ -157,66 +109,6 @@ class TestDefaultModeWithOtherFlags:
         )
 
         assert len(result.sessions_created) == 3
-
-
-class TestMatchWithOtherFlags:
-    """Tests combining --match with other flags."""
-
-    def test_match_with_eval_only(self, runner, fixtures_dir):
-        """--match with --eval-only should apply both filters."""
-        result = runner.run(
-            "--match",
-            "*eval*",
-            "--eval-only",
-            fixtures_dir,
-            wait_for_completion=True,
-        )
-
-        # Should only find test_eval_marked.py (2 eval tests) with eval mark
-        assert len(result.sessions_created) == 2
-
-    def test_match_with_symbolic_only(self, runner, fixtures_dir):
-        """--match with --symbolic-only should apply both filters."""
-        result = runner.run(
-            "--match",
-            "*symbolic*",
-            "--symbolic-only",
-            fixtures_dir,
-            wait_for_completion=True,
-        )
-
-        # Should find test_symbolic_only.py (2 tests, default per-test mode)
-        assert len(result.sessions_created) == 2
-
-
-class TestRepeatCombinations:
-    """Tests combining --repeat with other flags."""
-
-    def test_repeat_with_eval_only(self, runner, fixtures_dir):
-        """--repeat with --eval-only should repeat only eval tests."""
-        result = runner.run(
-            "--repeat",
-            "2",
-            "--eval-only",
-            fixtures_dir,
-            wait_for_completion=True,
-        )
-
-        # test_eval_marked.py has 2 eval tests, repeated 2 times = 4 sessions
-        assert len(result.sessions_created) == 4
-
-    def test_repeat_with_symbolic_only(self, runner):
-        """--repeat with --symbolic-only should repeat symbolic tests."""
-        result = runner.run(
-            "--repeat",
-            "2",
-            "--symbolic-only",
-            runner.fixture_path("test_symbolic_only.py"),
-            wait_for_completion=True,
-        )
-
-        # 2 tests * 2 repeats = 4 sessions (default per-test mode)
-        assert len(result.sessions_created) == 4
 
 
 class TestTripleCombinations:
@@ -244,26 +136,6 @@ class TestTripleCombinations:
         # 1 test * 2 repeats = 2 sessions, all should pass
         assert result.exit_code == 0
 
-    def test_eval_only_combo(self, runner):
-        """--eval-only should work with blocking."""
-        # Use specific file instead of whole directory to avoid slow collection
-        result = runner.run(
-            "--eval-only",
-            runner.fixture_path("test_eval_marked.py"),
-        )
-
-        # Should block for eval tests and return success
-        assert result.exit_code == 0
-
-    def test_symbolic_only_combo(self, runner):
-        """--symbolic-only should work with blocking."""
-        result = runner.run(
-            "--symbolic-only",
-            runner.fixture_path("test_symbolic_only.py"),
-        )
-
-        assert result.exit_code == 0
-
     def test_env_combo(self, runner):
         """--env should work with blocking."""
         result = runner.run(
@@ -273,18 +145,6 @@ class TestTripleCombinations:
         )
 
         assert result.exit_code == 0
-
-    def test_match_eval_only(self, runner, fixtures_dir):
-        """--match + --eval-only should all work together."""
-        result = runner.run(
-            "--match",
-            "*eval*",
-            "--eval-only",
-            fixtures_dir,
-        )
-
-        # test_eval_marked.py has 2 tests
-        assert len(result.sessions_created) == 2
 
     def test_repeat_env(self, runner):
         """--repeat + --env should all work together."""
@@ -313,17 +173,6 @@ class TestQuadrupleCombinations:
         )
 
         # test_single_test.py has 1 test, repeated 2 times
-        assert result.exit_code == 0
-
-    def test_symbolic_only_env(self, runner):
-        """--symbolic-only + --env should work together."""
-        result = runner.run(
-            "--symbolic-only",
-            "--env",
-            "QUAD_VAR=value",
-            runner.fixture_path("test_symbolic_only.py"),
-        )
-
         assert result.exit_code == 0
 
 

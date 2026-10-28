@@ -2,7 +2,7 @@
 Tests for ProductionSettings LLM provider validation.
 
 Verifies that unify.init() hard-fails when unillm resolved no key that serves
-an LLM call and UNIFY_VALIDATE_LLM_PROVIDERS is enabled (the default).
+an LLM call.
 """
 
 import pytest
@@ -34,17 +34,30 @@ def resolved_keys(monkeypatch, tmp_path):
 class TestLLMProviderValidation:
     """Tests for validate_llm_providers method."""
 
-    def test_default_model_is_gpt_5_6_sol(self):
+    def test_default_model_is_gpt_5_6_writer(self):
         """UNIFY_MODEL defaults to the primary production reasoning model."""
         field_info = ProductionSettings.model_fields["UNIFY_MODEL"]
         assert field_info.default == "openai/gpt-5.6-sol@openrouter"
         effort = ProductionSettings.model_fields["UNIFY_REASONING_EFFORT"]
         assert effort.default == "high"
 
+    def test_reasoning_effort_is_one_unillm_forwards(self):
+        """A misspelt effort fails at load, not as a provider error mid-run."""
+        for value in ("", "none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            settings = ProductionSettings(UNIFY_REASONING_EFFORT=value)
+            assert settings.UNIFY_REASONING_EFFORT == value
+        assert (
+            ProductionSettings(UNIFY_REASONING_EFFORT=" Medium ").UNIFY_REASONING_EFFORT
+            == "medium"
+        )
+        for value in ("med", "hgih", "default", "2"):
+            with pytest.raises(ValueError, match="UNIFY_REASONING_EFFORT"):
+                ProductionSettings(UNIFY_REASONING_EFFORT=value)
+
     def test_validation_fails_when_no_credential_resolved(self, resolved_keys):
         """Validation raises RuntimeError when unillm resolved no key."""
         resolved_keys()
-        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=True)
+        settings = ProductionSettings()
         with pytest.raises(RuntimeError) as exc_info:
             settings.validate_llm_providers()
 
@@ -57,7 +70,7 @@ class TestLLMProviderValidation:
     ):
         """An OpenRouter key serves the default model and every non-Anthropic one."""
         resolved_keys(OPENROUTER_API_KEY="sk-or-test")
-        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=True)
+        settings = ProductionSettings()
         settings.validate_llm_providers()
 
     def test_validation_passes_when_anthropic_credential_resolved(
@@ -66,7 +79,7 @@ class TestLLMProviderValidation:
     ):
         """An Anthropic key serves the Anthropic models, which unillm calls directly."""
         resolved_keys(ANTHROPIC_API_KEY="sk-ant-test")
-        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=True)
+        settings = ProductionSettings()
         settings.validate_llm_providers()
 
     def test_validation_rejects_keys_no_call_uses(self, resolved_keys):
@@ -75,19 +88,6 @@ class TestLLMProviderValidation:
             OPENROUTER_MANAGEMENT_API_KEY="sk-test",
             TOGETHER_API_KEY="sk-test",
         )
-        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=True)
+        settings = ProductionSettings()
         with pytest.raises(RuntimeError):
             settings.validate_llm_providers()
-
-    def test_validation_skipped_when_disabled(self, resolved_keys):
-        """Validation is skipped when UNIFY_VALIDATE_LLM_PROVIDERS=False."""
-        resolved_keys()
-        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=False)
-        # Should not raise even with no key resolved
-        settings.validate_llm_providers()
-
-    def test_validation_enabled_by_default(self):
-        """UNIFY_VALIDATE_LLM_PROVIDERS defaults to True in code."""
-        # Verify the class-level default is True (env vars may override at runtime)
-        field_info = ProductionSettings.model_fields["UNIFY_VALIDATE_LLM_PROVIDERS"]
-        assert field_info.default is True

@@ -1,0 +1,49 @@
+# Reviewed spans the role prompts show that do not parse as Python (paths, item ids, labels, placeholders).
+# One <role><TAB><span> per line; other lines are ignored. Regenerate from the test's own listing when a prompt changes.
+actor	/memory-library
+actor	/workspace
+actor	await
+actor	risky: bool
+actor	schema=
+actor	steps: list[str]
+helper	<episode>/<part>
+helper	candidates/<name>.py
+helper	cases/<name>.json
+teammate	/memory-library
+teammate	/workspace
+teammate	await
+teammate	risky: bool
+teammate	schema=
+teammate	steps: list[str]
+writer	"form": "checklist"
+writer	"reopened": {"<id>": "<reason>"}
+writer	Args:
+writer	Example request:
+writer	Example:
+writer	Input:
+writer	Not for:
+writer	Notes:
+writer	Raises:
+writer	Recognise:
+writer	Returns:
+writer	Saved for:
+writer	When to use
+writer	When to use:
+writer	[shared:<id>]
+writer	candidates/<name>.py
+writer	cases/<name>.json
+writer	memory.<package>.<module>:<name>
+writer	memory/
+writer	memory/<package>/
+writer	memory/<package>/<module>.py
+writer	memory/<package>/tests/data/
+writer	memory/<package>/tests/data/<module>.<function>.inputs.jsonl
+writer	memory/<package>/tests/test_<module>.py
+writer	memory/<package>/tests/test_<module>.py::test_<case>
+writer	notes/
+writer	notes/<name>.md
+writer	notes/<topic>/
+writer	notes/<topic>/<slug>.md
+writer	pool:<id>
+writer	staging:<episode>/candidates/<name>.py
+writer	tests/

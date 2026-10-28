@@ -1,44 +1,65 @@
 <!--
     GENERATED FILE - DO NOT EDIT DIRECTLY.
 
-    Regenerate with:  python3 .agents/global-rules/build_agents_md.py
+    Regenerate from the repo's root with build_agents_md.py from
+    unifyai/global-agent-rules: python3 ../global-agent-rules/build_agents_md.py
+    where it is a clone beside the repo, or
+    python3 .agents/global-rules/build_agents_md.py where it is a submodule.
 
     Edit the sources instead:
-      .agents/repo.md              this repo's overview and always-on guidance
-      .agents/rules/*.md           this repo's own rules
-      .agents/shared.txt           which shared rules this repo includes
-      .agents/global-rules/rules/  rules shared across all unifyai repos
-                                   (submodule: unifyai/global-agent-rules)
+      .agents/repo.md       this repo's overview and always-on guidance
+      .agents/rules/*.md    this repo's own rules
+      .agents/shared.txt    which shared rules this repo includes
+      rules/*.md in unifyai/global-agent-rules, the rules shared across
+      all unifyai repos
 -->
 
 # Unify
 
-The brain of a local AI assistant: a persistent conversation loop above a
-code-writing actor, two skill libraries, and one SQLite store.
+A code-acting agent harness: one actor answers a request by writing Python that runs in a sandbox, and a memory
+turns finished requests into a tested library that later requests read.
 
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first for the system design. This file
-covers *how to work on the code*, not *what the code does*.
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first for the system design, [`docs/memory.md`](docs/memory.md) for the
+memory and [`CONFIG.md`](CONFIG.md) for every setting. This file covers *how to work on the code*, not *what the code
+does*.
 
 ## What Unify is
 
-Unify implements an AI assistant's brain as a persistent **conversation loop** above a code-writing **`Actor`**, with two **skill libraries** behind it: `FunctionManager` (stored Python functions, the *what*) and `GuidanceManager` (procedures, the *how*). The actor discovers skills before it writes code, runs plans in a persistent Python sandbox, and a storage review after each run distils what worked back into the libraries. Manager methods run inside an **async LLM tool loop** and return a **steerable handle** that supports `ask`, `interject`, `pause`, `resume`, `stop` — all the way down the nesting tree. The skill libraries expose direct CRUD methods as Actor JSON tools (`FunctionManager_*`, `GuidanceManager_*`).
-
-Everything persists in one SQLite file, `unify/db.py` (imported as `from unify import db`): five tables (`functions`, `primitives`, `guidance`, `builtin_guidance`, `messages`) and two views (`all_functions`, `all_guidance`) over each catalogue and its seeded rows. Managers write plain SQL; every filter the model writes is a SQL `WHERE` clause run read-only. There is no backend service, no accounts and no infrastructure: the only external dependency is an LLM provider, reached through the sibling `unillm` repo (editable install via `[tool.uv.sources]` in `pyproject.toml`) for chat, and directly through OpenRouter for the embeddings behind skill search (`unify/common/embeddings.py`; `UNIFY_LOCAL_EMBEDDINGS` computes them in process instead).
-
-The assistant is **reactive**: it acts on the messages it receives and on the work those messages start. There is no scheduler, no timer wheel and no inbound channel other than the in-app chat.
+- **`unify act`** (`unify/cli.py`) runs one request, or a session (`--persist`, `--jsonl`), through one
+  **`CodeActActor`** (`unify/actor/`).
+- **Cells.** The actor's only model-API tool is `execute_code(code)`. Each call is one cell in a persistent Python
+  interpreter inside bubblewrap (`unify/common/box_interpreter.py`, `unify/sandbox.py`). Every other tool is a call
+  `tools.<name>(...)` from a cell, served on the host through the tool channel from one registry
+  (`unify/common/tool_registry.py`). An embedding application adds its own `primitives.<name>` namespaces
+  (`unify/function_manager/primitives/`, `unify/actor/environments/`).
+- **The run record** (`unify/agents/`). One append-only record per run that the actor, its teammates, the requester,
+  the librarian and the harness post to. Its own tools are `send`, `messages`, `wait` and `who`, the same for every
+  agent (`unify/agents/run_record_tools.py`).
+- **Memory** (`unify/memory/`). One switch, `UNIFY_MEMORY`: `off` or `on` (the default). With memory
+  on, each request is recorded as an episode, a fork of the actor's conversation captures what it did (a capture is
+  never run), a detached writer service keeps the library under a gate that labels and only refuses for safety, and
+  later requests read the library as the `memory` package and ask the librarian (`memory.ask`).
+- **The lanes and the relay** (`unify/lanes/`). With memory on and `OPENROUTER_API_KEY` set, `unify act` starts a
+  local relay that holds the key and runs the controller as its child. The writer, its helpers, the episode-end fork
+  and embeddings each get their own lane and token under one spend cap, `UNIFY_MEMORY_CAP_USD` (20.00 USD per run by
+  default); memory's processes never hold the key.
+- **State** lives under `UNIFY_HOME` (default `~/.unify`): the workspace, transcripts, the run record, the memory
+  home and the logs (`unify/db.py`'s `store_home`). There is no backend service and no database server; the only
+  external dependency is the model provider, reached through the sibling `unillm` repo.
 
 ## Run the agent locally
 
 ```bash
 uv sync --all-groups
 cp .env.example .env        # add one LLM provider key
-.venv/bin/python -m unify   # chat; `unify` is the same entry point on PATH inside the venv
+.venv/bin/unify act "request"   # `act` is the default; with no request it reads stdin
 ```
 
-- The runtime's home is `UNIFY_HOME` (default `~/.unify`): `store.sqlite`, `embeddings.sqlite` (a cache of the vectors skill search compares, safe to delete), `workspace/` (the actor's working directory, attachments and downloads) and `logs/`.
 - `unify --debug` streams runtime logs to the terminal as well as the log files; `unify --home DIR` uses another home.
-- The chat CLI lives in `unify/cli.py`. It publishes `UnifyMessageReceived` events on the in-memory event broker and renders the `UnifyMessageSent` replies, so it is one front end over the same loop any client can drive.
-- `unify act "request"` bypasses the conversation loop: one `CodeActActor` takes the request, progress streams to stderr from the handle's notification queue, a question the actor asks is answered from the terminal through `next_clarification`/`answer_clarification`, and the result goes to stdout (`--json` adds token accounting, `--persist` keeps the sandbox for follow-ups, `--no-store` skips the storage review). Use it for like-for-like comparisons with single-loop harnesses and for benchmark runners.
+- `unify act` options: `--json` (the result as a JSON object, with token accounting), `--jsonl` (newline-delimited
+  JSON on stdin and stdout, for a driving program), `--persist` (further lines are follow-ups), `--no-clarify`
+  (unattended: questions get no reply), `--timeout SECONDS` and `--quiet`. Memory has no command-line flag; it is
+  `UNIFY_MEMORY`.
 
 ## Development environment
 
@@ -54,29 +75,31 @@ pip install uv && uv sync --all-groups
 
 ### Running tests
 
-Tests run in tmux sessions, each test in its own session against its own SQLite store, with logs streamed to `logs/pytest/`. The runner blocks until everything completes.
+Tests run in tmux sessions, with logs streamed to `logs/pytest/`. The runner blocks until everything completes.
 
 ```bash
-# Default — one session per test, max concurrency
-tests/parallel_run.sh tests/function_manager/
+# Default: one session per test, max concurrency
+tests/parallel_run.sh tests/actor/
 
 # Specific test
-tests/parallel_run.sh tests/function_manager/storage/test_primitives.py::test_name
+tests/parallel_run.sh tests/test_cli_act.py::test_name
 
 # Serial mode (one session per file) for large suites
 tests/parallel_run.sh -s tests/
 
 # With timeout
-tests/parallel_run.sh --timeout 300 tests/function_manager/
+tests/parallel_run.sh --timeout 300 tests/memory/
 ```
 
-Each agent (or terminal) gets an **isolated tmux server automatically**, so concurrent agents don't collide.
+Each agent (or terminal) gets an **isolated tmux server automatically**, so concurrent agents don't collide. Every
+pytest process runs inside bubblewrap, so the tests need it too.
 
 ### When a test fails
 
 1. **Never inspect tmux panes directly.** Read the corresponding log in `logs/pytest/<YYYY-MM-DDTHH-MM-SS_socket>/`.
-2. **Use `Read` (not `cat`/`tail`)** — `logs/` is gitignored, so `Grep`/`Glob` won't find files there.
-3. **Add temporary debug logs via `CURSOR_DEBUG_LOG`** — the only permitted logging mechanism for debugging. Grep for it (`rg CURSOR_DEBUG_LOG`) to find the project's util, then import and use it. Remove all calls before finalizing the fix.
+2. **Use `Read` (not `cat`/`tail`)**: `logs/` is gitignored, so `Grep`/`Glob` won't find files there.
+3. **Temporary debug logging** follows the shared temporary-debug-logging rule below; remove every call before
+   finalizing the fix.
 4. **Clean up failed sessions** with `tests/kill_failed.sh` (or `tests/kill_server.sh` for everything).
 
 ### Pre-commit
@@ -95,54 +118,48 @@ pre-commit run --all-files
 
 ## Testing philosophy
 
-We **never** mock the LLM client. All tests use real LLM calls via `unillm.AsyncUnify`, with responses cached per unique input (`UNILLM_CACHE=true`, the default). First run is slow; subsequent runs replay from cache in milliseconds.
+**Tests always use stubbed models and never reach a real provider.** No test needs a real provider key; every model
+call in a test is a stubbed one. `tests/conftest.py` enforces it in every test: unillm's provider calls raise, a socket may connect only to this machine, and the markers that once
+let a test reach a provider (`live_provider`, `requires_provider_key`) fail the test that carries them. No test needs a
+key; with none set, the root conftest sets a placeholder that is plainly not a secret.
 
-Tests sit on a **spectrum** between two paradigms — there's no binary classification:
-
-- **Symbolic tests** use the LLM as a deterministic stub to exercise infrastructure (async tool loops, steering, state mutations). Failures = regression in programmatic code.
-- **Eval tests** verify end-to-end *capability* ("did the assistant answer correctly?"). Failures may indicate prompt issues, tool design problems, or capability gaps.
-
-**Never rely on sleeps** — use the trigger helpers in `tests/async_helpers.py` for deterministic ordering across cached (ms) and live (sec–min) timing.
-
-### The cache is never the problem
-
-"We just need to update the cache" is **never** a valid conclusion when debugging failures. The cache is a faithful replay mechanism keyed on the exact LLM input. If you change prompts or docstrings, the cache key changes automatically and you get fresh inference. If a cached response causes a failure, an LLM *actually made that decision* given that exact input — that's a prompt issue, not a stale-cache issue. Clearing the cache to "fix" a failing test is a category error.
-
-### Tagging eval tests
-
-```python
-import pytest
-pytestmark = pytest.mark.eval  # whole file
-
-@pytest.mark.eval                # single test
-async def test_natural_language_query(): ...
-```
+- Script the model with `tests/scripted_model.py` (`ScriptedModel`, one script per kind of call: actor, helper,
+  `query_llm`, compaction) or `tests/cache_discipline_helpers.py` (`scripted(...)`). Both replace unillm's transport
+  below its request building, so every request is built exactly as in production.
+- A test fakes embeddings (`unify.common.embeddings.embed`, or the endpoint it posts to); it never posts to a provider.
+- **Never rely on sleeps**: use the trigger helpers in `tests/async_helpers.py` for deterministic ordering.
+- A failing assertion is fixed at its root cause. Never loosen an assertion, skip, xfail, raise a timeout or add a
+  retry to get a pass; security and confinement tests pass as written, or the code gets fixed.
 
 ## No fast paths or heuristics
 
-If a method needs to respond correctly to a class of user input, **always** address this by prompting the model and/or improving tool docstrings. Never apply regex-based or substring-based routing on user commands. The LLM is the router.
+If a component needs to respond correctly to a class of input, address it by prompting the model and/or improving
+tool descriptions. Never apply regex-based or substring-based routing on user requests. The model is the router.
 
-## State manager design
+## Tools and prompts
 
-The public API of each state manager is defined by the abstract methods on `Base{SomeManager}` in `base.py`. These docstrings are the **LLM-facing contract** — they're attached to concrete implementations via `@functools.wraps`.
+Every tool's name, description, parameter schema and refusal texts live in one registry
+(`unify/common/tool_registry.py`), for the actor, its teammates and the memory agents. The box module `tools` is
+generated from it, and `tools.help(name)` reads it.
 
-### Docstring rules
+- **A tool's own guidance lives in its registry description**, never in a prompt builder.
+- **Compositional guidance** (when to use tool A versus B, multi-tool patterns) lives in the prompt builders
+  (`unify/actor/prompt_builders.py`, the memory agents' prompts), never in one tool's description.
+- **Descriptions are implementation-agnostic**: they say what the tool does for the caller, not which module serves
+  it.
 
-- **Implementation-agnostic.** Public docstrings must never reference other managers (cross-references rot) or the manager's own internal tools.
-- **Tool-specific guidance lives in the tool's own docstring** — never in the prompt builder.
-- **Compositional guidance (when to use tool A vs B, multi-tool patterns) lives in the prompt builder** — never in individual tool docstrings.
-
-### Routing playbook (who owns what)
+### Who owns what
 
 | Concern | Owner |
 |---|---|
-| Stored functions (find, run, store) | `FunctionManager_*` JSON tools and `execute_function` |
-| Procedures, how-tos | `GuidanceManager_*` JSON tools |
-| Anything else the request needs | `execute_code` (plain Python in the sandbox) |
-| Parallel or delegated work | `primitives.actor.act` |
-| Live action from chat | `Actor.act` (via ConversationManager) |
+| Anything the request needs | `execute_code` (a cell of plain Python in the sandbox) |
+| The embedding application's own operations | `primitives.<name>` namespaces |
+| Installing packages | `tools.install(packages)` |
+| Teammates, questions to the requester, messages | the run record's tools (`send`, `messages`, `wait`, `who`) |
+| What the library already holds | `memory.ask(...)` (the librarian) and the `memory` package |
+| Keeping the library | the writer service (`unify/memory/writer_service.py`), never the actor |
 
-Full role descriptions are in [`.agents/rules/state-manager-roles.md`](.agents/rules/state-manager-roles.md).
+Full role descriptions are in [`.agents/rules/component-roles.md`](.agents/rules/component-roles.md).
 
 ## Additional git constraints
 
@@ -163,23 +180,26 @@ unillm's `main` on GitHub: before pushing, check
 ## Repo map
 
 ```
-unify/
+unify-agent/
 ├── unify/                   # Main package
-│   ├── cli.py               # Terminal chat (`python -m unify`)
-│   ├── actor/               # CodeAct Actor, central orchestrator
-│   ├── conversation_manager/ # The persistent interaction loop (slow brain)
-│   ├── db.py                # The local SQLite store: five tables, two views
-│   ├── guidance_manager/    # Procedures, SOPs
-│   ├── function_manager/    # Stored Python functions and their dependencies
-│   ├── workspace.py         # The assistant's working directory
-│   ├── events/              # Typed event bus
-│   └── common/              # Async tool loop, shared infra
-├── tests/                   # Pytest suite
-├── scripts/                 # Skill import, git hooks
-├── docs/                    # Design writeups
+│   ├── cli.py               # The command line (`unify act`)
+│   ├── actor/               # CodeActActor, its prompts, in-code tools and the worker
+│   ├── agents/              # The run record, teammates and their tools
+│   ├── common/              # The tool loop, the registry and tool channel, the interpreter, model calls
+│   ├── function_manager/    # primitives: the embedding application's namespaces
+│   ├── lanes/               # The local lane relay and the launcher that starts it
+│   ├── memory/              # Episodes, captures, the writer service, the gate, the librarian
+│   ├── sandbox.py           # The bubblewrap confinement
+│   ├── environment.py       # The workspace environment (package installs)
+│   ├── db.py                # Where state lives (`UNIFY_HOME`)
+│   └── settings.py          # Every setting (CONFIG.md lists them)
+├── tests/                   # Pytest suite (stubbed models only)
+├── scripts/                 # Git hooks and identity checks
+├── docs/                    # memory.md and design notes
 ├── ARCHITECTURE.md          # System design (read first)
+├── CONFIG.md                # Every environment variable
+├── KNOWN-ISSUES.md          # Evaluated behaviour with its open fixes
 ├── README.md
-├── CONTRIBUTING.md
 └── pyproject.toml
 ```
 
@@ -193,7 +213,44 @@ unify/
 
 # Repository rules
 
-This project is an AI assistant implemented as a back office of cooperating managers, each dealing with one aspect of the assistant's persistent state, and each exposing an English-language public API. The public methods of most managers are asynchronous tool loops: a central LLM handles the English request by orchestrating lower-level tools that read and mutate that manager's rows in the local SQLite store (`unify/db.py`). These methods are dynamic, and return handles for mid-flight steering, question answering, pausing, resuming and stopping. They are also often **nested**: the public API of one manager appears in the tool set of a higher-level manager, and a tool loop can steer its own in-flight inner tools, so steering reaches arbitrary depth. The `Actor` is the central intelligence, orchestrating the managers through code-first plans, and the `ConversationManager` is the persistent interaction loop above it. There are no "fast paths" or heuristics based on regex or substring detection of user input: when a method must respond correctly to a class of input, the fix is always a prompt or a tool docstring that **nudges** the LLM.
+# Component Roles
+
+Use this to decide which component owns a change and where its jurisdiction ends. ARCHITECTURE.md and docs/memory.md
+are canonical for how each one works.
+
+### The CLI (`unify/cli.py`)
+- **Role**: `unify act`: one request, or a session (`--persist`, `--jsonl`), through one actor.
+- **Owns**: argument parsing, the driver's stdin/stdout contract, and, with memory on, starting the lane relay
+  (`unify/lanes/launch.py`) and the episode line.
+
+### The actor (`unify/actor/`)
+- **Role**: answers a request by writing Python, one cell per `execute_code` call.
+- **Scope**: the tool loop (`unify/common/async_tool_loop.py`), its prompt (`prompt_builders.py`), its in-code tools
+  (`in_code_tools.py`, `tool_handlers.py`) and the worker that runs cells in the sandbox (`execution/`).
+- **Reaches**: `tools.<name>` (the registry), the embedding application's `primitives.<name>` namespaces, the run
+  record, and with memory on the `memory` package and `memory.ask`.
+
+### The run record (`unify/agents/`)
+- **Role**: one append-only record per run for the actor, its teammates, the requester, the librarian and the harness.
+- **Owns**: `send`, `messages`, `wait` and `who`, the same tools for every agent (`run_record_tools.py`); teammates
+  and their lifetimes (`pool.py`).
+
+### Memory (`unify/memory/`)
+- **Role**: turns finished requests into a tested library that later requests read. One switch, `UNIFY_MEMORY`
+  (`off`, `on`).
+- **Parts**: episodes and the request's memory (`integration/request.py`), the episode-end fork and captures
+  (`integration/fork.py`, `captures.py`, `capture_trace.py`; a capture is never run), the attention ledger
+  (`attention.py`), the writer service and its passes (`writer_service.py`, `writer_pass.py`), the gate (`gate.py`,
+  `gate_policy.py`: labels, refusing only for safety, paths, syntax and layout) and the librarian (`librarian.py`).
+- **Boundary**: only the writer edits the library; the actor reads a pinned copy.
+
+### The lanes (`unify/lanes/`)
+- **Role**: with memory on and `OPENROUTER_API_KEY` set, a local relay that holds the key and gives the writer, its
+  helpers, the episode-end fork and embeddings their own lanes and tokens under one cap, `UNIFY_MEMORY_CAP_USD`.
+- **Boundary**: the key stays in the relay; memory's processes get only their lane's token, on an inherited
+  descriptor.
+
+This project is a code-acting agent harness. One `CodeActActor` answers a request by writing Python: its only model-API tool is `execute_code`, each call is a cell in a persistent interpreter inside bubblewrap, and every other tool is a `tools.<name>(...)` call from a cell, served on the host through one tool registry. The actor, its teammates, the requester and the librarian share one append-only run record per run. With `UNIFY_MEMORY` on (the default), each request is recorded as an episode, a fork of the actor's conversation captures what it did without running it, a detached writer service keeps a tested library under a gate that labels its findings and refuses only for safety, and later requests read that library. Memory's model calls go through a local lane relay that holds the provider key, under one spend cap. There are no "fast paths" or heuristics based on regex or substring detection of the request, no world vocabulary and no task ids in the harness: when a component must respond correctly to a class of input, the fix is a prompt or a tool description that **nudges** the model. No mechanism executes or re-runs a capture or a function to classify, deduplicate, rank or test it.
 
 # Local Development Environment
 
@@ -233,12 +290,12 @@ The script **always blocks** until all tests complete (or timeout), streaming pa
 
 - By default: One tmux session per *test*. All tests run concurrently (maximum speed).
 - With `-s`: One tmux session per *file*. Tests within a file run serially.
-- `-s` runs all of a file's tests in one process, each on its own event loop (`asyncio_default_test_loop_scope = function` in `pytest.ini`). That exposes module-level asyncio state (a queue, lock or task) left bound to an earlier test's loop, which the per-test default hides. Such state needs the dead-loop guard that `_adopt_running_loop` applies in `unify/conversation_manager/domains/managers_utils.py`.
+- `-s` runs all of a file's tests in one process, each on its own event loop (`asyncio_default_test_loop_scope = function` in `pytest.ini`). That exposes module-level asyncio state (a queue, lock or task) left bound to an earlier test's loop, which the per-test default hides; such state must be created per loop.
 
 **Examples:**
 ```bash
 # Single test file with multiple tests (default: runs all tests concurrently)
-tests/parallel_run.sh tests/function_manager/storage/test_primitives.py
+tests/parallel_run.sh tests/function_manager/primitives/test_environment_namespaces.py
 
 # Specific test functions
 tests/parallel_run.sh tests/test_foo.py::test_one tests/test_bar.py::test_two
@@ -250,7 +307,7 @@ tests/parallel_run.sh tests/actor/
 tests/parallel_run.sh -s tests/
 
 # With timeout (abort after 5 minutes)
-tests/parallel_run.sh --timeout 300 tests/function_manager/
+tests/parallel_run.sh --timeout 300 tests/memory/
 ```
 
 ### Failure Handling
@@ -258,7 +315,7 @@ tests/parallel_run.sh --timeout 300 tests/function_manager/
 - Do **NOT** inspect `tmux` panes directly.
 - **ALWAYS** read the corresponding log file in `logs/pytest/` for the failed session.
 - A test that fails only inside a large parallel run can be a load flake. Re-run it on its own before debugging it.
-- When every model-reaching test fails at once with `APIError(status=403)` and `Key limit exceeded`, the OpenRouter key has hit its spending limit. The code is not at fault.
+- No test reaches a model provider (see `test-philosophy.md`), so a provider error in a test log is a test that escaped its stub: fix the test's script, never by adding a key.
 
 ### Log Directory Naming
 Log directories use a **datetime-prefixed format** for natural time-based ordering in the filesystem:
@@ -327,11 +384,10 @@ The `logs/` directory is gitignored, which affects tool availability:
 
 | Directory | Purpose |
 |-----------|---------|
-| `logs/pytest/` | Test output logs (datetime-prefixed subdirs per run, one file per tmux session, one SQLite store per session under `stores/`) |
-| `logs/unify/` | Runtime LOGGER output (async tool loop, managers) when `UNIFY_LOG_DIR` points here |
+| `logs/pytest/` | Test output logs (datetime-prefixed subdirs per run, one file per tmux session) |
 | `logs/unillm/` | Raw LLM request/response traces |
 
-The chat CLI writes its runtime logs under `<UNIFY_HOME>/logs` (default `~/.unify/logs`), not under the repo.
+`unify act` writes its runtime logs to `UNIFY_LOG_DIR`, by default `<UNIFY_HOME>/logs` (`~/.unify/logs`), not under the repo.
 
 ## Practical Steps
 
@@ -346,7 +402,7 @@ ls logs/pytest/2025-12-05T14-30-45_unify_dev_ttys042/
 
 **Step 2: Read with Read tool**
 ```
-Read: logs/pytest/2025-12-05T14-30-45_unify_dev_ttys042/function_manager-storage-test_primitives.txt
+Read: logs/pytest/2025-12-05T14-30-45_unify_dev_ttys042/function_manager-primitives-test_environment_namespaces.txt
 ```
 
 ## Worktree Symlinks
@@ -370,10 +426,8 @@ ls logs/pytest/2025-12-21T16-00-00_unify_dev_ttys042/
 
 Then use the Read tool:
 ```
-Read: logs/pytest/2025-12-21T16-00-00_unify_dev_ttys042/function_manager-storage-test_primitives.txt
+Read: logs/pytest/2025-12-21T16-00-00_unify_dev_ttys042/function_manager-primitives-test_environment_namespaces.txt
 ```
-
-Each session's store file sits next to its log, so a failing test's rows can be inspected with `sqlite3` after the run.
 
 # Parallelize Test Analysis
 
@@ -419,157 +473,52 @@ This doesn't mean being hasty or sacrificing thoroughness. It means: **don't wai
 
 # Product Vocabulary: One Noun Per Concept
 
-The assistant reasons in the words we hand it. When two concepts share a
-word, the model has to guess which one a prompt means, and the guess is
-invisible until it routes to the wrong manager.
+The model reasons in the words we hand it. When two concepts share a word, the model has to guess which one a prompt
+means, and the guess is invisible until it calls the wrong tool or reads the wrong thing.
 
 ## The canonical nouns
 
-| Concept | Word | Owner |
+| Concept | Word | Where |
 |---|---|---|
-| Written-down multi-step how-to | **procedure** | `GuidanceManager` |
-| Executable unit the assistant calls | **function** | `FunctionManager` |
-| What the actor writes and runs to satisfy one request | **plan** | `Actor` |
-| One dispatched, steerable piece of work | **action** | `ConversationManager` |
-| Ordered instructions inside a docstring | **Steps** (section header) | — |
+| One request and everything the actor did for it | **episode** | `unify/memory/` |
+| One `execute_code` call: a program run in the persistent interpreter | **cell** | `unify/actor/` |
+| A host-side operation a cell calls as `tools.<name>(...)` | **tool** | `unify/common/tool_registry.py` |
+| The embedding application's own operations, `primitives.<name>` | **namespace** (its members: **methods**) | `unify/function_manager/primitives/` |
+| The shared, append-only message log of a run | **run record** | `unify/agents/` |
+| What the episode-end fork wrote down that an episode did | **capture** | `unify/memory/captures.py` |
+| A tested function or note the writer landed | **library item** | `unify/memory/` |
+| The agent that keeps the library | **writer** (its unit of work: a **pass**) | `unify/memory/writer_pass.py` |
+| The agent that answers what the library holds | **librarian** | `unify/memory/librarian.py` |
+| What the gate records about an item instead of refusing it | **label** | `unify/memory/gate.py` |
+| A model-call route of its own for one memory agent | **lane** | `unify/lanes/` |
 
-Do not write "workflow" to mean a multi-step anything: it is a procedure,
-an action, or a plan. Do not title a docstring section `### Workflow`; use
-`Steps` or `Procedure`.
-
-## The three stores, and how to tell them apart
-
-`FunctionManager` and `GuidanceManager` are the two places durable know-how
-lives, and they are distinguished by *what kind of thing they hold*, not by
-topic:
-
-| | FunctionManager | GuidanceManager |
-|---|---|---|
-| Role | the **what** | the **how** |
-| Holds | one callable | a multi-step procedure |
-| Content | executable implementation | natural-language recipe |
-| Analogy | a tool's docstring | a prompt that references tools |
-
-Deciding where something belongs:
-
-- **Can it run?** Function. If it is code that executed successfully and
-  would be worth calling again, it is a function — not a procedure
-  describing the code.
-- **Does it tell someone how to act?** Procedure (guidance). Reach for it
-  when composing several functions is non-obvious, or when a durable rule
-  or policy governs how work is done. A procedure links the functions it
-  composes via `function_ids`, which is also how a rule change finds every
-  implementation that embeds it.
-The common error is storing a procedure that merely restates one
-function's docstring. If a single function's docstring already explains
-its inputs, behaviour and use, store the function and stop.
-
-Neither store is a dumping ground for "stuff we learned": a fact with no
-procedure attached belongs in the procedure that uses it, or nowhere.
-
-**`skill` is an umbrella, not a synonym.** "Skills" means *anything worth
-storing across the three stores* — the `store_skills` tool, the
-`"Storing reusable skills"` review label. That is a legitimate superset
-covering functions and procedures together. It is wrong only when
-used for one specific member.
+Do not write "workflow" to mean a multi-step anything: it is an episode, a pass or a procedure. Do not call a capture
+a "skill", and do not call the library a "store".
 
 ## Before naming a new first-class type
 
-1. **Grep first.** `rg -ic "<candidate>" unify/ tests/`. If the word
-   appears in prompts, docstrings or examples meaning something else, you
-   have a collision.
-2. **Prefer an unused word** over renaming existing prose. An unused word
-   is free; a rename costs a sweep plus fresh LLM inference everywhere a
-   prompt changed.
-3. **If you keep the colliding word, do the cleanup in the same change.**
-   A half-renamed codebase teaches the model both meanings at once.
-4. **Watch for the near-synonym trap.** A new noun must not collide
-   *conceptually* either: "recipe" and "playbook" are both unused as
-   types, but the three-stores table calls guidance a "natural-language
-   recipe" and a playbook *is* a procedure.
+1. **Grep first.** `rg -ic "<candidate>" unify/ tests/`. If the word appears in prompts, descriptions or examples
+   meaning something else, you have a collision.
+2. **Prefer an unused word** over renaming existing prose. An unused word is free; a rename costs a sweep through
+   every prompt that uses it.
+3. **If you keep the colliding word, do the cleanup in the same change.** A half-renamed codebase teaches the model
+   both meanings at once.
+4. **Watch for the near-synonym trap.** A new noun must not collide *conceptually* either.
+5. **No world vocabulary.** The harness's own words name no benchmark, environment or task, and nothing keys on a
+   task id.
 
 ## What gets renamed, and what does not
 
-Rename **our** vocabulary: prompts, docstrings, tool labels, example
-titles, section headers, internal identifiers, test names and fixtures.
+Rename **our** vocabulary: prompts, tool descriptions, example titles, section headers, internal identifiers, test
+names and fixtures.
 
 Leave alone:
 
-- **Simulated user speech in eval tests.** Users really do say "workflow"
-  loosely about business processes. Scrubbing it removes exactly the
-  ambiguity the assistant must survive.
 - **Third-party product names.**
-- **The shared `global-agent-rules` submodule.** Edit it in its own repo,
-  never here.
+- **The shared `global-agent-rules` submodule.** Edit it in its own repo, never here.
 
 After editing anything under `.agents/`, regenerate the aggregate:
-`python3 .agents/global-rules/build_agents_md.py`. Never hand-edit
-`AGENTS.md`.
-
-# State Manager Interface Design
-
-## Base Class Public APIs
-
-The public API for all state managers (`FunctionManager`, `GuidanceManager`) is fully contained in the docstrings of the abstract methods defined on the base class `Base{SomeManager}` in `base.py`. All high level usage instructions should be fully encapsulated in these docstrings. These docstrings are then attached to the public methods of any derived class via `@functools.wraps(Base{StateManager}.{public_method}, updated=())`. These docstrings should not make **any** reference to **other managers** (we don't want to lock in any brittle cross-references, as other managers may change) and should also not make any reference to their **internal implementation**, including the private tools used for any particular instantiation of this abstract base class, with a consistent implementation agnostic public API.
-
-## Prompts vs Tool Docstrings
-
-The prompts in each prompt builder file should focus on the high level usage patterns, general guidance to the LLM, and specifically how to reason about the **composition** of tools, which tool to use in which scenario with contrastive explanations etc. However, in order to have a fully modular design and maximise our separation of concerns, it's very important that we do **not** bloat these prompts with any purely tool-specific information. This belongs exclusively in the tool's unique docstring (which the LLM gets access to). If the guidance is about deciding between two tools or using these tools together for complex composite behaviour, then it belongs in the prompt for the high-level public method in `prompt_builders.py`. If it's purely tool-specific, then it belongs in the tools own docstring.
-
-## Tests That Guard the Prompts
-
-`tests/actor/code_act/test_prompt_builders.py` and `tests/conversation_manager/core/test_prompt_builders.py` pin phrases of the rendered prompts with exact substring asserts. Change a pinned phrase and its assert together, and keep each pinned phrase on one line of the prompt source: the source's line breaks survive into the rendered prompt, so re-wrapping a paragraph can split a phrase and fail the assert. `tests/test_prompt_token_budgets.py` caps the tokens every call pays for its system prompt and tool schemas; tighten its budget in the same change as a cut.
-
-Use this to decide which component owns what and where its jurisdiction ends. Keep manager docstrings implementation‑agnostic; this guide is only for high‑level routing and composition.
-
-### ConversationManager
-- **Role**: The persistent interaction loop. Reads the chat, decides whether to speak or wait, routes work to `Actor` for code-first execution and steers it (pause/resume/interject/stop/ask) while it runs.
-- **Scope**: One user, one chat. Owns the chat history (in memory, persisted in its own store table), the notification bar and the in-flight and completed actions. Attachments are file paths passed along with a message.
-- **Connections**:
-  - **Steered by**: the chat front end (`unify/cli.py`, or any client that publishes `UnifyMessageReceived` on the in-memory event broker).
-  - **Steers**: `Actor.act`; relays in‑flight handles.
-
-### Actor
-- **Role**: Central intelligence. Generates and executes Python programs in a persistent sandbox to satisfy a request, discovering stored skills first.
-- **Scope**: Code-first execution via `act()`. A plan is plain Python plus the sandbox's namespaces: `primitives.actor.*` (nested actors for parallel or delegated work), `execute_function` for stored functions, and the `FunctionManager_*` / `GuidanceManager_*` JSON tools for the skill libraries. Files anywhere on the machine are read where they are; outputs go into the workspace. Wires in‑flight handles back to `ConversationManager` for real‑time steering.
-- **Connections**:
-  - **Steered by**: `ConversationManager` (primary caller of `act()`).
-  - **Steers**: nested actors, the skill libraries' JSON tools, and the `ConversationManager` handle (`ask`/`interject`/`get_full_transcript`).
-
-### Actor routing playbook
-- **Before writing code**: `FunctionManager_search_functions` / `FunctionManager_filter_functions` for a stored function that already does it; `GuidanceManager_search` / `GuidanceManager_filter` for a procedure that says how. The discovery-first policy gates the other tools until both were consulted.
-- **A single stored function or primitive call** → `execute_function` (a bare steerable handle; never `execute_code` for one call).
-- **Anything else** → `execute_code`: plain Python, loops, control flow, files, packages installed into the workspace environment.
-- **Parallel or delegated work** → `primitives.actor.act`.
-- **Asking the user** → `request_clarification` (bubbles up through every layer to the chat).
-- **After a run** the storage review decides what to keep: a callable that worked becomes a function, a non-obvious composition becomes guidance.
-
-### FunctionManager
-- **Role**: Catalogue of stored Python functions (the **what**) and their pip dependencies.
-- **Scope**: add/list/filter/search/delete over functions, execution in-process with dependencies ensured in the workspace environment, and the read-only `primitives` table of every primitive the Actor can call, seeded from the primitive registry.
-- **Connections**:
-  - **Steered by**: `Actor` (discovers and executes functions during plans; the storage review stores new ones).
-  - **Steers**: —
-
-### GuidanceManager
-- **Role**: Owner of procedural how-to information (the **how**): step-by-step instructions, walkthroughs, and strategies for composing functions together.
-- **Scope**: CRUD (search, filter, add_guidance, update_guidance, delete_guidance) exposed as `GuidanceManager_*` JSON tools on the Actor. Read tools are gated by the discovery-first policy.
-- **Builtins library**: reads also cover the read-only `builtin_guidance` table (through the `all_guidance` view, `is_builtin = 1`) holding entries imported from the Agent Skills ecosystem with stable hash-based ids. Seeded from the committed snapshot `unify/guidance_manager/builtins_guidance.json` when a `GuidanceManager` is constructed; `update_guidance`/`delete_guidance` refuse builtin ids.
-- **Connections**:
-  - **Steered by**: `Actor` (via `GuidanceManager_*` JSON tools).
-  - **Steers**: reads the `functions` table to surface linked functions.
-
-### EventBus
-- **Role**: Cross‑cutting, in‑process publish/subscribe backbone and searchable event log used by every component for telemetry and coordination.
-- **Scope**: Components publish structured events (notably `ManagerMethod` for incoming/outgoing method calls) via a thin logging wrapper; the bus supports `publish`, `search` over a bounded in-memory ring, `register_callback`/`unregister_callback`, and `join_callbacks` for deterministic joins.
-- **Connections**:
-  - **Steered by**: all public manager methods (through the logging decorator).
-  - **Steers**: —
-
-### Precedence and source of truth
-- **Code is canonical**: This guide is descriptive. If the implementation contradicts it, the code takes precedence.
-- **Keep in sync**: As components evolve, update this document alongside changes to cross‑component wiring, public surfaces, or prompt composition.
-- **Where to update**: Prefer updating manager base docstrings (public API contracts) and prompt builders for tool composition guidance, and reflect those changes here.
+`python3 .agents/global-rules/build_agents_md.py`. Never hand-edit `AGENTS.md`.
 
 # Surgical Verification Before Running Tests
 
@@ -578,8 +527,8 @@ When fixing infrastructure issues (especially concurrency, race conditions, or f
 ## Why This Matters
 
 Tests in this repo have significant overhead:
-- LLM calls (cached: milliseconds, uncached: seconds to minutes)
-- Fixture initialisation and catalogue seeding
+- Sandbox start-up (every pytest process runs inside bubblewrap, and each cell's interpreter is a confined worker)
+- Fixture set-up (homes, run records, memory homes, scripted models)
 
 A targeted verification script can validate a fix in **seconds** rather than waiting minutes for tests that may not even reliably reproduce the issue.
 
@@ -587,13 +536,13 @@ A targeted verification script can validate a fix in **seconds** rather than wai
 
 ✅ **Good candidates:**
 - Race conditions and concurrency fixes (can simulate parallel execution directly)
-- Fixture/conftest changes (test the seeding logic in isolation)
+- Fixture/conftest changes (test the set-up logic in isolation)
 - Infrastructure plumbing (context management, caching, file locking)
 - Non-deterministic failures that are hard to reproduce reliably in tests
 
 ❌ **Skip this for:**
 - Simple bug fixes where one test runs quickly enough
-- LLM behavior changes (need real eval tests with actual prompts)
+- Prompt changes (a scripted-model test of the prompt's text is the check)
 - Cases where the verification script would be more complex than the test itself
 
 ## How to Write a Verification Script
@@ -628,172 +577,91 @@ This pattern **complements** running actual tests—it doesn't replace them. The
 
 # Test Philosophy
 
-## Real LLMs, Never Mocked
+## Stubbed Models, Never Real Providers
 
-We *never* stub the LLM client. Tests always use a real LLM via `unillm.AsyncUnify`. Responses are cached per unique input, so repeated runs are fast on CI. The LLM responses become "locked in" after the first successful run.
+Tests always use stubbed models and never reach a real provider: no test needs a real provider key, and every model
+call in a test is a stubbed one. `tests/conftest.py` enforces it in every test, with or without a key loaded:
+
+- unillm's provider calls (`acompletion`, `completion`, `aembedding`, `embedding`) raise;
+- a socket may connect only to this machine;
+- a test carrying `live_provider` or `requires_provider_key` fails.
+
+Script the model instead:
+
+- `tests/scripted_model.py`: `ScriptedModel`, one script per kind of call (actor, helper, `query_llm`, compaction),
+  classified from the request alone. A kind the test did not script fails the test, naming the kind.
+- `tests/cache_discipline_helpers.py`: `scripted(...)`.
+
+Both replace unillm's transport below its request building, so every request is built exactly as in production and
+nothing leaves the process. A streamed request gets LiteLLM's own mock stream of the scripted reply
+(`scripted_model.as_requested`). Embeddings are faked at `unify.common.embeddings.embed` or at the endpoint it posts
+to.
 
 ## Trigger-Based Synchronization, Not Sleeps
 
-Never rely on sleeps to align events in tests. Always use the trigger helpers in `tests/async_helpers.py` to ensure each event occurs in the necessary order. This makes tests robust to significant timing differences between cached responses (milliseconds) and live LLM calls (up to a minute).
+Never rely on sleeps to align events in tests. Use the trigger helpers in `tests/async_helpers.py` so each event
+occurs in the order the test needs. Anchor a trigger on something that happens while a tool runs, not on wall-clock
+time.
 
-Anchor a trigger on something that happens while a tool runs, not before or during an LLM call. Tools run for real in both a live run and a cached replay, so only LLM latency differs between the two: an event keyed to an LLM call lands at a different point on replay, and one that cancels a call mid-flight leaves no recording for the replay to hit. A simulated sub-actor that finishes on a wall clock is such an event, since the model's turns take seconds live and milliseconds on replay: finish it on the steering it receives instead (`SimulatedActor(steps=1)`).
+## Fix the Cause, Keep the Assertion
 
-## Symbolic ↔ Eval Spectrum
-
-Tests fall on a **spectrum** between two paradigms. Understanding where a test sits on this spectrum is essential for writing, debugging, and interpreting test results.
-
-### Symbolic Tests (Infrastructure-Focused)
-
-At one end, **symbolic tests** use the LLM purely as a stub. The LLM receives minimal "dummy" instructions designed to trigger specific code paths.
-
-**Characteristics:**
-- LLM behavior is deterministic and predictable
-- Focus is on testing *infrastructure*: async tool loops, steering (pause/resume/interject/stop), state mutations
-- The LLM's "intelligence" is irrelevant—we just need it to call the right tools in the right order
-- **Failures indicate regressions in symbolic/programmatic logic**
-
-### Eval Tests (Capability-Focused)
-
-At the other end, **eval tests** exercise the system end-to-end. We ask a high-level question or give a directive, then verify the outcome—regardless of internal tool calls.
-
-**Characteristics:**
-- Focus is on *capability*: "Did the assistant correctly answer the question?" or "Did it complete the task?"
-- Internal implementation details (tool call order, number of steps) don't matter
-- Tests LLM reasoning and decision-making in realistic scenarios
-- **Failures may indicate prompt issues, tool design problems, or capability gaps**
-
-### The Spectrum (Not Binary)
-
-Most tests sit **somewhere between** these extremes:
-- Realistic prompts but only verify specific tool calls were made
-- End-to-end behavior but with constrained, predictable inputs
-- Combine symbolic infrastructure checks with high-level outcome assertions
-
-Think of each test as having a "slider" between symbolic and eval—not a binary classification.
-
-## Caching and Determinism (`UNILLM_CACHE`)
-
-When `UNILLM_CACHE="true"` (the default), all LLM responses are cached:
-
-1. **First run**: LLM executes normally; responses stored in cache
-2. **Subsequent runs**: Cached responses replayed—no actual LLM calls
-
-**Implications:**
-- Both symbolic and eval tests become deterministic once the cache is populated
-- After caching, both test types effectively verify that *symbolic logic has not regressed*
-- Tests run fast on CI (milliseconds vs seconds/minutes for real LLM calls)
-- To re-evaluate LLM behavior: delete `.cache.ndjson`, set `UNILLM_CACHE="false"`, or use `--no-cache`
-
-A test replays only if its LLM input is identical on every run, so nothing that varies between runs (a random or clock-derived value, rows read without an `ORDER BY`, a path named after the process, an object's memory address) may reach a prompt, a tool argument or a tool result. The `unify_home` fixture in `tests/conftest.py` gives each test its own `UNIFY_HOME`, named by its node id, which keeps the workspace path the actor prompt names the same on every run. Canonical keying (`UNILLM_CACHE_KEYING=canonical`; the default is `exact`) scrubs ISO timestamps, UUIDs, hex runs of 32 or more characters and `/tmp` paths, but never plain numbers or shorter hex.
-
-### The Cache Is Never the Problem
-
-"We just need to update the cache" is **never** a valid conclusion when debugging test failures. The cache is a faithful replay mechanism, not a source of bugs.
-
-Cache keys are the exact LLM input. A cache hit means the code is sending **byte-for-byte identical** input to a previous run. If you modify prompts, tool docstrings, or system messages, the cache key changes automatically and you get fresh inference.
-
-If a cached response causes a failure, an LLM **actually made that decision** given that exact input. This is a prompt issue, not a stale cache issue. Clearing the cache just re-runs inference on the same input—likely producing the same flawed output.
-
-Only clear the cache to **re-evaluate** LLM behavior after prompt changes (`--no-cache`), not as a fix for failing tests.
-
-## Tagging Tests as Eval
-
-Mark a test file as eval with a module-level marker:
-
-```python
-import pytest
-
-pytestmark = pytest.mark.eval  # All tests in this file are eval tests
-```
-
-For mixed files, use test-level markers:
-
-```python
-@pytest.mark.eval
-@pytest.mark.asyncio
-async def test_natural_language_query():
-    ...
-```
-
-## Running Test Categories
-
-```bash
-# Run only eval tests
-tests/parallel_run.sh --eval-only tests
-
-# Run only symbolic tests
-tests/parallel_run.sh --symbolic-only tests
-
-# Re-evaluate LLM behavior (fresh calls, no cache)
-tests/parallel_run.sh --no-cache tests
-
-# Statistical sampling for eval reliability
-tests/parallel_run.sh --no-cache --repeat 10 --eval-only tests/function_manager/
-```
+A failing test is fixed at its root cause: a real code bug is fixed in the code; a test of behaviour that changed is
+migrated with every assertion intact; a test is deleted only when its subject was removed, with the reason recorded.
+Never loosen an assertion, skip, xfail, raise a timeout or add a retry to get a pass. Security and confinement tests
+pass as written, or the code gets fixed. The only skips are environment-conditional ones (an optional tool or extra
+that is not installed).
 
 ## When Debugging Failing Tests
 
-1. **Determine test type**: Is it symbolic (infrastructure) or eval (capability)?
-2. **For symbolic failures**: Logic bug or regression in programmatic code—debug the infrastructure
-3. **For eval failures (cached)**: The cached LLM path broke—likely a code change affected tool behavior
-4. **For eval failures (uncached)**: LLM reasoning changed—may need prompt tuning, tool docstring improvements, or acceptance of variance
+1. Read the test's log under `logs/pytest/<run>/` (see `log-directory-navigation.md`).
+2. A scripted test is deterministic: the same failure on a re-run is a code or test bug, never a model's whim.
+3. A test that fails only inside a large parallel run can be a load flake. Re-run it on its own before debugging it.
+
+---
+
+# Situational rules
+
+These are not loaded by default. Read the file when the work matches its description.
+
+- [`.agents/global-rules/rules/shared-agent-context.md`](.agents/global-rules/rules/shared-agent-context.md) — Questions about what the team did or decided in earlier agent sessions (did we set up X, who changed Y, why Z) - every Cursor, Claude Code and Codex transcript is in ~/shared_context
+- [`.agents/global-rules/rules/rented-compute.md`](.agents/global-rules/rules/rented-compute.md) — Renting, extending or ending any cloud machine, GPU, volume, disk, IP or database (Vast, RunPod, Nebius, Hetzner, GCP, Lambda, Prime) - every machine has a lease that ends, and you end what your work leaves behind
 
 ---
 
 # Shared rules
 
-These apply across every unifyai repo. Edit them in the `unifyai/global-agent-rules` submodule, not here.
+These apply across every unifyai repo. Edit them in the `unifyai/global-agent-rules`, not here.
 
-# Aggressive Refactoring & Zero Backward Compatibility
+# Aggressive Refactoring, No Backward Compatibility
 
-## Context
-This project is a prototype in rapid development. We prioritize a clean, minimal, and correct codebase over stability, backward compatibility, or risk aversion.
+The code is a prototype in rapid development: clean, minimal and correct
+matters more than stability or caution.
 
-## Critical Rules
+- **No backward compatibility** unless it is asked for. Change an interface
+  and update every call site at once, with no adapters, aliases or optional
+  parameters to soften it. A new pattern replaces the old one everywhere.
+- **Rewrite, don't staple.** When requirements change, rewrite the code as
+  if the new requirements had been the first ones, rather than adding logic
+  on top. Delete what is no longer the best way; never comment it out or
+  keep it "just in case".
+- **No defensive coding.** No try/except except around a specific, expected,
+  recoverable error such as a network timeout, and no null or type checks
+  the logic does not need. Fail loud and fast.
+- **Simplify first.** Before adding a feature, ask whether simplifying the
+  code would make it natural, and remove redundant code, unused variables
+  and needless abstraction as you go.
 
-### 1. Zero Backward Compatibility
-- **Assume NO Backward Compatibility**: Unless explicitly requested, break APIs, data structures, and protocols freely.
-- **Immediate Updates**: When changing an interface, update all call sites immediately. Do not create adapters, aliases, or optional parameters to "soften" the change.
-- **Purge Old Patterns**: If you introduce a new design pattern (e.g., for state management), strictly remove all instances of the old pattern. Do not leave mixed patterns in the codebase.
+# Timeless Comments
 
-### 2. Destructive vs. Additive Editing
-- **Avoid "Stapling"**: Do not merely add new logic on top of old logic (additive editing). This creates bloat and "staples upon staples".
-- **Rewrite and Simplify**: When requirements change, **rewrite** the affected code to optimally support the *new* requirements as if they were the original ones.
-- **Delete Aggressively**: If code is no longer the "best" way to do something, delete it. Do not comment it out. Do not keep it "just in case".
+Comments and docstrings describe the code as it is now, never its history or
+the conversation that produced it.
 
-### 3. No Defensive Coding
-- **No Preemptive Exception Handling**: Do not wrap code in try/catch or try/except blocks to prevent crashes unless you are handling a specific, expected, and recoverable runtime error (e.g., network timeout). Fail loud and fast.
-- **No Defensive Checks**: Do not add null checks or type checks unless strictly necessary for the logic. Trust the type system and the caller contract.
-- **Clean Implementation**: Code should look like the "happy path". Avoid cluttering logic with defensive branches for edge cases that shouldn't happen in a correct system.
-
-### 4. Review and Reflect
-- **Simplify First**: Before adding a feature, ask: "Can I simplify the existing code to make this feature natural to implement?"
-- **Remove Bloat**: actively look for and remove redundant code, unused variables, and overly complex abstractions.
-
-# No Temporal or Chat-Specific Comments
-
-## Context
-Code comments and docstrings must be **timeless** and describe the code as it currently exists. They must **never** reflect the history of changes, the current chat session, or the fact that code is "new".
-
-## Critical Rules
-
-### 1. No "New" or "Updated" Markers
-- **Forbidden**: Never use words like "New", "Updated", "Added", "Modified", "Refactored" in comments to mark changes.
-- **Reasoning**: Code is only "new" for the moment it is written. Next week, it is old. These comments rot immediately and create noise.
-- **Correct Approach**: Just write the comment describing what the code does. Git history tracks what is new.
-
-### 2. No Chat Context
-- **Forbidden**: Do not reference "the user request", "this chat", "per instruction", or specific reasoning from the current conversation.
-- **Reasoning**: The codebase must stand alone. Context from a chat session is lost to future readers.
-- **Correct Approach**: If a complex decision needs explanation, document the *technical why* (e.g., "Use X because Y is slow"), not the *conversational why* ("User asked for X").
-
-### 3. Clean Documentation
-- **Focus**: Comments should explain **why** tricky code exists or **how** it functions.
-- **Avoid**: "Here is the implementation of..." or "Standardized composer utilities". The code itself shows it is an implementation.
-- **Example**:
-  - BAD: `NEW: Added this function to handle retries`
-  - BAD: `Updated to support the new API`
-  - GOOD: `Retries the request with exponential backoff to handle transient network errors.`
+- Never mark code "new", "updated", "added" or "refactored"; git records that.
+- Never cite the chat or the request ("as the user asked"). Give the
+  technical why ("retries with backoff because the API drops connections"),
+  never the conversational one.
+- Say why tricky code exists or how it works, not that it is an
+  implementation of something.
 
 If a test is failing, we should **never** add test-specific information or shortcuts to production code as a hack to get the test passing. No details about specific test cases should ever make their way into production code—no special-case branches, no hardcoded values that match test inputs, no conditional logic that only exists to satisfy a test.
 
@@ -801,148 +669,30 @@ All fixes must be fully general and **much** broader than the specific failing t
 
 # Git Safety
 
-## Rule: Pull Before Editing a Repository
+- **Pull before editing.** Run `git pull --rebase origin main` once per repo
+  per session before changing files, so you never work on a stale tree.
+  After a rejected push and a rebase, re-read any file you are about to edit:
+  the rebase changed it on disk.
+- **Commit explicit paths:** `git commit <files> -m "…"`, never a bare
+  `git commit`. Agents working in parallel share one index, so a bare commit
+  takes in whatever another agent staged. A new file needs `git add <file>`
+  first, then the same explicit commit.
+- **Push to `main` as the work lands,** without being asked:
+  `git push origin HEAD:main`, which works from `main` and from a worktree's
+  own branch alike. Never push a worktree's branch itself, since nobody
+  merges it. If the push is rejected, `git pull --rebase origin main`,
+  re-read what you are about to edit, and push again.
+- **Never force-push** unless the user asks and understands that it rewrites
+  history other people have pulled.
+- Start a branch only when a change has to sit apart from `main`, and merge
+  and delete it as soon as it lands.
 
-Before making any file edits in a repository, run `git pull --rebase` once to sync with the remote. This prevents the agent from working on a stale branch and silently overwriting others' commits.
+# Worktrees: No Feature Branches, No Pull Requests
 
-- **Once per repo per session** is sufficient — no need to pull on every turn.
-- **After a push rejection + rebase**: re-read any files you plan to edit next. The rebase changed them on disk but your in-memory copies are stale.
-- **Exception**: only skip if the user explicitly asks you not to pull.
-
-## Context: Explicit Path Commits
-When multiple agents run in parallel in `local` mode, there is a race condition risk if they use the shared git index (staging area).
-- Agent A: `git add fileA`
-- Agent B: `git add fileB`
-- Agent A: `git commit -m "msg"` -> Commits BOTH fileA and fileB!
-
-## Rule: Explicit Path Commits
-To eliminate this risk, **NEVER** run `git commit` without explicit file arguments.
-
-### Incorrect
-```bash
-git add myfile.json
-git commit -m "Update myfile"
-```
-
-### Correct
-```bash
-# For modified files:
-git commit myfile.json -m "Update myfile"
-
-# For new (untracked) files:
-git add myfile.json
-git commit myfile.json -m "Add myfile"
-```
-
-### Reasoning
-Passing filenames to `git commit` bypasses the shared index for that specific commit operation, ensuring that Agent A only commits what it intends to, regardless of what Agent B has staged.
-
-## Rule: Push When the Work Lands
-
-Commit to `main` and push as the work lands, without waiting to be asked. An
-unpushed commit, or a branch nobody merges, is invisible to every other
-checkout and every other agent: a branch in `continual-arc-baselines` once
-drifted ten commits ahead of an untouched `main` before anyone noticed.
-
-- Push the current branch only: `git push origin HEAD`.
-- If the push is rejected, `git pull --rebase`, re-read what you are about to
-  edit, and push again.
-- **Never** force-push unless the user explicitly asks for it and understands
-  that it rewrites history other people have pulled.
-- Start a branch only when a change genuinely has to sit apart from `main`,
-  and merge and delete it as soon as it lands.
-
-# Worktree Mode: Direct Commits, No Feature Branches
-
-## Context
-When running in **worktree mode**, the mental model is fundamentally different from traditional feature development:
-
-- **Worktrees are for small-scale parallel fixes**, not large-scale feature development
-- **Multiple agents on the same branch** = multiple collaborators working in parallel, each with their own local working directory
-- The overhead of `feature branch → PR → merge → cleanup` is **overkill** for this workflow
-
-## Critical Rules
-
-### 1. NEVER Create Feature Branches
-When asked to make changes, commit, or push:
-- **DO NOT** create a new branch (e.g., `git checkout -b feature/...`)
-- **DO NOT** suggest creating a branch for the work
-- **COMMIT DIRECTLY** to whatever branch is currently checked out
-
-The worktree already provides isolation. Creating additional branches defeats the purpose.
-
-### 2. NEVER Create Pull Requests
-- **DO NOT** use `gh pr create` or suggest creating a PR
-- **DO NOT** push to a new remote branch with the intent of opening a PR
-- If the user wants changes merged, they will handle the merge strategy themselves
-
-### 3. The Correct Workflow
-```bash
-# 1. Make your changes to files
-
-# 2. Commit directly to the current branch (following git-commit-safety rules)
-git commit <specific-files> -m "Description of change"
-
-# 3. Push the current branch (see git-commit-safety)
-git push origin HEAD
-```
-
-### 4. Mental Model
-Think of worktree agents as **multiple developers pair-programming on the same branch**:
-- Each has their own local checkout (the worktree)
-- All commit to the same branch
-- No one creates personal feature branches for small fixes
-- Coordination happens through communication, not branch isolation
-
-## Why This Matters
-The alternative workflow creates significant noise:
-1. **Stale branches accumulate** - agents create branches, users forget to delete them
-2. **PR overhead** - reviewing, merging, and closing PRs for trivial fixes wastes time
-3. **Context switching** - users must mentally track multiple branches for what should be one stream of work
-4. **Merge conflicts** - more branches = more opportunities for conflicts
-
-## Exception
-If the user **explicitly asks** for a feature branch or PR workflow, follow their instructions. But **never default to this behavior** in worktree mode.
-
-# Git History for Context
-
-## Context
-This rule applies when you are trying to understand the *rationale* behind specific code blocks, the evolution of a module, or when deciding whether "weird" looking code is essential or legacy technical debt.
-
-## Rules
-
-### 1. Strategic Git Usage
-- **Use as a Second Level of Analysis**: If the code's purpose isn't clear from the current state alone (static analysis), use `git blame` or `git log` to uncover the "why".
-- **Not a Mandate**: Do not check git history for every file you touch. This creates noise. Use it selectively when you lack context.
-
-### 2. Understanding Code Evolution
-- **Identify Legacy Code**: If you suspect code is redundant or outdated, check its commit date and message. If it was added months ago for a feature that is no longer relevant, this confirms it can likely be purged.
-- **Find the "Why"**: Expressive commit messages often contain the reasoning that comments lack. Use them to understand the author's original intent before refactoring or deleting complex logic.
-
-### 3. Targeted Queries
-- **Be Surgical**: When querying git, look for the history of specific lines or changes (e.g., `git blame -L n,m filename` or `git log -p filename`) rather than dumping the entire history into the context.
-- **Synthesize**: Use the information to form a narrative about the code's lifecycle (e.g., "This was added in commit X to fix bug Y, but since we rewrote the bug Y subsystem, this is now dead code").
-
-### 4. Investigating Regressions with Git Diff
-
-When debugging test failures or regressions, git history can pinpoint exactly what changed.
-
-**When the user proactively provides context:**
-If the user says something like "the test was passing at commit `<hash>`, and the relevant changes are in `<path>`", use this optimally:
-- Run `git log --oneline <hash>..HEAD -- <path>` to see which commits touched the area
-- Run `git diff <hash>..HEAD -- <path>` to get the **aggregate diff** (not serial diffs commit-by-commit)
-- Cross-reference the diff with commit messages to understand developer intent
-- The overall diff is mathematically equivalent to composing serial diffs, but far more token-efficient and cognitively cleaner
-
-**When debugging hits a roadblock:**
-If direct code analysis and debug logging (`CURSOR_DEBUG_LOG`) aren't yielding answers, *then* ask the user:
-- "Do you know when this test was last passing? If you have a commit hash and know which files/folders are likely involved, that would help narrow down what changed."
-- Don't front-load this question—often the user doesn't know the answer. Try direct debugging first.
-
-**Avoid wasteful patterns:**
-- Don't ask the user to provide diffs—ask for the commit hash and run git commands yourself
-- Don't read diffs commit-by-commit and mentally compose them; use the aggregate diff
-- Don't dump entire file histories; scope queries to the relevant path(s)
+A worktree is isolation enough: agents in separate worktrees are
+collaborators on `main`. Commit on the branch the worktree has and push it
+to `main` (see Git Safety). Never create a feature branch or a pull request,
+or suggest one, unless the user asks for it.
 
 # Python Formatting & Pre-commit
 
@@ -1099,8 +849,13 @@ it is written, and it drifts from the truth because nobody can correct it.
   `.agents/rules/`, or a comment beside the code it explains. Company-wide
   facts (people, accounts, legal state, decisions, how a job is run) go in
   `brain`'s wiki.
-- **Corrections count.** When someone tells you how they want something
-  done, write down the rule it implies where the next agent will read it.
+- **Corrections that teach something count.** When someone tells you what
+  the next agent could not work out for itself (how they like a thing done,
+  a fact, a limit to respect, a gotcha nobody would guess), write it down
+  where the next agent will read it. A correction for a lapse in ordinary
+  judgement or effort is not a rule to write: fix the work. Rules that
+  restate common sense bury the ones that matter, and teach agents to wait
+  for a rule instead of thinking (Dan, 12 October 2026).
 - **Commit and push it as the work lands,** so the next agent on any machine
   starts from it.
 - **Never write to private memory.** Claude Code's auto-memory is off in
@@ -1112,70 +867,6 @@ it is written, and it drifts from the truth because nobody can correct it.
 Two things never go in the repo: secrets, which live in Secret Manager, and
 material a repo keeps out of git on purpose through `.gitignore`, which stays
 in its ignored folder.
-
-# Shared agent conversation archive
-
-Unify keeps a private repo of **raw** agent transcripts at **`~/shared_context`**
-(GitHub: `unifyai/shared_context`), keyed by **GitHub login** (e.g. `djl11`).
-
-## Design (important)
-
-- **Adjacent clone, not a submodule.** `shared_context` sits next to the
-  product checkouts (`~/brain`, `~/unillm`, …). It is **not** nested under any
-  public or private product repo.
-- **Why:** public repos such as `unillm` stay public; transcript data stays
-  private. Public cloners never need or see this tree. One clone serves agents
-  in **every** repo that pulls `unifyai/global-agent-rules`.
-
-## When to load this
-
-Use before answering questions about past investigations or decisions across the
-team — e.g. "did we set up X?", "who changed Y?", "why did we do Z?" — when the
-answer might live in someone else's Cursor / Claude Code / Codex session, not
-only the current chat.
-
-## How to search
-
-Prefer ripgrep over reading whole files. Search **tracked** login trees only —
-**do not** search `yours/` unless the user explicitly asks about their local /
-unexported chats:
-
-```bash
-rg -n -i "keyword" ~/shared_context/derived/index.jsonl
-rg -n -i "keyword" ~/shared_context -g '!yours/**' -g '!tools/**' -g '!.git/**'
-```
-
-`derived/index.jsonl` is rebuilt locally by `tools/sync.sh` / `tools/export.py`
-after pull (gitignored). If it is missing, search tracked trees directly or run:
-
-```bash
-python3 ~/shared_context/tools/export.py --index-only
-```
-
-Sessions live at
-`<github_login>/{cursor|codex|claude-code}/<yyyy-mm>/<id>/{meta.json,transcript.jsonl}`.
-
-`yours/{cursor,codex,claude-code}` are local symlinks to personal stores and are
-gitignored.
-
-If `~/shared_context` is missing, say so and suggest:
-
-```bash
-git clone git@github.com:unifyai/shared_context.git ~/shared_context
-```
-
-Do **not** suggest `git submodule add` / nesting it under a product repo.
-
-## Citing
-
-Cite **user**, **tool**, **date**, and **path** so a human can open the same session.
-
-## Do not
-
-- Do not confuse this with `brain` (curated company memory).
-- Do not scrub or rewrite historical transcripts.
-- Do not push/sync unless the user asked you to.
-- Do not grep `yours/` unless the user asked for local-only context.
 
 # Replying to the Team
 

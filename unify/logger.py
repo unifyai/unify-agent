@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,8 +100,6 @@ def _get_memory_tag() -> str:
 
 LOGGER = logging.getLogger("unify")
 
-# Unique identifier for this process lifetime (used for log correlation)
-SESSION_ID = datetime.now(timezone.utc).isoformat()
 
 # File handler state (managed by configure_log_dir)
 _FILE_HANDLER: Optional[logging.FileHandler] = None
@@ -152,21 +151,20 @@ class _MillisFormatter(logging.Formatter):
 
 LOGGER.setLevel(logging.DEBUG)
 
-if SETTINGS.UNIFY_TERMINAL_LOG:
-    import sys
+# INFO and above to the terminal; the ``unify`` command removes this handler (its stdout is its own), and a
+# program importing the package adjusts it through the standard ``logging`` API.
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(_MillisFormatter(stream=sys.stdout))
+_handler.setLevel(logging.INFO)
 
-    _handler = logging.StreamHandler(sys.stdout)
-    _handler.setFormatter(_MillisFormatter(stream=sys.stdout))
-    _handler.setLevel(getattr(logging, SETTINGS.UNIFY_TERMINAL_LOG_LEVEL, logging.INFO))
+_already_configured = any(
+    isinstance(h, logging.StreamHandler) and getattr(h, "_unify_terminal", False)
+    for h in LOGGER.handlers
+)
 
-    _already_configured = any(
-        isinstance(h, logging.StreamHandler) and getattr(h, "_unify_terminal", False)
-        for h in LOGGER.handlers
-    )
-
-    if not _already_configured:
-        _handler._unify_terminal = True  # type: ignore[attr-defined]
-        LOGGER.addHandler(_handler)
+if not _already_configured:
+    _handler._unify_terminal = True  # type: ignore[attr-defined]
+    LOGGER.addHandler(_handler)
 
 # Mute noisy third-party loggers so only unify.* output reaches the terminal.
 for _lib in (

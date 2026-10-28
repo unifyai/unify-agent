@@ -1,0 +1,135 @@
+# The keyless test suite on Linux, inside bubblewrap. No secret is used:
+# every model reply in a test is scripted, provider calls are refused and
+# sockets may connect only to the runner itself (tests/conftest.py).
+#
+# Two things make this workflow fail today, by design:
+# - unillm commit UNILLM_SHA is not yet on GitHub, so its checkout fails
+#   until the commit is published;
+# - `uv sync --locked` fails until uv.lock is regenerated for the current
+#   pyproject.toml.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The unillm commit pyproject.toml pins; uv installs it from the checkout
+  # beside unify-agent ([tool.uv.sources]).
+  UNILLM_SHA: 9d8542206047d8131cf23f5511f4d6afcc81fc75
+  # The in-process embedder's weights, at the revision
+  # unify/common/embeddings.py pins. The test sandbox shares
+  # /tmp/unity_test_home with every pytest process, so they are kept there.
+  EMBED_MODEL: BAAI/bge-small-en-v1.5
+  EMBED_REVISION: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  HF_HOME: /tmp/unity_test_home/huggingface
+
+jobs:
+  tests:
+    name: tests (${{ matrix.shard.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+        - name: memory
+          paths: tests/memory
+        - name: actor and agents
+          paths: tests/actor tests/agents
+        - name: everything else
+          paths: tests --ignore=tests/memory --ignore=tests/actor --ignore=tests/agents
+    defaults:
+      run:
+        working-directory: unify-agent
+    steps:
+    - name: Check out unify-agent
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        path: unify-agent
+        persist-credentials: false
+
+    - name: Check out unillm at the pinned commit
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: unifyai/unillm
+        ref: ${{ env.UNILLM_SHA }}
+        path: unillm
+        persist-credentials: false
+
+    - name: Install bubblewrap, util-linux, git and tmux
+      # tmux is for the tests of tests/parallel_run.sh.
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends bubblewrap util-linux git tmux
+
+    - name: Let bubblewrap create user namespaces
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor.
+      # This changes the throwaway runner only.
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+    - name: Check that bubblewrap starts a sandbox
+      run: bwrap --ro-bind / / --dev /dev --unshare-all true
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      with:
+        working-directory: unify-agent
+        enable-cache: true
+
+    - name: Install the dev environment
+      run: uv sync --locked --group dev
+
+    - name: Restore the embedder's weights
+      id: weights
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /tmp/unity_test_home/huggingface
+        key: hf-bge-small-en-v1.5-${{ env.EMBED_REVISION }}
+
+    - name: Download the embedder's weights
+      if: steps.weights.outputs.cache-hit != 'true'
+      run: |
+        uv run --no-sync python - <<'EOF'
+        import os
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(
+            os.environ["EMBED_MODEL"],
+            revision=os.environ["EMBED_REVISION"],
+            allow_patterns=[
+                "config.json",
+                "model.safetensors",
+                "special_tokens_map.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "vocab.txt",
+            ],
+        )
+        EOF
+
+    - name: Save the embedder's weights
+      if: steps.weights.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /tmp/unity_test_home/huggingface
+        key: hf-bge-small-en-v1.5-${{ env.EMBED_REVISION }}
+
+    - name: Run the tests
+      env:
+        # Refuse to run if bubblewrap cannot confine the pytest process.
+        UNIFY_TEST_SANDBOX: required
+        # Not a key: start-up needs one set, and nothing can authenticate with
+        # this (the root conftest.py sets the same placeholder).
+        OPENROUTER_API_KEY: ci-placeholder-not-a-key
+        # The weights are on disk; nothing should ask the Hub.
+        HF_HUB_OFFLINE: "1"
+      run: uv run --no-sync pytest -n auto ${{ matrix.shard.paths }}

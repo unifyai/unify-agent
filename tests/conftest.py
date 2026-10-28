@@ -7,7 +7,7 @@ Global pytest configuration for the Unify test suite.
 Sections:
   1. Imports and logging guard
   2. Test stubs (DateTime)
-  3. Singleton isolation
+  3. Model-cache keying
   4. Command-line options
   5. Custom logging helpers
   6. Session lifecycle hooks
@@ -26,7 +26,6 @@ import shutil
 import tempfile
 
 import pytest
-from unify import db
 from pytest_metadata.plugin import metadata_key
 
 from datetime import datetime, timezone
@@ -43,43 +42,10 @@ if not _root_logger_early.handlers:
 from tests.helpers import _lock_file_nb
 from tests.settings import SETTINGS
 
-# Diagnostic switch for the async tool loop's sent-watermark append-only
-# transcript invariant. Prod behavior is identical whether this is set or
-# not — it only gates an integrity
-# assertion in generate_with_preprocess plus the below-watermark hashing
-# that backs it, which would otherwise ship real per-turn CPU to prod under
-# an `if __debug__` label. `setdefault` so an explicit override (e.g. a
-# targeted rerun with it forced off) still wins.
-os.environ.setdefault("UNIFY_TRANSCRIPT_INVARIANT_CHECKS", "1")
-
-
-def _reset_singleton_registries() -> None:
-    """Singletons must not leak across tests."""
-    from unify.manager_registry import ManagerRegistry
-    from unify.events.event_bus import EVENT_BUS
-
-    ManagerRegistry.clear()
-    EVENT_BUS.clear()
-
-
-def _reset_store_for_test() -> None:
-    """Give the test an empty store: the user tables are truncated and their
-    id sequences restart, so a rerun in a reused store never sees a previous
-    run's rows. The seeded catalogues (primitives, builtin guidance) stay."""
-    db.clear()
-    _reset_singleton_registries()
-
-
-def _uses_unify_context(item: pytest.Item) -> bool:
-    """Return whether this test needs the per-test store reset."""
-
-    return item.get_closest_marker("no_unify_context") is None
-
 
 def pytest_report_header(config):
     settings_str = [f"{k}={v}" for k, v in SETTINGS.model_dump().items()]
     return [
-        f"unify_store={os.environ.get('UNIFY_STORE_PATH')}",
         f"UNILLM_CACHE={os.environ.get('UNILLM_CACHE', 'not set')}",
     ] + settings_str
 
@@ -107,22 +73,9 @@ def stub_external_deps(monkeypatch):
     # All timestamps in prompts come from prompt_helpers.now() which returns either:
     # - A formatted string (as_string=True): "Friday, June 13, 2025 at 12:00 PM UTC"
     # - A datetime object (as_string=False): for timestamp comparisons
-    #
-    # When UNIFY_INCREMENTING_TIMESTAMPS is enabled (e.g., ConversationManager tests),
-    # datetime objects auto-increment by microseconds so last_snapshot < message.timestamp
-    # comparisons work correctly for **NEW** markers.
-
-    from datetime import timedelta
-
-    _timestamp_counter = {"value": 0}
 
     def _static_now(time_only: bool = False, as_string: bool = True):
         """Return a fixed timestamp for testing."""
-        if SETTINGS.UNIFY_INCREMENTING_TIMESTAMPS and not as_string:
-            # Return incrementing datetime for **NEW** marker comparisons
-            _timestamp_counter["value"] += 1
-            return _FIXED_DATETIME + timedelta(microseconds=_timestamp_counter["value"])
-
         if not as_string:
             return _FIXED_DATETIME
 
@@ -131,73 +84,58 @@ def stub_external_deps(monkeypatch):
             return _FIXED_DATETIME.strftime("%I:%M %p ") + label
         return _FIXED_DATETIME.strftime("%A, %B %d, %Y at %I:%M %p ") + label
 
-    # Patch prompt_helpers.now everywhere it's imported
-    monkeypatch.setattr("unify.common.prompt_helpers.now", _static_now)
-    monkeypatch.setattr("unify.conversation_manager.prompt_builders.now", _static_now)
-    monkeypatch.setattr("unify.conversation_manager.events.prompt_now", _static_now)
+    # Patch prompt_helpers.now everywhere it's imported. A module that binds
+    # it by name (``from unify.common.prompt_helpers import now as
+    # prompt_now``) keeps its own reference, which patching prompt_helpers
+    # alone misses, so every loaded ``unify`` module is searched for one.
+    # A module first imported during a test binds that test's patched clock,
+    # which the marker lets the next test find too.
+    from unify.common import prompt_helpers
+
+    _static_now._frozen_prompt_clock = True
+    _patch_every_copy(monkeypatch, prompt_helpers.now, _static_now)
+
+    # A transcript session's id is the wall-clock second and random hex
+    # (unify/transcripts.py), and a compression summary names the session's
+    # file in the request after it. Ids numbered in the order the test opens
+    # its sessions keep that request the same on every run; the test's home
+    # starts empty, so they never meet a file of an earlier run.
+    from unify import transcripts
+
+    _session_numbers = itertools.count(1)
+    _session_stamp = _FIXED_DATETIME.strftime("%Y%m%dT%H%M%S")
     monkeypatch.setattr(
-        "unify.conversation_manager.domains.chat_history.prompt_now",
-        _static_now,
-    )
-    monkeypatch.setattr(
-        "unify.conversation_manager.conversation_manager.prompt_now",
-        _static_now,
+        transcripts,
+        "_new_session_id",
+        lambda: f"{_session_stamp}-{next(_session_numbers):08x}",
     )
 
-    def _static_perf_counter() -> float:
-        return 1000.0
 
-    monkeypatch.setattr(
-        "unify.common._async_tool.time_context.perf_counter",
-        _static_perf_counter,
-    )
+def _patch_every_copy(monkeypatch, original, replacement) -> None:
+    """Point ``original``'s defining attribute and every by-name copy of it
+    in a loaded ``unify`` module at ``replacement``.
+
+    An earlier test's replacement (one marked ``_frozen_prompt_clock``) is
+    replaced as well."""
+    import sys
+    import types
+
+    def _is_copy(value) -> bool:
+        return value is original or (
+            type(value) is types.FunctionType
+            and getattr(value, "_frozen_prompt_clock", False)
+        )
+
+    for name, module in list(sys.modules.items()):
+        if module is None or not (name == "unify" or name.startswith("unify.")):
+            continue
+        for attr, value in list(getattr(module, "__dict__", {}).items()):
+            if _is_copy(value):
+                monkeypatch.setattr(module, attr, replacement)
 
 
 # --------------------------------------------------------------------------- #
-# 3. Singleton isolation                                                      #
-# --------------------------------------------------------------------------- #
-
-from unify.manager_registry import ManagerRegistry
-
-
-@pytest.fixture(autouse=True)
-def _clear_singletons_between_tests():
-    """Ensure *singleton* instances never leak from one test to the next."""
-    yield
-    ManagerRegistry.clear()  # Clear the registry after each test
-
-
-@pytest.fixture(autouse=True)
-def _exact_cache_keying_for_evals(request):
-    """An eval never accepts a canonically-equivalent recording.
-
-    Canonical keying deliberately lets a recording survive mundane prompt
-    churn, and the invariance it buys includes description rewording --
-    which is one of the ordinary ways to change which tool a model picks.
-    For a functional test that trade is right: the assertion is about the
-    code around the call. For an eval it inverts, because the model's
-    behaviour *is* the subject, so a canonical hit would score the
-    trajectory recorded before the change and report it green.
-
-    Scoped per test rather than per shard: a shard is a directory, and
-    directories hold both kinds.
-    """
-    if request.node.get_closest_marker("eval") is None:
-        yield
-        return
-
-    from unillm.settings import SETTINGS as UNILLM_SETTINGS
-
-    previous = UNILLM_SETTINGS.UNILLM_CACHE_KEYING
-    UNILLM_SETTINGS.UNILLM_CACHE_KEYING = "exact"
-    try:
-        yield
-    finally:
-        UNILLM_SETTINGS.UNILLM_CACHE_KEYING = previous
-
-
-# --------------------------------------------------------------------------- #
-# 4. Command-line options                                                     #
+# 3. Command-line options                                                     #
 # --------------------------------------------------------------------------- #
 
 
@@ -224,7 +162,7 @@ def pytest_addoption(parser):
 
 
 # --------------------------------------------------------------------------- #
-# 5. Custom logging helpers                                                   #
+# 4. Custom logging helpers                                                   #
 # --------------------------------------------------------------------------- #
 
 
@@ -277,7 +215,7 @@ def get_test_log_format(config):
 
 
 # --------------------------------------------------------------------------- #
-# 6. Session lifecycle hooks                                                  #
+# 5. Session lifecycle hooks                                                  #
 # --------------------------------------------------------------------------- #
 
 
@@ -296,17 +234,20 @@ def pytest_sessionstart(session):
 
 
 def _parallel_run_result_file(kind: str) -> str | None:
-    """The temp file parallel_run.sh reads this session's ``kind`` result from.
+    """The file parallel_run.sh reads this session's ``kind`` result from.
 
-    None outside a parallel_run.sh session. The name carries the tmux socket
-    as well as the session id: every tmux server numbers its sessions from
-    $0, and each terminal running parallel_run.sh has a server of its own.
+    None outside a parallel_run.sh session. It lives in the run's results
+    directory (``UNIFY_TEST_RESULTS_DIR``), not /tmp: the session runs in the
+    test sandbox, whose /tmp is private. The name carries the tmux socket as
+    well as the session id: every tmux server numbers its sessions from $0,
+    and each terminal running parallel_run.sh has a server of its own.
     """
     socket = os.environ.get("UNIFY_TEST_SOCKET")
     session_id = os.environ.get("UNIFY_TMUX_SESSION_ID")
     if not (socket and session_id):
         return None
-    return f"/tmp/parallel_run_{kind}_{socket}_{session_id}.txt"
+    directory = os.environ.get("UNIFY_TEST_RESULTS_DIR") or "/tmp"
+    return f"{directory}/parallel_run_{kind}_{socket}_{session_id}.txt"
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -334,21 +275,18 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 def pytest_unconfigure(config):
-    """Restore HOME (and HF_HOME if we set it).
+    """Restore HOME.
 
     The test HOME (``unity_test_home`` in the system temp directory) is
     deliberately left in place: every parallel pytest session
-    ``parallel_run.sh`` spawns shares it, along with the embeddings cache
-    inside it, so wiping it here would pull files out from under sessions
-    still running. It accumulates only for the life of the CI runner;
-    locally, deleting it gives a clean slate.
+    ``parallel_run.sh`` spawns shares it, so wiping it here would pull files
+    out from under sessions still running. It accumulates only for the life
+    of the CI runner; locally, deleting it gives a clean slate.
     """
     if _original_home is None:
         os.environ.pop("HOME", None)
     else:
         os.environ["HOME"] = _original_home
-    if _hf_home_set_by_us:
-        os.environ.pop("HF_HOME", None)
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -379,7 +317,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
 
 # --------------------------------------------------------------------------- #
-# 7. Test run hooks                                                           #
+# 6. Test run hooks                                                           #
 # --------------------------------------------------------------------------- #
 
 from unillm.cost_tracker import capture_costs
@@ -387,15 +325,9 @@ from unillm.cost_tracker import capture_costs
 _session_costs: list[tuple[str, float]] = []
 
 _original_home: str | None = None
-_hf_home_set_by_us: bool = False
 
 
 def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "no_unify_context: skip the per-test store reset for pure unit tests",
-    )
-
     # ------------------------------------------------------------------
     # Isolate HOME so that tests never touch the real home directory
     # (dotfiles, ~/.cache, the default ~/.unify). The path is fixed, not
@@ -408,34 +340,6 @@ def pytest_configure(config):
     test_home = os.path.join(tempfile.gettempdir(), "unity_test_home")
     os.makedirs(test_home, exist_ok=True)
     os.environ["HOME"] = test_home
-
-    # Preserve access to the real HuggingFace model cache.  The HOME
-    # override above moves ~/.cache/huggingface to a temp dir that won't
-    # contain pre-downloaded models (e.g. SmolVLM used by docling's PDF
-    # pipeline).  Pinning HF_HOME to the original location avoids
-    # redundant multi-GB downloads and the .incomplete-blob hangs that
-    # occur when the download is interrupted or raced across sessions.
-    global _hf_home_set_by_us
-    if "HF_HOME" not in os.environ and _original_home:
-        original_hf = os.path.join(_original_home, ".cache", "huggingface")
-        if os.path.isdir(original_hf):
-            os.environ["HF_HOME"] = original_hf
-            _hf_home_set_by_us = True
-
-    config.addinivalue_line(
-        "markers",
-        "requires_real_unify: mark test as requiring the real unify implementation",
-    )
-    config.addinivalue_line(
-        "markers",
-        "eval: mark a test as a fuzzy evaluation test for English language "
-        "APIs. Selects the eval tier in discover_test_paths.py, and pins cache "
-        "lookups to exact keying so a canonical hit cannot score a trajectory "
-        "recorded before the prompt changed. Distinct from llm_call, which "
-        "says only that a model is reached: eval asks whether the answer was "
-        "good, llm_call whether the call happens at all. The two are applied "
-        "independently and neither implies the other.",
-    )
 
     # Required to disable explicit log level if set from pytest.ini or command line options
     if os.environ.get("UNIFY_TESTS_CLI_LOGGING", "true").lower() == "false":
@@ -494,7 +398,7 @@ def unify_home(request, monkeypatch):
     monkeypatch.setenv("UNIFY_HOME", str(home))
     cwd = os.getcwd()
     yield home
-    # The conversation loop and ``unify act`` chdir into the workspace.
+    # ``unify act`` chdirs into the workspace.
     os.chdir(cwd)
     shutil.rmtree(home, ignore_errors=True)
     # The lock file stays: were it deleted, a run still holding the old file
@@ -502,10 +406,85 @@ def unify_home(request, monkeypatch):
     lock.close()
 
 
+# No test reaches a real model provider or the network (the lead's rule, 13 Oct 2026: "WE DO NOT ADD TESTS THAT
+# NEED A REAL PROVIDER KEY AND ALWAYS MOCK THOSE TESTS WITH STUBBED LLM CALLS"). A test's model is scripted:
+# tests/scripted_model.py (``ScriptedModel``, per agent kind) or tests/cache_discipline_helpers.py (``scripted(...)``,
+# which replaces unillm's transport above the provider call). The guard below holds in every session, with or
+# without a key loaded: unillm's provider calls raise :data:`PROVIDER_REFUSAL`, and a socket may connect only to
+# this machine. The markers that once let a test reach a provider fail the test that carries them.
+STUB_HINT = (
+    "script the model with tests/scripted_model.py (ScriptedModel) or tests/cache_discipline_helpers.py "
+    "(scripted(...)), which replace unillm's transport"
+)
+PROVIDER_REFUSAL = f"this test reached a real model provider; tests never call one: {STUB_HINT}"
+NETWORK_REFUSAL = "this test opened a connection to {address!r}, off this machine; tests never use the network: {hint}"
+REMOVED_MARKERS = ("live_provider", "requires_provider_key")
+
+
+def _loopback(address) -> bool:
+    """Whether a socket address is on this machine (a Unix path, localhost, 127.0.0.0/8 or ::1)."""
+    import ipaddress
+
+    if not isinstance(address, tuple):
+        return True  # AF_UNIX paths and abstract names
+    host = str(address[0])
+    if host in ("localhost", ""):
+        return True
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return host.endswith(".localhost")
+
+
+@pytest.fixture(autouse=True)
+def _no_provider_or_network(monkeypatch):
+    """Refuse unillm's provider calls and any socket connection off this machine, in every test (the comment
+    above)."""
+    import socket
+
+    import unillm.clients.uni_llm as uni_llm
+
+    async def refuse_async(*args, **kwargs):
+        raise AssertionError(PROVIDER_REFUSAL)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(PROVIDER_REFUSAL)
+
+    for name in ("acompletion", "completion", "aembedding", "embedding"):
+        if hasattr(uni_llm.litellm, name):
+            monkeypatch.setattr(
+                uni_llm.litellm,
+                name,
+                refuse_async if name.startswith("a") else refuse,
+            )
+
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def connect(sock, address):
+        if not _loopback(address):
+            raise AssertionError(NETWORK_REFUSAL.format(address=address, hint=STUB_HINT))
+        return real_connect(sock, address)
+
+    def connect_ex(sock, address):
+        if not _loopback(address):
+            raise AssertionError(NETWORK_REFUSAL.format(address=address, hint=STUB_HINT))
+        return real_connect_ex(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+    yield
+
+
 def pytest_runtest_setup(item):
     test_name_log_filter.set_test_name(item.nodeid)
-    if not os.environ.get("SKIP_UNIFY_TEST_INIT") and _uses_unify_context(item):
-        _reset_store_for_test()
+    for marker in REMOVED_MARKERS:
+        if item.get_closest_marker(marker) is not None:
+            pytest.fail(
+                f"{item.nodeid} is marked {marker}, but no test may need a provider key: {STUB_HINT}, and remove "
+                "the marker",
+                pytrace=False,
+            )
 
 
 def _normalize_pytest_nodeid(nodeid):

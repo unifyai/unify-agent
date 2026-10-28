@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-import json
 import re
 import sys
 import tomllib
 from pathlib import Path
 
+# This repository's distribution and its first-party dependency.
 FIRST_PARTY = {
     "unillm",
-    "unify",
+    "unify-agent",
 }
 INERT_VERSION = "0.0.0"
 
@@ -42,32 +42,10 @@ def _check_pyproject(root: Path, failures: list[str]) -> None:
         )
 
 
-def _check_package_json(root: Path, failures: list[str]) -> None:
-    for path in [root / "package.json", root / "agent-service" / "package.json"]:
-        if not path.exists():
-            continue
-
-        data = json.loads(path.read_text())
-        if _is_first_party(data.get("name")) and "version" in data:
-            failures.append(
-                f"{path}: private first-party packages must not declare a package version",
-            )
-
-        lock_path = path.parent / "package-lock.json"
-        if lock_path.exists():
-            lock_data = json.loads(lock_path.read_text())
-            root_package = lock_data.get("packages", {}).get("", {})
-            if _is_first_party(root_package.get("name")) and "version" in root_package:
-                failures.append(
-                    f"{lock_path}: root package must not declare a package version",
-                )
-
-
 def main() -> int:
     root = Path.cwd()
     failures: list[str] = []
     _check_pyproject(root, failures)
-    _check_package_json(root, failures)
     if failures:
         print("\n".join(f"FAIL: {failure}" for failure in failures))
         return 1

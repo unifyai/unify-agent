@@ -13,11 +13,8 @@ from unify.common._async_tool.loop import (
 )
 
 
-def _tracker(max_consecutive_failures: int = 3) -> _LoopToolFailureTracker:
-    return _LoopToolFailureTracker(
-        max_consecutive_failures=max_consecutive_failures,
-        runtime_state=ToolLoopRuntimeState(),
-    )
+def _tracker() -> _LoopToolFailureTracker:
+    return _LoopToolFailureTracker(ToolLoopRuntimeState())
 
 
 def _refuse(tracker, *, args, message="Cannot use state_mode='stateless'."):
@@ -46,7 +43,7 @@ def test_distinct_attempts_are_never_stopped():
 
 def test_refusals_do_not_consume_the_unexpected_failure_budget():
     """A refusal is not a fault, so it must not spend the budget for real ones."""
-    tracker = _tracker(max_consecutive_failures=3)
+    tracker = _tracker()
     for attempt in range(10):
         _refuse(tracker, args={"session_id": attempt}, message=f"no {attempt}")
     assert tracker.current_failures == 0
@@ -95,10 +92,7 @@ def test_identical_calls_stop_sooner_than_varied_ones():
 def test_repetition_is_counted_per_tool():
     """One tool's refusals say nothing about another's."""
     state = ToolLoopRuntimeState()
-    tracker = _LoopToolFailureTracker(
-        max_consecutive_failures=3,
-        runtime_state=state,
-    )
+    tracker = _LoopToolFailureTracker(state)
     args = {"session_id": 0}
     for tool in ("execute_code", "execute_function", "run_query"):
         for _ in range(_LoopToolFailureTracker.IDENTICAL_CALL_LIMIT - 1):
@@ -117,14 +111,14 @@ def test_repetition_is_counted_per_tool():
 
 
 def test_unexpected_failures_still_stop_after_the_flat_limit():
-    tracker = _tracker(max_consecutive_failures=3)
+    tracker = _tracker()
     for _ in range(3):
         tracker.increment_failures()
     assert tracker.stop_reason() == "Aborted after too many consecutive tool failures."
 
 
 def test_a_success_clears_the_unexpected_failure_run():
-    tracker = _tracker(max_consecutive_failures=3)
+    tracker = _tracker()
     tracker.increment_failures()
     tracker.increment_failures()
     tracker.reset_failures()

@@ -1,0 +1,395 @@
+[
+ {
+  "id": "M1",
+  "what": "stop recording a request's runtime calls (uses are never written)",
+  "file": "unify/memory/integration/request.py",
+  "old": "        add_runtime_calls(self.runtime_calls, drained, self.export_roots)\n",
+  "new": "        pass  # MUTATION M1\n",
+  "tests": [
+   "tests/system/test_s01_capture_reuse.py::test_a_capture_is_served_at_once_reused_with_no_arguments_and_its_use_is_recorded[on]"
+  ]
+ },
+ {
+  "id": "M2",
+  "what": "captures are no longer listed or opened from the copy (not servable at once)",
+  "file": "unify/memory/library_helper.py",
+  "old": "    names: set[str] = set()\n    for base in (os.path.join(_ROOT, CAPTURES_DIR), HANDED_CAPTURES):",
+  "new": "    return []  # MUTATION M2\n    names: set[str] = set()\n    for base in (os.path.join(_ROOT, CAPTURES_DIR), HANDED_CAPTURES):",
+  "tests": [
+   "tests/system/test_s03_lone_capture.py::test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped[on]"
+  ]
+ },
+ {
+  "id": "M3",
+  "what": "a capture's card no longer links back to the item that generalises it",
+  "file": "unify/memory/library_helper.py",
+  "old": "        return [i for i, row in self.rows.items() if eps & set(row.get(\"episodes\") or ())] if eps else []",
+  "new": "        return []  # MUTATION M3",
+  "tests": [
+   "tests/system/test_s02_group_and_writer_pass.py::test_a_related_capture_forms_a_group_the_pass_lands_an_item_linked_both_ways[on]"
+  ]
+ },
+ {
+  "id": "M4",
+  "what": "a lone capture is due on its own (written up alone)",
+  "file": "unify/memory/capture_groups.py",
+  "old": "        elif g.context:\n            g.due = \"history\"",
+  "new": "        else:  # MUTATION M4\n            g.due = \"history\"",
+  "tests": [
+   "tests/system/test_s03_lone_capture.py::test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped[on]"
+  ]
+ },
+ {
+  "id": "M5",
+  "what": "a failed use opens no writer attention entry",
+  "file": "unify/memory/attention.py",
+  "old": "            for u in sources.use_failures():",
+  "new": "            for u in []:  # MUTATION M5",
+  "tests": [
+   "tests/system/test_s04_failed_use.py::test_a_failed_use_is_recorded_not_reoffered_opens_an_entry_and_reaches_the_card[on]"
+  ]
+ },
+ {
+  "id": "M6",
+  "what": "the writer's missing-path refusal names no next step",
+  "file": "unify/common/tool_registry.py",
+  "old": "        \"not_found\": \"{path} does not exist; /inputs/attention/index.json lists your entries' material, and \"\n        \"memory.items() the library's items\",",
+  "new": "        \"not_found\": \"{path} does not exist\",  # MUTATION M6",
+  "tests": [
+   "tests/system/test_s05_paths_open.py::test_every_path_and_handle_shown_opens_and_refusals_name_a_working_call[on]"
+  ]
+ },
+ {
+  "id": "M7",
+  "what": "with memory off the common section still names the librarian, the fork and the writer",
+  "file": "unify/common/tool_registry.py",
+  "old": "COMMON_SECTION_NO_MEMORY = COMMON_SECTION.replace(\n    _COMMON_ROLES_ALL, \"the actor doing each request and the helpers it starts.\"\n).replace(_COMMON_ADDRESSES_ALL, \"a role: @actor (every running actor); @helpers (every running helper).\")",
+  "new": "COMMON_SECTION_NO_MEMORY = COMMON_SECTION  # MUTATION M7",
+  "tests": [
+   "tests/system/test_s06_memory_off.py::test_memory_off_has_no_memory_text_no_memory_agents_and_the_same_tools_but_memory[off]"
+  ]
+ },
+ {
+  "id": "M8",
+  "what": "the librarian may answer with a menu of three",
+  "file": "unify/memory/librarian.py",
+  "old": "MAX_FITS = 2\n",
+  "new": "MAX_FITS = 3  # MUTATION M8\n",
+  "tests": [
+   "tests/system/test_s07_start_block_and_ask.py::test_the_block_and_the_ask_answer_are_one_primary_and_one_fallback_bounded[on]"
+  ]
+ },
+ {
+  "id": "M9",
+  "what": "teammates no longer reach the request's librarian",
+  "file": "unify/actor/in_code_tools.py",
+  "old": "        asks = agent in (\"actor\", \"teammate\") and _librarian_on()",
+  "new": "        asks = agent in (\"actor\",) and _librarian_on()  # MUTATION M9",
+  "tests": [
+   "tests/system/test_s08_helpers_use_the_request.py::test_a_teammate_uses_the_actors_request[on]"
+  ]
+ },
+ {
+  "id": "M11",
+  "what": "the judge's call is settled at its worst case, not at the cost the model declared",
+  "file": "unify/memory/writer_service.py",
+  "old": "    booked = known + unknown * worst\n",
+  "new": "    booked = worst  # MUTATION M11\n",
+  "tests": [
+   "tests/system/test_s10_spend.py::test_the_judge_the_passes_and_the_start_block_are_booked_from_declared_costs_under_the_cap[on]"
+  ]
+ },
+ {
+  "id": "M12",
+  "what": "the suite's guard no longer refuses a connection off the machine",
+  "file": "tests/conftest.py",
+  "old": "    monkeypatch.setattr(socket.socket, \"connect\", connect)\n",
+  "new": "    pass  # MUTATION M12\n",
+  "tests": [
+   "tests/system/test_s00_no_real_model.py::test_the_test_process_cannot_reach_a_provider_or_the_network"
+  ]
+ },
+ {
+  "id": "M13",
+  "what": "memory.get on a note serves the whole note, its evidence appendix included",
+  "file": "unify/memory/library_helper.py",
+  "old": "    start = next((i for i, line in enumerate(body) if line.strip().lower() == \"## rule\"), None)\n",
+  "new": "    start = None  # MUTATION M13\n",
+  "tests": [
+   "tests/system/test_s11_bounds_and_kinds.py::test_one_listing_two_labelled_kinds_and_a_note_served_as_its_rule[on]"
+  ]
+ },
+ {
+  "id": "M14",
+  "what": "a call of a capture no longer relates the calling episode's capture to it",
+  "file": "unify/memory/capture_groups.py",
+  "old": "    called = ({\"capture:\" + c for c in a.captures} & b.items) | ({\"capture:\" + c for c in b.captures} & a.items)\n",
+  "new": "    called = set()  # MUTATION M14\n",
+  "tests": [
+   "tests/system/test_s02b_relations_and_history_bound.py::test_a_call_of_a_capture_relates_the_calling_episodes_capture_to_it[on]"
+  ]
+ },
+ {
+  "id": "M15",
+  "what": "the history handed with a new capture is bounded at 20, not 8",
+  "file": "unify/memory/capture_groups.py",
+  "old": "HISTORY_MAX = 8\n",
+  "new": "HISTORY_MAX = 20  # MUTATION M15\n",
+  "tests": [
+   "tests/system/test_s02b_relations_and_history_bound.py::test_the_history_handed_with_a_new_capture_is_at_most_eight[on]"
+  ]
+ },
+ {
+  "id": "M16",
+  "what": "the run's end counts no capture as never grouped",
+  "file": "unify/memory/attention.py",
+  "old": "        they were never written up. Each as ``{\"entry\", \"captures\", \"state\"}``.\"\"\"\n        return [\n",
+  "new": "        they were never written up. Each as ``{\"entry\", \"captures\", \"state\"}``.\"\"\"\n        return []  # MUTATION M16\n        return [\n",
+  "tests": [
+   "tests/system/test_s03_lone_capture.py::test_a_lone_capture_waits_stays_servable_and_is_counted_never_grouped[on]"
+  ]
+ },
+ {
+  "id": "M17",
+  "what": "every capture card claims accepted work, whatever its record shows",
+  "file": "unify/memory/library_helper.py",
+  "old": "    accepted = support.get(\"accepted\") if isinstance(support.get(\"accepted\"), int) else 0\n",
+  "new": "    accepted = 1  # MUTATION M17\n",
+  "tests": [
+   "tests/system/test_s01_capture_reuse.py::test_a_capture_whose_episode_has_no_verdict_never_claims_acceptance[on]"
+  ]
+ },
+ {
+  "id": "M18",
+  "what": "every use row counts as a use, served-only rows included (history joined through served items)",
+  "file": "unify/memory/capture_groups.py",
+  "old": "        used_sql = (\"(\" + \" + \".join(f\"COALESCE({c}, 0)\" for c in cols) + \") > 0\") if cols else \"0\"\n",
+  "new": "        used_sql = \"1\"  # MUTATION M18\n",
+  "tests": [
+   "tests/system/test_s02b_relations_and_history_bound.py::test_an_item_only_served_relates_nothing[on]"
+  ]
+ },
+ {
+  "id": "M19",
+  "what": "every use row counts as used: an item only served enters the group's library items",
+  "file": "unify/memory/capture_groups.py",
+  "old": "        used_sql = (\"(\" + \" + \".join(f\"COALESCE({c}, 0)\" for c in cols) + \") > 0\") if cols else \"0\"\n",
+  "new": "        used_sql = \"1\"  # MUTATION M18\n",
+  "tests": [
+   "tests/system/test_s02b_relations_and_history_bound.py::test_the_pass_is_shown_only_the_items_its_captures_used_or_are_linked_to[on]"
+  ]
+ },
+ {
+  "id": "M20",
+  "what": "the judge is shown up to 60 earlier captures",
+  "file": "unify/memory/kinship.py",
+  "old": "CANDIDATES = 40\n",
+  "new": "CANDIDATES = 60  # MUTATION M20\n",
+  "tests": [
+   "tests/system/test_s10_spend.py::test_the_judge_is_shown_at_most_forty_candidates_and_bounded_code[on]"
+  ]
+ },
+ {
+  "id": "M21",
+  "what": "the scripted model routes by the helper phrase before the session's role (the old misrouting)",
+  "file": "tests/scripted_model.py",
+  "old": "    if LIBRARIAN_FRAGMENT in system:\n        return \"librarian\"\n    if users and HELPER_FRAGMENT in users[0]:\n        return \"helper\"\n",
+  "new": "    if users and HELPER_FRAGMENT in users[0]:\n        return \"helper\"\n    if LIBRARIAN_FRAGMENT in system:  # MUTATION M21\n        return \"librarian\"\n",
+  "tests": [
+   "tests/system/test_s00_no_real_model.py::test_a_teammates_librarian_session_is_routed_as_the_librarian"
+  ]
+ },
+ {
+  "id": "M22",
+  "what": "a new environment knob that switches memory, unreviewed",
+  "file": "unify/memory/integration/request.py",
+  "old": "LOCK_TIMEOUT_S = 60.0\n",
+  "new": "LOCK_TIMEOUT_S = 60.0\n_MUTANT = __import__(\"os\").environ.get(\"UNIFY_MEMORY_SHADOW_SWITCH\")  # MUTATION M22\n",
+  "tests": [
+   "tests/system/test_j9_knobs.py::test_every_knob_is_reviewed_and_every_row_is_named"
+  ]
+ },
+ {
+  "id": "M24",
+  "what": "an unreviewed change to a sentence the librarian is shown",
+  "file": "unify/memory/librarian.py",
+  "old": "Rank by fit to the question",
+  "new": "Rank by fit to the request",
+  "tests": [
+   "tests/system/test_j1_claims.py::test_every_in_scope_sentence_is_reviewed"
+  ]
+ },
+ {
+  "id": "M25",
+  "what": "the writer's helper reads no /task",
+  "file": "unify/memory/helpers.py",
+  "old": "        \"/task\": st[\"task\"],\n",
+  "new": "",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_a_writers_helper_has_the_box_and_roots_its_texts_state[on]"
+  ]
+ },
+ {
+  "id": "M26",
+  "what": "land_capture lands a failed capture",
+  "file": "unify/memory/land_capture.py",
+  "old": "        raise _NotLanded(\"failed_capture\", capture_id=cid)",
+  "new": "        pass  # MUTATION M26",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_the_writers_capture_tools_do_what_their_texts_state[on]"
+  ]
+ },
+ {
+  "id": "M27",
+  "what": "taking a closed entry takes it as an open one (owed)",
+  "file": "unify/memory/attention_tools.py",
+  "old": "    if closed is not None and closed.state == \"closed\":",
+  "new": "    if False:  # MUTATION M27",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_the_writers_capture_tools_do_what_their_texts_state[on]"
+  ]
+ },
+ {
+  "id": "M28",
+  "what": "find's result drops the count it states (\"of\")",
+  "file": "unify/memory/attention_tools.py",
+  "old": "\"hits\": hits, \"of\": len(ranked)}))",
+  "new": "\"hits\": hits}))  # MUTATION M28",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_the_writers_capture_tools_do_what_their_texts_state[on]"
+  ]
+ },
+ {
+  "id": "M30",
+  "what": "keep_note keeps nothing",
+  "file": "unify/memory/librarian.py",
+  "old": "            os.write(fd, data)\n",
+  "new": "            pass  # MUTATION M30\n",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_the_librarians_notes_reach_a_later_librarian_and_search_lists_every_item[on]"
+  ]
+ },
+ {
+  "id": "M31",
+  "what": "search reads no index (lists nothing)",
+  "file": "unify/memory/librarian.py",
+  "old": "    data = read_index(state.copy) if state.copy is not None else None\n",
+  "new": "    data = None  # MUTATION M31\n",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_the_librarians_notes_reach_a_later_librarian_and_search_lists_every_item[on]"
+  ]
+ },
+ {
+  "file": "unify/common/tool_registry.py",
+  "old": "COMMON_SECTION_NO_MEMORY = COMMON_SECTION.replace(\n    _COMMON_ROLES_ALL, \"the actor doing each request and the helpers it starts.\"\n).replace(_COMMON_ADDRESSES_ALL, \"a role: @actor (every running actor); @helpers (every running helper).\")",
+  "new": "COMMON_SECTION_NO_MEMORY = COMMON_SECTION  # MUTATION M7",
+  "id": "M32",
+  "what": "with memory off the common section names the memory agents (seen in the first requests)",
+  "tests": [
+   "tests/system/test_j2b_first_requests.py::test_each_roles_first_request_reads_as_its_golden[off]"
+  ]
+ },
+ {
+  "id": "M33",
+  "what": "(re-anchored M10 for the GatePolicy tip) a finding no item owns only labels",
+  "file": "unify/memory/gate_policy.py",
+  "old": "            \"G1\",\n            unowned=True,",
+  "new": "            \"G1-mutated\",  # MUTATION M33\n            unowned=True,",
+  "tests": [
+   "tests/system/test_s09_gate_raw_candidates.py::test_gate_refuses_an_undeclared_removal_of_a_library_item"
+  ]
+ },
+ {
+  "id": "M34",
+  "what": "a note without a Rule section only labels",
+  "file": "unify/memory/gate_policy.py",
+  "old": "        Refusal(f\"a new or changed note without a `## {RULE}` section with text\", \"G1\", (RULE_MARK,)),\n",
+  "new": "",
+  "tests": [
+   "tests/system/test_s09_gate_raw_candidates.py::test_gate_refuses_a_note_without_a_rule_section_on_a_raw_candidate",
+   "tests/system/test_s09_gate_raw_candidates.py::test_a_writer_pass_cannot_land_a_note_without_a_rule_section[on]"
+  ]
+ },
+ {
+  "id": "M35",
+  "what": "G5 (fewer items) only labels",
+  "file": "unify/memory/gate_policy.py",
+  "old": "        Refusal(\"a pass with fewer items than the library it started from, or a dropped alias (G5)\", \"G5\"),\n",
+  "new": "",
+  "tests": [
+   "tests/system/test_s09_gate_raw_candidates.py::test_gate_refuses_a_declared_deletion_of_a_library_item",
+   "tests/system/test_s09_gate_raw_candidates.py::test_a_writer_pass_cannot_remove_a_library_item[on]"
+  ]
+ },
+ {
+  "id": "M36",
+  "what": "(re-anchored M23) the pass limits table states 12 reader calls while 16 are enforced",
+  "file": "unify/memory/agent_profiles.py",
+  "old": "{\"limit\": \"reader calls per model turn\", \"value\": R.READERS_PER_TURN, \"unit\": \"calls\"},",
+  "new": "{\"limit\": \"reader calls per model turn\", \"value\": 12, \"unit\": \"calls\"},  # MUTATION M36",
+  "tests": [
+   "tests/system/test_j3_constants.py::test_the_pass_limits_table_is_the_enforced_constants",
+   "tests/system/test_j3_constants.py::test_each_stated_number_is_its_constant[0]"
+  ]
+ },
+ {
+  "id": "M37",
+  "what": "(re-anchored M29) the helper's read refusal names roots it cannot read",
+  "file": "unify/common/tool_registry.py",
+  "old": "        \"outside_box\": \"{path} is outside /inputs, /task, /memory and /work\",\n        \"not_found\": \"{path} does not exist; /inputs",
+  "new": "        \"outside_box\": \"{path} is outside /inputs, /memory and /outputs\",  # MUTATION M37\n        \"not_found\": \"{path} does not exist; /inputs",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_each_roles_refusals_name_only_roots_it_can_open[on]"
+  ]
+ },
+ {
+  "id": "M38",
+  "what": "(reverts the drain fix, window 1) the stopped-service early return ignores the group",
+  "file": "unify/memory/writer_service.py",
+  "old": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE) and (caller or not left()):\n",
+  "new": "    if doc.get(\"state\") == \"stopped\" and not lock_holders(service_dir(home) / LOCK_FILE):  # MUTATION M38\n",
+  "tests": [
+   "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_of_a_stopped_service_lives"
+  ]
+ },
+ {
+  "id": "M39",
+  "what": "(reverts the drain fix, window 2) unrecorded members count only up to the last sign of life",
+  "file": "unify/memory/writer_service.py",
+  "old": "    limit = alive + timedelta(seconds=HEARTBEAT_S + MEMBERS_S)\n",
+  "new": "    limit = alive  # MUTATION M39\n",
+  "tests": [
+   "tests/system/test_s14_drain_verification.py::test_a_drain_is_not_verified_while_a_child_started_after_the_last_heartbeat_lives"
+  ]
+ },
+ {
+  "id": "M40",
+  "what": "the librarian enforces 4 sessions per request while the texts say 3",
+  "file": "unify/memory/librarian.py",
+  "old": "MAX_ASK_SESSIONS = 3\n",
+  "new": "MAX_ASK_SESSIONS = 4  # MUTATION M40\n",
+  "tests": [
+   "tests/system/test_j3_constants.py::test_each_stated_number_is_its_constant[7]"
+  ]
+ },
+ {
+  "id": "M41",
+  "what": "no recorded blob reaches the writer's /inputs/blobs",
+  "file": "unify/memory/writer_pass.py",
+  "old": "            if getattr(a, \"kind\", \"tool\") != \"worktree\" or not isinstance(\n",
+  "new": "            if True or not isinstance(  # MUTATION M41\n",
+  "tests": [
+   "tests/system/test_s13_role_claims.py::test_the_writers_inputs_hold_whole_episodes_and_their_blobs[on]"
+  ]
+ },
+ {
+  "id": "M42",
+  "what": "an unreviewed change to a sentence in a role's first request (the writer's group message)",
+  "file": "unify/memory/attention_tools.py",
+  "old": "says why the harness put them together",
+  "new": "explains why the harness grouped them",
+  "tests": [
+   "tests/system/test_j2b_first_requests.py::test_each_roles_first_request_reads_as_its_golden[on]"
+  ]
+ }
+]

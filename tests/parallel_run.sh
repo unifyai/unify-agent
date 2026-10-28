@@ -53,15 +53,6 @@ _derive_log_subdir() {
 LOG_SUBDIR="${UNIFY_LOG_SUBDIR:-$(_derive_log_subdir "$TMUX_SOCKET")}"
 LOG_DIR="$REPO_ROOT/logs/pytest/$LOG_SUBDIR"
 
-# ---- Per-session stores ----
-# Every pytest process opens the SQLite store named by UNIFY_STORE_PATH.
-# Each session gets its own file under the run's log directory, so sessions
-# never share tables and each store stays on disk next to the session's log
-# for post-mortem queries. A UNIFY_STORE_PATH the caller already set
-# (environment, .env or --env) is honoured instead, and every session then
-# shares that one store.
-STORES_DIR="$LOG_DIR/stores"
-
 # Wrapper for all tmux commands to use our isolated socket
 # LC_ALL=en_US.UTF-8 ensures Unicode emojis work in session names
 tmux_cmd() {
@@ -71,6 +62,8 @@ tmux_cmd() {
 # ---- Cleanup on interrupt ----
 # Track session IDs for cleanup on SIGINT/SIGTERM
 declare -a CREATED_SESSION_IDS=()
+declare -a CREATED_RESULT_PATHS=()
+declare -a CREATED_SESSION_NAMES=()
 
 # ---- Inline pass/fail reporting ----
 # Track which sessions we've already reported completion for (":$0:$3:")
@@ -90,10 +83,12 @@ _mark_reported() {
 }
 
 # Record one finished session's duration, cache stats and cost for the
-# end-of-run sorted output. The per-session temp files are written by
-# tests/conftest.py, keyed on the socket and the tmux session id: every tmux
-# server numbers its sessions from $0, so the id alone is shared by
-# overlapping runs from different terminals.
+# end-of-run sorted output. The per-session files are written by
+# tests/conftest.py into this run's RESULTS_DIR (UNIFY_TEST_RESULTS_DIR in the
+# session), keyed on the socket and the tmux session id: every tmux server
+# numbers its sessions from $0, so the id alone is shared by overlapping runs
+# from different terminals. They are not in /tmp: each pytest process runs in
+# the test sandbox (tests/_test_sandbox.py), whose /tmp is its own.
 _record_session_result() {
   local sid="$1" status="$2" base="$3"
   [[ -n "${START_TIMES_FILE:-}" && -f "$START_TIMES_FILE" ]] || return 0
@@ -104,14 +99,14 @@ _record_session_result() {
   local key="${TMUX_SOCKET}_${sid}"
 
   local hits=0 canonical=0 misses=0
-  local stats_file="/tmp/parallel_run_cache_${key}.txt"
+  local stats_file="${RESULTS_DIR:-/tmp}/parallel_run_cache_${key}.txt"
   if [[ -f "$stats_file" ]]; then
     IFS='|' read -r hits canonical misses < "$stats_file" 2>/dev/null || true
     rm -f "$stats_file"
   fi
 
   local cost="0"
-  local cost_file="/tmp/parallel_run_cost_${key}.txt"
+  local cost_file="${RESULTS_DIR:-/tmp}/parallel_run_cost_${key}.txt"
   if [[ -f "$cost_file" ]]; then
     cost=$(tr -d '[:space:]' < "$cost_file" 2>/dev/null || echo 0)
     rm -f "$cost_file"
@@ -120,7 +115,7 @@ _record_session_result() {
   # pytest exits 0 when every test skips, so a green session may have run
   # nothing. Report those as skipped rather than passed.
   local outcome_passed outcome_skipped
-  local outcome_file="/tmp/parallel_run_outcome_${key}.txt"
+  local outcome_file="${RESULTS_DIR:-/tmp}/parallel_run_outcome_${key}.txt"
   if [[ -f "$outcome_file" ]]; then
     IFS='|' read -r outcome_passed outcome_skipped < "$outcome_file" 2>/dev/null || true
     rm -f "$outcome_file"
@@ -138,30 +133,28 @@ report_completed_sessions() {
   # Guard against empty array (set -u treats empty array expansion as unbound)
   (( ${#CREATED_SESSION_IDS[@]} == 0 )) && return 0
 
-  for sid in "${CREATED_SESSION_IDS[@]}"; do
-    # Skip if already reported
+  local index sid receipt status base
+  for (( index=0; index<${#CREATED_SESSION_IDS[@]}; index++ )); do
+    sid="${CREATED_SESSION_IDS[$index]}"
     _is_reported "$sid" && continue
-
-    # Get current session name (may fail if session was killed)
-    local current_name
-    current_name=$(tmux_cmd display-message -p -t "$sid" "#{session_name}" 2>/dev/null || echo "")
-    [[ -z "$current_name" ]] && continue
-
-    # Check for completion (passed or failed prefix)
-    case "$current_name" in
-      "p ✅ "*)
-        local base="${current_name#p ✅ }"
-        echo "  - p ✅ $base"
-        _mark_reported "$sid"
-        _record_session_result "$sid" pass "$base"
-        ;;
-      "f ❌ "*)
-        local base="${current_name#f ❌ }"
-        echo "  - f ❌ $base"
-        _mark_reported "$sid"
-        _record_session_result "$sid" fail "$base"
-        ;;
-    esac
+    receipt="${CREATED_RESULT_PATHS[$index]}"
+    # The child publishes its exit receipt before it renames or closes the
+    # session. A missing session is not evidence of a successful test.
+    [[ -f "$receipt" && ! -L "$receipt" ]] || continue
+    status=$(cat "$receipt") || continue
+    if [[ ! "$status" =~ ^(0|[1-9][0-9]{0,2})$ ]] || (( status > 255 )); then
+      echo "Invalid exit receipt for $sid: $receipt" >&2
+      continue
+    fi
+    base="${CREATED_SESSION_NAMES[$index]}"
+    if (( status == 0 )); then
+      echo "  - p ✅ $base"
+      _record_session_result "$sid" pass "$base"
+    else
+      echo "  - f ❌ $base"
+      _record_session_result "$sid" fail "$base"
+    fi
+    _mark_reported "$sid"
   done
 }
 
@@ -197,8 +190,10 @@ trap '_cleanup_sessions TERM; exit 143' TERM
 # (tests/parallel_run/), not tests themselves; those tests hand the fixture
 # files to this script explicitly. Excluding them by name keeps a directory
 # sweep from spawning, say, the hang fixture that exists only to be killed by
-# --session-timeout.
-EXCLUDE_DIRS=( .git .hg .svn .venv venv .mypy_cache .pytest_cache __pycache__ .idea .vscode fixtures hang_fixtures store_fixtures report_fixtures )
+# --session-timeout. tests/legacy/ holds the tests of unify/legacy/ (legacy,
+# unused, unsupported code): a sweep skips it, and it runs only when named
+# (tests/parallel_run.sh tests/legacy/).
+EXCLUDE_DIRS=( .git .hg .svn .venv venv .mypy_cache .pytest_cache __pycache__ .idea .vscode fixtures hang_fixtures env_fixtures report_fixtures legacy )
 
 # Parse arguments
 # Returns: 0=success, 1=help requested, 2=error
@@ -228,21 +223,6 @@ if (( SESSION_TIMEOUT == 0 )); then
   fi
 fi
 
-# Build pytest marker filter based on flags
-MARKER_FILTER=""
-if (( EVAL_ONLY )); then
-  MARKER_FILTER="-m eval"
-elif (( SYMBOLIC_ONLY )); then
-  MARKER_FILTER="-m 'not eval'"
-elif (( DETERMINISTIC_ONLY )); then
-  # "not eval" still leaves every llm_call test in, and those answer to
-  # whatever the shared cache happens to hold: under UNILLM_CACHE=read-only a
-  # request with no recorded entry raises, so a sweep meant to find broken
-  # tests reports cache gaps instead. Excluding both markers leaves only the
-  # tests whose outcome depends on this repository alone.
-  MARKER_FILTER="-m 'not eval and not llm_call'"
-fi
-
 # ---------------------------------------------------------------------------
 # Helper: check if a var name is in the --env overrides
 # Usage: is_var_in_env_overrides VAR_NAME
@@ -255,47 +235,6 @@ is_var_in_env_overrides() {
     fi
   done
   return 1
-}
-
-# ---------------------------------------------------------------------------
-# Helper: resolve the store a session should open
-# Usage: resolve_store_path SESSION_NAME
-# ---------------------------------------------------------------------------
-# --env wins over the environment (which includes .env); with neither set,
-# the runner hands out one store per session under STORES_DIR.
-RUNNER_OWNS_STORES=1
-if is_var_in_env_overrides "UNIFY_STORE_PATH" || [[ -n "${UNIFY_STORE_PATH:-}" ]]; then
-  RUNNER_OWNS_STORES=0
-fi
-
-resolve_store_path() {
-  local session_name="$1"
-  for kv in "${ENV_OVERRIDES[@]+"${ENV_OVERRIDES[@]}"}"; do
-    if [[ "$kv" == "UNIFY_STORE_PATH="* ]]; then
-      echo "${kv#UNIFY_STORE_PATH=}"
-      return 0
-    fi
-  done
-  if [[ -n "${UNIFY_STORE_PATH:-}" ]]; then
-    echo "$UNIFY_STORE_PATH"
-    return 0
-  fi
-  echo "$STORES_DIR/$(store_basename "$session_name").sqlite"
-}
-
-# A session name can carry a parametrised node id: characters the filesystem
-# rejects and more bytes than one path component allows. The store file keeps
-# a readable prefix and a hash of the full name, the same shape as the log
-# filenames conftest.py writes.
-store_basename() {
-  local name="$1"
-  name="${name//[^A-Za-z0-9._-]/_}"
-  if (( ${#name} > 120 )); then
-    local digest
-    digest=$(printf '%s' "$1" | shasum | cut -c1-8)
-    name="${name:0:111}_${digest}"
-  fi
-  printf '%s' "$name"
 }
 
 # ---------------------------------------------------------------------------
@@ -313,23 +252,17 @@ build_env_exports() {
   # ---------------------------------------------------------------------------
   # OpenTelemetry Configuration for Cross-Repo Traces
   # ---------------------------------------------------------------------------
-  # Enable OTEL tracing in unify and unillm so the spans from a single test
-  # are aggregated into one {trace_id}.jsonl file under logs/all/. Per-test
+  # Enable OTEL tracing in unillm so the spans from a single test are
+  # aggregated into one {trace_id}.jsonl file under logs/all/. Per-test
   # isolation comes from unique trace_ids, not subdirectories.
   local otel_log_dir="$REPO_ROOT/logs/all"
 
-  # Enable OTEL master switches (unless explicitly disabled via --env)
-  if ! is_var_in_env_overrides "UNIFY_OTEL"; then
-    exports="$exports UNIFY_OTEL=true"
-  fi
+  # Enable the OTEL master switch (unless explicitly disabled via --env)
   if ! is_var_in_env_overrides "UNILLM_OTEL"; then
     exports="$exports UNILLM_OTEL=true"
   fi
 
-  # Point both repos to the shared OTEL log directory (unless explicitly set via --env)
-  if ! is_var_in_env_overrides "UNIFY_OTEL_LOG_DIR"; then
-    exports="$exports UNIFY_OTEL_LOG_DIR=$otel_log_dir"
-  fi
+  # Point unillm to the shared OTEL log directory (unless explicitly set via --env)
   if ! is_var_in_env_overrides "UNILLM_OTEL_LOG_DIR"; then
     exports="$exports UNILLM_OTEL_LOG_DIR=$otel_log_dir"
   fi
@@ -489,8 +422,8 @@ fi
 # Build the command to run in each tmux session
 run_cmd() {
   local target="$1"        # pytest target (file path or node id)
-  local marker_arg="$2"    # optional marker filter (e.g., "-m eval")
-  local session_name="$3"  # unique session name (names the session's store)
+  local session_name="$2"  # unique session name
+  local result_path="$3"   # controller-owned occurrence, never derived from a node
   # Build the inner script first with safe %q for path/target, then quote the whole script with %q
   local inner
   local env_exports
@@ -501,10 +434,10 @@ run_cmd() {
   # inherited value. UTF-8 locale keeps emoji session names intact;
   # UNILLM_CACHE_STATS must be set before unillm is imported.
   env_exports="export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 UNILLM_CACHE_STATS=true"
-  env_exports="$env_exports $(printf 'UNIFY_STORE_PATH=%q' "$(resolve_store_path "$session_name")")"
+  env_exports="$env_exports $(printf 'UNIFY_TEST_RESULTS_DIR=%q' "$RESULTS_DIR")"
   # Append user-provided --env overrides plus the socket/log-dir/OTEL exports
   env_exports="$env_exports$(build_env_exports)"
-  # Build pytest command with optional marker filter and extra args
+  # Build pytest command with any extra args
   local pytest_cmd
   local extra_args=""
   # Append any extra pytest args passed via --
@@ -513,11 +446,7 @@ run_cmd() {
       extra_args="$extra_args $(printf '%q' "$arg")"
     done
   fi
-  if [[ -n "$marker_arg" ]]; then
-    pytest_cmd=$(printf '%q -m pytest %s %s %q' "$VENV_PY" "$marker_arg" "$extra_args" "$target")
-  else
-    pytest_cmd=$(printf '%q -m pytest %s %q' "$VENV_PY" "$extra_args" "$target")
-  fi
+  pytest_cmd=$(printf '%q -m pytest %s %q' "$VENV_PY" "$extra_args" "$target")
   # Wrap pytest in GNU/coreutils timeout so a hung session fails in minutes
   # instead of holding the whole-run --timeout budget. Prefer timeout(1);
   # fall back to gtimeout on macOS Homebrew. Skip wrapping if neither exists
@@ -546,7 +475,9 @@ run_cmd() {
   # where multiple sessions complete simultaneously or external agents interfere.
   # The session ID is captured BEFORE pytest runs and exported as UNIFY_TMUX_SESSION_ID
   # so pytest's conftest.py can write cache stats to a known temp file location.
-  inner=$(printf '%s; export UNIFY_TMUX_SESSION_ID=$(LC_ALL=en_US.UTF-8 tmux -L %q display-message -p -t "$TMUX_PANE" "#{session_id}"); cd %q && %s; status=$?; sname=$(LC_ALL=en_US.UTF-8 tmux -L %q display-message -p -t "$TMUX_PANE" "#{session_name}"); base="$sname"; case "$sname" in "p ✅ "*) base="${sname#p ✅ }" ;; "f ❌ "*) base="${sname#f ❌ }" ;; "r ⏳ "*) base="${sname#r ⏳ }" ;; esac; if [ $status -eq 0 ]; then pfx="p ✅"; else pfx="f ❌"; fi; LC_ALL=en_US.UTF-8 tmux -L %q rename-session -t "$sname" "$pfx $base" 2>/dev/null || true; if [ $status -eq 0 ]; then (sleep 10; LC_ALL=en_US.UTF-8 tmux -L %q kill-session -t "$UNIFY_TMUX_SESSION_ID" 2>/dev/null; if ! LC_ALL=en_US.UTF-8 tmux -L %q ls >/dev/null 2>&1; then LC_ALL=en_US.UTF-8 tmux -L %q kill-server 2>/dev/null || true; fi) >/dev/null 2>&1 & disown; echo "All tests passed. This tmux session will close in 10s..."; fi; echo; echo "pytest exited with code: $status"; echo "(You are now in a shell. Press Ctrl-D to close this window.)"; exec bash -l' "$env_exports" "$TMUX_SOCKET" "$REPO_ROOT" "$pytest_cmd" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET")
+  local receipt_cmd
+  receipt_cmd=$(printf '%q -B %q %q "$status"' "$VENV_PY" "$SCRIPT_DIR/_parallel_result.py" "$result_path")
+  inner=$(printf '%s; export UNIFY_TMUX_SESSION_ID=$(LC_ALL=en_US.UTF-8 tmux -L %q display-message -p -t "$TMUX_PANE" "#{session_id}"); cd %q && %s; status=$?; if ! %s; then echo "Failed to publish test exit receipt" >&2; exit 125; fi; sname=$(LC_ALL=en_US.UTF-8 tmux -L %q display-message -p -t "$TMUX_PANE" "#{session_name}"); base="$sname"; case "$sname" in "p ✅ "*) base="${sname#p ✅ }" ;; "f ❌ "*) base="${sname#f ❌ }" ;; "r ⏳ "*) base="${sname#r ⏳ }" ;; esac; if [ $status -eq 0 ]; then pfx="p ✅"; else pfx="f ❌"; fi; LC_ALL=en_US.UTF-8 tmux -L %q rename-session -t "$sname" "$pfx $base" 2>/dev/null || true; if [ $status -eq 0 ]; then (sleep 10; LC_ALL=en_US.UTF-8 tmux -L %q kill-session -t "$UNIFY_TMUX_SESSION_ID" 2>/dev/null; if ! LC_ALL=en_US.UTF-8 tmux -L %q ls >/dev/null 2>&1; then LC_ALL=en_US.UTF-8 tmux -L %q kill-server 2>/dev/null || true; fi) >/dev/null 2>&1 & disown; echo "All tests passed. This tmux session will close in 10s..."; fi; echo; echo "pytest exited with code: $status"; echo "(You are now in a shell. Press Ctrl-D to close this window.)"; exec bash -l' "$env_exports" "$TMUX_SOCKET" "$REPO_ROOT" "$pytest_cmd" "$receipt_cmd" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET")
   printf 'bash -c %q' "$inner"
 }
 
@@ -802,8 +733,6 @@ build_find_cmd() {
 # This is much faster than calling pytest --collect-only per file, as pytest
 # initialization (~10s) happens only once instead of per file.
 collect_nodes_batch() {
-  local marker_arg="$1"  # optional marker filter (e.g., "-m eval")
-  shift
   local targets=("$@")
 
   if (( ${#targets[@]} == 0 )); then
@@ -811,8 +740,8 @@ collect_nodes_batch() {
   fi
 
   local cmd
-  # Collection only needs test ids, not an activated project: SKIP_UNIFY_TEST_INIT
-  # keeps the harness from opening a store and seeding the builtin catalogues.
+  # Collection only needs test ids: SKIP_UNIFY_TEST_INIT keeps the harness
+  # from initialising the runtime.
   local env_exports='export SKIP_UNIFY_TEST_INIT=1'
   # Append user-provided --env overrides
   local user_overrides
@@ -827,11 +756,8 @@ collect_nodes_batch() {
     quoted_targets+=" $(printf '%q' "$t")"
   done
 
-  # Build collection filter args (marker filter + any -k/-m from PYTEST_EXTRA_ARGS)
+  # Build collection filter args (any -k/-m from PYTEST_EXTRA_ARGS)
   local collection_filters=""
-  if [[ -n "$marker_arg" ]]; then
-    collection_filters="$marker_arg"
-  fi
   # Append collection-relevant args from PYTEST_EXTRA_ARGS (e.g., -k "pattern")
   if (( ${#PYTEST_COLLECTION_ARGS[@]} > 0 )); then
     for carg in "${PYTEST_COLLECTION_ARGS[@]}"; do
@@ -882,9 +808,9 @@ validate_and_add_direct_nodes() {
     fi
   done
 
-  # Collect all valid nodes from those files (no marker filter — just checking existence)
+  # Collect all valid nodes from those files (just checking existence)
   local collected
-  collected=$(collect_nodes_batch "" "${base_files[@]}")
+  collected=$(collect_nodes_batch "${base_files[@]}")
 
   # Validate each direct_node against collected output
   for node in "${direct_nodes[@]}"; do
@@ -947,40 +873,11 @@ if (( ! SERIAL )); then
   if (( ${#all_targets[@]} )); then
     while IFS= read -r nid; do
       [[ -n "$nid" ]] && printf '%s\0' "$nid" >> "$tmp"
-    done < <(collect_nodes_batch "$MARKER_FILTER" "${all_targets[@]}")
-  fi
-  validate_and_add_direct_nodes
-elif [[ -n "$MARKER_FILTER" ]]; then
-  # Serial mode WITH marker filter: collect nodes first to find which files
-  # have matching tests, then create one session per file (not per-node).
-  # This prevents creating sessions for files with 0 matching tests.
-  all_targets=()
-  if (( ${#direct_files[@]} )); then
-    all_targets+=( "${direct_files[@]}" )
-  fi
-  if (( ${#found_files[@]} )); then
-    all_targets+=( "${found_files[@]}" )
-  fi
-  if (( ${#all_targets[@]} )); then
-    # Collect node ids, extract unique file paths (bash 3.x compatible)
-    # Use a temp file + sort -u to get unique file paths
-    tmp_files="$(mktemp)"
-    while IFS= read -r nid; do
-      if [[ -n "$nid" && "$nid" == *"::"* ]]; then
-        # Extract file path (everything before first ::)
-        file_path="${nid%%::*}"
-        echo "$file_path" >> "$tmp_files"
-      fi
-    done < <(collect_nodes_batch "$MARKER_FILTER" "${all_targets[@]}")
-    # Output unique files that have matching tests
-    while IFS= read -r file_path; do
-      [[ -n "$file_path" ]] && printf '%s\0' "$file_path" >> "$tmp"
-    done < <(sort -u "$tmp_files")
-    rm -f "$tmp_files"
+    done < <(collect_nodes_batch "${all_targets[@]}")
   fi
   validate_and_add_direct_nodes
 else
-  # Serial mode without marker filter: one session per file
+  # Serial mode: one session per file
   if (( ${#direct_files[@]} )); then
     printf '%s\0' "${direct_files[@]}" >> "$tmp"
   fi
@@ -1000,7 +897,6 @@ if (( ${#files[@]} == 0 )); then
   echo "This could mean:" >&2
   echo "  - The path doesn't exist or contains no test_*.py files" >&2
   echo "  - pytest --collect-only failed (check for import errors)" >&2
-  echo "  - A marker filter (--eval-only/--symbolic-only) excluded all tests" >&2
   exit 1
 fi
 
@@ -1023,12 +919,7 @@ declare -a session_ids=()
 print_log_directories() {
   echo "========================================================================"
   echo "📁 pytest logs:  logs/pytest/$LOG_SUBDIR/"
-  if (( RUNNER_OWNS_STORES )); then
-    echo "🗄️  stores:       logs/pytest/$LOG_SUBDIR/stores/ (one SQLite file per session)"
-  else
-    echo "🗄️  store:        $(resolve_store_path "") (UNIFY_STORE_PATH, shared by every session)"
-  fi
-  echo "🔗 OTel traces:  logs/{unify|unillm}/ (per-repo), logs/all/ (cross-repo)"
+  echo "🔗 OTel traces:  logs/unillm/ (unillm), logs/all/ (cross-repo)"
   echo "📖 Logging docs: logs/README.md"
   echo "========================================================================"
 }
@@ -1044,11 +935,11 @@ else
   echo "Concurrency limit: unlimited"
 fi
 
-# Sessions open their stores as soon as pytest starts, so the directory has
-# to exist before the first session is created.
-if (( RUNNER_OWNS_STORES )); then
-  mkdir -p "$STORES_DIR"
-fi
+# Keep occurrence identities and terminal receipts after sessions and the
+# runner exit. Each invocation gets a private fresh directory, including
+# repeated runs using the same socket or log subdirectory.
+mkdir -p "$LOG_DIR"
+RESULTS_DIR=$(mktemp -d "$LOG_DIR/session-results.XXXXXX")
 
 # Print header before drip-feeding session creation
 echo "Creating ${#files[@]} tmux sessions..."
@@ -1072,7 +963,12 @@ for target in "${files[@]}"; do
   # Note: Log directory is created lazily by conftest.py only when a log file is
   # actually written, avoiding empty directories when sessions fail/are interrupted.
   # Note: Log paths are auto-derived by conftest.py (semantic name + timestamp in socket subdir)
-  cmd="$(run_cmd "$target" "$MARKER_FILTER" "$session")"
+  occurrence=${#CREATED_SESSION_IDS[@]}
+  result_path="$RESULTS_DIR/$occurrence.exit"
+  original_session_name="$session"
+  printf '%s\n' "$target" > "$RESULTS_DIR/$occurrence.target"
+  printf '%s\n' "$session" > "$RESULTS_DIR/$occurrence.name"
+  cmd="$(run_cmd "$target" "$session" "$result_path")"
 
   # Capture session ID to track this specific run robustly
   sid=$(tmux_cmd new-session -d -P -F "#{session_id}" -s "$session" -n "$wname" "$cmd")
@@ -1091,6 +987,9 @@ for target in "${files[@]}"; do
   session_ids+=( "$sid" )
   # Track for cleanup on interrupt (SIGINT/SIGTERM)
   CREATED_SESSION_IDS+=( "$sid" )
+  CREATED_RESULT_PATHS+=( "$result_path" )
+  CREATED_SESSION_NAMES+=( "$original_session_name" )
+  printf '%s\n' "$sid" > "$RESULTS_DIR/$occurrence.session"
 done
 
 # ---- Wait for all tests to complete ----
@@ -1164,7 +1063,18 @@ if (( timed_out )); then
 fi
 
 echo ""
-echo "All tests completed."
+incomplete_count=0
+for sid in "${session_ids[@]}"; do
+  if ! _is_reported "$sid"; then
+    ((incomplete_count++)) || true
+    echo "Missing terminal receipt for owned session $sid; outcome unknown." >&2
+  fi
+done
+if (( incomplete_count > 0 )); then
+  echo "Incomplete test accounting: $incomplete_count missing outcomes." >&2
+else
+  echo "All tests completed."
+fi
 
 # Collect failures
 declare -a failed_sessions=()
@@ -1294,7 +1204,10 @@ fi
 echo ""
 print_log_directories
 
-if (( fail_count > 0 || ${#failed_sessions[@]} > 0 )); then
+if (( incomplete_count > 0 || total_tests != ${#session_ids[@]} )); then
+  echo "Test accounting is incomplete; preserved receipts: $RESULTS_DIR" >&2
+  exit 2
+elif (( fail_count > 0 || ${#failed_sessions[@]} > 0 )); then
   exit 1
 else
   echo ""

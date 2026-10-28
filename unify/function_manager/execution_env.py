@@ -1,15 +1,6 @@
-"""
-Utilities for creating function execution environments.
-
-Provides controlled global namespaces for executing user-defined and
-compositional functions with:
-- Safe built-in functions (excluding dangerous ones like eval, exec, open)
-- Common standard library modules (asyncio, re, json, datetime, collections)
-- Typing module and common type hints
-- Pydantic support (if available)
-- The ``primitives`` root, filled only by the sandbox's environments
-- Steerable handle infrastructure (for functions that return steerable handles)
-"""
+"""The globals of the actor's cells: safe builtins, common standard library modules and typing names, pydantic,
+the model helpers (``query_llm``, ``list_llms``, ``unillm``), ``run_coro_sync``, and the globals a registered
+environment binds."""
 
 import asyncio
 import collections
@@ -19,8 +10,6 @@ import json
 import re
 import typing
 from typing import Any, Dict
-
-import unillm
 
 try:
     import pydantic
@@ -32,21 +21,6 @@ except ImportError:
     BaseModel = None
     Field = None
     HAS_PYDANTIC = False
-
-
-ENVIRONMENT_MODULES: frozenset[str] = frozenset(
-    {
-        "primitives",
-        "pydantic",
-        "unillm",
-        "unify",
-    },
-)
-"""Non-stdlib module names that the function execution environment provides.
-
-Used by ``detect_third_party_imports`` to distinguish between packages that
-must be recorded as dependencies and packages that the runtime already supplies.
-"""
 
 
 def create_base_globals() -> Dict[str, Any]:
@@ -208,52 +182,49 @@ def create_base_globals() -> Dict[str, Any]:
 
 def create_execution_globals() -> Dict[str, Any]:
     """
-    Creates the globals of an actor's execution sandbox.
+    Creates the globals of the actor's cells.
 
     Extends create_base_globals() with:
-    - A `primitives` object exposing no namespace. The sandbox holds exactly
-      the primitives its environments inject, which replace this object; a
-      sandbox with none refuses `primitives.<namespace>` and says why.
-    - Steerable handle infrastructure for functions that return handles
-      (SteerableToolHandle)
-    - The `unillm` module for advanced direct LLM usage
-    - The `query_llm` helper for focused one-shot LLM queries
+    - `unillm` for advanced direct LLM usage (client constructors for the
+      endpoints UNIFY_CELL_LLM_MODELS allows)
+    - The `query_llm` helper for focused one-shot LLM queries (and
+      `list_llms`), held to the same endpoints
     - The `run_coro_sync` helper for sync façades that must drive async work
-      under an already-running event loop (offline Jobs / actor sandboxes)
-
-    Steerable Functions
-    -------------------
-    Functions can return a ``SteerableToolHandle`` subclass to indicate they
-    are steerable. The execution layer will detect this at runtime via
-    ``isinstance(result, SteerableToolHandle)`` and wire up steering operations.
+      under an already-running event loop
 
     Returns:
-        A dictionary of globals for function execution.
+        A dictionary of globals for the cells.
     """
     globals_dict = create_base_globals()
 
-    # Import Primitives here to avoid circular imports at module load time
-    from unify.function_manager.primitives import Primitives, PrimitiveScope
-
-    globals_dict["primitives"] = Primitives(primitive_scope=PrimitiveScope.none())
-
-    # Steerable handle type - allows compositional functions to return handles
-    # that the execution layer can detect and wire up for steering operations.
-    from unify.common.async_tool_loop import SteerableToolHandle
     from unify.common.asyncio_compat import run_coro_sync
-    from unify.common.reasoning import list_llms, query_llm
+    from unify.common.cell_models import (
+        ModelCallFailed,
+        ModelRequestError,
+        cell_list_llms,
+        cell_query_llm,
+        cell_unillm,
+    )
 
-    globals_dict["SteerableToolHandle"] = SteerableToolHandle
-    globals_dict["query_llm"] = query_llm
-    globals_dict["list_llms"] = list_llms
+    # Cell-scoped: each refuses an endpoint UNIFY_CELL_LLM_MODELS does not
+    # allow (unify/common/cell_models.py); the harness's own query_llm,
+    # list_llms and unillm are unchanged.
+    globals_dict["query_llm"] = cell_query_llm
+    globals_dict["list_llms"] = cell_list_llms
     globals_dict["run_coro_sync"] = run_coro_sync
-    globals_dict["unillm"] = unillm
+    globals_dict["unillm"] = cell_unillm
+    # What a cell's model call raises when the provider refuses the request's
+    # own content, so the cell can catch it by name.
+    globals_dict["ModelRequestError"] = ModelRequestError
+    # What it raises for any other failure of the call: a fixed text with the
+    # status and the error's type, never the provider's reply.
+    globals_dict["ModelCallFailed"] = ModelCallFailed
+
+    # Globals a registered environment binds beside its namespaces; never in
+    # place of one of the above.
+    from unify.function_manager.primitives.environment import environment_globals
+
+    for name, value in environment_globals().items():
+        globals_dict.setdefault(name, value)
 
     return globals_dict
-
-
-def sandbox_env() -> dict[str, str]:
-    """Environment for subprocesses that run user code: the runtime's own."""
-    import os
-
-    return dict(os.environ)

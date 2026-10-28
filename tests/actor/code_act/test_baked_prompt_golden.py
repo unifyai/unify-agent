@@ -1,0 +1,79 @@
+"""Symbolic: the actor's first request is the recorded one.
+
+This pins what a model receives on a fresh actor's first call with memory off,
+byte for byte: the system prompt, the tool list (``execute_code`` alone), the
+tool choice and the first user message. Requests are captured at unillm's
+transport (``tests/cache_discipline_helpers.py``), so nothing leaves the
+process.
+
+To record it again after a deliberate change, run this file with
+``UNIFY_RECORD_GOLDEN=1``: the recording is written to
+``logs/actor_baked_prompt_golden.json`` (the checkout is read-only inside the
+test sandbox), to be copied over ``tests/actor_baked_prompt_golden.json``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+
+import pytest
+
+from tests import cache_discipline_helpers as h
+
+BAKED_GOLDEN = Path(__file__).resolve().parents[2] / "actor_baked_prompt_golden.json"
+RECORDED = Path(__file__).resolve().parents[3] / "logs" / BAKED_GOLDEN.name
+
+
+def baked_recording(requests: list[dict]) -> dict:
+    """The first request of the actor's session, its parts as compared.
+
+    ``$UNIFY_HOME`` stands for the test's own home, which the system prompt
+    names in the workspace path, and ``actor-<hex>`` for the actor's name on
+    the run record, which is drawn per run (its form is pinned by
+    tests/agents/test_binding.py).
+    """
+    home = os.environ.get("UNIFY_HOME") or ""
+
+    def _norm(text: str) -> str:
+        text = text.replace(home, "$UNIFY_HOME") if home else text
+        return re.sub(r"`actor-[0-9a-f]{4,}`", "`actor-<hex>`", text)
+
+    first = h.session_requests(requests)[0]
+    messages = first["messages"]
+    return {
+        "system_prompt": _norm(messages[0]["content"]),
+        "tools": _norm(json.dumps(first["tools"], indent=1, default=str)),
+        "tool_choice": first["tool_choice"],
+        "first_user_message": _norm(
+            next(m["content"] for m in messages if m["role"] == "user"),
+        ),
+    }
+
+
+async def record_first_request() -> dict:
+    """``CodeActActor.act`` on a fresh actor; its first request."""
+    _result, _, requests = await h.scenario_actor(
+        [lambda: h.completion(content="done")] * 8,
+    )
+    return baked_recording(requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_the_first_request_is_the_recorded_one():
+    recorded = await record_first_request()
+    if os.environ.get("UNIFY_RECORD_GOLDEN") == "1":
+        RECORDED.parent.mkdir(parents=True, exist_ok=True)
+        RECORDED.write_text(json.dumps(recorded, indent=1) + "\n")
+        pytest.skip(f"recorded to {RECORDED}")
+    golden = json.loads(BAKED_GOLDEN.read_text())
+    assert [t["function"]["name"] for t in json.loads(recorded["tools"])] == [
+        "execute_code",
+    ]
+    assert recorded["tools"] == golden["tools"]
+    assert recorded["system_prompt"] == golden["system_prompt"]
+    assert recorded["first_user_message"] == golden["first_user_message"]
+    assert recorded == golden

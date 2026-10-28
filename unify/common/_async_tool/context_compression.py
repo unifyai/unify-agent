@@ -4,23 +4,56 @@ import copy
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Optional
 
 import unillm
 from pydantic import BaseModel
+from unify import transcripts
 from unify.common.llm_client import new_llm_client
 from unify.common.token_utils import count_tokens
 from unify.function_manager.execution_env import create_base_globals
+
+#: Every agent (the agent loop, and the memory writer and its helpers) compacts its context once a model call's
+#: prompt reaches whichever comes first: this share of the model's context window (``unillm.get_max_input_tokens``)
+#: or a fixed number of prompt tokens (:func:`compaction_at_tokens`). With no known window, the fixed number applies.
+COMPACTION_THRESHOLD = 0.85
+#: The fixed number of prompt tokens: a point where the conversation is summarised and restarted, not a limit on
+#: what an agent may read or write.
+COMPACTION_AT_TOKENS = 150_000
+
+
+def compaction_point(
+    max_input_tokens: object,
+    threshold: float = COMPACTION_THRESHOLD,
+) -> int:
+    """The prompt size at which a call's context is compacted: the smaller of *threshold* of the model's window
+    and the fixed point, or the fixed point alone when the window is unknown (None, zero or not a number).
+    """
+    fixed = COMPACTION_AT_TOKENS
+    if (
+        isinstance(max_input_tokens, int)
+        and not isinstance(max_input_tokens, bool)
+        and max_input_tokens > 0
+    ):
+        return min(fixed, int(max_input_tokens * threshold))
+    return fixed
 
 
 def context_over_threshold(
     n_tokens: int,
     threshold: float,
-    max_input_tokens: int,
+    max_input_tokens: int | None,
 ) -> bool:
-    return n_tokens >= max_input_tokens * threshold
+    """Whether a call that used *n_tokens* of prompt has reached the compaction point (:func:`compaction_point`)."""
+    return n_tokens >= compaction_point(max_input_tokens, threshold)
 
 
 _COMPRESSED_HEADER = "## Compressed Prior Context\n"
+
+#: A compression asks for its summary as a fork of the conversation first
+#: (``AsyncToolLoopHandle._summarise_as_fork``), and rebuilds with
+#: :func:`compress_and_rebuild` only when the fork returns nothing.
+FORK_SUMMARY = True
 
 
 @dataclass
@@ -133,16 +166,16 @@ COMPRESSION_MULTI_PASS_ADDENDUM = (
 _COMPRESSION_SIGNAL = object()
 
 
-def compress_context() -> str:
-    """Compress the conversation history to free up context window space.
+#: The line after the summary that tells the model to carry on.
+RESTART_NOTICE = "Context was compressed. Continue from where you left off."
 
-    This tool is always visible. When the context window is nearly full, this
-    becomes the **only** available tool and you **must** call it.
 
-    Cannot be called while other tools are in-flight -- finish or stop all
-    running tools first.
-    """
-    return "compression acknowledged"
+def restart_text(summary: str, pointer: Optional[str] = None) -> str:
+    """The text of the summary message a compaction restarts from."""
+    text = f"{_COMPRESSED_HEADER}{summary}\n\n{RESTART_NOTICE}"
+    if pointer:
+        text += "\n\n" + pointer
+    return text
 
 
 def tag_images_in_messages(
@@ -209,8 +242,8 @@ _SANDBOX_GLOBALS = None
 
 
 def _get_sandbox_globals() -> dict:
-    """Sandbox globals for transformation exec: ``create_base_globals()``
-    plus ``re`` and ``json``, built once."""
+    """The transformation's globals: ``create_base_globals()`` plus ``re``
+    and ``json``, built once. The box rebuilds them by import."""
     global _SANDBOX_GLOBALS
     if _SANDBOX_GLOBALS is None:
         g = create_base_globals()
@@ -221,30 +254,17 @@ def _get_sandbox_globals() -> dict:
 
 
 def _eval_transformation(transformation_str: str, content: str) -> str:
-    """Execute transformation code that receives the content as ``x`` and
-    leaves the result in ``x``. Raises on syntax or runtime errors; the
-    caller reports them to the LLM.
+    """Run transformation code that receives the content as ``x`` and
+    leaves the result in ``x``, in a fresh confined process
+    (transformation_sandbox.py), never in the harness: the code is the
+    compression model's, written over transcript text that holds untrusted
+    content. A bare expression is assigned to ``x``. Raises on syntax or
+    runtime errors (same type name and message), on a timeout and without
+    bubblewrap; the caller reports them to the LLM.
     """
-    sandbox = dict(_get_sandbox_globals())
-    sandbox["x"] = content
+    from .transformation_sandbox import run_transformation
 
-    code = transformation_str.strip()
-
-    # A bare expression such as ``x.replace("old", "new")`` is wrapped as
-    # ``x = <expr>``; multi-line code or code containing ``=`` runs as-is
-    # and must assign ``x`` itself.
-    if "\n" not in code and "=" not in code:
-        try:
-            compile(code, "<transformation>", "eval")
-            code = f"x = {code}"
-        except SyntaxError:
-            pass
-
-    exec(code, sandbox)  # noqa: S102
-    result = sandbox["x"]
-    if not isinstance(result, str):
-        result = str(result)
-    return result
+    return run_transformation(transformation_str, content, _get_sandbox_globals())
 
 
 def _compute_token_usage(entries: dict[int, str], endpoint: str) -> str:
@@ -308,16 +328,10 @@ def _make_update_tool(entries: dict[int, str], endpoint: str) -> callable:
     return update
 
 
-def _make_archive_lookup_tool(
-    raw_archives: list[list[dict]],
-    *,
-    for_compression: bool = False,
-) -> callable:
-    """Archive-lookup tool over the raw message archives: ``get_raw`` for
-    the compression sub-loop when *for_compression*, else ``unpack_messages``
-    for the restarted main loop."""
+def _make_archive_lookup_tool(raw_archives: list[list[dict]]) -> callable:
+    """``get_raw``: the compression sub-loop's lookup over the raw message archives."""
 
-    def _lookup(index: int, n: int = 1) -> str:
+    def get_raw(index: int, n: int = 1) -> str:
         flat = [msg for archive in raw_archives for msg in archive]
         if index < 0 or index >= len(flat):
             return json.dumps(
@@ -326,30 +340,17 @@ def _make_archive_lookup_tool(
         end = min(index + n, len(flat))
         return json.dumps(flat[index:end], default=str)
 
-    if for_compression:
-        _lookup.__name__ = "get_raw"
-        _lookup.__doc__ = (
-            "Retrieve the original uncompressed content of a message.\n\n"
-            "Use this to inspect what a previously-compressed entry looked "
-            "like before compression.  Helpful when re-evaluating whether "
-            "an old compression decision was too aggressive or when the "
-            "conversation focus has shifted.\n\n"
-            "Args:\n"
-            "    index: The [N] index of the message.\n"
-            "    n: Number of consecutive messages to retrieve (default 1)."
-        )
-    else:
-        _lookup.__name__ = "unpack_messages"
-        _lookup.__doc__ = (
-            "Retrieve one or more uncompressed messages by index.\n\n"
-            "``index`` corresponds to the ``[N]`` label in the compressed "
-            "context summary.  Returns up to ``n`` consecutive original "
-            "messages as a JSON array.\n\n"
-            "Args:\n"
-            "    index: The [N] index of the message.\n"
-            "    n: Number of consecutive messages to retrieve (default 1)."
-        )
-    return _lookup
+    get_raw.__doc__ = (
+        "Retrieve the original uncompressed content of a message.\n\n"
+        "Use this to inspect what a previously-compressed entry looked "
+        "like before compression.  Helpful when re-evaluating whether "
+        "an old compression decision was too aggressive or when the "
+        "conversation focus has shifted.\n\n"
+        "Args:\n"
+        "    index: The [N] index of the message.\n"
+        "    n: Number of consecutive messages to retrieve (default 1)."
+    )
+    return get_raw
 
 
 async def compress_messages(
@@ -396,10 +397,7 @@ async def compress_messages(
     tools: dict[str, callable] = {"update": update_tool}
 
     if prior_entries and raw_archives:
-        tools["get_raw"] = _make_archive_lookup_tool(
-            raw_archives,
-            for_compression=True,
-        )
+        tools["get_raw"] = _make_archive_lookup_tool(raw_archives)
 
     initial_usage = _compute_token_usage(entries, endpoint)
 
@@ -449,7 +447,6 @@ async def compress_messages(
         loop_id="compress_messages",
         timeout=120,
         log_steps=True,
-        enable_compression=False,
     )
 
     await handle.result()
@@ -473,9 +470,13 @@ async def compress_and_rebuild(
     """Archive messages, compress, and prepare everything for a loop restart.
 
     Mutates *state* in place (archives, entries, image registry, counters).
-    Returns the rebuilt system messages and augmented tools dict needed to
-    start a new loop iteration.
+    Returns the rebuilt system messages and the tools to restart with.
     """
+    # The session whose history this is gets everything not yet on disk
+    # before that history is replaced.
+    session = transcripts.session_for_messages(all_messages)
+    if session is not None:
+        session.sync()
     all_messages = copy.deepcopy(all_messages)
     state.raw_archives.append(all_messages)
     archive_base = sum(len(a) for a in state.raw_archives[:-1])
@@ -505,14 +506,16 @@ async def compress_and_rebuild(
         else None
     )
 
-    compressed = await compress_messages(
-        tagged_messages,
-        endpoint,
-        image_blocks=live_images,
-        prior_entries=state.entries or None,
-        raw_archives=state.raw_archives,
-        new_indices=new_msg_global_indices,
-    )
+    # The compressor's own loop is a child of the session it compacts.
+    with transcripts.as_current(session):
+        compressed = await compress_messages(
+            tagged_messages,
+            endpoint,
+            image_blocks=live_images,
+            prior_entries=state.entries or None,
+            raw_archives=state.raw_archives,
+            new_indices=new_msg_global_indices,
+        )
 
     if live_images:
         state.live_image_ids = compressed.surviving_image_ids
@@ -550,18 +553,14 @@ async def compress_and_rebuild(
     state.entries = conversation_entries
 
     body = "\n".join(f"[{idx}] {content}" for idx, content in state.entries)
-    combined = _COMPRESSED_HEADER + body
-
-    _instructions = (
-        "When you need details from a compressed message, call "
-        "`unpack_messages(index)` with its `[N]` index to "
-        "retrieve the full original content. Pass `n` to "
-        "retrieve a range of consecutive messages."
-    )
+    # The text names no tool, only the transcript when there is one.
+    text = _COMPRESSED_HEADER + body
+    if session is not None:
+        text += "\n\n" + session.pointer_line()
 
     if state.live_image_ids:
         content_blocks: list[dict] = [
-            {"type": "text", "text": f"{combined}\n\n{_instructions}"},
+            {"type": "text", "text": text},
         ]
         for img_id in sorted(state.live_image_ids):
             if img_id in state.image_registry:
@@ -571,7 +570,7 @@ async def compress_and_rebuild(
                 content_blocks.append(state.image_registry[img_id])
         compressed_content: str | list[dict] = content_blocks
     else:
-        compressed_content = f"{combined}\n\n{_instructions}"
+        compressed_content = text
 
     system_msgs.append(
         {
@@ -581,9 +580,12 @@ async def compress_and_rebuild(
         },
     )
 
-    tools = dict(original_tools)
-    tools["unpack_messages"] = _make_archive_lookup_tool(state.raw_archives)
-
     state.count += 1
+    transcripts.record_compaction(
+        session,
+        archived=len(all_messages),
+        pass_number=state.count,
+        context=system_msgs,
+    )
 
-    return RebuildResult(system_msgs=system_msgs, tools=tools)
+    return RebuildResult(system_msgs=system_msgs, tools=dict(original_tools))

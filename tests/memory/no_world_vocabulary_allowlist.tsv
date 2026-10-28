@@ -1,0 +1,68 @@
+# The reviewed allow-list of tests/memory/test_no_world_vocabulary.py: generic English uses of a guarded word.
+# One line per phrase: scope (* for every source, or a source prefix), the phrase as it appears around the word,
+# and why it names no world. Every line must cover at least one hit. The reviewer signs each line (G0).
+# Review note (22 Oct, builder A; awaiting the reviewer's G0 sign-off): two lines added for delegate's argument name
+# as rev 2's in-code stub renders it: `*\t_args(task=task\t...` (the stub passes the argument on) and
+# `*\tdelegate(task=\t...` (its example call). Same identifier as the reviewed `"task"` line. Eight lines that no
+# longer cover any text were removed (the test refuses unused lines).
+*	a reading or drafting task	the helper's assignment from the writer (delegate's own argument)
+*	hand a reading or drafting task	to hand work over (verb)
+*	Hand a reading or drafting task	to hand work over (verb)
+*	/task	the helper box's read-only mount of the episodes its assignment names
+*	"task"	delegate's argument name and the helper box's mount key
+*	_args(task=task	delegate's argument name, as the rendered in-code stub passes it on (rev 2)
+*	delegate(task=	delegate's argument name in its in-code example call (rev 2)
+*	task must be a non-empty string	delegate's refusal text
+*	the task is not done	the helper's done refusal: its assignment goes on
+*	End your task and hand your summary and claims	the helper's done: ends its assignment, hands back its claims
+*	the task ended and what was handed back	the helper's done result
+*	the task goes on	the helper's done refusal
+*	the start of its task	the roster line of a helper: its assignment
+*	closed for the rest of this task	execute_code's work quota: the helper's assignment
+*	every task and session	the persistent venv outlives each piece of work
+*	not run: task done	the pass loop's answer after done
+*	ends your task	the helper's done
+*	Hand one file to the writer	stage (verb)
+*	one task. Do that task and hand back	the helper brief: its one assignment, handed back
+*	your task names	the helper brief: the episodes its assignment names
+*	in this task is the same text	the helper brief: within its assignment
+*	the ones the task names	the helper brief: the episodes its assignment names
+*	Task from the writer	the helper's first message: its assignment
+*	every later task. When a task genuinely needs a CLI	the actor prompt: later pieces of work
+*	tasks. Write files there	the actor prompt: the workspace persists across pieces of work
+*	made by hand	English idiom (an Item built directly)
+*	hand over the request	to pass (verb)
+*	Hand one cell's drained audit records	to pass (verb)
+*	every task ended	asyncio tasks of the pass's pool
+*	every task has ended	asyncio tasks of the pass's pool
+*	as a task of the pass record's pool	an asyncio task
+*	as the helper's task	an asyncio task
+*	delegate(task, episodes)	delegate's signature
+*	the writer's task and the named episode ids	the helper's first message: its assignment
+*	the task digest	the helper's record: a digest of its assignment
+*	to hand back	to return (verb)
+*	helper brief and task	the helper profile: its assignment
+*	its task, as the record entry	the helper profile: its assignment
+*	delegate(task)	delegate's signature in its help
+*	task (string, required)	delegate's argument in its help
+module:unify/memory/writer_service.py	``hand(k)``	the service handing a pass its entries (Ledger.hand, a method name)
+module:unify/memory/metering.py	their booking	a cost booked at the worst case (accounting)
+module:unify/memory/metering.py	its booking	a cost booked at the worst case (accounting)
+module:unify/memory/metering.py	"hand"	the ledger row op for handing an entry to a pass
+module:unify/memory/capture_trace.py	keys on a task id	the code states it never reads a benchmark's task id
+module:unify/memory/attention.py	Ledger.hand	the ledger's method that hands entries to a pass
+module:unify/memory/attention.py	**Hand order**	the order entries are handed to a pass
+module:unify/memory/attention.py	age-at-hand	how old an entry is when it is handed to a pass
+module:unify/memory/attention.py	age at hand	how old an entry is when it is handed to a pass
+module:unify/memory/attention.py	"hand"	the ledger row op for handing an entry to a pass
+module:unify/memory/attention.py	Hand up to	the ledger's method that hands entries to a pass
+module:unify/memory/attention.py	in hand order	the order entries are handed to a pass
+# the run's spend: money as the harness books it, never a world's
+module:unify/memory/writer_pass.py	Money as a plain decimal string	the run's spend, booked as a decimal string
+module:unify/memory/writer_pass.py	cannot run away. Money is a pure	the run's spend, booked as a decimal string
+module:unify/memory/librarian.py	decimal strings for money	the librarian's spend record
+module:unify/memory/integration/fork.py	bounds the money	the fork lane's spend cap
+module:unify/memory/writer_service.py	may have cost money	a failed model call's possible spend
+module:unify/memory/metering.py	Money is a decimal string	metering's spend record
+*	unless the task or its environment	the actor prompt's clock line: the current piece of work, whose own stated date governs it
+*	governs the task	the actor prompt's clock line: the current piece of work

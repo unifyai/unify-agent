@@ -36,8 +36,6 @@ repos:
         \.venv/.*|
         logs/.*|
         assets/.*|
-        scripts/skill_migration/builtins_skills\.lock\.json$|
-        unify/guidance_manager/builtins_guidance\.json$|
         .*/__pycache__/.*
       )$
 

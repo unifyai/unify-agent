@@ -1,50 +1,22 @@
-"""Primitives scoping and registry.
+"""The environment's own callable surface, bound in the actor's cells as ``primitives.<name>``.
 
-This subpackage provides:
-- `PrimitiveScope` - The single knob for controlling which namespaces are exposed
-- `VALID_MANAGER_ALIASES` - Canonical set of valid namespace aliases
-- `ToolSurfaceRegistry` / `get_registry` - Central registry for namespace configuration
-- `ManagerSpec` - Per-namespace configuration dataclass
-- `Primitives` - Scoped runtime interface for accessing primitives
-- `get_primitive_callable` - Resolve primitive metadata to callables
-- `collect_primitives` / `compute_primitives_hash` - Module-level convenience functions
+- :class:`EnvironmentSurface` / :func:`register_environment`: the namespaces an environment registers
+  (``UNIFY_ENV_NAMESPACES``, unify/function_manager/primitives/environment.py);
+- :class:`Primitives`: what ``primitives`` resolves to in a cell.
 """
 
-from unify.function_manager.primitives.scope import (
-    PrimitiveScope,
-    VALID_MANAGER_ALIASES,
-    default_runtime_scope,
+from unify.function_manager.primitives.environment import (
+    EnvironmentMethod,
+    EnvironmentNamespace,
+    EnvironmentSurface,
+    register_environment,
 )
-from unify.function_manager.primitives.registry import (
-    ManagerSpec,
-    ToolSurfaceRegistry,
-    get_registry,
-    collect_primitives,
-    compute_primitives_hash,
-    get_primitive_sources,
-    _COMMON_EXCLUDED_METHODS,
-    _CLASS_PATH_TO_ALIAS,
-)
-from unify.function_manager.primitives.runtime import (
-    Primitives,
-    get_primitive_callable,
-)
+from unify.function_manager.primitives.runtime import Primitives
 
 __all__ = [
-    # Scope
-    "PrimitiveScope",
-    "VALID_MANAGER_ALIASES",
-    "default_runtime_scope",
-    # Registry
-    "ManagerSpec",
-    "ToolSurfaceRegistry",
-    "get_registry",
-    "collect_primitives",
-    "compute_primitives_hash",
-    "get_primitive_sources",
-    "_COMMON_EXCLUDED_METHODS",
-    "_CLASS_PATH_TO_ALIAS",
-    # Runtime
+    "EnvironmentMethod",
+    "EnvironmentNamespace",
+    "EnvironmentSurface",
     "Primitives",
-    "get_primitive_callable",
+    "register_environment",
 ]

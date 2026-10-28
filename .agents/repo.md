@@ -1,31 +1,49 @@
 # Unify
 
-The brain of a local AI assistant: a persistent conversation loop above a
-code-writing actor, two skill libraries, and one SQLite store.
+A code-acting agent harness: one actor answers a request by writing Python that runs in a sandbox, and a memory
+turns finished requests into a tested library that later requests read.
 
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first for the system design. This file
-covers *how to work on the code*, not *what the code does*.
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first for the system design, [`docs/memory.md`](docs/memory.md) for the
+memory and [`CONFIG.md`](CONFIG.md) for every setting. This file covers *how to work on the code*, not *what the code
+does*.
 
 ## What Unify is
 
-Unify implements an AI assistant's brain as a persistent **conversation loop** above a code-writing **`Actor`**, with two **skill libraries** behind it: `FunctionManager` (stored Python functions, the *what*) and `GuidanceManager` (procedures, the *how*). The actor discovers skills before it writes code, runs plans in a persistent Python sandbox, and a storage review after each run distils what worked back into the libraries. Manager methods run inside an **async LLM tool loop** and return a **steerable handle** that supports `ask`, `interject`, `pause`, `resume`, `stop` — all the way down the nesting tree. The skill libraries expose direct CRUD methods as Actor JSON tools (`FunctionManager_*`, `GuidanceManager_*`).
-
-Everything persists in one SQLite file, `unify/db.py` (imported as `from unify import db`): five tables (`functions`, `primitives`, `guidance`, `builtin_guidance`, `messages`) and two views (`all_functions`, `all_guidance`) over each catalogue and its seeded rows. Managers write plain SQL; every filter the model writes is a SQL `WHERE` clause run read-only. There is no backend service, no accounts and no infrastructure: the only external dependency is an LLM provider, reached through the sibling `unillm` repo (editable install via `[tool.uv.sources]` in `pyproject.toml`) for chat, and directly through OpenRouter for the embeddings behind skill search (`unify/common/embeddings.py`; `UNIFY_LOCAL_EMBEDDINGS` computes them in process instead).
-
-The assistant is **reactive**: it acts on the messages it receives and on the work those messages start. There is no scheduler, no timer wheel and no inbound channel other than the in-app chat.
+- **`unify act`** (`unify/cli.py`) runs one request, or a session (`--persist`, `--jsonl`), through one
+  **`CodeActActor`** (`unify/actor/`).
+- **Cells.** The actor's only model-API tool is `execute_code(code)`. Each call is one cell in a persistent Python
+  interpreter inside bubblewrap (`unify/common/box_interpreter.py`, `unify/sandbox.py`). Every other tool is a call
+  `tools.<name>(...)` from a cell, served on the host through the tool channel from one registry
+  (`unify/common/tool_registry.py`). An embedding application adds its own `primitives.<name>` namespaces
+  (`unify/function_manager/primitives/`, `unify/actor/environments/`).
+- **The run record** (`unify/agents/`). One append-only record per run that the actor, its teammates, the requester,
+  the librarian and the harness post to. Its own tools are `send`, `messages`, `wait` and `who`, the same for every
+  agent (`unify/agents/run_record_tools.py`).
+- **Memory** (`unify/memory/`). One switch, `UNIFY_MEMORY`: `off` or `on` (the default). With memory
+  on, each request is recorded as an episode, a fork of the actor's conversation captures what it did (a capture is
+  never run), a detached writer service keeps the library under a gate that labels and only refuses for safety, and
+  later requests read the library as the `memory` package and ask the librarian (`memory.ask`).
+- **The lanes and the relay** (`unify/lanes/`). With memory on and `OPENROUTER_API_KEY` set, `unify act` starts a
+  local relay that holds the key and runs the controller as its child. The writer, its helpers, the episode-end fork
+  and embeddings each get their own lane and token under one spend cap, `UNIFY_MEMORY_CAP_USD` (20.00 USD per run by
+  default); memory's processes never hold the key.
+- **State** lives under `UNIFY_HOME` (default `~/.unify`): the workspace, transcripts, the run record, the memory
+  home and the logs (`unify/db.py`'s `store_home`). There is no backend service and no database server; the only
+  external dependency is the model provider, reached through the sibling `unillm` repo.
 
 ## Run the agent locally
 
 ```bash
 uv sync --all-groups
 cp .env.example .env        # add one LLM provider key
-.venv/bin/python -m unify   # chat; `unify` is the same entry point on PATH inside the venv
+.venv/bin/unify act "request"   # `act` is the default; with no request it reads stdin
 ```
 
-- The runtime's home is `UNIFY_HOME` (default `~/.unify`): `store.sqlite`, `embeddings.sqlite` (a cache of the vectors skill search compares, safe to delete), `workspace/` (the actor's working directory, attachments and downloads) and `logs/`.
 - `unify --debug` streams runtime logs to the terminal as well as the log files; `unify --home DIR` uses another home.
-- The chat CLI lives in `unify/cli.py`. It publishes `UnifyMessageReceived` events on the in-memory event broker and renders the `UnifyMessageSent` replies, so it is one front end over the same loop any client can drive.
-- `unify act "request"` bypasses the conversation loop: one `CodeActActor` takes the request, progress streams to stderr from the handle's notification queue, a question the actor asks is answered from the terminal through `next_clarification`/`answer_clarification`, and the result goes to stdout (`--json` adds token accounting, `--persist` keeps the sandbox for follow-ups, `--no-store` skips the storage review). Use it for like-for-like comparisons with single-loop harnesses and for benchmark runners.
+- `unify act` options: `--json` (the result as a JSON object, with token accounting), `--jsonl` (newline-delimited
+  JSON on stdin and stdout, for a driving program), `--persist` (further lines are follow-ups), `--no-clarify`
+  (unattended: questions get no reply), `--timeout SECONDS` and `--quiet`. Memory has no command-line flag; it is
+  `UNIFY_MEMORY`.
 
 ## Development environment
 
@@ -41,29 +59,31 @@ pip install uv && uv sync --all-groups
 
 ### Running tests
 
-Tests run in tmux sessions, each test in its own session against its own SQLite store, with logs streamed to `logs/pytest/`. The runner blocks until everything completes.
+Tests run in tmux sessions, with logs streamed to `logs/pytest/`. The runner blocks until everything completes.
 
 ```bash
-# Default — one session per test, max concurrency
-tests/parallel_run.sh tests/function_manager/
+# Default: one session per test, max concurrency
+tests/parallel_run.sh tests/actor/
 
 # Specific test
-tests/parallel_run.sh tests/function_manager/storage/test_primitives.py::test_name
+tests/parallel_run.sh tests/test_cli_act.py::test_name
 
 # Serial mode (one session per file) for large suites
 tests/parallel_run.sh -s tests/
 
 # With timeout
-tests/parallel_run.sh --timeout 300 tests/function_manager/
+tests/parallel_run.sh --timeout 300 tests/memory/
 ```
 
-Each agent (or terminal) gets an **isolated tmux server automatically**, so concurrent agents don't collide.
+Each agent (or terminal) gets an **isolated tmux server automatically**, so concurrent agents don't collide. Every
+pytest process runs inside bubblewrap, so the tests need it too.
 
 ### When a test fails
 
 1. **Never inspect tmux panes directly.** Read the corresponding log in `logs/pytest/<YYYY-MM-DDTHH-MM-SS_socket>/`.
-2. **Use `Read` (not `cat`/`tail`)** — `logs/` is gitignored, so `Grep`/`Glob` won't find files there.
-3. **Add temporary debug logs via `CURSOR_DEBUG_LOG`** — the only permitted logging mechanism for debugging. Grep for it (`rg CURSOR_DEBUG_LOG`) to find the project's util, then import and use it. Remove all calls before finalizing the fix.
+2. **Use `Read` (not `cat`/`tail`)**: `logs/` is gitignored, so `Grep`/`Glob` won't find files there.
+3. **Temporary debug logging** follows the shared temporary-debug-logging rule below; remove every call before
+   finalizing the fix.
 4. **Clean up failed sessions** with `tests/kill_failed.sh` (or `tests/kill_server.sh` for everything).
 
 ### Pre-commit
@@ -82,54 +102,48 @@ pre-commit run --all-files
 
 ## Testing philosophy
 
-We **never** mock the LLM client. All tests use real LLM calls via `unillm.AsyncUnify`, with responses cached per unique input (`UNILLM_CACHE=true`, the default). First run is slow; subsequent runs replay from cache in milliseconds.
+**Tests always use stubbed models and never reach a real provider.** No test needs a real provider key; every model
+call in a test is a stubbed one. `tests/conftest.py` enforces it in every test: unillm's provider calls raise, a socket may connect only to this machine, and the markers that once
+let a test reach a provider (`live_provider`, `requires_provider_key`) fail the test that carries them. No test needs a
+key; with none set, the root conftest sets a placeholder that is plainly not a secret.
 
-Tests sit on a **spectrum** between two paradigms — there's no binary classification:
-
-- **Symbolic tests** use the LLM as a deterministic stub to exercise infrastructure (async tool loops, steering, state mutations). Failures = regression in programmatic code.
-- **Eval tests** verify end-to-end *capability* ("did the assistant answer correctly?"). Failures may indicate prompt issues, tool design problems, or capability gaps.
-
-**Never rely on sleeps** — use the trigger helpers in `tests/async_helpers.py` for deterministic ordering across cached (ms) and live (sec–min) timing.
-
-### The cache is never the problem
-
-"We just need to update the cache" is **never** a valid conclusion when debugging failures. The cache is a faithful replay mechanism keyed on the exact LLM input. If you change prompts or docstrings, the cache key changes automatically and you get fresh inference. If a cached response causes a failure, an LLM *actually made that decision* given that exact input — that's a prompt issue, not a stale-cache issue. Clearing the cache to "fix" a failing test is a category error.
-
-### Tagging eval tests
-
-```python
-import pytest
-pytestmark = pytest.mark.eval  # whole file
-
-@pytest.mark.eval                # single test
-async def test_natural_language_query(): ...
-```
+- Script the model with `tests/scripted_model.py` (`ScriptedModel`, one script per kind of call: actor, helper,
+  `query_llm`, compaction) or `tests/cache_discipline_helpers.py` (`scripted(...)`). Both replace unillm's transport
+  below its request building, so every request is built exactly as in production.
+- A test fakes embeddings (`unify.common.embeddings.embed`, or the endpoint it posts to); it never posts to a provider.
+- **Never rely on sleeps**: use the trigger helpers in `tests/async_helpers.py` for deterministic ordering.
+- A failing assertion is fixed at its root cause. Never loosen an assertion, skip, xfail, raise a timeout or add a
+  retry to get a pass; security and confinement tests pass as written, or the code gets fixed.
 
 ## No fast paths or heuristics
 
-If a method needs to respond correctly to a class of user input, **always** address this by prompting the model and/or improving tool docstrings. Never apply regex-based or substring-based routing on user commands. The LLM is the router.
+If a component needs to respond correctly to a class of input, address it by prompting the model and/or improving
+tool descriptions. Never apply regex-based or substring-based routing on user requests. The model is the router.
 
-## State manager design
+## Tools and prompts
 
-The public API of each state manager is defined by the abstract methods on `Base{SomeManager}` in `base.py`. These docstrings are the **LLM-facing contract** — they're attached to concrete implementations via `@functools.wraps`.
+Every tool's name, description, parameter schema and refusal texts live in one registry
+(`unify/common/tool_registry.py`), for the actor, its teammates and the memory agents. The box module `tools` is
+generated from it, and `tools.help(name)` reads it.
 
-### Docstring rules
+- **A tool's own guidance lives in its registry description**, never in a prompt builder.
+- **Compositional guidance** (when to use tool A versus B, multi-tool patterns) lives in the prompt builders
+  (`unify/actor/prompt_builders.py`, the memory agents' prompts), never in one tool's description.
+- **Descriptions are implementation-agnostic**: they say what the tool does for the caller, not which module serves
+  it.
 
-- **Implementation-agnostic.** Public docstrings must never reference other managers (cross-references rot) or the manager's own internal tools.
-- **Tool-specific guidance lives in the tool's own docstring** — never in the prompt builder.
-- **Compositional guidance (when to use tool A vs B, multi-tool patterns) lives in the prompt builder** — never in individual tool docstrings.
-
-### Routing playbook (who owns what)
+### Who owns what
 
 | Concern | Owner |
 |---|---|
-| Stored functions (find, run, store) | `FunctionManager_*` JSON tools and `execute_function` |
-| Procedures, how-tos | `GuidanceManager_*` JSON tools |
-| Anything else the request needs | `execute_code` (plain Python in the sandbox) |
-| Parallel or delegated work | `primitives.actor.act` |
-| Live action from chat | `Actor.act` (via ConversationManager) |
+| Anything the request needs | `execute_code` (a cell of plain Python in the sandbox) |
+| The embedding application's own operations | `primitives.<name>` namespaces |
+| Installing packages | `tools.install(packages)` |
+| Teammates, questions to the requester, messages | the run record's tools (`send`, `messages`, `wait`, `who`) |
+| What the library already holds | `memory.ask(...)` (the librarian) and the `memory` package |
+| Keeping the library | the writer service (`unify/memory/writer_service.py`), never the actor |
 
-Full role descriptions are in [`.agents/rules/state-manager-roles.md`](.agents/rules/state-manager-roles.md).
+Full role descriptions are in [`.agents/rules/component-roles.md`](.agents/rules/component-roles.md).
 
 ## Additional git constraints
 
@@ -150,23 +164,26 @@ unillm's `main` on GitHub: before pushing, check
 ## Repo map
 
 ```
-unify/
+unify-agent/
 ├── unify/                   # Main package
-│   ├── cli.py               # Terminal chat (`python -m unify`)
-│   ├── actor/               # CodeAct Actor, central orchestrator
-│   ├── conversation_manager/ # The persistent interaction loop (slow brain)
-│   ├── db.py                # The local SQLite store: five tables, two views
-│   ├── guidance_manager/    # Procedures, SOPs
-│   ├── function_manager/    # Stored Python functions and their dependencies
-│   ├── workspace.py         # The assistant's working directory
-│   ├── events/              # Typed event bus
-│   └── common/              # Async tool loop, shared infra
-├── tests/                   # Pytest suite
-├── scripts/                 # Skill import, git hooks
-├── docs/                    # Design writeups
+│   ├── cli.py               # The command line (`unify act`)
+│   ├── actor/               # CodeActActor, its prompts, in-code tools and the worker
+│   ├── agents/              # The run record, teammates and their tools
+│   ├── common/              # The tool loop, the registry and tool channel, the interpreter, model calls
+│   ├── function_manager/    # primitives: the embedding application's namespaces
+│   ├── lanes/               # The local lane relay and the launcher that starts it
+│   ├── memory/              # Episodes, captures, the writer service, the gate, the librarian
+│   ├── sandbox.py           # The bubblewrap confinement
+│   ├── environment.py       # The workspace environment (package installs)
+│   ├── db.py                # Where state lives (`UNIFY_HOME`)
+│   └── settings.py          # Every setting (CONFIG.md lists them)
+├── tests/                   # Pytest suite (stubbed models only)
+├── scripts/                 # Git hooks and identity checks
+├── docs/                    # memory.md and design notes
 ├── ARCHITECTURE.md          # System design (read first)
+├── CONFIG.md                # Every environment variable
+├── KNOWN-ISSUES.md          # Evaluated behaviour with its open fixes
 ├── README.md
-├── CONTRIBUTING.md
 └── pyproject.toml
 ```
 

@@ -7,8 +7,7 @@ not run, and the tool message the model reads names the arguments that were
 wrong and the parameters the tool takes. The tolerance the loop applies on
 purpose still holds: nested ``kwargs`` expansion, empty ``a``/``kw`` noise
 keys, single-parameter aliases, string coercion and the context-control keys
-the loop pops itself. Steering the loop forwards to a handle still drops what
-the handle's method does not take.
+the loop pops itself.
 
 Most tests drive the real dispatch and result path (``schedule_base_tool_call``,
 the task, ``process_completed_task``) without a model and read the tool message
@@ -23,14 +22,8 @@ import json
 
 import pytest
 
-from tests.async_helpers import any_tool_message_content_contains
-from tests.helpers import _handle_project
-from unify.common._async_tool.context_tracker import LoopContextState
 from unify.common._async_tool.loop import ToolLoopRuntimeState, _LoopToolFailureTracker
-from unify.common._async_tool.messages import forward_handle_call
 from unify.common._async_tool.tools_data import ToolsData
-from unify.common.async_tool_loop import ChatContextPropagation, start_async_tool_loop
-from unify.common.llm_client import new_llm_client
 
 
 class _Client:
@@ -45,11 +38,8 @@ class _Dispatcher:
     def __init__(self, client):
         self._client = client
 
-    async def append_msgs(self, msgs, origin=None, *, skip_event_bus=False, kind=None):
+    async def append_msgs(self, msgs):
         self._client.append_messages(msgs)
-
-    async def publish_to_event_bus(self, msgs, origin=None, kind=None):
-        pass
 
 
 class _Logger:
@@ -67,7 +57,7 @@ class _Loop:
         self.client = _Client()
         self._dispatcher = _Dispatcher(self.client)
         self._tools_data = ToolsData(tools, client=self.client, logger=_Logger())
-        self.tracker = _LoopToolFailureTracker(3, ToolLoopRuntimeState())
+        self.tracker = _LoopToolFailureTracker(ToolLoopRuntimeState())
         self._calls = 0
 
     async def call(self, name: str, args: dict) -> str:
@@ -95,8 +85,6 @@ class _Loop:
             args_json=args_json,
             call_id=call_id,
             call_idx=0,
-            context_state=LoopContextState(),
-            propagate_chat_context=ChatContextPropagation.NEVER,
             assistant_meta=assistant_meta,
             msg_dispatcher=self._dispatcher,
         )
@@ -105,7 +93,6 @@ class _Loop:
         await self._tools_data.process_completed_task(
             task,
             self.tracker,
-            [None],
             assistant_meta,
             self._dispatcher,
         )
@@ -118,7 +105,7 @@ class _Loop:
 
 
 def _search_tool(received: list, *, is_async: bool = False):
-    """A guidance-search-shaped tool that records every call it runs."""
+    """A search tool that records every call it runs."""
 
     def search(references: dict | None = None, k: int = 10) -> str:
         received.append({"references": references, "k": k})
@@ -138,12 +125,12 @@ def _search_tool(received: list, *, is_async: bool = False):
 async def test_a_misnamed_argument_fails_the_call_naming_the_real_parameters(
     is_async,
 ):
-    """Guidance search called with the function search's parameter names, as
-    the actor's discovery mutator once did, reads back a refusal, not rows."""
+    """A search called with another search's parameter names reads back a
+    refusal, not rows."""
     received: list = []
     loop = _Loop({"search": _search_tool(received, is_async=is_async)})
 
-    reply = await loop.call("search", {"query": "relevant guidance", "n": 5})
+    reply = await loop.call("search", {"query": "relevant notes", "n": 5})
 
     assert reply == (
         "search was not run: it has no parameter named 'query' or 'n'.\n"
@@ -203,7 +190,7 @@ async def test_a_misnamed_call_is_a_refusal_not_a_failure():
 @pytest.mark.asyncio
 async def test_resending_the_same_misnamed_call_stops_the_loop():
     loop = _Loop({"search": _search_tool([])})
-    args = {"query": "relevant guidance", "n": 5}
+    args = {"query": "relevant notes", "n": 5}
 
     for _ in range(_LoopToolFailureTracker.IDENTICAL_CALL_LIMIT - 1):
         await loop.call("search", args)
@@ -246,11 +233,6 @@ async def test_misnaming_the_same_argument_while_varying_its_value_stops_the_loo
             {"references": {"content": "deploys"}, "k": "3"},
             {"references": {"content": "deploys"}, "k": 3},
             id="string-coercion",
-        ),
-        pytest.param(
-            {"references": {"content": "deploys"}, "include_parent_chat_context": True},
-            {"references": {"content": "deploys"}, "k": 10},
-            id="loop-popped-context-key",
         ),
     ],
 )
@@ -297,114 +279,6 @@ async def test_a_tool_taking_arbitrary_keywords_receives_them():
     assert received == [{"colour": "red", "size": "large"}]
 
 
-# ── steering forwarded to a handle keeps dropping what it does not take ───
-
-
-class _Handle:
-    def __init__(self):
-        self.calls: list = []
-
-    async def stop(self):
-        self.calls.append(("stop",))
-
-    async def interject(self, message: str):
-        self.calls.append(("interject", message))
-
-
-@pytest.mark.asyncio
-async def test_forwarded_steering_drops_what_the_handles_method_does_not_take():
-    """The loop writes these kwargs to the base steering contract, not a model,
-    so a handle whose methods take fewer must still be stopped and steered."""
-    handle = _Handle()
-
-    await forward_handle_call(
-        handle,
-        "stop",
-        {"reason": "the user cancelled"},
-        fallback_positional_keys=["reason"],
-    )
-    await forward_handle_call(
-        handle,
-        "interject",
-        {
-            "content": "use the staging database",
-            "_parent_chat_context_cont": [{"role": "user", "content": "hi"}],
-        },
-        fallback_positional_keys=["content", "message"],
-    )
-
-    assert handle.calls == [("stop",), ("interject", "use the staging database")]
-
-
 # ── through the whole loop, the model reads the refusal and recovers ──────
 
 
-@pytest.mark.llm_call
-@pytest.mark.eval
-@pytest.mark.asyncio
-@_handle_project
-async def test_the_model_reissues_a_refused_call_with_the_parameters_named(
-    llm_config,
-):
-    """The model's first search is rewritten to the function search's names,
-    the arguments the actor's discovery mutator once appended. The model must
-    read the refusal and search again with the names it gives."""
-    received: list = []
-
-    def search_guidance(references: dict | None = None, k: int = 10) -> list[str]:
-        """Search stored procedures by meaning.
-
-        Parameters
-        ----------
-        references : dict | None
-            Mapping of field name (``title`` or ``content``) to the text that
-            field is compared with by meaning.
-        k : int
-            Maximum number of results to return.
-        """
-        received.append({"references": references, "k": k})
-        return ["Deploying the web app: build it, run the migrations, restart it."]
-
-    def misname_first_turn_searches(completion, context):
-        # Only the first turn: once a tool message is in the request, the
-        # model's own calls go through untouched.
-        messages = context.request_kw.get("messages") or []
-        if any(m.get("role") == "tool" for m in messages):
-            return completion
-        misnamed = json.dumps({"query": "relevant guidance", "n": 5})
-        for call in completion.choices[0].message.tool_calls or []:
-            if isinstance(call, dict):
-                if call["function"]["name"] == "search_guidance":
-                    call["function"]["arguments"] = misnamed
-            elif call.function.name == "search_guidance":
-                call.function.arguments = misnamed
-        return completion
-
-    client = new_llm_client(**llm_config)
-    generate = client.generate
-
-    def generate_with_misnaming(*args, **kwargs):
-        kwargs.setdefault("completion_mutator", misname_first_turn_searches)
-        return generate(*args, **kwargs)
-
-    client.generate = generate_with_misnaming
-
-    answer = await start_async_tool_loop(
-        client,
-        message=(
-            "Use search_guidance to find the procedure for deploying the web "
-            "app, then list its steps."
-        ),
-        tools={"search_guidance": search_guidance},
-        max_consecutive_failures=2,
-    ).result()
-
-    assert any_tool_message_content_contains(
-        client.messages,
-        "search_guidance was not run: it has no parameter named 'query' or 'n'.\n"
-        "Suggestion: Call search_guidance again using only its own parameters: "
-        "references, k.",
-    )
-    assert received, "the model never reissued the search"
-    assert all(call["references"] for call in received), received
-    assert "migration" in answer.lower()

@@ -1,0 +1,691 @@
+"""Writer-launched helpers (the ``delegate`` tool): staging format, readability by the writer, concurrency, spend,
+events, failures and the helper box's mounts. Keyless: every model is a scripted fake.
+"""
+
+import asyncio
+import json
+import os
+import time
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from unify.memory import helpers, messaging, tool_spec, views
+from unify.memory.episodes import Cell
+from unify.memory.integration import consolidate, switch
+from tests.memory.test_writer_library_tools import _episode
+from tests.memory.test_writer_pass import needs_bwrap
+
+
+async def helper_result(ctx, call: str) -> str:
+    """Wait for helper *call* to end and return its last text."""
+    await ctx.pass_record.ended[call].wait()
+    return ctx.replies[call]
+
+EPS = {
+    "e1": _episode(
+        "e1",
+        [Cell(0, "def area(w, h):\n    return w * h\nprint(area(2, 3))", "6\n")],
+    ),
+    "e2": _episode("e2", [Cell(0, "print('two')", "two\n")]),
+    "e3": _episode("e3"),  # recorded, not named by any task
+}
+CANDIDATE = 'def area(w, h):\n    """Area of a w by h rectangle."""\n    return w * h\n'
+CASE = json.dumps([{"args": [2, 3], "result": 6}])
+
+
+def _tc(cid, name, args):
+    from tests.memory.in_code_calls import as_cell
+
+    name, args = as_cell(name, args)
+    return {
+        "id": cid,
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(args)},
+    }
+
+
+def _msg(*calls):
+    return {"role": "assistant", "content": "", "tool_calls": list(calls)}
+
+
+#: How long a turn waits for another live helper's turn under ``Script(turn_taking=True)``.
+TURN_WAIT_S = 5.0
+
+
+class Script:
+    """A fresh scripted helper model per delegate call, chosen by the task text in the first user message."""
+
+    def __init__(self, scripts, usd="0.001", gap=0.0, turn_taking=False):
+        self.scripts, self.usd, self.gap = scripts, usd, gap
+        #: turn_taking: a helper's turn waits (at most TURN_WAIT_S) while the previous turn was its own and another
+        #: helper still has turns, and stays in flight until another helper's turn is in flight too, so live helpers
+        #: alternate and overlap whatever the host's load; helpers that are not live at once can do neither (their
+        #: turns come out in runs, one in flight at a time).
+        self.turn_taking = turn_taking
+        self.remaining = {k: len(v) for k, v in scripts.items()}
+        self.order: list[str] = []
+        self.outputs: dict[str, str] = {}
+        self.in_flight = self.max_in_flight = 0
+        self.prefixes: list[str] = []
+
+    def factory(self, session=None):
+        state = {"queue": None}
+
+        async def turn(messages, tools):
+            key = messages[1]["content"].split("\n")[1]
+            if state["queue"] is None:
+                state["queue"] = list(self.scripts[key])
+                self.prefixes.append(json.dumps(messages[0], sort_keys=True))
+            for m in messages:
+                if m.get("role") == "tool":
+                    self.outputs[m["tool_call_id"]] = m["content"]
+            if self.turn_taking:
+                end = time.monotonic() + TURN_WAIT_S
+                while (
+                    self.order
+                    and self.order[-1] == key
+                    and any(n > 0 for k, n in self.remaining.items() if k != key)
+                    and time.monotonic() < end
+                ):
+                    await asyncio.sleep(0.001)
+            self.remaining[key] -= 1
+            self.order.append(key)
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            try:
+                if self.turn_taking:
+                    # held in flight until another helper's turn is in flight too (or none has turns left)
+                    end = time.monotonic() + TURN_WAIT_S
+                    while (
+                        self.in_flight < 2
+                        and any(n > 0 for k, n in self.remaining.items() if k != key)
+                        and time.monotonic() < end
+                    ):
+                        await asyncio.sleep(0.001)
+                await asyncio.sleep(self.gap)
+            finally:
+                self.in_flight -= 1
+            q = state["queue"]
+            if isinstance(q[0], Exception):
+                raise q.pop(0)
+            return q.pop(0), self.usd
+
+        return turn
+
+
+def _ctx(tmp_path, script=None, **kw):
+    inputs, lib = tmp_path / "inputs", tmp_path / "memory"
+    inputs.mkdir(parents=True)
+    (inputs / "pool").mkdir()  # the writer's own inputs: a helper reads them read-only
+    (inputs / "pool" / "INDEX.md").write_text("pool")
+    lib.mkdir()
+    (lib / "INDEX.md").write_text("# library\n")
+    (lib / ".pass").mkdir()
+    (lib / ".pass" / "manifest.json").write_text("{}")
+    base = dict(
+        pass_id="p1",
+        out_root=tmp_path / "state" / helpers.HELPERS_DIR / "p1",
+        inputs=inputs,
+        library=lib,
+        load=EPS.__getitem__,
+        recorded=lambda: list(EPS),
+        new_turn=script.factory if script is not None else None,
+        deadline=time.monotonic() + 600,
+        spend=SimpleNamespace(usd=Decimal("0"), unknown=0),
+        scratch=tmp_path / "scratch",
+        events=tmp_path / "out" / "tool-events.jsonl",
+    )
+    base.update(kw)
+    if "pass_record" not in base:
+        from unify.memory import messaging
+
+        base["pass_record"] = messaging.PassRecord(
+            root="writer", deadline=base["deadline"], run_home=str(tmp_path / "run-home"), pass_id=base["pass_id"],
+        )
+    return helpers.DelegateContext(**base)
+
+
+def _run(args, ctx):
+    """``delegate`` (it returns at once), then the helper's last text once it has ended; the pool is closed and its
+    termination checked. A refusal comes back as it is."""
+
+    async def go():
+        out = await helpers.handle(args, ctx)
+        if tool_spec.form_of(out):
+            return out
+        name = out.split()[1]
+        reply = await helper_result(ctx, name)
+        assert await messaging.close(ctx.pass_record, "the writer finished") == {
+            name: "ended",
+        }
+        return reply
+
+    return asyncio.run(go())
+
+
+def _drafting(task_key="draft area"):
+    return {
+        task_key: [
+            _msg(
+                _tc("o", "overview", {"episode": "e1"}),
+                _tc("r", "read", {"path": "/task/episodes/e1.json"}),
+            ),
+            _msg(_tc("x", "execute_code", {"code": "print(6)"})),
+            _msg(
+                _tc("c", "stage", {"path": "candidates/area.py", "text": CANDIDATE}),
+                _tc("k", "stage", {"path": "cases/area.json", "text": CASE}),
+                _tc("bad", "stage", {"path": "../escape.py", "text": "x"}),
+            ),
+            _msg(
+                _tc(
+                    "d",
+                    "done",
+                    {
+                        "summary": "drafted area from e1",
+                        "claims": [
+                            {
+                                "claim": "e1 computes a rectangle's area as w * h",
+                                "sources": ["e1/cell:0", "e1/request"],
+                            },
+                        ],
+                    },
+                ),
+            ),
+        ],
+    }
+
+
+@pytest.fixture
+def helper_boxes(monkeypatch):
+    """Each helper interpreter box a test starts, as the helper built it: its read-only and read-write binds, its
+    profile and a listing of each read-only root (the box itself is real)."""
+    seen = []
+    real = helpers._helper_box
+
+    def spy(ctx, st):
+        binds, profile = real(ctx, st)
+        listing = {
+            dst: sorted(str(p.relative_to(src)) for p in Path(src).rglob("*")) for src, dst in binds["ro"].items()
+        }
+        seen.append({**binds, "profile": profile, "listing": listing})
+        return binds, profile
+
+    monkeypatch.setattr(helpers, "_helper_box", spy)
+    return seen
+
+
+def test_delegate_stages_in_the_fork_format_and_the_writer_reads_it(tmp_path, helper_boxes):
+    script = Script(_drafting())
+    ctx = _ctx(tmp_path, script)
+    reply = _run({"task": "draft area", "episodes": ["e1"]}, ctx)
+    assert reply.startswith("helper call-1: ok")
+    assert (
+        "candidates/area.py" in reply
+        and "cases/area.json" in reply
+        and "drafted area from e1" in reply
+    )
+    out = ctx.out_root / "call-1"
+    assert (out / "candidates" / "area.py").read_text() == CANDIDATE
+    assert (out / "cases" / "area.json").read_text() == CASE
+    status = json.loads((out / "helper.json").read_text())
+    assert (
+        status["status"] == "ok"
+        and status["usd"] == "0.004"
+        and status["unknown_cost_calls"] == 0
+    )
+    assert [f["path"] for f in status["files"]] == [
+        "candidates/area.py",
+        "cases/area.json",
+    ]
+    assert status["task_sha256"] and status["episodes"] == ["e1"]
+    assert status["claims"] == [
+        {
+            "claim": "e1 computes a rectangle's area as w * h",
+            "sources": ["e1/cell:0", "e1/request"],
+        },
+    ]
+    # the writer reads the helper's files with its own reader, under /inputs/helpers/<name>/
+    roots = {"/inputs": ctx.inputs}
+    assert "def area" in views.read("/inputs/helpers/call-1/candidates/area.py", roots)
+    assert '"status": "ok"' in views.read("/inputs/helpers/call-1/helper.json", roots)
+    assert "not a plain relative path" in script.outputs["bad"]
+    assert "6" in script.outputs["x"] and script.outputs["o"].strip()
+    # spend joins the pass's and is recorded per call
+    assert ctx.spend.usd == Decimal("0.004") and ctx.spend.unknown == 0
+    assert ctx.records[0]["usd"] == "0.004" and len(ctx.records[0]["files"]) == 2
+
+
+def test_the_helper_box_reads_the_writers_inputs_its_task_and_the_library_and_writes_only_work(
+    tmp_path,
+    helper_boxes,
+):
+    """The helper's interpreter box: the writer's own /inputs, the task and the library read-only, /work its only
+    writable root and its cwd, the work-file size limit, and the import path the box sees."""
+    ctx = _ctx(tmp_path, Script(_drafting()), shared={"b1": "shared block"})
+    _run({"task": "draft area", "episodes": ["e1"]}, ctx)
+    (call,) = helper_boxes
+    profile = call["profile"]
+    assert sorted(call["ro"].values()) == ["/inputs", "/memory", "/task"]
+    assert call["ro"][ctx.inputs] == "/inputs"  # the writer's own /inputs, read-only
+    assert list(call["rw"].values()) == ["/work"] and profile.cwd == "/work"
+    assert tuple(profile.sys_path) == ("/inputs", "/memory")
+    assert profile.fsize_bytes == helpers.WORK_FILE_BYTES
+    # /inputs: what the writer has (here its pool) with the helpers' output folder; /task: the named episode's record
+    assert call["listing"]["/inputs"] == ["helpers", "pool", "pool/INDEX.md", "sitecustomize.py"]
+    assert call["listing"]["/task"] == ["episodes", "episodes/e1.json"]
+    # /memory: the library as the writer sees it, without the writer's .pass
+    assert call["listing"]["/memory"] == ["INDEX.md"]
+
+
+def test_helpers_run_concurrently_and_so_do_their_model_calls(
+    tmp_path,
+    helper_boxes,
+):
+    def two(key):
+        return [
+            _msg(
+                _tc(f"{key}s", "stage", {"path": "notes.md", "text": f"lesson {key}"}),
+            ),
+            _msg(_tc(f"{key}d", "done", {"summary": key, "claims": []})),
+        ]
+
+    script = Script({"A": two("A"), "B": two("B")}, gap=0.01, turn_taking=True)
+    ctx = _ctx(tmp_path, script)
+
+    async def go():
+        for task, eps in (("A", ["e1"]), ("B", ["e2"])):
+            await helpers.handle({"task": task, "episodes": eps}, ctx)
+        replies = [await helper_result(ctx, c) for c in ("call-1", "call-2")]
+        await messaging.close(ctx.pass_record, "the writer finished")
+        return replies
+
+    replies = asyncio.run(go())
+    assert replies[0].startswith("helper call-1: ok") and replies[1].startswith(
+        "helper call-2: ok",
+    )
+    assert script.order == ["A", "B", "A", "B"]  # both helpers were live at once
+    assert script.max_in_flight == 2  # both helpers' model calls were in flight at once
+    assert len(set(script.prefixes)) == 1  # siblings share the brief byte for byte
+    assert (ctx.out_root / "call-2" / "notes.md").read_text() == "lesson B"
+    assert ctx.spend.usd == Decimal("0.004") and len(ctx.records) == 2
+
+
+def test_every_helper_tool_call_is_an_event(tmp_path, helper_boxes):
+    """Each of the helper's cells is an ``execute_code`` row and each call its cells make a row of its own, every row
+    numbered once in the helper's own sequence; usage rides on the first cell of each model turn only."""
+    ctx = _ctx(tmp_path, Script(_drafting()))
+    _run({"task": "draft area", "episodes": ["e1"]}, ctx)
+    rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
+    calls, cells = _calls(rows)
+    assert [t for t, _ in calls] == ["overview", "read", "stage", "stage", "stage", "done"]
+    assert cells == 7  # one per model-API call: the six above and the cell that prints 6
+    assert all(
+        r["agent"] == "helper" and r["pass_id"] == "p1" and r["helper_call"] == "call-1"
+        for r in rows
+    )
+    assert sorted(r["call"] for r in rows) == list(range(13))
+    # usage on the first call of each model turn only (four turns), never on a call a cell makes
+    with_usage = [r for r in rows if r["usage"] is not None]
+    assert len(with_usage) == 4 and all(r["tool"] == "execute_code" for r in with_usage)
+    assert with_usage[0]["usage"]["usd"] == "0.001"
+    stages = [r for r in rows if r["tool"] == "stage"]
+    bad = stages[2]
+    assert (
+        bad["status"] == "refused"
+        and bad["refusal"]["form"] == "path"
+        and bad["paths"] == []
+    )
+    assert stages[0]["paths"] == [
+        {"path": "/inputs/helpers/call-1/candidates/area.py", "mode": "write"},
+    ]
+    (read,) = [r for r in rows if r["tool"] == "read"]
+    assert read["paths"] == [{"path": "/task/episodes/e1.json", "mode": "read"}]
+
+
+def test_a_failing_helper_returns_a_clear_result_and_never_fails_the_pass(
+    tmp_path,
+    helper_boxes,
+):
+    script = Script({"boom": [RuntimeError("upstream said no")]})
+    ctx = _ctx(tmp_path, script)
+    reply = _run({"task": "boom", "episodes": ["e1"]}, ctx)
+    assert (
+        reply.startswith("helper call-1: error: RuntimeError")
+        and "upstream said no" not in reply
+    )
+    assert (
+        ctx.spend.unknown == 1
+    )  # a failed call may have cost money: booked as unknown
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
+    assert status["status"] == "error: RuntimeError" and status["usd"] == "unknown"
+    assert (ctx.inputs / "helpers" / "call-1" / "helper.json").is_file()
+
+
+def test_unpriced_helper_calls_stay_unknown(tmp_path, helper_boxes):
+    script = Script(
+        {"t": [_msg(_tc("d", "done", {"summary": "nothing", "claims": []}))]},
+        usd="unknown",
+    )
+    ctx = _ctx(tmp_path, script)
+    reply = _run({"task": "t", "episodes": []}, ctx)
+    assert "spend: unknown USD (1 unpriced calls" in reply and ctx.spend.unknown == 1
+
+
+def test_refusals_start_no_helper(tmp_path):
+    ctx = _ctx(tmp_path, None, lane_refusal="no helper lane")
+    assert _run({"task": "t", "episodes": ["e1"]}, ctx) == (
+        "refused: no helper can start: no helper lane"
+    )
+    ctx = _ctx(tmp_path / "b", Script({}))
+    for args, phrase in (
+        ({"task": "", "episodes": ["e1"]}, "task must be"),
+        ({"task": "t", "episodes": "e1"}, "episodes must be"),
+        ({"task": "t", "episodes": ["nope"]}, "'nope' is not a recorded episode"),
+        ({"task": "t", "episodes": ["../e1"]}, "is not a recorded episode"),
+    ):
+        assert phrase in _run(args, ctx)
+    late = _ctx(tmp_path / "c", Script({}), deadline=time.monotonic())
+    assert "wall clock is used up" in _run({"task": "t", "episodes": []}, late)
+    assert not (tmp_path / "b" / "state").exists()
+
+
+def test_helpers_read_any_recorded_episode_but_only_through_the_index(
+    tmp_path,
+    helper_boxes,
+):
+    script = Script(
+        {
+            "t": [
+                _msg(
+                    _tc("other", "read_episode", {"episode": "e3"}),
+                    _tc("hidden", "read_episode", {"episode": "e4"}),
+                    _tc("pathy", "overview", {"episode": "../../etc/passwd"}),
+                    _tc("pool", "read", {"path": "/inputs/pool/INDEX.md"}),
+                ),
+                _msg(_tc("d", "done", {"summary": "read", "claims": []})),
+            ],
+        },
+    )
+    loads = []
+
+    def load(eid):
+        loads.append(eid)
+        return {**EPS, "e4": _episode("e4")}[eid]
+
+    ctx = _ctx(tmp_path, script, load=load)
+    _run({"task": "t", "episodes": ["e1"]}, ctx)
+    assert "request" in script.outputs["other"]  # e3 was not named, and is readable
+    assert (
+        "not a recorded episode" in script.outputs["hidden"]
+    )  # loadable, but not in the index
+    assert "not an episode id" in script.outputs["pathy"]
+    assert "e4" not in loads and all(".." not in e for e in loads)
+    # the writer's /inputs, its pool included, is readable by a helper
+    assert "pool" in script.outputs["pool"] and not script.outputs["pool"].startswith(
+        "refused",
+    )
+
+
+def _calls(rows):
+    """(tool, status) of each in-code call's row, in order, and the number of cells (``execute_code`` rows)."""
+    calls = [(r["tool"], r["status"]) for r in rows if r["tool"] != "execute_code"]
+    return calls, sum(r["tool"] == "execute_code" for r in rows)
+
+
+def _done_then(cid, claims, then=None):
+    """A helper that calls done with *claims*, then (if refused) done again with *then*."""
+    turns = [_msg(_tc(cid, "done", {"summary": "s", "claims": claims}))]
+    if then is not None:
+        turns.append(_msg(_tc("again", "done", {"summary": "s", "claims": then})))
+    return {"t": turns}
+
+
+def test_done_with_resolving_sources_is_recorded_and_shown_to_the_writer(
+    tmp_path,
+    helper_boxes,
+):
+    claims = [
+        {"claim": "area is w * h", "sources": ["e1/cell:0"]},
+        {"claim": "e3 asked for nothing", "sources": ["e3/request", "e3/request"]},
+        {"claim": "a shared block holds the rules", "sources": ["e1/shared:b1"]},
+    ]
+    script = Script(_done_then("d", claims))
+    ctx = _ctx(tmp_path, script, shared={"b1": "shared block"})
+    reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
+    rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
+    assert _calls(rows) == ([("done", "ok")], 1)
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
+    assert status["status"] == "ok"
+    assert status["claims"] == [
+        {"claim": "area is w * h", "sources": ["e1/cell:0"]},
+        {"claim": "e3 asked for nothing", "sources": ["e3/request"]},
+        {"claim": "a shared block holds the rules", "sources": ["e1/shared:b1"]},
+    ]
+    exported = json.loads(
+        (ctx.inputs / "helpers" / "call-1" / "helper.json").read_text(),
+    )
+    assert exported["claims"] == status["claims"]
+    assert ctx.records[0]["claims"] == status["claims"]
+    # the writer's reply lists every claim with its pointers and says they are untrusted until read
+    assert "untrusted until you read the parts" in reply
+    assert "1. area is w * h\n   sources: e1/cell:0" in reply
+    assert "2. e3 asked for nothing\n   sources: e3/request" in reply
+    assert "3. a shared block holds the rules\n   sources: e1/shared:b1" in reply
+
+
+def test_no_claims_is_stated_in_the_reply(tmp_path, helper_boxes):
+    ctx = _ctx(tmp_path, Script(_done_then("d", [])))
+    reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
+    assert reply.splitlines()[-1] == "claims: (none)"
+
+
+@pytest.mark.parametrize(
+    "claims, phrase, form",
+    [
+        ([{"claim": "x", "sources": []}], "claim 1 has no sources", "no_sources"),
+        # a claim without a sources key: the call's schema refuses it before the helper reads it
+        ([{"claim": "x"}], "claims[0].sources is missing", "bad_arguments"),
+        (
+            [{"claim": "x", "sources": ["e1/cell:0"]}, {"claim": "y", "sources": []}],
+            "claim 2 has no sources",
+            "no_sources",
+        ),
+        (
+            [{"claim": "x", "sources": ["e1/cell:7"]}],
+            "source 'e1/cell:7' does not resolve (episode 'e1' has no part 'cell:7'; its parts: request, cell:0",
+            "bad_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["e1/action:-1"]}],
+            "has no part 'action:-1'",
+            "bad_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["e9/request"]}],
+            "'e9' is not a recorded episode",
+            "bad_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["../e1/request"]}],
+            "is not an episode id",
+            "bad_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["cell:0"]}],
+            "not written `<episode>/<part>`",
+            "bad_source",
+        ),
+        (
+            [{"claim": "x", "sources": ["e1/shared:nope"]}],
+            "has no part 'shared:nope'",
+            "bad_source",
+        ),
+        ("all good", "claims is 'all good' (str)", "bad_arguments"),
+        ([{"claim": "", "sources": ["e1/cell:0"]}], "claim 1 has no text", "claims"),
+    ],
+)
+def test_done_with_a_missing_or_unresolved_source_is_refused_and_can_be_fixed(
+    tmp_path,
+    helper_boxes,
+    claims,
+    phrase,
+    form,
+):
+    fixed = [{"claim": "area is w * h", "sources": ["e1/cell:0"]}]
+    script = Script(_done_then("d", claims, then=fixed))
+    ctx = _ctx(tmp_path, script)
+    reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
+    refused = script.outputs["d"]
+    assert refused.startswith("refused: ") and phrase in refused, refused
+    if form == "bad_arguments":  # the schema's refusal says what the call takes
+        assert "Expected claims" in refused, refused
+    else:
+        assert "the task is not done, call done again" in refused
+    # the helper went on and fixed it
+    rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
+    assert _calls(rows) == ([("done", "refused"), ("done", "ok")], 2)
+    assert next(r for r in rows if r["tool"] == "done")["refusal"]["form"] == form
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
+    assert status["status"] == "ok" and status["claims"] == fixed
+    assert "sources: e1/cell:0" in reply
+
+
+def test_a_helper_that_never_fixes_its_claims_hands_back_none(tmp_path, helper_boxes):
+    script = Script(
+        {
+            "t": [_msg(_tc("d", "done", {"summary": "s", "claims": [{"claim": "x"}]}))]
+            * 3,
+        },
+    )
+    ctx = _ctx(tmp_path, script, step_guard=3)
+    reply = _run({"task": "t", "episodes": ["e1"]}, ctx)
+    assert reply.startswith("helper call-1: operational step guard")
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
+    assert status["claims"] == [] and status["summary"] == ""
+
+
+def test_staging_again_replaces_and_the_quota_is_stated(tmp_path, monkeypatch):
+    st = helpers._Staging(tmp_path / "s" / "call-1")
+    assert st.stage("notes.md", "one") == "staged notes.md (3 bytes)"
+    assert st.stage("notes.md", "two!") == "staged notes.md (4 bytes)"
+    assert (tmp_path / "s" / "call-1" / "notes.md").read_text() == "two!"
+    monkeypatch.setattr(helpers, "QUOTA_FILES", 1)
+    assert "staging quota" in st.stage("candidates/f.py", "def f(): pass")
+    refused = st.stage("evil.sh", "x")
+    assert refused.startswith("refused: 'evil.sh': outside ") and "candidates/*.py" in refused, refused
+    with pytest.raises(FileExistsError):
+        helpers._Staging(tmp_path / "s" / "call-1")  # always a fresh directory
+
+
+def test_the_helper_lane_reads_its_token_from_a_descriptor_and_scrubs_the_environment(
+    monkeypatch,
+):
+    lane = switch._Lane(switch.LIBRARY_HELPER_BASE_URL, switch.LIBRARY_HELPER_TOKEN_FD, switch.LIBRARY_HELPER_TOKEN,
+                        "helper", "no helper lane")
+    monkeypatch.setattr(switch, "_HELPER", lane)
+    assert switch.helper_lane_route() == (None, "no helper lane")
+    r, w = os.pipe()
+    os.write(w, b"helper-token-0123456789abcdef\n")  # pragma: allowlist secret
+    os.close(w)
+    os.set_inheritable(r, True)
+    base = "http://127.0.0.1:18081/helper/v1"
+    env = {switch.LIBRARY_HELPER_BASE_URL: base, switch.LIBRARY_HELPER_TOKEN_FD: str(r)}
+    s = SimpleNamespace(**env)
+    assert switch.settle_helper_route_env(env, s) is None
+    assert env == {}  # both names left the environment
+    pair, why = switch.helper_lane_route()
+    assert (
+        why is None
+        and pair[0] == base
+        and pair[1].get_secret_value()
+        == "helper-token-0123456789abcdef"  # pragma: allowlist secret
+    )
+    with pytest.raises(OSError):
+        os.fstat(r)  # the descriptor was closed once read
+    with pytest.raises(ValueError):
+        switch.parse_library_helper_base_url("http://127.0.0.1:18081/fork/v1")
+
+
+def test_no_helper_lane_means_no_delegate_and_no_fallback(monkeypatch):
+    lane = switch._Lane(switch.LIBRARY_HELPER_BASE_URL, switch.LIBRARY_HELPER_TOKEN_FD, switch.LIBRARY_HELPER_TOKEN,
+                        "helper", "no helper lane")
+    monkeypatch.setattr(switch, "_HELPER", lane)
+    lane.tried = True
+    s = SimpleNamespace(
+        UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL="",
+        UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD="",
+        UNIFY_MODEL="vendor/actor-model@openrouter",
+    )
+    got = consolidate._helper_turns(s, "low")
+    assert got == {"helper_turn": None, "helper_refusal": "no helper lane"}
+
+
+@needs_bwrap
+def test_the_real_helper_box_writes_only_work(tmp_path):
+    code = (
+        "import pathlib\n"
+        "pathlib.Path('/work/x.txt').write_text('ok')\n"
+        "for p in ('/memory/y.txt', '/inputs/z.txt'):\n"
+        "    try:\n"
+        "        pathlib.Path(p).write_text('no')\n"
+        "        print('WROTE', p)\n"
+        "    except OSError as e:\n"
+        "        print('DENIED', p)\n"
+        "print(open('/memory/INDEX.md').read().strip())\n"
+    )
+    script = Script(
+        {
+            "t": [
+                _msg(_tc("x", "execute_code", {"code": code})),
+                _msg(_tc("d", "done", {"summary": "s", "claims": []})),
+            ],
+        },
+    )
+    ctx = _ctx(tmp_path, script)
+    _run({"task": "t", "episodes": ["e1"]}, ctx)
+    out = script.outputs["x"]
+    assert (
+        "DENIED /memory/y.txt" in out
+        and "DENIED /inputs/z.txt" in out
+        and "WROTE" not in out
+    )
+    assert "# library" in out
+    assert not (ctx.library / "y.txt").exists() and not (ctx.inputs / "z.txt").exists()
+
+
+def test_a_helpers_episode_reads_record_the_paths_the_writer_records():
+    assert helpers.episode_paths("overview", {"episode": "e1"}, "e1") == [
+        {"path": "/episodes/e1", "mode": "read"},
+    ]
+    assert helpers.episode_paths("read_episode", {"episode": "e1"}, "e1") == [
+        {"path": "/episodes/e1", "mode": "read"},
+    ]
+    assert helpers.episode_paths(
+        "read_episode",
+        {"parts": ["cell:1", "action:0"]},
+        "e1",
+    ) == [
+        {"path": "/episodes/e1/cell:1", "mode": "read"},
+        {"path": "/episodes/e1/action:0", "mode": "read"},
+    ]
+    assert helpers.episode_paths("read_episode", {"part": "cell:2"}, "e1") == [
+        {"path": "/episodes/e1/cell:2", "mode": "read"},
+    ]
+
+
+def test_helper_json_records_the_largest_prompt_a_call_reported(tmp_path, helper_boxes):
+    first = {
+        **_msg(_tc("o", "overview", {"episode": "e1"})),
+        "usage": {"prompt_tokens": 300},
+    }
+    last = {
+        **_msg(_tc("d", "done", {"summary": "s", "claims": []})),
+        "usage": {"prompt_tokens": 120},
+    }
+    ctx = _ctx(tmp_path, Script({"t": [first, last]}))
+    _run({"task": "t", "episodes": ["e1"]}, ctx)
+    status = json.loads((ctx.out_root / "call-1" / "helper.json").read_text())
+    assert status["max_prompt_tokens"] == 300

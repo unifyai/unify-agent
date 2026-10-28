@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -27,9 +28,6 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 # Kept outside fixtures/ so directory-discovery meta-tests do not spawn the
 # intentional hang session used only by --session-timeout coverage.
 HANG_FIXTURES_DIR = Path(__file__).parent / "hang_fixtures"
-# Likewise separate: fixtures that open their store and report their
-# environment, used only by the store-plumbing and --no-cache coverage.
-STORE_FIXTURES_DIR = Path(__file__).parent / "store_fixtures"
 # Likewise separate: fixtures whose results the runner reports back, some of
 # which hold their session open, used only by the result-reporting coverage.
 REPORT_FIXTURES_DIR = Path(__file__).parent / "report_fixtures"
@@ -37,7 +35,6 @@ PYTEST_LOGS_DIR = REPO_ROOT / "logs" / "pytest"
 _FIXTURE_TREES = (
     FIXTURES_DIR,
     HANG_FIXTURES_DIR,
-    STORE_FIXTURES_DIR,
     REPORT_FIXTURES_DIR,
 )
 
@@ -55,6 +52,12 @@ def pytest_ignore_collect(collection_path, config):
         return None
     invoked = [Path(str(arg).split("::")[0]).resolve() for arg in config.args]
     return not any(p == tree or tree in p.parents for p in invoked)
+
+
+#: A hang guard for one tmux command, not a bound: a tmux client's start on a
+#: loaded host can take seconds, and a timed-out ``ls`` would read as no
+#: sessions.
+TMUX_TIMEOUT_S = 60
 
 
 def get_unity_sockets() -> List[str]:
@@ -133,7 +136,7 @@ def list_tmux_sessions(socket: Optional[str] = None) -> List[TmuxSession]:
                 ["tmux", "-L", sock, "ls"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=TMUX_TIMEOUT_S,
             )
             if result.returncode != 0:
                 continue
@@ -179,7 +182,7 @@ def kill_tmux_session(name: str, socket: Optional[str] = None) -> bool:
             result = subprocess.run(
                 ["tmux", "-L", sock, "kill-session", "-t", name],
                 capture_output=True,
-                timeout=5,
+                timeout=TMUX_TIMEOUT_S,
             )
             if result.returncode == 0:
                 return True
@@ -316,7 +319,7 @@ def _kill_tmux_server(socket: str) -> None:
         subprocess.run(
             ["tmux", "-L", socket, "kill-server"],
             capture_output=True,
-            timeout=5,
+            timeout=TMUX_TIMEOUT_S,
         )
     except Exception:
         pass
@@ -340,6 +343,17 @@ def clean_tmux_sessions():
     yield
 
 
+def unique_socket(suffix: str = "") -> str:
+    """A tmux socket name no other runner shares.
+
+    The pid alone is not unique: under per-test PID namespaces every test
+    process is pid 2, so runners of concurrent tests would share a tmux
+    server and a log directory, and one runner's cleanup would end the
+    other's sessions.
+    """
+    return f"unity_test_{os.getpid()}_{uuid.uuid4().hex[:8]}{suffix}"
+
+
 class ParallelRunner:
     """Helper class to run parallel_run.sh with various arguments."""
 
@@ -347,13 +361,12 @@ class ParallelRunner:
         self.script_path = SCRIPT_PATH
         self.fixtures_dir = FIXTURES_DIR
         self.hang_fixtures_dir = HANG_FIXTURES_DIR
-        self.store_fixtures_dir = STORE_FIXTURES_DIR
         self.report_fixtures_dir = REPORT_FIXTURES_DIR
         self.repo_root = REPO_ROOT
         self._created_sessions: List[tuple[str, str]] = []  # (socket, session_name)
         # Generate a unique socket name for this runner instance so all runs
         # within the same test use the same socket (enables collision detection)
-        self._socket_name = socket_name or f"unity_test_{os.getpid()}"
+        self._socket_name = socket_name or unique_socket()
 
     def run(
         self,
@@ -389,9 +402,6 @@ class ParallelRunner:
         # Use a consistent socket name for all runs within this runner instance
         # This enables collision detection between sequential runs in the same test
         run_env["UNIFY_TEST_SOCKET"] = self._socket_name
-        # The outer pytest process owns a store of its own; the nested runner
-        # must hand each spawned session a fresh one rather than inherit it.
-        run_env.pop("UNIFY_STORE_PATH", None)
         if env:
             run_env.update(env)
 
@@ -574,38 +584,10 @@ class ParallelRunner:
         path = self.hang_fixtures_dir.joinpath(*parts)
         return str(path.relative_to(self.repo_root))
 
-    def store_fixture_path(self, *parts: str) -> str:
-        """Get the path to a store-plumbing fixture relative to repo root."""
-        path = self.store_fixtures_dir.joinpath(*parts)
-        return str(path.relative_to(self.repo_root))
-
     def report_fixture_path(self, *parts: str) -> str:
         """Get the path to a result-reporting fixture relative to repo root."""
         path = self.report_fixtures_dir.joinpath(*parts)
         return str(path.relative_to(self.repo_root))
-
-    @staticmethod
-    def session_env_reports(
-        result: RunResult,
-        store: Optional[Path] = None,
-    ) -> List[dict]:
-        """Read the ``<store>.env.json`` snapshots the store fixtures write.
-
-        With ``store`` given, only that store's snapshot is read (the shared
-        store case); otherwise every snapshot under the run's ``stores/``
-        directory is returned.
-        """
-        import json
-
-        if store is not None:
-            candidates = [Path(f"{store}.env.json")]
-        elif result.log_dir is not None:
-            candidates = sorted((result.log_dir / "stores").glob("*.env.json"))
-        else:
-            candidates = []
-        return [
-            json.loads(p.read_text(encoding="utf-8")) for p in candidates if p.is_file()
-        ]
 
     def cleanup(self):
         """Kill all sessions created by this runner.
@@ -650,7 +632,7 @@ def runner(clean_tmux_sessions):
 @pytest.fixture
 def second_runner(clean_tmux_sessions):
     """A ParallelRunner on a socket of its own, for runs that overlap ``runner``'s."""
-    r = ParallelRunner(socket_name=f"unity_test_{os.getpid()}_second")
+    r = ParallelRunner(socket_name=unique_socket("_second"))
     yield r
     r.cleanup()
 

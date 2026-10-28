@@ -1,0 +1,330 @@
+"""The prompt texts every agent reads when tools are called from code (``UNIFY_TOOLS_IN_CODE=on``).
+
+With the setting on, each agent has one model-API tool, ``execute_code``, and calls every other tool in its cells as
+``tools.<name>(...)``. The briefs then name tools in that form and leave each tool's details to ``tools.help(name)``.
+Three things must hold for those texts:
+
+* every rule a check enforces is still stated where the agent acts on it (:data:`RULES`: one stable phrase per
+  inventory row, and the text it must be in);
+* no brief names a tool its agent cannot call (:data:`ALLOWED`, the per-agent allow-lists);
+* no text says "stored function", and none names a model-API tool that is no longer offered.
+
+With the setting off every text is today's, byte for byte; the existing wording tests cover that arm.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+
+#: Names every agent's ``tools`` module has besides its allow-list: listing, help, the shell, and the two exceptions a
+#: call raises (the shared opening that starts every brief names them).
+COMMON = frozenset({"list", "help", "sh", "Refused", "NotRun"})
+
+#: Each agent's in-code tools (the design's per-agent allow-lists); the writer's optional tools by the flag that
+#: offers them.
+WRITER_ALWAYS = frozenset(
+    {
+        "read",
+        "grep",
+        "overview",
+        "read_episode",
+        "pool",
+        "fixture",
+        "land_capture",
+        "check",
+        "finish",
+        # the attention ledger's tools and the writer's stated tests (always on in rev 2)
+        "open_entries",
+        "take",
+        "decide",
+        "find",
+        "test",
+        "send",
+        "messages",
+        "wait",
+        "who",
+        "reply",
+        "stop",
+    },
+)
+WRITER_OPTIONAL = {"helper": "delegate", "similar": "similar"}
+ALLOWED = {
+    "helper": frozenset(
+        {"read", "grep", "overview", "read_episode", "similar", "stage", "send", "messages", "wait", "who", "ask", "done"},
+    ),
+    "actor": frozenset(
+        {"read", "grep", "install", "send", "messages", "wait", "who", "reply", "stop", "delegate", "answer"},
+    ),
+    # rev 2: the fork is on the run record too, with its comms tools
+    "fork": frozenset({"send", "messages", "wait", "who"}),
+}
+
+#: The model-API tools each agent had before, none of which it has with tools called from code.
+MEMORY_JSON_TOOLS = frozenset(
+    {
+        "read",
+        "grep",
+        "overview",
+        "read_episode",
+        "pool",
+        "fixture",
+        "replay",
+        "land_capture",
+        "check",
+        "finish",
+        "similar",
+        "delegate",
+        "send",
+        "messages",
+        "wait",
+        "who",
+        "reply",
+        "stop",
+        "write",
+        "edit",
+        "stage",
+        "done",
+        "ask",
+    },
+)
+ACTOR_JSON_TOOLS = frozenset({"final_response", "send_response", "store_skills"})
+#: A backticked word that is a manifest key, not a tool: the writer's manifest has a `pool` block.
+MANIFEST_KEYS = frozenset({"pool"})
+
+#: Every inventory row of kind "rule a check enforces" (and the facts the briefs state from a checked constant),
+#: with the text the agent reads it in and a stable phrase of the rule. Rows a refusal states are checked in the
+#: refusal's own text. Rev 2 (labels-only gate, no replays, no stage 5) has no rows B113 (procedures verified by
+#: replay), B117 (perturbed reruns), B139 (drawn recorded inputs) or B144 (mutation score); the other rows state rev 2's
+#: wording of the same rule.
+RULES: tuple[tuple[str, str, str], ...] = (
+    ("B86", "writer", "Functions go in `memory/<package>/<module>.py`"),
+    ("B87", "writer", "Each package has an `__init__.py` whose docstring is one paragraph"),
+    ("B88", "writer", "an `Example:` section of one line naming one of the function's tests"),
+    ("B89", "writer", "must name an item that exists"),
+    ("B90", "writer", "plain pytest, importing only the library and the standard library"),
+    ("B93", "writer", '{"items": [{"item": "<id>", "kind": "function" or "note"'),
+    ("B94", "writer", "A note's entry takes `item`, `kind` and `source_episodes`"),
+    ("B95", "writer", "its `tests` name at least one test file"),
+    ("B96", "writer", "A field with a fixed domain is declared in `field_types` (form: /inputs/README.md)"),
+    ("B96", "inputs_readme", "declares a field with a fixed domain"),
+    ("B98", "writer", "`covers` takes typed covers only"),
+    ("B99", "writer", "`support` lists helper files"),
+    ("B101", "writer", "keeps a moved item's history"),
+    ("B104", "writer", "An item's `adopts` lists the drafts it drew on"),
+    ("B109", "writer", "`pool` records decisions on pool entries"),
+    ("B115", "writer", 'raises `MemoryInputError("<what was expected>")` on an input it was not built for'),
+    ("B127", "writer", "add a test that fails on the old version and passes on yours"),
+    ("B128", "writer", "A pass never removes library items"),
+    ("B129", "writer", "name it in `tests_changed` with the reason"),
+    ("B130", "writer", "in this order of trust"),
+    ("B131", "writer", "At least one call returns on arguments loaded from fixtures made with `tools.fixture`"),
+    ("B132", "writer", "one episode is enough"),
+    ("B133", "writer", "A call that refuses or raises counts for nothing"),
+    ("B134", "writer", "equals an exact trusted value"),
+    ("B135", "writer", "Never compute an expected value with the function's own expression"),
+    ("B136", "writer", "never assert on the clock"),
+    ("B138", "writer", "recorded-inputs file"),
+    # B140 ("values that vary become parameters") is gone: the harness never steers what is stored, either way
+    ("B141", "writer", "Never store credentials or session tokens"),
+    ("B145", "writer", "a candidate with fewer items than the library it started from, a deleted item or a dropped alias is refused"),
+    ("B145", "writer", "or a candidate with fewer tests, is labelled"),
+    ("B147", "writer", "G1, layout and provenance"),
+    ("B148", "writer", "G2, evidence"),
+    ("B149", "writer", "G3, tests"),
+    ("B150", "writer", "G4, the index"),
+    ("B151", "writer", "G5, items (no fewer items"),
+    ("B152", "writer", "G6, safety"),
+    ("B157", "writer", "a breach refuses the pass"),
+    ("B158", "writer", "model and check calls"),
+    ("T58", "writer", "a fixture that did not come through `tools.fixture` unchanged"),
+    ("B247", "helper", "a `tools.done` without them is refused"),
+    ("B268", "fork", "at most 200 files and 4 MiB in all are kept"),
+    ("A2", "actor", "Your answer is your final reply: a message without a tool call."),
+    ("A8", "actor_structured", "answer by calling `tools.answer(answer)`"),
+    ("M12", "library_guide", "A function should raise `MemoryInputError` on an input it was not built for."),
+    ("M19", "library_head", "Generated by the harness from the library; never edit it."),
+    ("N1", "refusals", "Stopped at the step limit"),
+    ("N2", "refusals", "message starts a new request"),
+    ("P7", "refusals", "write long content to a file and post its path"),
+)
+
+#: Rule rows whose text another part of the build writes (the shared opening, each tool's help, the actor's
+#: execute_code description): not checked here.
+ELSEWHERE = {
+    "A27": "the shared opening's environment sentence",
+    "A43": "execute_code's description",
+    "J3": "execute_code's description",
+    "J7": "execute_code's description",
+    "J9": "execute_code's description",
+    "J10": "execute_code's description",
+    "H5": 'tools.help("read")',
+    "H6": 'tools.help("grep")',
+    "P2": "the actor's own text",
+    "P3": 'tools.help("wait")',
+    "H11": 'tools.help("wait")',
+}
+
+
+def _writer_briefs() -> dict[str, tuple[str, frozenset[str]]]:
+    """The writer's briefs with no optional input and with every one, each with the flags it was built with."""
+    from unify.memory import library_prompts as lp
+
+    full = {"helper": True, "similar": True}
+    return {
+        "writer base": (lp.write_brief_now(), frozenset()),
+        "writer full": (
+            lp.write_brief_now(**full),
+            frozenset({"helper", "similar"}),
+        ),
+    }
+
+
+def _writer_allowed(flags: frozenset[str]) -> frozenset[str]:
+    names = set(WRITER_ALWAYS)
+    for flag, tools in WRITER_OPTIONAL.items():
+        if flag in flags:
+            names.update((tools,) if isinstance(tools, str) else tools)
+    return frozenset(names)
+
+
+def _actor_prompt(**kw) -> str:
+    from unify.actor import prompt_builders as pb
+
+    return pb.build_code_act_prompt(environments={}, **kw)
+
+
+def _sources(*modules: str) -> str:
+    import importlib
+
+    return "\n".join(Path(importlib.import_module(m).__file__).read_text(encoding="utf-8") for m in modules)
+
+
+def _texts() -> dict[str, str]:
+    """Every text the rows are checked in, as the agents read them with tools called from code."""
+    from unify.common._async_tool import cache_discipline
+    from unify.memory import helpers, library_index
+    from unify.memory import library_prompts as lp
+    from unify.memory.integration import fork
+
+    writers = _writer_briefs()
+    files = lp.input_pointer_files()
+    return {
+        "writer": writers["writer full"][0],
+        "writer base": writers["writer base"][0],
+        "helper": helpers.helper_brief(True),
+        "fork": fork.fork_instruction(),
+        "actor": _actor_prompt(),
+        "actor_structured": _actor_prompt(structured=True),
+        "library_guide": lp.GUIDE_LIBRARIAN,
+        "library_head": library_index.INDEX_HEAD,
+        "compaction": cache_discipline.compression_fork_instruction(),
+        "inputs_readme": files[lp.INPUTS_README_FILE],
+        "refusals": "\n".join(
+            [
+                _sources(
+                    "unify.memory.writer_pass",
+                    "unify.common._async_tool.loop",
+                    "unify.agents.record",
+                ),
+            ],
+        ),
+    }
+
+
+@pytest.mark.parametrize("row,where,phrase", RULES, ids=[f"{r}-{w}" for r, w, _ in RULES])
+def test_every_checked_rule_is_still_stated_where_the_agent_acts(row, where, phrase):
+    text = " ".join(_texts()[where].split())
+    assert " ".join(phrase.split()) in text, f"{row}: {phrase!r} is not in the {where} text"
+
+
+def test_the_rows_stated_elsewhere_are_not_rows_this_file_checks():
+    assert not set(ELSEWHERE) & {row for row, _, _ in RULES}
+
+
+def _tool_calls(text: str) -> set[str]:
+    return set(re.findall(r"\btools\.([A-Za-z_]+)", text))
+
+
+def test_no_brief_names_a_tool_its_agent_cannot_call():
+    from unify.memory import helpers
+
+    for name, (brief, flags) in _writer_briefs().items():
+        extra = _tool_calls(brief) - _writer_allowed(flags) - COMMON
+        assert not extra, f"{name} names {sorted(extra)}"
+    texts = _texts()
+    for agent in ("actor", "fork"):
+        extra = _tool_calls(texts[agent]) - ALLOWED[agent] - COMMON
+        assert not extra, f"{agent} names {sorted(extra)}"
+    assert not _tool_calls(texts["actor_structured"]) - ALLOWED["actor"] - COMMON
+    for similar in (True, False):
+        allowed = ALLOWED["helper"] - (set() if similar else {"similar"})
+        extra = _tool_calls(helpers.helper_brief(similar)) - allowed - COMMON
+        assert not extra, f"helper (similar={similar}) names {sorted(extra)}"
+
+
+def _bare_tool_names(text: str, names: frozenset[str]) -> set[str]:
+    """Backticked bare tool names: `name` or `name(...)`, never `tools.name`."""
+    return {m for m in re.findall(r"`([a-z_]+)(?:`|\()", text) if m in names}
+
+
+def test_no_text_says_stored_function_or_names_a_tool_no_longer_offered():
+    texts = _texts()
+    memory = ("writer", "writer base", "helper", "fork", "compaction")
+    for name in memory:
+        assert "stored function" not in texts[name].lower(), name
+        bare = _bare_tool_names(texts[name], MEMORY_JSON_TOOLS) - (MANIFEST_KEYS if "writer" in name else set())
+        assert not bare, f"{name} names {sorted(bare)} as a model-API tool"
+    for name in ("library_guide", "library_head", "compaction"):
+        assert "stored function" not in texts[name].lower(), name
+    for name in ("actor", "actor_structured"):
+        from unify.actor import prompt_builders as pb
+
+        # the role (its first paragraph) is the actor's own text, rewritten in its own change; with the tools in
+        # code it is the role that states the one answer rule
+        role = pb._role()
+        assert role in texts[name], name
+        body = texts[name].split(role, 1)[-1]
+        assert "stored function" not in body.lower(), name
+        assert not _bare_tool_names(texts[name], ACTOR_JSON_TOOLS), name
+        assert "### Tools" not in texts[name] and "### Sandbox Objects" not in texts[name]
+    from unify.memory import helpers
+
+    for similar in (True, False):
+        assert not _bare_tool_names(helpers.helper_brief(similar), MEMORY_JSON_TOOLS)
+
+
+def test_the_pointer_files_hold_the_tables_the_brief_points_to():
+    from unify.memory import library_prompts as lp
+
+    files = lp.input_pointer_files()
+    keys = files[lp.BATCH_MAP_KEYS_FILE]
+    for key, _ in lp.row_keys():
+        assert f"- `{key}` (" in keys, key
+    readme = files[lp.INPUTS_README_FILE]
+    assert "Pool entry kinds" in readme
+    brief = _texts()["writer"]
+    assert "/inputs/batch_map_keys.md" in brief and "/inputs/README.md" in brief
+    assert "`episode_id` (str)" not in brief
+
+
+def _opening_sizes() -> dict[str, int]:
+    """With the setting on, the characters the shared opening and its blank line add to each memory brief."""
+    from unify.memory import helpers
+
+    texts = {
+        "writer base brief": _writer_briefs()["writer base"][0],
+        "writer full brief": _writer_briefs()["writer full"][0],
+        "helper brief (no similar)": helpers.helper_brief(False),
+        "helper brief (similar)": helpers.helper_brief(True),
+    }
+    out = {}
+    for name, text in texts.items():
+        start = "\n\nYou are a helper" if name.startswith("helper") else "\n\n# Role\n"
+        head, sep, _ = text.partition(start)
+        assert sep and head.startswith("## How you work here"), name
+        out[name] = len(head) + 2
+    return out

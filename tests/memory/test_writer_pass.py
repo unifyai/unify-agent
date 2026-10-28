@@ -1,0 +1,1182 @@
+import asyncio
+import json
+import os
+import shutil
+
+import pytest
+
+from unify.memory.library_checks import LibraryConfig
+from unify.memory.blobs import BlobStore
+from unify.memory.episodes import Action, Cell, CostRow
+from unify.memory.evidence import EvidenceStore
+from unify.memory.gate import Gate
+from unify.memory.gitio import Repo
+from unify.memory.redact import Redactor
+from unify.memory.writer_pass import PassConfig, WriterPass, _mirror, export_for_writer, transcript_lines
+from unify.memory.trigger import PassRequest
+from tests.memory.test_episodes import _ep
+from tests.memory.test_gate import MAN, MOD
+
+needs_bwrap = pytest.mark.skipif(
+    shutil.which("bwrap") is None,
+    reason="bubblewrap required",
+)
+
+_ME = Action(0, "venmo", "me", [], {}, {"user_id": "u-1"}, "ok", "read")
+
+
+def _never(eid):
+    raise AssertionError(f"episode {eid} was not requested")
+
+
+def _e1():
+    return _ep(
+        episode_id="e1",
+        cells=[Cell(0, "print(apis.venmo.me())", "{'user_id': 'u-1'}")],
+        actions=[_ME],
+    )
+
+
+def _write(path, text):
+    return (
+        f"import pathlib; p=pathlib.Path({path!r}); "
+        f"p.parent.mkdir(parents=True, exist_ok=True); p.write_text({text!r})"
+    )
+
+
+def _call(cid, name, args):
+    from tests.memory.in_code_calls import as_cell
+
+    name, args = as_cell(name, args)
+    return {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": cid,
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            },
+        ],
+    }
+
+
+class Script:
+    """A scripted model: one execute_code call per cell, then finish; it records every tool result."""
+
+    def __init__(self, cells, usd="0.001"):
+        self.cells, self.i, self.usd = cells, 0, usd
+        self.outputs: dict[str, str] = {}
+        self.first: list[dict] | None = None
+        self.tools: list[dict] | None = None
+
+    async def __call__(self, messages, tools):
+        if self.first is None:
+            self.first, self.tools = [dict(m) for m in messages], tools
+        for m in messages:
+            if m.get("role") == "tool":
+                self.outputs[m["tool_call_id"]] = m["content"]
+        if self.i < len(self.cells):
+            code = self.cells[self.i]
+            self.i += 1
+            return _call(f"c{self.i}", "execute_code", {"code": code}), self.usd
+        return _call("f", "finish", {"summary": "added venmo.me"}), self.usd
+
+
+# the test command WRITER_SYSTEM gives, run as the writer would run it
+SUITE = (
+    "import subprocess, sys\n"
+    "r = subprocess.run([sys.executable, '-m', 'pytest', 'env/venmo/tests', '-q', '-p', 'no:cacheprovider',\n"
+    "    '--rootdir', '/memory', '-c', '/dev/null', '--import-mode=importlib'],\n"
+    "    env={'PYTHONPATH': '/memory', 'PYTHONDONTWRITEBYTECODE': '1'}, capture_output=True, text=True)\n"
+    "print(r.stdout[-300:], r.returncode)\n"
+)
+
+
+@needs_bwrap
+def test_pass_stops_at_call_cap_without_manifest(tmp_path):
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
+    writer = WriterPass(
+        mem,
+        gate,
+        ev,
+        load=_never,
+        model_turn=Script(["print(1)"] * 50),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=3),
+    )
+    parent = mem.head()
+    out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p2"))
+    assert not out.passed and out.calls == 3 and out.reasons == ["no manifest"]
+    assert out.commit is None and out.usd == "0.003" and mem.head() == parent
+    row = ev.db.execute(
+        "SELECT passed, reasons, usd, candidate FROM passes WHERE pass_id='p2'",
+    ).fetchone()
+    assert row == (0, json.dumps(["no manifest"]), "0.003", None)
+
+
+class Costs:
+    """A model that answers in text only (no cell runs), at scripted per-call costs."""
+
+    def __init__(self, costs):
+        self.costs, self.i = costs, 0
+
+    async def __call__(self, messages, tools):
+        usd = self.costs[min(self.i, len(self.costs) - 1)]
+        self.i += 1
+        return {"role": "assistant", "content": "thinking"}, usd
+
+
+@pytest.mark.parametrize(
+    "costs, calls, usd, unknown",
+    [
+        # no USD cap of its own: every pass runs to its step guard; unpriced calls are counted apart
+        (["0.40"] + ["unknown"] * 50, 10, "0.40", 9),
+        (["0.60"] * 50, 10, "6.00", 0),
+        (["unknown"] * 50, 10, "0", 10),
+        (["not money"] * 50, 10, "0", 10),
+        # never exponent notation (str(Decimal("1E-7")) is "1E-7")
+        (["1E-7"] * 50, 10, "0.0000010", 0),
+    ],
+)
+def test_spend_counts_known_costs_and_unpriced_calls_apart(
+    tmp_path,
+    costs,
+    calls,
+    usd,
+    unknown,
+):
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
+    writer = WriterPass(
+        mem,
+        gate,
+        ev,
+        load=_never,
+        model_turn=Costs(costs),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
+    )
+    out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p3"))
+    assert out.calls == calls and not out.passed
+    # money is a pure decimal string; unpriced calls are counted apart
+    assert out.usd == usd and out.unknown_cost_calls == unknown
+    notes = [f"note: {unknown} unpriced calls"] if unknown else []
+    assert out.reasons == ["no manifest", *notes]
+    assert ev.db.execute(
+        "SELECT usd, reasons FROM passes WHERE pass_id='p3'",
+    ).fetchone() == (usd, json.dumps(["no manifest", *notes]))
+
+
+def test_recorded_pass_id_is_refused_before_any_model_call(tmp_path):
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    ev.record_pass({"pass_id": "p4", "passed": 0, "usd": "0.5"})
+    model = Costs(["0.1"])
+    writer = WriterPass(
+        mem,
+        Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig()),
+        ev,
+        load=_never,
+        model_turn=model,
+        config=PassConfig(run_home=str(tmp_path / "run-home"), ),
+    )
+    out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p4"))
+    assert not out.passed and out.calls == 0 and model.i == 0
+    assert ev.db.execute("SELECT usd FROM passes WHERE pass_id='p4'").fetchone() == (
+        "0.5",
+    )
+
+
+def test_export_for_writer_carries_no_outcome_signal_or_checker_data(tmp_path):
+    reason = "CHECKER: failed because the amount paid to Bob was 20, not 25"
+    ep = _ep(
+        episode_id="e9",
+        regime=reason,
+        transcript=[{"role": "user", "content": reason}],
+        cells=[Cell(0, "print(apis.venmo.me())", "{'user_id': 'u-1'}", error=reason)],
+        actions=[
+            Action(
+                0,
+                "venmo",
+                "pay",
+                [5],
+                {"to": "bob"},
+                {"ok": True},
+                "ok",
+                "write",
+                None,
+            ),
+        ],
+        memory_diff=reason,
+        worktree_diff=reason,
+        costs=[CostRow(reason, "m", 1, 1, "0.1")],
+        fingerprints={"venmo": {reason: [reason]}},
+    )
+    # attributes a later schema might add: an outcome, signals, a checker verdict
+    ep.outcome = reason
+    ep.signals = [{"label": "fail", "reason": reason}]
+    ep.actions[0].checker = reason
+    out = tmp_path / "episodes"
+    out.mkdir()
+    export_for_writer(lambda eid: ep, ["e9"], out)
+    files = sorted(p for p in out.rglob("*") if p.is_file())
+    assert [p.name for p in files] == ["e9.json"]
+    assert reason not in files[0].read_text()
+    assert json.loads(files[0].read_text()) == {
+        "episode_id": "e9",
+        "request": ["Pay my Venmo friends back"],
+        "cells": [
+            {
+                "index": 0,
+                "code": "print(apis.venmo.me())",
+                "output": "{'user_id': 'u-1'}",
+            },
+        ],
+        "actions": [
+            {
+                "index": 0,
+                "cell": 0,
+                "channel": "venmo",
+                "method": "pay",
+                "args": [5],
+                "kwargs": {"to": "bob"},
+                "response": {"ok": True},
+                "status": "ok",
+                "effect": "write",
+                "error": None,
+                "kind": "tool",
+            },
+        ],
+        "memory_channels": ["venmo"],
+    }
+
+
+def test_export_for_writer_names_each_actions_memory_channel_as_the_gate_maps_it(
+    tmp_path,
+):
+    ep = _e1()
+    ep.actions = [
+        Action(
+            cell=0,
+            channel="env",
+            method="say",
+            args=["x"],
+            kwargs={},
+            response="o",
+            status="ok",
+            kind="dialogue",
+        ),
+        Action(
+            cell=0,
+            channel="dialogue:user",
+            method="say",
+            args=["x"],
+            kwargs={},
+            response="o",
+            status="ok",
+            kind="dialogue",
+        ),
+        Action(
+            cell=0,
+            channel="shell:git",
+            method="run",
+            args=["x"],
+            kwargs={},
+            response=None,
+            status="ok",
+            kind="dialogue",
+        ),
+    ]
+    export_for_writer(lambda eid: ep, ["e1"], tmp_path)
+    row = json.loads((tmp_path / "e1.json").read_text())
+    assert row["memory_channels"] == ["env", "dialogue_user", None]
+    for a in row["actions"]:  # the brief's rebuild recipe still works on every action
+        Action(**{k: v for k, v in a.items() if k != "index"})
+
+
+def test_export_for_writer_refuses_unsafe_episode_ids(tmp_path):
+    with pytest.raises(ValueError):
+        export_for_writer(lambda eid: _e1(), ["../e1"], tmp_path)
+
+
+@needs_bwrap
+def test_pass_never_follows_links_or_git_files_written_in_the_box(tmp_path):
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
+    planted = tmp_path / "planted.json"  # a host file the box cannot see
+    planted.write_text(json.dumps(MAN))
+    cells = [
+        _write("/memory/.git", "gitdir: /nonexistent\n"),
+        _write("/memory/env/venmo/__init__.py", MOD),
+        "import os; os.makedirs('/memory/.pass'); "
+        f"os.symlink({str(planted)!r}, '/memory/.pass/manifest.json')",
+    ]
+    writer = WriterPass(
+        mem,
+        gate,
+        ev,
+        load=_never,
+        model_turn=Script(cells),
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
+    )
+    out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p5"))
+    assert not out.passed
+    assert any(
+        "manifest" in r and "regular file" in r for r in out.reasons
+    ), out.reasons
+    cand = ev.db.execute("SELECT candidate FROM passes WHERE pass_id='p5'").fetchone()[
+        0
+    ]
+    tree = mem.run("ls-tree", "-r", "--name-only", cand).split()
+    assert tree == ["env/venmo/__init__.py"]
+
+
+def test_model_error_ends_the_pass_and_is_recorded(tmp_path):
+    async def boom(messages, tools):
+        raise RuntimeError("provider down")
+
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    writer = WriterPass(
+        mem,
+        Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig()),
+        ev,
+        load=_never,
+        model_turn=boom,
+        config=PassConfig(run_home=str(tmp_path / "run-home"), ),
+    )
+    out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p6"))
+    assert out.calls == 1 and out.usd == "0" and out.unknown_cost_calls == 1
+    assert out.reasons == [
+        "model call failed: RuntimeError: provider down",
+        "no manifest",
+        "note: 1 unpriced calls",
+    ]
+    assert ev.db.execute("SELECT usd FROM passes WHERE pass_id='p6'").fetchone() == (
+        "0",
+    )
+
+
+@pytest.mark.parametrize(
+    "costs, usd",
+    [
+        ([0.0125, 0.0005], "0.0130"),
+        ([1e-07], "0.0000001"),
+        ([0.01, None], "unknown"),
+        ([], "unknown"),
+    ],
+)
+def test_unillm_turn_prices_its_own_events_without_a_model_call(
+    monkeypatch,
+    costs,
+    usd,
+):
+    import unify.common.llm_client as llm_client
+    from unillm.llm_events import LLMEvent, get_llm_event_hook
+
+    from unify.memory.writer_pass import unillm_turn
+
+    built = {}
+
+    class FakeClient:
+        messages: list = []
+
+        async def generate(self, *, messages, tools, tool_choice, stateful):
+            assert (
+                stateful and tool_choice == "auto" and messages[0]["role"] == "system"
+            )
+            # delivered to the context-local hook only (as unillm does), never to process-wide listeners
+            hook = get_llm_event_hook()
+            for c in costs:  # e.g. a postprocessing retry emits a second event
+                hook(LLMEvent(request={}, provider_cost=c, origin="memory_writer"))
+            hook(LLMEvent(request={}, provider_cost=9.0, origin="elsewhere"))
+            self.messages = [
+                *messages,
+                {"role": "assistant", "content": "hi", "tool_calls": None},
+            ]
+
+    def fake_new(model, **kw):
+        built.update(model=model, **kw)
+        return FakeClient()
+
+    monkeypatch.setattr(llm_client, "new_llm_client", fake_new)
+    turn = unillm_turn("openai/gpt-6-sol", "low")
+    msg, got = asyncio.run(
+        turn(
+            [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            [],
+        ),
+    )
+    assert built == {
+        "model": "openai/gpt-6-sol@openrouter",
+        "origin": "memory_writer",
+        "reasoning_effort": "low",
+        "stateful": True,
+    }
+    assert msg["content"] == "hi" and got == usd
+
+
+class Turns:
+    """A model that replays scripted assistant messages, then finishes."""
+
+    def __init__(self, messages, usd="0.001"):
+        self.queue, self.usd = list(messages), usd
+        self.outputs: dict[str, str] = {}
+        self.seen: list[dict] = []
+
+    async def __call__(self, messages, tools):
+        self.seen = messages
+        for m in messages:
+            if m.get("role") == "tool":
+                self.outputs[m["tool_call_id"]] = m["content"]
+        if self.queue:
+            return self.queue.pop(0), self.usd
+        return _call("fin", "finish", {"summary": "done"}), self.usd
+
+
+def _writer(tmp_path, model, **cfg):
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
+    cfg.setdefault("max_calls", 10)
+    writer = WriterPass(
+        mem,
+        gate,
+        ev,
+        load=_never,
+        model_turn=model,
+        config=PassConfig(run_home=str(tmp_path / "run-home"), **cfg),
+    )
+    return mem, ev, writer
+
+
+def _run(writer, pass_id="px"):
+    return asyncio.run(
+        writer.run(PassRequest("incremental", "venmo", [], False), pass_id),
+    )
+
+
+DEEP = "[" * 200000 + "]" * 200000
+
+
+@needs_bwrap
+def test_hostile_cells_and_arguments_never_raise_on_the_host(tmp_path):
+    big = (
+        "x = 1\n" * 40000 + "print('BIG', x)\n"
+    )  # 240 KB: over the 128 KiB argv string limit
+    calls = [
+        _call("big", "execute_code", {"code": big}),
+        _call("nul", "execute_code", {"code": "print(1)\0"}),
+        _call(
+            "utf8",
+            "execute_code",
+            {
+                # raw bytes on the cell's standard output (rev 2's persistent interpreter captures print through a
+                # text stream with no .buffer; what reaches fd 1 is decoded with replacements)
+                "code": "import os; os.write(1, b'A\\xff\\xfeB')",
+            },
+        ),
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "deep",
+                    "type": "function",
+                    "function": {"name": "execute_code", "arguments": DEEP},
+                },
+            ],
+        },
+        _call(
+            "deepman",
+            "execute_code",
+            {"code": _write("/memory/.pass/manifest.json", DEEP)},
+        ),
+    ]
+    model = Turns(calls)
+    mem, ev, writer = _writer(tmp_path, model)
+    out = _run(writer)
+    assert model.outputs["big"].strip() == "BIG 1"
+    assert "null bytes" in model.outputs["nul"]
+    assert model.outputs["utf8"].strip() == "A\ufffd\ufffdB"
+    assert model.outputs["deep"].startswith(
+        "refused: unreadable arguments: RecursionError",
+    )
+    assert not out.passed
+    assert any(
+        r.startswith("manifest: not valid JSON (RecursionError") for r in out.reasons
+    ), out.reasons
+    assert ev.pass_exists("px")
+
+
+@needs_bwrap
+def test_chmod_zero_entries_are_unlocked_measured_and_mirrored(tmp_path):
+    code = (
+        "import os\n"
+        "os.makedirs('/memory/env/venmo/hidden')\n"
+        "open('/memory/env/venmo/hidden/x.py', 'w').write('x = 1')\n"
+        "os.chmod('/memory/env/venmo/hidden', 0)\n"
+        "open('/memory/env/venmo/secret.md', 'w').write('s')\n"
+        "os.chmod('/memory/env/venmo/secret.md', 0)\n"
+        "open('/memory/env/venmo/NOTES.md', 'w').write('# Venmo\\n')\n"
+        "os.makedirs('/memory/.pass')\n"
+        "open('/memory/.pass/manifest.json', 'w').write('{}')\n"
+    )
+    mem, ev, writer = _writer(tmp_path, Script([code]))
+    out = _run(writer)
+    assert not out.passed  # the gate still decides; nothing crashed on the host
+    assert not any(
+        "left out" in r or "unreadable" in r for r in out.reasons
+    ), out.reasons
+    cand = ev.db.execute("SELECT candidate FROM passes WHERE pass_id='px'").fetchone()[
+        0
+    ]
+    # the host restored its own access, so the gate sees (and refuses) exactly what the writer wrote
+    assert mem.run("ls-tree", "-r", "--name-only", cand).split() == [
+        "env/venmo/NOTES.md",
+        "env/venmo/hidden/x.py",
+        "env/venmo/secret.md",
+    ]
+
+
+@needs_bwrap
+@pytest.mark.parametrize(
+    "code, why",
+    [
+        ("open('/memory/big.txt', 'wb').write(b'x' * (1024**2 + 1))", "per file"),
+        (
+            "import os\nfor i in range(2001):\n    open(f'/memory/f{i}', 'w').close()",
+            "files and directories",
+        ),
+        (
+            "import os\nos.makedirs('/memory/env/a')\n"
+            "for i in range(21):\n    open(f'/memory/env/a/f{i}', 'wb').write(b'x' * 1024**2)",
+            "bytes under /memory",
+        ),
+    ],
+)
+def test_write_quota_refuses_the_pass_without_a_commit(tmp_path, code, why):
+    later = _write("/memory/.pass/manifest.json", json.dumps(MAN))
+    model = Script([code, later])
+    mem, ev, writer = _writer(tmp_path, model)
+    parent = mem.head()
+    out = _run(writer)
+    assert not out.passed and out.commit is None and out.calls == 1
+    assert any(
+        r.startswith("over quota") and why in r for r in out.reasons
+    ), out.reasons
+    row = ev.db.execute(
+        "SELECT passed, candidate FROM passes WHERE pass_id='px'",
+    ).fetchone()
+    assert row == (0, None) and mem.head() == parent
+
+
+@needs_bwrap
+def test_cell_file_size_is_limited_below_run_confineds(tmp_path):
+    from unify.memory.writer_pass import CELL_FSIZE_BYTES
+
+    code = "import resource\n" "print(resource.getrlimit(resource.RLIMIT_FSIZE)[0])\n"
+    model = Script([code])
+    mem, ev, writer = _writer(tmp_path, model)
+    _run(writer)
+    assert model.outputs["c1"].strip() == str(CELL_FSIZE_BYTES)
+
+
+EMPTY = {"items": [], "why": "nothing to keep", "summary": "s"}
+
+
+@needs_bwrap
+def test_calls_after_finish_are_skipped_and_missing_ids_are_synthesised(tmp_path):
+    from tests.memory.in_code_calls import as_cell
+
+    turn = {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_code",
+                    # rev 2: finish needs a manifest; one that lists nothing is a decision to store nothing
+                    "arguments": json.dumps(
+                        {"code": _write("/memory/.pass/manifest.json", json.dumps(EMPTY)) + "\nprint('first')"},
+                    ),
+                },
+            },
+            {
+                "id": "f",
+                "type": "function",
+                # every tool is called from a cell
+                "function": {
+                    "name": "execute_code",
+                    "arguments": json.dumps(as_cell("finish", {"summary": "s"})[1]),
+                },
+            },
+            {
+                "id": "late",
+                "type": "function",
+                "function": {
+                    "name": "execute_code",
+                    "arguments": json.dumps({"code": "open('/memory/late', 'w')"}),
+                },
+            },
+        ],
+    }
+    model = Turns([turn])
+    mem, ev, writer = _writer(tmp_path, model)
+    out = _run(writer)
+    # the list the model was last given is the pass's transcript, final tool replies included
+    tool_msgs = [m for m in model.seen if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["call_1_0", "f", "late"]
+    assert turn["tool_calls"][0]["id"] == "call_1_0"
+    assert tool_msgs[0]["content"].strip() == "first"
+    assert tool_msgs[2]["content"] == "not run: pass finished"
+    # the accepted finish with a manifest that lists nothing: the pass stores nothing, by the writer's own word
+    assert out.calls == 1 and out.summary == "s" and out.finished and out.nothing_to_store
+
+
+def test_pass_deadline_stops_a_slow_model(tmp_path):
+    class Slow:
+        calls = 0
+
+        async def __call__(self, messages, tools):
+            Slow.calls += 1
+            await asyncio.sleep(0.4)
+            return {"role": "assistant", "content": "thinking"}, "0.01"
+
+    mem, ev, writer = _writer(tmp_path, Slow(), max_calls=40, deadline_s=1.0)
+    out = _run(writer)
+    assert 2 <= out.calls <= 4
+    assert any("pass deadline of 1.0 s reached" in r for r in out.reasons), out.reasons
+    assert ev.pass_exists("px")
+
+
+def test_cancelled_pass_is_recorded(tmp_path):
+    started = asyncio.Event()
+
+    async def hang(messages, tools):
+        started.set()
+        await asyncio.sleep(3600)
+
+    mem, ev, writer = _writer(tmp_path, hang)
+
+    async def main():
+        task = asyncio.create_task(
+            writer.run(PassRequest("incremental", "venmo", [], False), "pc"),
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    usd, reasons = ev.db.execute(
+        "SELECT usd, reasons FROM passes WHERE pass_id='pc'",
+    ).fetchone()
+    assert usd == "0" and json.loads(reasons)[0].startswith(
+        "pass error: CancelledError",
+    )
+
+
+@needs_bwrap
+def test_an_unreadable_memory_root_is_unlocked_and_measured(tmp_path):
+    code = (
+        "import os\n"
+        "os.makedirs('/memory/env/venmo')\n"
+        "open('/memory/env/venmo/NOTES.md', 'w').write('# Venmo\\n')\n"
+        "os.makedirs('/memory/.pass')\n"
+        "open('/memory/.pass/manifest.json', 'w').write('{}')\n"
+        "os.chmod('/memory/env/venmo', 0)\n"
+        "os.chmod('/memory', 0)\n"
+    )
+    mem, ev, writer = _writer(tmp_path, Script([code]))
+    out = _run(writer)
+    assert not out.passed and ev.pass_exists("px")
+    cand = ev.db.execute("SELECT candidate FROM passes WHERE pass_id='px'").fetchone()[
+        0
+    ]
+    # nothing was left out: the host made every directory owner-readable before measuring and mirroring
+    assert mem.run("ls-tree", "-r", "--name-only", cand).split() == [
+        "env/venmo/NOTES.md",
+    ]
+    assert not any("left out" in r for r in out.reasons), out.reasons
+
+
+@needs_bwrap
+def test_a_parsable_but_deep_manifest_is_refused_before_the_gate(tmp_path):
+    deep = json.dumps({"items": [[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]})
+    mem, ev, writer = _writer(
+        tmp_path,
+        Script([_write("/memory/.pass/manifest.json", deep)]),
+    )
+    out = _run(writer)
+    assert not out.passed
+    assert "manifest: nested deeper than 16 levels" in out.reasons, out.reasons
+
+
+@needs_bwrap
+@pytest.mark.parametrize("mode", [0, 0o444, 0o111])
+def test_quota_cannot_be_hidden_under_an_unreadable_directory(tmp_path, mode):
+    code = (
+        "import os\n"
+        "os.makedirs('/memory/hide')\n"
+        "for i in range(25):\n"
+        "    open(f'/memory/hide/f{i}', 'wb').write(b'x' * 1024**2)\n"
+        "os.makedirs('/memory/.pass')\n"
+        f"open('/memory/.pass/manifest.json', 'w').write({json.dumps(json.dumps(MAN))})\n"
+        f"os.chmod('/memory/hide', {mode})\n"
+    )
+    model = Script([code])
+    mem, ev, writer = _writer(tmp_path, model)
+    parent = mem.head()
+    out = _run(writer)
+    assert not out.passed and out.commit is None and out.calls == 1
+    assert any(r.startswith("over quota: more than") for r in out.reasons), out.reasons
+    row = ev.db.execute(
+        "SELECT passed, candidate FROM passes WHERE pass_id='px'",
+    ).fetchone()
+    assert row == (0, None) and mem.head() == parent
+
+
+def test_measure_refuses_entries_that_stay_unreadable(tmp_path, monkeypatch):
+    import unify.memory.writer_pass as sp
+
+    (tmp_path / "d").mkdir()
+    real = os.scandir
+
+    def deny(path):
+        # the measure lists directories from descriptors: name the one opened for "d"
+        name = os.readlink(f"/proc/self/fd/{path}") if isinstance(path, int) else str(path)
+        if name.endswith("/d"):
+            raise PermissionError(13, "denied")
+        return real(path)
+
+    monkeypatch.setattr(sp.os, "scandir", deny)
+    assert sp._measure(tmp_path) == "over quota: unreadable entries ['d']"
+
+
+@needs_bwrap
+def test_pass_notes_reach_the_recorded_row_on_the_gate_path(tmp_path):
+    class Model:
+        i = 0
+
+        async def __call__(self, messages, tools):
+            Model.i += 1
+            if Model.i == 1:
+                code = _write("/memory/.pass/manifest.json", "{}")
+                return _call("w", "execute_code", {"code": code}), "unknown"
+            raise RuntimeError("provider down")
+
+    mem, ev, writer = _writer(tmp_path, Model())
+    out = _run(writer)
+    assert ev.db.execute("SELECT candidate FROM passes WHERE pass_id='px'").fetchone()[
+        0
+    ]
+    row = json.loads(
+        ev.db.execute("SELECT reasons FROM passes WHERE pass_id='px'").fetchone()[0],
+    )
+    assert row[-2:] == [
+        "model call failed: RuntimeError: provider down",
+        "note: 2 unpriced calls",
+    ]
+    assert out.reasons == row
+    assert out.unknown_cost_calls == 2 and out.usd == "0"
+
+
+# --- the check tool and the pre-created channel folders ----------------------------------------------------
+
+# Outcome-like text in the episode: it must never reach the writer through check.
+MARK = "CHECKER-VERDICT-ZX81: the amount paid to Bob was wrong"
+_SLACK = Action(
+    0,
+    "slack",
+    "post",
+    [],
+    {"text": "hi"},
+    {"ok": True, "note": MARK},
+    "ok",
+    "write",
+)
+
+
+def _dialogue(channel):
+    return Action(
+        cell=0,
+        channel=channel,
+        method="say",
+        args=["x"],
+        kwargs={},
+        response="o",
+        status="ok",
+        kind="dialogue",
+    )
+
+
+def _marked(actions):
+    ep = _ep(
+        episode_id="e1",
+        request=[f"Pay Bob back. {MARK}"],
+        cells=[Cell(0, "print(apis.venmo.me())", f"{{'user_id': 'u-1'}} {MARK}")],
+        actions=actions,
+    )
+    ep.outcome = MARK
+    return ep
+
+
+def _checks(cid, manifests):
+    """One assistant message carrying a check call per manifest (ids <cid>1, <cid>2, ...), each from its own cell, as
+    rev 2's writer calls every tool."""
+    from tests.memory.in_code_calls import as_cell
+
+    calls = []
+    for n, m in enumerate(manifests, 1):
+        name, args = as_cell("check", {"manifest": m})
+        calls.append({"id": f"{cid}{n}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}})
+    return {"role": "assistant", "tool_calls": calls}
+
+
+def test_check_calls_count_against_the_call_cap_and_have_no_limit_of_their_own(tmp_path):
+    # rev 2: finish needs a manifest, so the scripted writer writes one that lists nothing after its checks
+    model = Turns(
+        [
+            _checks("k", ["{", "{}", "{}", "{}", "{}", "{}"]),
+            _call("m", "execute_code", {"code": _write("/memory/.pass/manifest.json", json.dumps(EMPTY))}),
+        ],
+    )
+    mem, ev, writer = _writer(tmp_path, model, max_calls=20)
+    out = _run(writer)
+    # a refusal raised in the cell prints as the tool raised it
+    assert model.outputs["k1"].startswith("refused: manifest: not valid JSON"), model.outputs[
+        "k1"
+    ]
+    from tests.memory.writer_library_items import CHECK_OK
+
+    # no check limit: every check runs
+    assert [model.outputs[f"k{n}"] for n in range(2, 7)] == [CHECK_OK] * 5
+    # two model calls, six checks run (a check is a call), and the manifest cell; the empty manifest stores nothing
+    assert out.calls == 2 + 6 + 1 and out.nothing_to_store
+    # a check is a call: the cap stops checks too
+    model = Turns([_checks("c", ["{}"] * 4)])
+    mem, ev, writer = _writer(tmp_path / "capped", model, max_calls=3)
+    out = _run(writer, "py")
+    # the cap ends the pass with no further model turn, so the replies are read from the message list
+    # the model was given (the pass appends to it), not from what a next turn would have recorded
+    replies = {
+        m["tool_call_id"]: m["content"] for m in model.seen if m.get("role") == "tool"
+    }
+    assert [replies[f"c{n}"] for n in (1, 2)] == [CHECK_OK, CHECK_OK]
+    assert replies["c3"] == replies["c4"] == ("not run: the pass's call cap is reached")
+    # the checks wrote the manifest "{}", which lists nothing: rev 2 lands nothing for it (no refusal)
+    assert out.calls == 3 and out.items_merged == [] and out.items_refused == {}
+
+
+DIGEST = (
+    "import hashlib, os\n"
+    "h = hashlib.sha256()\n"
+    "for d, ds, fs in sorted(os.walk('/memory')):\n"
+    "    for n in sorted(ds + fs):\n"
+    "        p = os.path.join(d, n)\n"
+    "        st = os.lstat(p)\n"
+    "        h.update(f'{p} {st.st_mode} {st.st_size}'.encode())\n"
+    "        if os.path.isfile(p) and not os.path.islink(p):\n"
+    "            h.update(open(p, 'rb').read())\n"
+    "print('DIGEST', h.hexdigest())\n"
+)
+
+
+@needs_bwrap
+def test_writer_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
+    from tests.memory import writer_library_items as wl
+
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    ep = _marked([_ME, _SLACK])
+    ev.index_episode(ep, "1" * 40)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), library_mode=LibraryConfig())
+    # the writer first puts the module in a subpackage, where the library layout has no place for it
+    wrong = "memory/acct/users/__init__.py"
+    files = {k: v for k, v in wl.FILES.items() if k != wl.MODULE}
+    # the manifest is written first, so each check judges the file as it is (a manifest argument would be written
+    # into /memory/.pass first, which is the documented exception to "check changes nothing")
+    write_misplaced = "\n".join(
+        [wl.write(f"/memory/{rel}", text) for rel, text in {**files, wrong: wl.MODULE_SOURCE}.items()]
+        + [wl.write("/memory/.pass/manifest.json", json.dumps(wl.MANIFEST))],
+    )
+    move = "\n".join(
+        [
+            "import shutil",
+            "shutil.rmtree('/memory/memory/acct/users')",
+            wl.write(f"/memory/{wl.MODULE}", wl.MODULE_SOURCE),
+        ],
+    )
+    placed = wl.MANIFEST
+    model = Turns(
+        [
+            _call("w", "execute_code", {"code": write_misplaced}),
+            _call("d1", "execute_code", {"code": DIGEST}),
+            _checks("bad", [""]),
+            _call("d2", "execute_code", {"code": DIGEST}),
+            _call("mv", "execute_code", {"code": move}),
+            _checks("good", [""]),
+            _call(
+                "m",
+                "execute_code",
+                {"code": _write("/memory/.pass/manifest.json", json.dumps(placed))},
+            ),
+        ],
+    )
+    writer = WriterPass(
+        mem,
+        gate,
+        ev,
+        load=lambda eid: ep,
+        model_turn=model,
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=20),
+    )
+    parent = mem.head()
+    out = asyncio.run(
+        writer.run(PassRequest("incremental", "acct", ["e1"], False), "pc"),
+    )
+    bad = model.outputs["bad1"]
+    assert (
+        f"G1: file {wrong}: packages have no subpackages; tests go in memory/<package>/tests/" in bad.splitlines()
+    ), bad
+    # the reasons carry ids and paths only: no episode content, no outcome text
+    assert MARK not in bad and "u-1" not in bad and "Bob" not in bad
+    assert all(len(line) <= 200 for line in bad.splitlines())
+    # check never changes the tree
+    assert (
+        model.outputs["d1"].startswith("DIGEST")
+        and model.outputs["d1"] == model.outputs["d2"]
+    )
+    assert model.outputs["good1"] == wl.CHECK_OK
+    assert out.passed, out.reasons
+    assert out.calls == 8 + 2 and mem.head() == out.commit != parent
+    tree = mem.run("ls-tree", "-r", "--name-only", out.commit).split()
+    # the folder removed is no commit noise
+    assert sorted(tree) == sorted(wl.FILES)
+
+
+def _store_backed(tmp_path, model, **cfg):
+    """A pass over e1 (venmo and slack actions) whose lookups read the evidence store, as production's do."""
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    ep = _marked([_ME, _SLACK])
+    ev.index_episode(ep, "1" * 40)
+
+    def lookup(eid, i):  # the store's connection belongs to the thread that opened it
+        ok = ev.episode_exists(eid) and 0 <= i < len(ep.actions)
+        return ep.actions[i] if ok else None
+
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup, library_mode=LibraryConfig())
+    cfg.setdefault("max_calls", 10)
+    writer = WriterPass(
+        mem,
+        gate,
+        ev,
+        load=lambda eid: ep,
+        model_turn=model,
+        config=PassConfig(run_home=str(tmp_path / "run-home"), **cfg),
+    )
+    return mem, ev, writer
+
+
+def test_check_with_an_item_returns_the_gates_reasons_on_the_stores_thread(tmp_path):
+    from tests.memory import writer_library_items as wl
+
+    # the manifest names an item the box does not hold: the gate's own reason comes back, read on the store's thread
+    model = Turns([_checks("k", [json.dumps(wl.MANIFEST)])])
+    mem, ev, writer = _store_backed(tmp_path, model)
+    out = asyncio.run(
+        writer.run(PassRequest("incremental", "venmo", ["e1"], False), "pt"),
+    )
+    reply = model.outputs["k1"]
+    assert "check error" not in reply, reply
+    assert f"G1: {wl.ITEM_ID} (function) is not in the candidate" in reply.splitlines(), reply
+    assert out.checks == 1
+
+
+def test_check_is_refused_when_too_little_of_the_deadline_is_left(tmp_path):
+    model = Turns(
+        [
+            _checks("k", ["{}"]),
+            _call("m", "execute_code", {"code": _write("/memory/.pass/manifest.json", json.dumps(EMPTY))}),
+        ],
+    )
+    mem, ev, writer = _writer(tmp_path, model, deadline_s=30.0)
+    out = _run(writer)
+    assert (
+        model.outputs["k1"] == "not run: too little time left before the pass deadline"
+    )
+    assert out.checks == 0 and out.calls == 2 + 1  # the refused check is not a call; the manifest cell is
+
+
+def test_a_check_error_shows_its_type_only_and_the_detail_stays_on_the_host(
+    tmp_path,
+    monkeypatch,
+):
+    model = Turns([_checks("k", ["{}"])])
+    mem, ev, writer = _writer(tmp_path, model)
+
+    def broken(*a, **kw):
+        raise OSError("cannot read /tmp/memory-check-host/tree/x")
+
+    monkeypatch.setattr(writer.gate, "preview", broken)
+    out = _run(writer)
+    assert model.outputs["k1"] == "check error: OSError"
+    assert any("/tmp/memory-check-host" in r for r in out.reasons), out.reasons
+
+
+def test_check_refuses_a_declared_input_in_library_mode(tmp_path):
+    """The library-mode counterpart of the v2 test above: a library function takes any arguments, so the check
+    refuses an item that still declares an input form, naming the item, before finish.
+    """
+    from unify.memory.library_checks import LibraryConfig
+    from tests.memory import library_example_world as w
+
+    declared = w.manifest({}, w.item(input="observation"))
+    model = Turns([_checks("k", [json.dumps(declared)])])
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    for n, ep in enumerate(w.EPISODES.values()):
+        ev.index_episode(ep, str(n + 1) * 40)
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b"),
+        action_lookup=w.lookup,
+        library_mode=LibraryConfig(episodes=w.EPISODES.get),
+    )
+    writer = WriterPass(
+        mem,
+        gate,
+        ev,
+        load=w.EPISODES.__getitem__,
+        model_turn=model,
+        config=PassConfig(run_home=str(tmp_path / "run-home"), max_calls=10),
+    )
+    out = asyncio.run(
+        writer.run(PassRequest("incremental", "acct", ["e1", "e2"], False), "pl"),
+    )
+    reply = model.outputs["k1"].splitlines()
+    text = (
+        f"{w.ITEM_ID}: input is no longer read: a function takes any arguments and its examples are the calls its "
+        "tests make on fixtures; remove input"
+    )
+    assert any(line.startswith("G1:") and line.endswith(text) for line in reply), reply
+    assert out.checks == 1 and not out.passed
+
+
+def test_test_run_caches_are_never_mirrored_out_of_the_box(tmp_path):
+    # the gate refuses a stray root entry, so a cache the writer's own test run left must never reach the commit
+    box, wt = tmp_path / "box", tmp_path / "wt"
+    for d in (
+        ".hypothesis/examples",
+        ".pytest_cache/v",
+        "env/venmo/__pycache__",
+        "env/venmo/.hypothesis",
+    ):
+        (box / d).mkdir(parents=True)
+    (box / ".hypothesis/examples/a").write_text("x")
+    (box / "env/venmo/.hypothesis/b").write_text("x")
+    (box / "env/venmo/NOTES.md").write_text("# Venmo\n")
+    wt.mkdir()
+    assert _mirror(box, wt) == []
+    assert sorted(str(p.relative_to(wt)) for p in wt.rglob("*")) == [
+        "env",
+        "env/venmo",
+        "env/venmo/NOTES.md",
+    ]
+
+
+# --- distillation inputs: the last gate's refusals, the library summary, the kept transcript ---------------
+
+
+def _recorded(ev, pass_id, channel, reasons, passed=0):
+    ev.record_pass(
+        {
+            "pass_id": pass_id,
+            "kind": "batched" if channel is None else "incremental",
+            "channel": channel,
+            "parent": "0" * 40,
+            "candidate": None,
+            "passed": passed,
+            "reasons": json.dumps(reasons),
+            "usd": "0",
+            "patch_blob": None,
+        },
+    )
+
+
+_NOT_GATE = [
+    "note: 2 unpriced calls",
+    "model call failed: RuntimeError: provider down",
+    "G2 held-out values: env/venmo:me 3 values accepted",
+    "pre-existing: env/venmo/tests/test_me.py still fails ['t'], as on the parent",
+    "pass error: CancelledError: ",
+]
+
+
+def _put(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def _module(names, doc="Read a thing."):
+    return "".join(
+        f'def {n}(apis, x):\n    """{doc}\n\n    Effect: read\n    """\n    return x\n\n\n'
+        for n in names
+    )
+
+
+PLANTED = "tok-PLANTED-0123456789abcdef"  # pragma: allowlist secret
+
+
+def test_transcript_redacts_a_secret_registered_after_its_redactor_was_built(
+    monkeypatch,
+):
+    # the writer's route token is registered with unify.process_secrets and is never in os.environ; the transcript
+    # applies redact_error at the time it is made, so even a redactor built earlier cannot let it through
+    from unify import process_secrets
+
+    token = "solroute-" + "Q" * 30  # pragma: allowlist secret
+    red = Redactor({})
+    monkeypatch.setitem(process_secrets._SECRETS, token, "UNIFY_MEMORY_WRITER_TOKEN")
+    messages = [
+        {"role": "user", "content": f"route {token}"},
+        {"role": "tool", "tool_call_id": "c1", "content": {token: "Bearer " + token}},
+    ]
+    for redactor in (red, None):
+        text = "\n".join(
+            transcript_lines(messages, "p1", redactor, string_chars=12),
+        )
+        assert "solroute" not in text and "QQQQ" not in text
+        assert "<secret:UNIFY_MEMORY_WRITER_TOKEN>"[:12] in text
+
+
+_NO_OUTCOME_KEYS = {
+    "outcome",
+    "solved",
+    "passed",
+    "label",
+    "signal",
+    "signals",
+    "checker",
+    "checks",
+    "verdict",
+    "reward",
+    "score",
+    "regime",
+    "task",
+    "task_id",
+}
+
+
+def _keys(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            yield k
+            yield from _keys(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _keys(v)

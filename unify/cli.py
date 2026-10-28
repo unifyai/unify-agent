@@ -1,15 +1,10 @@
-"""The terminal front ends: chat with the assistant, or drive the actor alone.
+"""The terminal front end: drive the actor.
 
-``unify`` (or ``python -m unify``) starts the slow brain in-process, wires the
-terminal to the in-app chat, and renders what the assistant sends back.
-Every line typed is an inbound ``UnifyMessageReceived`` event; every reply is
-the ``UnifyMessageSent`` event the brain publishes, so the terminal is one
-front end over the same loop any other client would drive.
-
-``unify act "request"`` bypasses the conversation loop: one ``CodeActActor``
-takes the request, its progress streams to the terminal, any question it asks
-is answered from the terminal, and the result is printed. This is the unit to
-compare against single-loop harnesses, and the shape a benchmark runner wants.
+``unify act "request"`` (and ``unify`` or ``python -m unify`` with no
+subcommand, which runs ``act`` on a request read from stdin): one
+``CodeActActor`` takes the request, its progress streams to the terminal, a
+post it addresses to ``@user`` is shown and answered from the terminal, and
+the result is printed.
 
 Runtime logs go to ``<UNIFY_HOME>/logs`` and stay off the terminal unless
 ``--debug`` is given.
@@ -22,44 +17,46 @@ import contextlib
 import json
 import asyncio
 import os
-import shutil
+import select
 import sys
-import uuid
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-BOOT_TIMEOUT_SECONDS = 300.0
-
-HELP = """\
-Type a message and press Enter. The assistant keeps working on anything you
-asked for while you keep typing; follow-up messages steer it.
-
-  /attach <path>   attach a file to your next message
-  /attach          list queued attachments
-  /detach          clear queued attachments
-  /help            show this help
-  /quit            exit (Ctrl-D and Ctrl-C work too)
-"""
-
 
 ACT_HELP = """\
-Drive one actor directly, without the conversation loop.
+Drive one actor directly. `unify` with no subcommand runs this command.
 
 The request is taken from the command line, or from stdin when omitted or
 given as "-". Progress lines stream to stderr while the actor works; the
-result goes to stdout. When the actor asks a question, type the answer and
-press Enter. With --persist the actor stays alive after answering: each
+result goes to stdout. A post the actor addresses to @user is shown; type
+the reply and press Enter (with --no-clarify, or when stdin is not a
+terminal, nobody reads @user posts). With --persist the actor stays alive after answering: each
 further line is a follow-up in the same sandbox, /quit ends the session.
 With --jsonl the session speaks newline-delimited JSON instead, for a
 program driving the actor: each stdin line is {"message": "..."} (a
-follow-up, which may span lines) or {"quit": true}; each stdout line is
-{"type": "result" | "response" | "question" | "storage" | "ended", ...}.
-With --persist every turn ends in one "response" line as the actor starts
-waiting, its content empty when the turn produced no text. Progress still
-goes to stderr.
+follow-up, which may span lines), {"cancel": true} or {"quit": true}
+(with memory on, "consolidate": false on any line, e.g. with the
+stream's last request or with quit, makes the session record its episode but
+start no due consolidation pass whenever it ends, also at a step or time
+limit: a driver ending its stream uses it, since no pass may be tied to the
+stream's end); each
+stdout line is {"type": "result" | "response" | "record" | "ended", ...}.
+With --persist every turn ends in one "response" line as the
+actor starts waiting, its content empty when the turn produced no text.
+{"cancel": true} ends the running turn at once and keeps the session: the
+model call and the tool calls still running are cancelled, and the turn's
+"response" line says "cancelled": true, its content the text the turn had
+drafted; with no turn running it is ignored. Without --persist it ends the
+session as {"quit": true} does. Progress still goes to stderr. With memory
+on, a stdin line {"outcome": {...}} gives the request its checked outcome
+(see unify/outcome.py) and is answered with {"type": "outcome",
+"accepted": ...}. A message is posted to the run's shared agent
+record and reaches the actor at its next step instead of interrupting it,
+and each record entry that mentions @user is written out as
+{"type": "record", ...} (a "record>" line without --jsonl).
 """
 
 
@@ -78,7 +75,7 @@ def _add_common_options(
         "--home",
         metavar="DIR",
         default=argparse.SUPPRESS if subcommand else None,
-        help="where the store, workspace and logs live "
+        help="where the workspace, transcripts, memory and logs live "
         "(default: UNIFY_HOME or ~/.unify)",
     )
     parser.add_argument(
@@ -92,17 +89,14 @@ def _add_common_options(
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="unify",
-        description="Chat with the local assistant, or drive its actor directly.",
+        description="Drive the actor (`unify act`, the default).",
     )
     _add_common_options(parser)
     commands = parser.add_subparsers(dest="command")
 
-    chat = commands.add_parser("chat", help="chat with the assistant (the default)")
-    _add_common_options(chat, subcommand=True)
-
     act = commands.add_parser(
         "act",
-        help="run one request through the actor, bypassing the conversation loop",
+        help="run a request through the actor (the default)",
         description=ACT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -118,19 +112,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="keep the actor alive after the result; further lines are follow-ups",
     )
     act.add_argument(
-        "--no-store",
-        action="store_true",
-        help="skip the storage review that distils the run into functions and guidance",
-    )
-    act.add_argument(
-        "--no-compose",
-        action="store_true",
-        help="forbid execute_code: the actor may only call stored functions",
-    )
-    act.add_argument(
         "--no-clarify",
         action="store_true",
-        help="disable request_clarification; the actor must decide on its own",
+        help="no one answers questions: the record's @user posts get no reply "
+        "(for unattended runs)",
     )
     act.add_argument(
         "--timeout",
@@ -141,7 +126,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     act.add_argument(
         "--json",
         action="store_true",
-        help="print the result as a JSON object with the run statistics",
+        help="print the result as a JSON object",
     )
     act.add_argument(
         "--quiet",
@@ -155,15 +140,26 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "the actor (see the description)",
     )
 
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
     if args.command is None:
-        args.command = "chat"
+        # No subcommand runs `act`, its request read from stdin.
+        args = parser.parse_args([*argv, "act"])
     return args
 
 
 def _configure_environment(args: argparse.Namespace) -> Path:
     """Point the runtime at its home directory and route logs there."""
     load_dotenv()
+    # Settings were read before .env: a writer route value only there is refused
+    # (it would leave the writer on the actor's route) and its token leaves the
+    # environment.
+    from unify.memory.integration.switch import settle_writer_route_env
+    from unify.settings import SETTINGS
+
+    refusal = settle_writer_route_env(os.environ, SETTINGS)
+    if refusal is not None:
+        print(f"memory: {refusal}", file=sys.stderr)
     if args.home:
         os.environ["UNIFY_HOME"] = str(Path(args.home).expanduser())
     home = Path(os.environ.get("UNIFY_HOME", "").strip() or "~/.unify").expanduser()
@@ -179,173 +175,46 @@ def _configure_environment(args: argparse.Namespace) -> Path:
     return home
 
 
-def _stage_attachment(source: Path) -> str:
-    """Copy a local file into the workspace and return its workspace path."""
-    from unify.workspace import get_local_root
+@contextlib.contextmanager
+def _channel_pump(
+    loop: asyncio.AbstractEventLoop,
+    fd: int,
+    reader: asyncio.StreamReader,
+) -> Iterator[None]:
+    """Read *fd* on a thread into *reader* while the block runs.
 
-    attachments_dir = Path(get_local_root()) / "Attachments"
-    attachments_dir.mkdir(parents=True, exist_ok=True)
-    target_name = f"{uuid.uuid4().hex[:8]}_{source.name}"
-    shutil.copy2(source, attachments_dir / target_name)
-    return f"Attachments/{target_name}"
+    The thread owns no descriptor: it stops (within 0.1 s) before the
+    caller closes *fd*, so it never reads a number the process reused.
+    """
+    stop = threading.Event()
 
-
-def _assistant_name() -> str:
-    from unify.session_details import PLACEHOLDER_ASSISTANT_FIRST_NAME, SESSION_DETAILS
-
-    return SESSION_DETAILS.assistant.first_name or PLACEHOLDER_ASSISTANT_FIRST_NAME
-
-
-class Chat:
-    """One terminal session over a running ConversationManager."""
-
-    def __init__(self) -> None:
-        self._cm = None
-        self._ready = asyncio.Event()
-        self._closing = asyncio.Event()
-        self._pending_attachments: list[Path] = []
-
-    # ── lifecycle ────────────────────────────────────────────────────────
-
-    async def start(self) -> None:
-        from unify import db
-        from unify.conversation_manager.main import run_conversation_manager
-        from unify.session_details import SESSION_DETAILS
-
-        SESSION_DETAILS.populate_from_env()
-        db.connect()
-
-        self._cm = await run_conversation_manager()
-        self._listener = asyncio.create_task(self._listen())
-
-    async def close(self) -> None:
-        self._closing.set()
-        if self._cm is not None:
-            self._cm.stop.set()
-            try:
-                await asyncio.wait_for(self._cm.cleanup(), timeout=15.0)
-            except asyncio.TimeoutError:
-                pass
-        self._listener.cancel()
-
-    # ── outbound ─────────────────────────────────────────────────────────
-
-    async def _listen(self) -> None:
-        from unify.conversation_manager.events import (
-            ActorClarificationRequest,
-            ActorNotification,
-            ActorResult,
-            DirectMessageEvent,
-            Error,
-            Event,
-            InitializationComplete,
-            UnifyMessageSent,
-        )
-
-        async with self._cm.event_broker.pubsub() as pubsub:
-            await pubsub.psubscribe("app:comms:*", "app:actor:*")
-            while not self._closing.is_set():
-                msg = await pubsub.get_message(
-                    timeout=1.0,
-                    ignore_subscribe_messages=True,
-                )
-                if not msg:
-                    continue
-                event = Event.from_json(msg["data"])
-                if isinstance(event, InitializationComplete):
-                    self._ready.set()
-                elif isinstance(event, (UnifyMessageSent, DirectMessageEvent)):
-                    self._say(_assistant_name(), event.content)
-                    for attachment in getattr(event, "attachments", []):
-                        self._status(f"attached {attachment}")
-                elif isinstance(event, ActorNotification):
-                    prefix = "done" if event.completed else "working"
-                    self._status(f"{prefix}: {event.response}")
-                elif isinstance(event, ActorResult):
-                    if not event.success:
-                        self._status(f"action failed: {event.error}")
-                elif isinstance(event, ActorClarificationRequest):
-                    self._status(f"the assistant is asking: {event.query}")
-                elif isinstance(event, Error):
-                    self._status(f"error: {event.message}")
-
-    def _say(self, who: str, text: str) -> None:
-        print(f"\n{who}> {text}\n", flush=True)
-
-    def _status(self, text: str) -> None:
-        print(f"  · {text}", flush=True)
-
-    # ── inbound ──────────────────────────────────────────────────────────
-
-    async def send(self, text: str) -> None:
-        from unify.conversation_manager.events import UnifyMessageReceived
-
-        attachments = [_stage_attachment(p) for p in self._pending_attachments]
-        self._pending_attachments.clear()
-        event = UnifyMessageReceived(content=text, attachments=attachments)
-        await self._cm.event_broker.publish(UnifyMessageReceived.topic, event.to_json())
-
-    def attach(self, raw_path: str) -> str:
-        path = Path(raw_path).expanduser()
-        if not path.is_file():
-            return f"no such file: {raw_path}"
-        if path.stat().st_size > MAX_ATTACHMENT_BYTES:
-            return f"too large to attach (limit 25MB): {raw_path}"
-        self._pending_attachments.append(path)
-        return f"queued {path.name} for your next message"
-
-    def queued_attachments(self) -> str:
-        if not self._pending_attachments:
-            return "no attachments queued"
-        return "queued: " + ", ".join(p.name for p in self._pending_attachments)
-
-    def detach(self) -> str:
-        count = len(self._pending_attachments)
-        self._pending_attachments.clear()
-        return f"cleared {count} queued attachment(s)"
-
-    # ── loop ─────────────────────────────────────────────────────────────
-
-    async def run(self) -> None:
-        print("starting the assistant ...", flush=True)
-        await self.start()
+    def deliver(callback, *args) -> None:
         try:
-            await asyncio.wait_for(self._ready.wait(), timeout=BOOT_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            print("the assistant did not finish starting; check the logs", flush=True)
-            return
-        print("ready. /help for commands, /quit to exit.\n", flush=True)
-        while True:
-            try:
-                raw = await asyncio.to_thread(input, "> ")
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return
-            line = raw.strip()
-            if not line:
-                continue
-            if line.startswith("/"):
-                if await self._command(line):
-                    return
-                continue
-            await self.send(line)
+            loop.call_soon_threadsafe(callback, *args)
+        except RuntimeError:  # the loop is closed
+            stop.set()
 
-    async def _command(self, line: str) -> bool:
-        """Run a slash command; return True when the session should end."""
-        name, _, arg = line[1:].partition(" ")
-        name = name.lower()
-        arg = arg.strip()
-        if name in {"quit", "exit", "q"}:
-            return True
-        if name in {"help", "h", "?"}:
-            print(HELP)
-        elif name == "attach":
-            print(self.attach(arg) if arg else self.queued_attachments())
-        elif name == "detach":
-            print(self.detach())
-        else:
-            print(f"unknown command: /{name} (try /help)")
-        return False
+    def pump() -> None:
+        while not stop.is_set():
+            try:
+                ready, _, _ = select.select([fd], [], [], 0.1)
+                if not ready:
+                    continue
+                data = os.read(fd, 65536)
+            except OSError:
+                data = b""
+            if not data:
+                deliver(reader.feed_eof)
+                return
+            deliver(reader.feed_data, data)
+
+    thread = threading.Thread(target=pump, name="act-stdin", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(5)
 
 
 @contextlib.contextmanager
@@ -356,10 +225,34 @@ def _stdin_reader() -> Iterator[asyncio.StreamReader]:
     stdin, stdout and stderr are one open file: every write the terminal
     could not take at once would then fail with BlockingIOError. Reading
     only once the descriptor is readable never blocks the loop.
+
+    When stdin is not a terminal it is the driver's message channel, and
+    nothing else in the process may read it. The channel is read from a
+    private copy while descriptor 0 becomes ``/dev/null``, so a subprocess
+    or thread that model code starts reads end of input, as in the
+    sandboxed worker, instead of waiting on, or taking, the driver's lines.
+
+    That channel is read on its own thread, which hands the bytes to the
+    loop in order.
     """
     loop = asyncio.get_running_loop()
     fd = sys.stdin.fileno()
+    moved_from = None
+    if not os.isatty(fd):
+        channel = os.dup(fd)
+        null = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(null, fd)
+        os.close(null)
+        moved_from, fd = fd, channel
     reader = asyncio.StreamReader()
+    if moved_from is not None:
+        try:
+            with _channel_pump(loop, fd, reader):
+                yield reader
+        finally:
+            os.dup2(fd, moved_from)
+            os.close(fd)
+        return
 
     def feed() -> None:
         data = os.read(fd, 65536)
@@ -376,6 +269,15 @@ def _stdin_reader() -> Iterator[asyncio.StreamReader]:
         loop.remove_reader(fd)
 
 
+def _checker_lines_on() -> bool:
+    """Whether the CLI takes ``{"checker": ...}`` lines: whenever the run has memory. Without memory such a line is
+    no control line at all."""
+    from unify.memory.integration.switch import memory_on
+    from unify.settings import SETTINGS
+
+    return memory_on(SETTINGS)
+
+
 class Act:
     """One actor driven from the terminal, with no conversation loop above it."""
 
@@ -383,29 +285,35 @@ class Act:
         self._args = args
         self._actor = None
         self._handle = None
-        self._pending_clarifications: asyncio.Queue[dict] = asyncio.Queue()
+        # Routes lines into the shared agent record.
+        self._bridge = None
         self._closing = asyncio.Event()
+        # Set once the session is asked to end (/quit, {"quit": true}, end
+        # of input); a persistent session whose result arrives without it
+        # ended on its own.
+        self._stop_requested = False
+        # UNIFY_MEMORY: this request's memory run (None while the switch is off).
+        self._mv2 = None
+        # "consolidate": false on any stdin line: when the session ends, record the episode, start no pass.
+        self._mv2_consolidate = True
+        # Why the request stopped unfinished, for its memory run's journal: "timeout", or "error" with the
+        # exception's class name (never its text); None when nothing stopped it.
+        self._mv2_stop: dict | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
     async def start(self) -> None:
         import unify
-        from unify.actor.environments import ActorEnvironment
-        from unify.manager_registry import ManagerRegistry
-        from unify.session_details import SESSION_DETAILS
+        from unify.actor.code_act_actor import CodeActActor
+        from unify.actor.environments import registered_environments
         from unify.workspace import get_local_root
 
-        SESSION_DETAILS.populate_from_env()
         unify.init()
-        # Relative paths in the actor's code resolve against the workspace,
-        # exactly as they do under the conversation loop.
+        # Relative paths in the actor's code resolve against the workspace.
         local_root = Path(get_local_root())
         local_root.mkdir(parents=True, exist_ok=True)
         os.chdir(local_root)
-        self._actor = ManagerRegistry.get_actor(
-            description="direct actor session",
-            environments=[ActorEnvironment()],
-        )
+        self._actor = CodeActActor(environments=registered_environments())
 
     async def close(self) -> None:
         self._closing.set()
@@ -414,11 +322,10 @@ class Act:
                 await self._handle.stop("session closed")
             except Exception:
                 pass
-        if self._actor is not None:
-            try:
-                await self._actor.close()
-            except Exception:
-                pass
+        if self._mv2 is not None:
+            # A run not finished (a timeout, an error) records nothing now; its journal keeps the turns, and the
+            # next start records them as an incomplete episode with why it stopped.
+            self._mv2.abort(**({"stopped": self._mv2_stop} if self._mv2_stop else {}))
 
     # ── output ───────────────────────────────────────────────────────────
 
@@ -429,6 +336,17 @@ class Act:
     def _emit(self, **payload: object) -> None:
         """One JSON line on stdout (``--jsonl``)."""
         print(json.dumps(payload, default=str), flush=True)
+
+    def _emit_record(self, **entry: object) -> None:
+        """A record entry that mentions @user."""
+        if self._args.jsonl:
+            self._emit(**entry)
+        else:
+            print(
+                f"\nrecord> #{entry.get('seq')} {entry.get('author')}: "
+                f"{entry.get('text')}",
+                flush=True,
+            )
 
     async def _watch_notifications(self) -> None:
         while not self._closing.is_set():
@@ -441,42 +359,25 @@ class Act:
                 # A persist-mode turn finished; its answer is the result of the
                 # follow-up the user typed.
                 if self._args.jsonl:
-                    self._emit(type="response", content=notif.get("content", ""))
-                else:
-                    print(f"\n{notif.get('content', '')}\n", flush=True)
-            elif kind in ("storage_review_complete", "turn_storage_review_complete"):
-                verdict = "stored" if notif.get("success") else "storage review failed"
-                if self._args.jsonl:
+                    extra = {"cancelled": True} if notif.get("cancelled") else {}
                     self._emit(
-                        type="storage",
-                        success=bool(notif.get("success")),
-                        message=notif.get("message", ""),
+                        type="response",
+                        content=notif.get("content", ""),
+                        **extra,
                     )
                 else:
-                    self._progress(f"{verdict}: {notif.get('message', '')}")
+                    print(f"\n{notif.get('content', '')}\n", flush=True)
+                if self._bridge is not None:
+                    await self._bridge.root_replied(str(notif.get("content", "")))
             else:
                 text = notif.get("message") or notif.get("result_summary") or kind
                 self._progress(str(text))
 
-    async def _watch_clarifications(self) -> None:
-        while not self._closing.is_set():
-            clar = await self._handle.next_clarification()
-            if not clar:
-                continue
-            if self._args.jsonl:
-                self._emit(
-                    type="question",
-                    call_id=str(clar.get("call_id") or ""),
-                    question=clar.get("question", ""),
-                )
-            else:
-                print(f"\nactor asks> {clar.get('question', '')}", flush=True)
-            await self._pending_clarifications.put(clar)
-
     # ── input ────────────────────────────────────────────────────────────
 
     async def _read_lines(self) -> None:
-        """Route typed lines: answer a pending question, else steer the actor."""
+        """Route typed lines: each is the next message (read at the session's
+        next turn boundary)."""
         with _stdin_reader() as reader:
             while not self._closing.is_set():
                 raw = await reader.readline()
@@ -484,11 +385,15 @@ class Act:
                     if self._args.persist:
                         from unify.actor.code_act_actor import SESSION_ENDED
 
+                        self._stop_requested = True
                         await self._handle.stop(SESSION_ENDED)
                     return
                 line = raw.decode(errors="replace").strip()
                 if not line:
                     continue
+                # the world marks a message that starts a new request of the session ({"message": ..., "request":
+                # "new"}); a plain message is more of the same request (an observation, feedback on the same task)
+                new_request = False
                 if self._args.jsonl:
                     try:
                         item = json.loads(line)
@@ -499,48 +404,134 @@ class Act:
                         continue
                     if not isinstance(item, dict):
                         continue
+                    if item.get("consolidate") is False:
+                        # UNIFY_MEMORY: on any line (with the stream's last request, or with
+                        # quit): whenever this session ends, record the episode, start no pass.
+                        self._mv2_consolidate = False
+                    if "outcome" in item:
+                        self._post_outcome(item.get("outcome"))
+                        continue
+                    if set(item) == {"checker"} and _checker_lines_on():
+                        # a verdict the environment showed the actor; never a message. Only a checker-only line:
+                        # any other line, including one that also names message, quit or cancel, is handled as such.
+                        self._post_checker(item.get("checker"))
+                        continue
+                    if (
+                        "checker" in item
+                        and set(item) <= {"checker", "episode", "about"}
+                        and _checker_lines_on()
+                    ):
+                        # a verdict about an action or item, or on an earlier episode named by its id (never by
+                        # position)
+                        self._post_checker(
+                            item.get("checker"),
+                            episode=item.get("episode"),
+                            about=item.get("about"),
+                        )
+                        continue
                     if item.get("quit"):
                         line = "/quit"
+                    elif item.get("cancel"):
+                        if self._bridge is not None:
+                            self._bridge.cancel_posted()
+                        # A one-shot session's request is the session.
+                        if not self._args.persist:
+                            line = "/quit"
+                        else:
+                            if not await self._handle.cancel_request():
+                                self._progress(
+                                    "cancel ignored: the session takes no more requests",
+                                )
+                            continue
                     else:
                         message = item.get("message")
                         if not isinstance(message, str) or not message:
                             continue
                         line = message
+                        new_request = item.get("request") == "new"
                 if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED
 
-                    self._progress("session ended; reviewing the work for storage")
+                    self._progress("session ended")
+                    self._stop_requested = True
                     await self._handle.stop(SESSION_ENDED)
                     return
-                if not self._pending_clarifications.empty():
-                    clar = await self._pending_clarifications.get()
-                    await self._handle.answer_clarification(
-                        str(clar.get("call_id") or ""),
-                        line,
-                    )
+                mark = getattr(self._mv2, "mark_request", None)
+                if new_request and callable(mark):
+                    # the world says the session's next request begins: a verdict line now bears on the request it
+                    # followed
+                    mark()
+                if self._bridge is not None:
+                    # A record post, read at the next boundary.
+                    await self._bridge.user_message(line)
                     continue
-                await self._handle.interject(line)
+                await self._handle.submit(line)
+
+    def _post_checker(self, raw: object, **where: object) -> None:
+        """Hand a ``{"checker": ...}`` line to the memory run and answer it (a verdict the
+        world showed the actor, kept as an agent-visible checker signal). Without a memory run it is refused.
+        The verdict is typed: ``{"label": "pass"|"fail"}``, optionally with ``"text"``, the verdict's text exactly as
+        the world showed it to the actor (kept for the writer; never read for a verdict). *where*: the line's
+        ``episode`` and ``about`` (a run with memory).
+        """
+        if self._mv2 is None:
+            answer = {
+                "type": "checker",
+                "accepted": False,
+                "reason": "this session records no memory",
+            }
+        else:
+            answer = self._mv2.take_checker(raw, **where)
+        if not answer["accepted"]:
+            self._progress(f"checker line refused: {answer['reason']}")
+        self._emit(**answer)
+
+    def _post_outcome(self, raw: object) -> None:
+        """Hand an ``{"outcome": ...}`` line to the request's memory run and answer it (unify/outcome.py): the
+        answer names whether it was taken and, if not, why. Without a memory run it is refused."""
+        if self._mv2 is None:
+            answer = {
+                "type": "outcome",
+                "accepted": False,
+                "reason": "this session records no memory",
+            }
+        else:
+            answer = self._mv2.take_outcome(raw)
+        if not answer["accepted"]:
+            self._progress(f"outcome refused: {answer['reason']}")
+        self._emit(**answer)
 
     # ── run ──────────────────────────────────────────────────────────────
 
     async def run(self, request: str) -> int:
         await self.start()
         args = self._args
+        from unify.memory.integration import hooks as _mv2
+
+        # UNIFY_MEMORY=on: export memory and open the request's record
+        # before the actor builds its prompt.
+        self._mv2 = _mv2.begin_request(request)
+        if args.jsonl and self._mv2 is not None:
+            # the episode's id, so a verdict that arrives after it ends can name it
+            self._emit(type="episode", episode_id=self._mv2.episode_id)
         interactive = sys.stdin.isatty()
-        clarify = not args.no_clarify and interactive
-        if not args.no_clarify and not interactive:
+        # Someone can answer only at a terminal: there the actor's posts to
+        # @user are read and answered; otherwise the record says nobody reads
+        # them.
+        clarify = interactive and not args.no_clarify
+        if not interactive:
             self._progress("stdin is not a terminal; the actor cannot ask questions")
+        elif not clarify:
+            self._progress("--no-clarify: nobody reads the actor's @user posts")
         self._handle = await self._actor.act(
             request,
             persist=args.persist,
-            can_compose=not args.no_compose,
-            can_store=not args.no_store,
             clarification_enabled=clarify,
         )
-        watchers = [
-            asyncio.create_task(self._watch_notifications()),
-            asyncio.create_task(self._watch_clarifications()),
-        ]
+        from unify.agents.cli_bridge import attach_bridge
+
+        self._bridge = attach_bridge(self._handle, self._emit_record)
+        watchers = [asyncio.create_task(self._watch_notifications())]
         reader = None
         if (interactive and (clarify or args.persist)) or args.jsonl:
             reader = asyncio.create_task(self._read_lines())
@@ -548,17 +539,32 @@ class Act:
             result = await asyncio.wait_for(self._handle.result(), timeout=args.timeout)
         except asyncio.TimeoutError:
             print(f"timed out after {args.timeout:g}s", file=sys.stderr, flush=True)
+            self._mv2_stop = {"reason": "timeout"}
             return 1
         except Exception as exc:
             print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            self._mv2_stop = {"reason": "error", "error": type(exc).__name__}
             return 1
         finally:
             if reader is not None and not args.persist:
                 reader.cancel()
 
+        # A persistent session's result arrives when the session ends. Unless
+        # it was asked to end, its task loop ended on its own (at a step or
+        # time limit): there is no session left to take a follow-up, so input
+        # stops here and the session ends as after /quit, with its review and
+        # an "ended" line, rather than reading messages it never answers.
+        ended_on_its_own = args.persist and not self._stop_requested
+        if ended_on_its_own and reader is not None:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+            reader = None
+
         self._print_result(result)
 
-        if args.persist:
+        if ended_on_its_own:
+            self._progress("the actor stopped on its own and takes no follow-ups")
+        elif args.persist:
             self._progress("actor is waiting; type a follow-up, /quit to end")
             if reader is not None:
                 await reader
@@ -566,6 +572,14 @@ class Act:
             await asyncio.sleep(0.2)
         for task in watchers:
             task.cancel()
+        if self._mv2 is not None:
+            # Record the episode and run the due consolidation passes, blocking.
+            await self._mv2.finish(
+                self._handle,
+                consolidate=self._mv2_consolidate,
+                progress=self._progress,
+                emit=(lambda event: self._emit(**event)) if args.jsonl else None,
+            )
         if args.jsonl:
             self._emit(type="ended")
         return 0
@@ -575,7 +589,6 @@ class Act:
             self._emit(
                 type="result",
                 content=result if isinstance(result, str) else str(result),
-                run_stats=getattr(self._handle, "run_stats", {}) or {},
             )
             return
         if self._args.json:
@@ -583,8 +596,6 @@ class Act:
                 "result": (
                     result if isinstance(result, (str, dict, list)) else str(result)
                 ),
-                # The storage-aware handle meters tokens; a bare loop handle does not.
-                "run_stats": getattr(self._handle, "run_stats", {}) or {},
             }
             print(json.dumps(payload, indent=2, default=str), flush=True)
         else:
@@ -594,21 +605,14 @@ class Act:
 def _read_request(args: argparse.Namespace) -> str:
     if args.request and args.request != "-":
         return args.request
+    if sys.stdin.isatty():
+        print("type the request; end with Ctrl-D", file=sys.stderr, flush=True)
     text = sys.stdin.read().strip()
     if not text:
         raise SystemExit(
             "unify act: no request given (pass it as an argument or on stdin)",
         )
     return text
-
-
-async def _run_chat(args: argparse.Namespace) -> int:
-    chat = Chat()
-    try:
-        await chat.run()
-    finally:
-        await chat.close()
-    return 0
 
 
 async def _run_act(args: argparse.Namespace) -> int:
@@ -619,12 +623,31 @@ async def _run_act(args: argparse.Namespace) -> int:
         await session.close()
 
 
+def _memory_refusal() -> str | None:
+    """Why this run may not start under its memory settings (named, never a value), or None."""
+    from unify.memory.integration.switch import memory_on, writer_refusal
+    from unify.settings import SETTINGS
+
+    return writer_refusal(SETTINGS) if memory_on(SETTINGS) else None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    _configure_environment(args)
-    runner = _run_act if args.command == "act" else _run_chat
+    home = _configure_environment(args)
+    refusal = _memory_refusal()
+    if refusal is not None:
+        # fail closed: nothing starts, no model is called
+        print(f"unify: {refusal}", file=sys.stderr)
+        return 2
+    # memory's model lanes: with memory on and no lane given, this process starts the local lane relay and runs the
+    # command as its child, with each lane's route (unify/lanes/launch.py); None: run it here
+    from unify.lanes.launch import run_controller
+
+    code = run_controller(list(sys.argv[1:] if argv is None else argv), home)
+    if code is not None:
+        return code
     try:
-        return asyncio.run(runner(args))
+        return asyncio.run(_run_act(args))
     except KeyboardInterrupt:
         return 130
 
