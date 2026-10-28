@@ -103,6 +103,7 @@ def rows(
         _docstrings,
         _status,
         in_place_of,
+        record_why,
     )
     from .item_records import support, support_text
     from .library_index import HIDDEN
@@ -130,6 +131,8 @@ def rows(
         except (OSError, UnicodeDecodeError):
             body = ""
         about = _one_line(n.description) or _one_line(n.title)
+        if n.scope:
+            about += f" ({n.scope})"
         text = _section_line(wtu.note_section(body)) or about
         card = about + " | " + support_text("curated item", support(records.get(n.item_id) if records else None))
         out.append({"id": n.item_id, "kind": "note", "path": n.item_id, "card": card, "text": text})
@@ -139,8 +142,12 @@ def rows(
         goal = _one_line(sig.get("goal")) if isinstance(sig.get("goal"), str) else ""
         run_doc = _first_paragraph(_docstring_of(doc["procedure"])) if isinstance(doc["procedure"], str) else ""
         negative = rec.get("outcome") in ("failed", "contrary")
+        why = record_why(rec)
         card = (run_doc or goal) + (" | tried and failed: never offered to run" if negative else "")
-        card += " | " + support_text("recorded procedure", capture_support(serving, cid, rec))
+        if why and not negative:
+            # a record (capture_shape.record_kind): what was done last time, never a fit for a different request
+            card += f" | a record of what was done last time, not a procedure: {why}"
+        card += " | " + support_text("record" if why else "recorded procedure", capture_support(serving, cid, rec))
         out.append(
             {
                 "id": CAPTURE_PREFIX + cid,
@@ -158,12 +165,14 @@ def rows(
                 row["text"] = f"{row['text']} {extra}".strip()
     if serving:
         from .library_export import _evidence_row, failure_line, items_in_place_of
+        from .library_helper import use_counts_text
 
         replaced_items = items_in_place_of(serving)
         for row in out:
             ev = _evidence_row(serving, row["id"]) or {}
             if ev.get("status_text"):
                 row["card"] = f"{row['card']} | status by evidence: {ev['status_text']}"
+            row["card"] = f"{row['card']} | {use_counts_text(ev.get('counts'))}"
             row["card"] = f"{row['card']} | recorded failures: {failure_line(ev)}"
             row["card"] = f"{row['card']} | later uses: {ev.get('later_uses_text') or 'none yet'}"
             for old, _gone in replaced_items.get(row["id"], []):

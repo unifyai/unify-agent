@@ -533,8 +533,11 @@ _WHAT_TO_WRITE_IN_CODE = (
     "the function's tests, `memory/<package>/tests/test_<module>.py::test_<case>`, with no doctest and no "
     "`Input:` line; a `When to use:` section (below); and, optionally, a `Notes:` line naming note paths.\n"
     "- Notes go in `notes/<topic>/<slug>.md`: markdown (a fact, a pitfall, a how-to, or how to combine functions) "
-    "with front matter `title`, `description` (one line, shown in the index) and `uses` (the ids of the functions "
-    "it uses), and a `## Rule` section. `memory.get` serves a note's front matter and its `## Rule` section, at most "
+    "with front matter `title`, `description` (one line, shown in the index), `uses` (the ids of the functions "
+    "it uses) and, when the note has a scope, `applies_to` (what it holds for: the requests, people or work) and "
+    "`stated_by` (who stated it, by name or role, when someone did), optionally `kind` (what it keeps: "
+    "`preference`, `rule`, `caution` or `lesson`; a note with none is shown as a note), and a `## Rule` section. A "
+    "note's scope is shown wherever the note is served. `memory.get` serves a note's front matter and its `## Rule` section, at most "
     "<<note_rule_chars>> characters; the rest of the file (the cases it came from, under `## Evidence`, say) is read "
     "at its path. A new or changed note without a `## Rule` section with text is refused. A link is written only in "
     "a note's `uses` or a function's `Notes:` line, and must name an item that exists. A new item starts as "
@@ -590,7 +593,10 @@ _WRITE_RULES_IN_CODE = (
     "so. "
     "A pass may also change only notes, only tests, or the expected values in the tests of a function you did not "
     "change; such tests need only pass. Retire an item whose recorded uses fail and that no change can repair; the "
-    "usage table counts every call, including calls made through `memory.get`.\n"
+    "usage table counts every call, including calls made through `memory.get`. An item is stale when a later "
+    "outcome contradicts it: a verdict that arrived after an episode that used it (its entry's signal, with the "
+    "verdict's text when the environment gave one), or a failed use after it was served. Change a stale item to "
+    "what the later outcome shows, or retire it when nothing recorded shows the change.\n"
     "5. Write the tests first, against trusted expected values, "
     + _TRUST
     + " At least one call returns on arguments loaded from fixtures made with `tools.fixture`, or computed in the "
@@ -623,13 +629,20 @@ def _attention_text() -> str:
     return ATTENTION_TEXT.replace("<<relations>>", relations_text()).replace("<<history>>", HISTORY_TEXT)
 
 
+#: How an episode with no capture reaches the writer (:mod:`.attention`, ``Refs.notes``): its fork's lessons and note
+#: candidates, as an entry of the same standing as a capture's.
+NOTE_ENTRY_TEXT = (
+    "An episode that left no capture but left lessons (`notes.md`) or note candidates (`notes/<name>.md`) comes to "
+    "you the same way, as an entry with the same standing: its lessons are candidates for notes, and a note needs no "
+    "capture behind it."
+)
 #: The attention pass's section of the brief (:func:`_attention_text` fills in the relations and the history).
 ATTENTION_TEXT = (
     "# Your entries\n"
     "You are given entries that need your attention; decide each with `tools.decide`. New captures come to you as a "
     "group of related captures, each related pair for one or more of these reasons: <<relations>>. With them come "
     "<<history>> and the library items the group used or is linked to (/inputs/attention/group.json). Read them "
-    "together with the library and decide what to keep. Open "
+    "together with the library and decide what to keep. " + NOTE_ENTRY_TEXT + " Open "
     "entries listed beside them may share a rule with yours; look with "
     "`tools.open_entries` and `tools.find`, and `tools.take` those that do; taking a closed entry shows its material "
     "and what was decided, read-only. /inputs/attention/index.json lists your entries, each with the material it "
@@ -787,7 +800,9 @@ def _write_brief_in_code(
         "- /inputs/staging/<episode>/: what was drafted from that episode when it ended: `summary.md` (what was "
         "asked, the approach, what worked and what failed, and the outcome, each line with a part name and a "
         "quote that point into the episode), `candidates/<name>.py` (a function), `cases/<name>.json` (its "
-        "example inputs and outputs) and `notes.md` (lessons). The episode's batch-map row lists them under "
+        "example inputs and outputs), `notes.md` (lessons) and `notes/<name>.md` (note candidates: what someone stated, "
+    "a correction, an outcome or a caution, with `applies_to` and, when someone stated it, `stated_by`). The "
+    "episode's batch-map row lists them under "
         "`staging`. "
         + STAGING_UNFINISHED
         + " None of it has been run: untrusted input. "

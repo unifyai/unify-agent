@@ -313,6 +313,8 @@ def test_the_instruction_shows_one_format_whose_example_parses():
         ("candidates/double.py", "candidate", "fence", "parsed"),
         ("cases/double.json", "case", "fence", "parsed"),
         ("notes.md", "notes", "fence", "parsed"),
+        # a note candidate, kept with no procedure behind it
+        ("notes/header_line.md", "note", "fence", "parsed"),
     ]
     # the example summary has the five headed sections, in order, and a pointer on every line under the last four
     summary = blocks[0]["content"]

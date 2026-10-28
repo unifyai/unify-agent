@@ -690,7 +690,7 @@ def capture_trace_step(
     No recurrence step runs and nothing credits a use: the writer reads and groups. Returns the step's row, also
     appended to ``captures-events.jsonl``; never raises for what the staging holds."""
     from . import capture_trace as ct
-    from .capture_shape import shape_of
+    from .capture_shape import record_kind, shape_of
 
     t0 = clock()
     staging, store = Path(staging), Path(store)
@@ -788,6 +788,9 @@ def capture_trace_step(
             _occurrence(d, len(rec["episodes"]), case, source if folded else None, shape_id, clock())
         rec.update(
             entry_point=entry,
+            # record or procedure, from the code's syntax alone (capture_shape.record_kind): a record is served as
+            # what was done last time, never as a fit for a different request
+            kind=record_kind(source),
             trace=trace,
             value=value_doc,
             own_check=check,
@@ -972,11 +975,17 @@ def record_support(record: Mapping[str, Any] | None) -> dict:
     return {"episodes": len({e for e in eps if isinstance(e, str)}), "accepted": len(accepted)}
 
 
-def listed_record(record: dict) -> dict:
+def listed_record(record: dict, source: str | None = None) -> dict:
     """*record* as a box reads it: with its ``support`` (:func:`record_support`; its confirmed uses are on every card
-    that has the harness's evidence). Every capture is listed (:func:`.recognition.listing`: nothing runs to unlist
-    one)."""
-    return {**record, "support": record_support(record)}
+    that has the harness's evidence) and its ``kind``, record or procedure (:func:`.capture_shape.record_kind`; for a
+    record captured before the field existed, read now from its *source*, by the same syntax-only rule). Every capture
+    is listed (:func:`.recognition.listing`: nothing runs to unlist one)."""
+    from .capture_shape import record_kind
+
+    kind = record.get("kind")
+    if not isinstance(kind, dict) and source is not None:
+        kind = record_kind(source)
+    return {**record, "support": record_support(record), **({"kind": kind} if isinstance(kind, dict) else {})}
 
 
 def export_files(
@@ -987,8 +996,9 @@ def export_files(
     """The actor's snapshot of the store, by path under its library copy (``.memory/captures/<id>/<file>``), each
     record with what it rests on (:func:`listed_record`).
 
-    Every capture is exported the same way, whatever its code looks like: nothing judges whether it gives a fixed
-    answer, reads its input or acts (none of that can be told reliably), so nothing changes how it is served.
+    Every capture is exported the same way; its record says whether it is a record (it never reads its input, or
+    returns only literals: what was done last time) or a procedure (:func:`.capture_shape.record_kind`, from its
+    syntax alone), and its card and catalogue row say which. Nothing else about its code changes how it is served.
 
     With *withdrawn* (:func:`.pool.withdrawn_captures`, capture
     id -> ``{"status", "by", "reason"}``) those captures are left out of the snapshot, so nothing offers them, and
@@ -1007,7 +1017,7 @@ def export_files(
         ):
             if isinstance(doc.get(key), str):
                 out[f"{EXPORT_DIR}/{cid}/{name}"] = doc[key].encode("utf-8", "surrogatepass")
-        record = listed_record(doc["record"])
+        record = listed_record(doc["record"], doc.get("procedure") if isinstance(doc.get("procedure"), str) else None)
         out[f"{EXPORT_DIR}/{cid}/{RECORD_FILE}"] = _json(record)
         if isinstance(doc.get("signature"), dict):
             out[f"{EXPORT_DIR}/{cid}/{SIGNATURE_FILE}"] = _json(doc["signature"])
@@ -1127,7 +1137,8 @@ def export_for_writer(store: Path | str, cids: Iterable[str], dest: Path) -> lis
         d = dest / cid
         d.mkdir(parents=True, exist_ok=True)
         doc = docs[cid]
-        (d / RECORD_FILE).write_bytes(_json(listed_record(doc["record"])))
+        source = doc.get("procedure") if isinstance(doc.get("procedure"), str) else None
+        (d / RECORD_FILE).write_bytes(_json(listed_record(doc["record"], source)))
         if isinstance(doc.get("signature"), dict):
             (d / SIGNATURE_FILE).write_bytes(_json(doc["signature"]))
         for name, key in ((PROCEDURE_FILE, "procedure"), (BROKE_FILE, "broke")):

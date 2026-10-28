@@ -98,6 +98,15 @@ FORMAT_EXAMPLE = (
     "```path: notes.md\n"
     "- Reading the size from the first line failed when the file had a header line; skip lines until the first "
     'number. From the error "ValueError: invalid literal for int()".\n'
+    "```\n"
+    "\n"
+    "```path: notes/header_line.md\n"
+    "---\n"
+    "kind: caution\n"
+    "applies_to: text files of numbers whose size is read from them\n"
+    "---\n"
+    "A file may start with a header line: skip lines until the first number. This episode proved it: "
+    '"ValueError: invalid literal for int()".\n'
     "```"
 )
 
@@ -144,6 +153,20 @@ CAPTURE_BULLETS = (
     "- `broke.md`: each thing that broke in this attempt and why, one line each, with the part name and a short quote "
     'from the record. Write "none" if nothing broke.\n'
 )
+#: What the fork may keep as a note for the writer (a note candidate), with no procedure behind it: what someone stated,
+#: a correction, an outcome or a caution the episode proved, with its scope (``applies_to``) and, when someone stated
+#: it, who (``stated_by``): the front matter keys of a library note (:data:`..layout.SCOPE_KEYS`).
+NOTE_BULLET = (
+    "- `notes/<name>.md`: a note worth keeping for later requests, from what this episode showed: a preference or "
+    "rule someone stated, a correction, an outcome, or a caution this episode proved. It needs no `procedure.py`. "
+    "One note per file; <name> uses only letters, digits and underscores, and is not `summary`. The file starts "
+    "with a `---` line, then "
+    "`kind:` (which of these it is: `preference` or `rule` for what someone stated, `caution` for a caution, "
+    "`lesson` for a correction or an outcome), then "
+    "`applies_to:` (what the note holds for: the requests, people or work), then `stated_by:` (who stated it, by "
+    "name or role; leave this line out when no one did), then a `---` line; then the note, quoting the short line "
+    "from this conversation it comes from.\n"
+)
 #: The sentence of the instructions that says which calls run: the record's comms calls only (through the fork's relay,
 #: :mod:`unify.agents.fork_relay`); any other tool call gets the reply saying tools are not available
 #: (``fork_worker.TOOL_REPLY``).
@@ -169,7 +192,8 @@ INSTRUCTION = (
     "not.\n"
     "- `notes.md`: each thing that failed and why, and any other lesson, each quoting the short line or error "
     "message from this conversation it comes from. If nothing here "
-    "is worth keeping, write `notes.md` saying so.\n"
+    "is worth keeping, leave `notes.md` out.\n"
+    + NOTE_BULLET
     + CAPTURE_BULLETS
     + "\n"
     + SUMMARY_FORMAT

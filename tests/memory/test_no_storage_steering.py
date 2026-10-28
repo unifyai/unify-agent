@@ -55,6 +55,7 @@ MODULES = (
     "unify/memory/qa.py",
     "unify/memory/integration/prompt.py",
     "unify/memory/integration/hooks.py",
+    "unify/memory/standing_notes.py",
 )
 
 #: Wording that steers against keeping specific work (generalise it, it holds only for one case, it is not reusable).

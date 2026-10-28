@@ -480,9 +480,13 @@ def first_message(att: AttentionPass, req: Any, wall: str) -> str:
             (by_harness, "the harness closed when no pass finished its group"),
         ) if n]  # fmt: skip
         lib = len(group.get("library_items") or [])
+        # captures, unless the group holds an episode that came for its lessons (no capture) or a message handed along
+        other = [e for e in handed if e.kind != "new_experience"
+                 or (getattr(e, "refs", None) is not None and not e.refs.captures)]  # fmt: skip
+        noun = ("entry" if len(handed) == 1 else "entries") if other else ("capture" if len(handed) == 1 else "captures")
         return (
             f"Pass {att.pass_id}: a group of {len(handed)} related "
-            f"{'capture' if len(handed) == 1 else 'captures'} needs your attention: {ids}"
+            f"{noun} needs your attention: {ids}"
             + (", with " + " and ".join(history) if history else "")
             + ".\n"
             "/inputs/attention/group.json says why the harness put them together (each related pair with its "
@@ -498,4 +502,3 @@ def first_message(att: AttentionPass, req: Any, wall: str) -> str:
         "What each owes a read is in /inputs/attention/index.json; decide each with tools.decide.\n"
         f"Wall clock for this pass: {wall} s.\n"
     )
-

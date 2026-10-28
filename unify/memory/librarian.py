@@ -141,6 +141,9 @@ BRIEF = (
     "## How you answer\n"
     "- Rank by fit to the question: an item's kind (a curated item, a note or a recorded procedure) is never a "
     "reason to prefer it or to pass it over.\n"
+    "- A record (its card and its catalogue row say so: its code never reads its input, or every return is a fixed "
+    "value) is what was done last time: it gives the same result whatever request it is called on. Name it only for "
+    "the request it was saved from, as what was done then, never as a fit for a different request.\n"
     "- Name the one item that fits best (the primary), with why it applies: the When to use line, the fact or the "
     "record you relied on. Name a second item only as a fallback for when the first fails, and only when it could "
     "do the job then: `fits` holds at most two, the primary first. Never a list of everything that might apply.\n"
@@ -312,6 +315,31 @@ def acting_captures(copy: Path) -> set[str]:
     return out
 
 
+def record_captures(copy: Path) -> dict[str, str]:
+    """The recorded procedures of the copy at *copy* that are records (their record's ``kind``,
+    :func:`.capture_shape.record_kind`: they never read their input, or return only literals), each with why; read
+    from the records the capture step wrote, nothing run."""
+    from .library_export import record_why
+
+    out: dict[str, str] = {}
+    base = Path(copy) / _CAPTURES_DIR
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for name in names:
+        if _CAPTURE_DIR.fullmatch(name) is None:
+            continue
+        try:
+            rec = json.loads((base / name / "record.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        why = record_why(rec) if isinstance(rec, dict) else ""
+        if why:
+            out[CAPTURE_PREFIX + name] = why
+    return out
+
+
 # --- the facts ------------------------------------------------------------------------------------------------------
 
 
@@ -397,10 +425,13 @@ def sent_to_librarian(
 
 
 def failed_line(failed: list[str]) -> str:
-    """The line of a question that names the items whose call failed in the agent's current request."""
+    """The line of a question that names the items that failed in the agent's current request: a call that failed, or
+    a use the environment's verdict then said failed."""
     return (
-        "Tried and failed in this request (the agent called each and the call failed; never offer one of them again "
-        "in this request, name it as nearest if it is): " + ", ".join(failed) + "."
+        "Tried and failed in this request (the agent used each and the call failed, or the environment's verdict after "
+        "the use said the work failed; never offer one of them again in this request, name it as nearest if it is): "
+        + ", ".join(failed)
+        + "."
     )
 
 
@@ -1709,13 +1740,21 @@ START_HEAD = "What the library holds for this request (its librarian's answer; a
 #: ``memory.ask`` section holds the same words).
 BEST_FIT_LABEL = "Best fit"
 FALLBACK_LABEL = "Fallback, only if the first fails"
+#: How the block labels a named item that is a record (:func:`record_captures`): what was done last time, never a fit.
+RECORD_LABEL = "What was done last time (a record, not a procedure: {why})"
 
 
-def start_block(answer: Mapping[str, Any]) -> str:
+def start_block(answer: Mapping[str, Any], records: Mapping[str, str] | None = None) -> str:
     """The request-start block from the librarian's checked *answer*: the primary entry with its call, then at most one
-    fallback, labelled for when the first fails; or that nothing in the library fits. At most
-    :data:`START_BLOCK_CHARS` characters; nothing else of the library is pushed into the request."""
+    fallback, labelled for when the first fails; or that nothing in the library fits. An item of *records* (id -> why
+    it is a record, :func:`record_captures`) is labelled as what was done last time (:data:`RECORD_LABEL`), never as
+    a fit. At most :data:`START_BLOCK_CHARS` characters; nothing else of the library is pushed into the request."""
     fits = [f for f in answer.get("fits") or [] if isinstance(f, Mapping)][:MAX_FITS]
+    records = records or {}
+
+    def label(fit: Mapping[str, Any], default: str) -> str:
+        why = records.get(str(fit.get("id")))
+        return RECORD_LABEL.format(why=why) if why else default
 
     def short(text: Any, n: int) -> str:
         text = " ".join(str(text or "").split())
@@ -1725,12 +1764,12 @@ def start_block(answer: Mapping[str, Any]) -> str:
         return f"{START_HEAD}\n- nothing in the library fits this request."
     lines = [
         START_HEAD,
-        f"- {BEST_FIT_LABEL}: {fits[0].get('id')}: {short(fits[0].get('why'), 400)}",
+        f"- {label(fits[0], BEST_FIT_LABEL)}: {fits[0].get('id')}: {short(fits[0].get('why'), 400)}",
         f"  call: {short(fits[0].get('call'), 300)}",
     ]
     if len(fits) > 1:
         lines += [
-            f"- {FALLBACK_LABEL}: {fits[1].get('id')}: {short(fits[1].get('why'), 250)}",
+            f"- {label(fits[1], FALLBACK_LABEL)}: {fits[1].get('id')}: {short(fits[1].get('why'), 250)}",
             f"  call: {short(fits[1].get('call'), 300)}",
         ]
     text = "\n".join(lines)
@@ -1764,4 +1803,10 @@ async def request_start_block(state: Any) -> str:
         got = json.loads(getattr(reply, "text", "") or "{}")
     except Exception:  # noqa: BLE001 - no answer: the request starts without the block; memory.ask still works
         return ""
-    return start_block(got) if isinstance(got, Mapping) else ""
+    if not isinstance(got, Mapping):
+        return ""
+    try:
+        records = record_captures(Path(copy))
+    except Exception:  # noqa: BLE001 - unreadable records: the block names each item as the librarian did
+        records = {}
+    return start_block(got, records)

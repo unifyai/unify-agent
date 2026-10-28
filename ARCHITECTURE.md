@@ -33,9 +33,9 @@ memory (UNIFY_MEMORY) ── the library the next request reads
 
 `unify act "request"` builds one `CodeActActor` over the environments the process registered, runs the request and
 prints the result. `--persist` keeps the session open: each further line is a new request in the same interpreter.
-`--jsonl` speaks newline-delimited JSON for a program driving the actor: stdin lines are `{"message": ...}`,
+`--jsonl` speaks newline-delimited JSON for a program driving the actor: stdin lines are `{"message": ...}` (optionally `"request": "new"`: it starts a new request),
 `{"cancel": true}`, `{"quit": true}` and, with memory on, `{"outcome": ...}` and
-`{"checker": {"label": "pass"|"fail"}}` (optionally with `about` and `episode`); stdout lines are `result`, `response`,
+`{"checker": {"label": "pass"|"fail"}}` (optionally with `text`, `about` and `episode`); stdout lines are `result`, `response`,
 `record` and `ended`. A cancel ends the running request and keeps the session. When stdin is not a terminal it is
 read from a private copy and descriptor 0 becomes `/dev/null`, so nothing model code starts can read the driver's
 lines.
@@ -166,4 +166,4 @@ credential values are replaced before a line is written. The log files go to `UN
 read-only copy of the library (functions and linked notes, with their generated `INDEX.md` and `links.json`) and the
 captures served beside it. After the request a fork of the actor writes down what it did, and the detached writer
 service turns that into tested library items in passes it runs in a confined box; a gate checks every change before
-it lands. `docs/memory.md` walks through it.
+it lands. `docs/memory.md` walks through it; `docs/memory-off.md` describes the harness with memory off.

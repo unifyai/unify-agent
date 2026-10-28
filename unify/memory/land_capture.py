@@ -100,6 +100,22 @@ REPLY_SECTIONS = (
 )
 
 
+#: The reply's line for a capture that is a record (:func:`.capture_shape.record_kind`): it is landed, and labelled.
+REPLY_RECORD = (
+    "- capture {cid} is a record, not a procedure ({why}): what was done last time. Its card and catalogue row say "
+    "so; a function landed from it gives that same result whatever request it is called on"
+)
+
+
+def _record_why(record: dict, source: str) -> str:
+    """Why capture *record* (with its *source*) is a record, from its stored ``kind`` or, for a capture stored before
+    the field existed, its source's syntax (:func:`.capture_shape.record_kind`); '' for a procedure."""
+    from .capture_shape import is_record, record_kind
+
+    kind = record.get("kind") if isinstance(record.get("kind"), dict) else record_kind(source)
+    return str(kind.get("why") or "it never reads its input") if is_record(kind) else ""
+
+
 class _NotLanded(Exception):
     def __init__(self, form: str, **fields: object) -> None:
         super().__init__(form)
@@ -719,6 +735,10 @@ def _land(args, store, box, episode, blob, batch, python, parse, work, pass_id=N
     )
     lines = [f"Landed capture {cid} from episode {eid}:"]
     lines.append(f"- procedure {proc_id}")
+    why = _record_why(record, source)
+    if why:
+        # a record (capture_shape.record_kind, from its syntax alone): labelled, never refused
+        lines.append(REPLY_RECORD.format(cid=cid, why=why))
     lines.append(f"- reader {reader_id}" + (" (reused: the library holds the same reader code)" if reused else ""))
     lines.append(REPLY_RECIPE.format(recipe=recipe_id, cases=", ".join(cases)))
     lines += [f"- wrote /memory/{p}" for p in written]

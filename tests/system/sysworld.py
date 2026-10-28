@@ -184,6 +184,26 @@ def fork_sum_reply() -> str:
 SUMMARY_REPLY = _summary("Part of a piece of work.", "Worked on it") + "```path: broke.md\nnone\n```\n"
 
 
+# ── a stated preference and no code: the fork keeps a note candidate, with no procedure ─────────────────────────
+
+PREF_STATED = "always keep the words in the order given"
+PREF_REQUEST = f'Give the words back as they are.\nThe requester says: "{PREF_STATED}".\n{WORDS_MARK}["oak", "ash"]\nEND'
+PREF_ANSWER = ["oak", "ash"]
+PREF_SCOPE = "lists of words a request carries"
+PREF_WHO = "the requester"
+NOTE_CANDIDATE = (
+    "```path: notes/order.md\n---\nkind: preference\n"
+    f"applies_to: {PREF_SCOPE}\nstated_by: {PREF_WHO}\n---\n"
+    f'Keep the words in the order given. From the request: "{PREF_STATED}".\n```\n\n'
+)
+
+
+def fork_note_reply() -> str:
+    """The fork of an episode with no code: a summary and a note candidate, no ``procedure.py``."""
+    return (_summary("Give a list of words back.", "Gave the words back in their order") + NOTE_CANDIDATE
+            + "```path: broke.md\nnone\n```\n")
+
+
 def _all_text(body: dict) -> str:
     return json.dumps(body.get("messages") or [], ensure_ascii=False)
 
@@ -191,6 +211,8 @@ def _all_text(body: dict) -> str:
 def fork_script(body: dict) -> str:
     """The fork's model: the procedure of the world whose request the episode holds; a summary for any other."""
     text = _all_text(body)
+    if PREF_STATED in text:
+        return fork_note_reply()
     if "to tally.json once more" in text:
         return fork_tally_reply().replace(TALLY_PROC, TALLY_PROC_B)
     if "moves.json" in text:
@@ -215,7 +237,7 @@ def fork_script(body: dict) -> str:
 
 JUDGE_MARK = "You compare recorded procedures by what they do."
 PASS_LINE = re.compile(
-    r"^Pass (\S+): (?:\d+ entr(?:y|ies)|a group of \d+ related captures?) needs? your attention: (.*?)"
+    r"^Pass (\S+): (?:\d+ entr(?:y|ies)|a group of \d+ related (?:captures?|entr(?:y|ies))) needs? your attention: (.*?)"
     r"(?:, with \d+ related captures? an earlier pass decided)?\.$",
     re.M,
 )
@@ -236,6 +258,9 @@ NOTE_WHEN = (
 NOTE_EVIDENCE = "## Evidence\n" + "".join(f"- case {i}: the list was read after WORDS and every word kept its place.\n"
                                           for i in range(120))
 NOTE_TEXT = NOTE_RULE + NOTE_WHEN + "\n" + NOTE_EVIDENCE
+#: The same note with its scope in its front matter (what it applies to, who stated it), landed with no capture.
+NOTE_SCOPED_TEXT = NOTE_TEXT.replace("uses: []\n", f"uses: []\nkind: preference\napplies_to: {PREF_SCOPE}\n"
+                                                    f"stated_by: {PREF_WHO}\n")
 #: The same note with no ``## Rule`` section (the gate must refuse it on a raw candidate).
 NOTE_NO_RULE = NOTE_TEXT.replace("## Rule\n- the list follows the line WORDS and ends at END\n"
                                  "- transform every word, keep the order\n\n", "The list follows the line WORDS.\n\n")
@@ -347,10 +372,10 @@ WAIT_HELPER = (
 
 def decide_code(ids: list[str], plan: str) -> str:
     """The writer's deciding cell. *plan*: ``land`` (a note citing every new capture's episode, with its Rule
-    section), ``land_no_rule`` (the same note without its Rule section), ``delete`` (remove the note and declare it
+    section), ``land_scoped`` (the same note with its scope), ``land_no_rule`` (the same note without its Rule section), ``delete`` (remove the note and declare it
     deleted), ``keep`` (nothing to keep). Every entry that is not new experience is decided ``nothing_to_keep``, one at
     a time; then the manifest and ``tools.finish``."""
-    note = NOTE_NO_RULE if plan == "land_no_rule" else NOTE_TEXT
+    note = NOTE_NO_RULE if plan == "land_no_rule" else NOTE_SCOPED_TEXT if plan == "land_scoped" else NOTE_TEXT
     return (
         "import json, os\n"
         f"handed = {ids!r}\n"
@@ -362,7 +387,7 @@ def decide_code(ids: list[str], plan: str) -> str:
         "rest = [r for r in rows if r['kind'] != 'new_experience']\n"
         "items, deleted = [], []\n"
         "eps = sorted({e for r in new for e in ((r.get('refs') or {}).get('episodes') or [])})\n"
-        "if plan in ('land', 'land_no_rule') and new:\n"
+        "if plan in ('land', 'land_no_rule', 'land_scoped') and new:\n"
         "    os.makedirs(os.path.dirname(path), exist_ok=True)\n"
         f"    open(path, 'w').write({note!r})\n"
         f"    open(os.path.join(os.path.dirname(path), 'README.md'), 'w').write({NOTE_README!r})\n"

@@ -118,7 +118,8 @@ Packages a program needs are installed into one shared environment under
    another (`@writer`, `@librarian`), so a question reaches the agent that
    can answer it.
 
-[`docs/memory.md`](docs/memory.md) explains the memory in full.
+[`docs/memory.md`](docs/memory.md) explains the memory in full, and
+[`docs/memory-off.md`](docs/memory-off.md) the harness with memory off.
 
 ## Configuration
 
@@ -145,11 +146,11 @@ Lines your program writes to its stdin:
 
 | Line | Effect |
 |---|---|
-| `{"message": "..."}` | A follow-up request in the same session. |
+| `{"message": "..."}` | A follow-up message in the same session. With `"request": "new"` the driver says it starts a new request (memory then scopes verdicts per request); without it, it is more of the same request. |
 | `{"cancel": true}` | Ends the running turn at once and keeps the session. |
 | `{"quit": true}` | Ends the session. |
 | `{"outcome": {"solved": true, ...}}` | Your verdict on the work, so memory learns what worked. The full form is in `unify/outcome.py`. |
-| `{"checker": {"label": "pass"}}` | With memory on: a verdict the environment showed the actor during the request, `"pass"` or `"fail"`. It may also carry `about` (an action or item) and `episode` (an earlier episode's id). |
+| `{"checker": {"label": "pass"}}` | With memory on: a verdict the environment showed the actor during the request, `"pass"` or `"fail"`, optionally with `"text"`: the verdict's text exactly as the actor was shown it, kept for the writer (the label is the verdict). It may also carry `about` (an action or item) and `episode` (an earlier episode's id). A `"fail"` counts as a failed use of the items the current request used before it (in a persistent session a request starts at the session or at a message marked `"request": "new"`), so `memory.ask` does not offer them again in that request or the next; it bears on those items only for trust. One naming an earlier episode is late evidence on that episode, and on its last request's items when it held several requests. |
 
 Lines it writes to stdout, each with a `type`:
 

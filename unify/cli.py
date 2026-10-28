@@ -391,6 +391,9 @@ class Act:
                 line = raw.decode(errors="replace").strip()
                 if not line:
                     continue
+                # the world marks a message that starts a new request of the session ({"message": ..., "request":
+                # "new"}); a plain message is more of the same request (an observation, feedback on the same task)
+                new_request = False
                 if self._args.jsonl:
                     try:
                         item = json.loads(line)
@@ -445,6 +448,7 @@ class Act:
                         if not isinstance(message, str) or not message:
                             continue
                         line = message
+                        new_request = item.get("request") == "new"
                 if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED
 
@@ -452,6 +456,11 @@ class Act:
                     self._stop_requested = True
                     await self._handle.stop(SESSION_ENDED)
                     return
+                mark = getattr(self._mv2, "mark_request", None)
+                if new_request and callable(mark):
+                    # the world says the session's next request begins: a verdict line now bears on the request it
+                    # followed
+                    mark()
                 if self._bridge is not None:
                     # A record post, read at the next boundary.
                     await self._bridge.user_message(line)
@@ -461,7 +470,9 @@ class Act:
     def _post_checker(self, raw: object, **where: object) -> None:
         """Hand a ``{"checker": ...}`` line to the memory run and answer it (a verdict the
         world showed the actor, kept as an agent-visible checker signal). Without a memory run it is refused.
-        *where*: the line's ``episode`` and ``about`` (a run with memory).
+        The verdict is typed: ``{"label": "pass"|"fail"}``, optionally with ``"text"``, the verdict's text exactly as
+        the world showed it to the actor (kept for the writer; never read for a verdict). *where*: the line's
+        ``episode`` and ``about`` (a run with memory).
         """
         if self._mv2 is None:
             answer = {

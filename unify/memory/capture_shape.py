@@ -16,6 +16,10 @@ an occurrence of the first, its raw bytes kept beside it as evidence, nothing de
 
 Nothing is run, imported or evaluated, and no world name, word, task id or value is read: the address is a function of
 the procedure's syntax only. A procedure that does not parse has no address (it is not captured anyway).
+
+**Record or procedure** (:func:`record_kind`): a captured procedure whose ``run`` never reads its input, or
+whose every ``return`` gives a literal, is labelled a ``record`` when it is captured: what was done last time, served as
+such and never as a fit for a different request. The same syntax-only reading: no word, value or task id.
 """
 
 from __future__ import annotations
@@ -276,6 +280,98 @@ def shape_of(source: Any) -> dict | None:
     }
     digest = hashlib.sha256(json.dumps(doc, sort_keys=True).encode("utf-8", "surrogatepass")).hexdigest()[:16]
     return {"v": SHAPE_VERSION, "shape": digest, "form": doc["form"], "params": doc["params"], "env_calls": env_calls}
+
+
+# --- record or procedure ----------------------------------------------------------------------------------------------
+
+#: What a captured procedure is served as (:func:`record_kind`): a ``procedure`` computes from what it is handed; a
+#: ``record`` ignores it, so it is what was done last time, never a fit for a different request.
+PROCEDURE = "procedure"
+RECORD = "record"
+#: Why a capture is a record, as its card and its catalogue row say it.
+NEVER_READS = "it never reads its input"
+FIXED_RESULT = "every return of its run is a fixed value"
+
+
+def _own_nodes(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+    """Every node of *fn*'s body but its docstring, nested functions, lambdas and classes included: a name a nested
+    function reads is read by *fn*."""
+    body = list(fn.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        if isinstance(body[0].value.value, str):
+            body = body[1:]
+    return [n for stmt in body for n in ast.walk(stmt)]
+
+
+def _returns(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
+    """*fn*'s own ``return`` statements: those of a nested function, lambda or class are not *fn*'s."""
+    out: list[ast.Return] = []
+    todo: list[ast.AST] = list(fn.body)
+    while todo:
+        node = todo.pop()
+        if isinstance(node, ast.Return):
+            out.append(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        todo.extend(ast.iter_child_nodes(node))
+    return out
+
+
+def _reads_any(fn: ast.FunctionDef | ast.AsyncFunctionDef, names: set[str]) -> bool:
+    return any(isinstance(n, ast.Name) and n.id in names for n in _own_nodes(fn))
+
+
+def record_kind(source: Any) -> dict | None:
+    """``{"kind", "why"}``: whether a captured procedure is served as a :data:`RECORD` or a :data:`PROCEDURE`, from its
+    syntax alone (nothing is run, and no value, word, request or task id is read); None when it does not parse or has
+    no ``run``.
+
+    Its *input* is what the capture contract hands it (:mod:`.capture_trace`): ``run(value)`` with the value its
+    ``read_input(request)`` reads (form ``value``), ``run(state)`` (form ``state``) or the state of
+    ``run(state, env)`` (form ``state_env``: ``env``, the episode's tool namespace, is how it acts, not what it is
+    handed). It is a **record** when:
+
+    * its ``run`` never names an input parameter in its body (and, for the ``value`` form, also when its
+      ``read_input`` never names its own): it gives the same result whatever request it is called on
+      (:data:`NEVER_READS`); or
+    * it hands back a value and every ``return`` of its ``run`` gives a literal (a constant other than ``None``, a
+      container of literals, a negated literal, an f-string without fields): its result is fixed
+      (:data:`FIXED_RESULT`). Not for ``state_env``, whose work is its tool calls, not what it returns.
+
+    Otherwise it is a procedure (``why`` empty)."""
+    from .fixed_answer import _gives_value, is_literal
+
+    if not isinstance(source, str):
+        return None
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    fns = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    run = fns.get("run")
+    if run is None:
+        return None
+    positional = _positional(run)
+    form = "state_env" if len(positional) >= 2 else ("value" if "read_input" in fns else "state")
+    inputs = {a.arg for a in _args(run.args)}
+    if form == "state_env":
+        inputs.discard(positional[1])
+    reads = _reads_any(run, inputs)
+    if reads and form == "value":
+        reader = fns["read_input"]
+        reads = _reads_any(reader, {a.arg for a in _args(reader.args)})
+    if not reads:
+        return {"kind": RECORD, "why": NEVER_READS}
+    if form != "state_env":
+        returns = _returns(run)
+        if any(_gives_value(r) for r in returns) and all(_gives_value(r) and is_literal(r.value) for r in returns):
+            return {"kind": RECORD, "why": FIXED_RESULT}
+    return {"kind": PROCEDURE, "why": ""}
+
+
+def is_record(kind: Any) -> bool:
+    """Whether a stored :func:`record_kind` result names a record."""
+    return isinstance(kind, dict) and kind.get("kind") == RECORD
 
 
 def function_shape(source: Any, name: str) -> str | None:

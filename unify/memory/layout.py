@@ -55,7 +55,13 @@ _PACKAGE = re.compile(rf"^{_NAME}\Z")
 _MODULE_FILE = re.compile(rf"^({_NAME})\.py\Z")
 _TEST_FILE = re.compile(r"^test_[A-Za-z0-9_]*\.py\Z")
 _NOTES_LINE = re.compile(r"^[ \t]*Notes:[ \t]*(.*)$", re.M)
-FRONT_KEYS = ("title", "description", "uses")
+FRONT_KEYS = ("title", "description", "uses", "stated_by", "applies_to", "kind")
+#: What a note keeps (its optional front-matter ``kind``): a stated preference or rule, a caution, or a lesson (what was
+#: tried, corrected or came out). Only the first three are in the standing-note digest (:mod:`.standing_notes`).
+NOTE_KINDS = ("preference", "rule", "caution", "lesson")
+#: A note's scope keys, optional: who stated what it keeps (a person or a role, when someone did) and what it applies
+#: to. Shown wherever the note is served (:func:`note_scope`).
+SCOPE_KEYS = ("applies_to", "stated_by")
 ACTOR_KINDS = frozenset({"module", "package_init", "note", "readme"})
 #: Each library folder's description: ``memory/<package>/README.md``, ``notes/<topic>/README.md`` (:mod:`.when_to_use`).
 README = "README.md"
@@ -210,6 +216,9 @@ class NoteMeta:
     description: str
     uses: list[str]
     body: str
+    stated_by: str = ""
+    applies_to: str = ""
+    kind: str = ""
 
 
 def _scalar(raw: str) -> str:
@@ -221,8 +230,9 @@ def _scalar(raw: str) -> str:
 
 def parse_front_matter(text: str) -> NoteMeta:
     """A note's front matter, strictly. The file starts with a ``---`` line. Then come ``title:``
-    and ``description:``, and optionally ``uses: [<item>, ...]``, one line each, each key once and no other
-    key. A closing ``---`` line ends it. Raises :class:`FrontMatterError` naming what is wrong.
+    and ``description:``, and optionally ``uses: [<item>, ...]``, ``stated_by:`` and ``applies_to:`` (its scope:
+    :data:`SCOPE_KEYS`) and ``kind:`` (one of :data:`NOTE_KINDS`), one line each, each key once and no other key. A closing ``---`` line ends it. Raises
+    :class:`FrontMatterError` naming what is wrong.
     """
     lines = text.split("\n")
     if lines[0].rstrip("\r") != "---":
@@ -259,12 +269,29 @@ def parse_front_matter(text: str) -> NoteMeta:
         uses = [_scalar(t) for t in inner.split(",")] if inner else []
         if any(not u for u in uses):
             raise FrontMatterError("uses holds an empty entry")
+    kind = _scalar(seen.get("kind", "")).lower()
+    if kind and kind not in NOTE_KINDS:
+        raise FrontMatterError(f"kind is one of {', '.join(NOTE_KINDS)}, or left out")
     return NoteMeta(
         _scalar(seen["title"]),
         _scalar(seen["description"]),
         uses,
         "\n".join(lines[end + 1 :]),
+        stated_by=_scalar(seen.get("stated_by", "")),
+        applies_to=_scalar(seen.get("applies_to", "")),
+        kind=kind,
     )
+
+
+def note_scope(applies_to: str = "", stated_by: str = "") -> str:
+    """A note's scope as every place that serves it shows it: ``applies to: <scope>; stated by: <who>``, each part
+    only when the note gives it ('' when it gives neither)."""
+    parts = []
+    if " ".join(str(applies_to or "").split()):
+        parts.append("applies to: " + " ".join(str(applies_to).split()))
+    if " ".join(str(stated_by or "").split()):
+        parts.append("stated by: " + " ".join(str(stated_by).split()))
+    return "; ".join(parts)
 
 
 def notes_links(doc: str) -> list[str]:
@@ -299,6 +326,15 @@ class Note:
     description: str
     uses: list[str]
     error: str = ""  # why its front matter could not be read ("" when it was)
+    stated_by: str = ""
+    applies_to: str = ""
+    #: what it keeps (:data:`NOTE_KINDS`); '' when its front matter gives none (shown as a note)
+    kind: str = ""
+
+    @property
+    def scope(self) -> str:
+        """What the note applies to and who stated it (:func:`note_scope`), '' when its front matter gives neither."""
+        return note_scope(self.applies_to, self.stated_by)
 
 
 @dataclass
@@ -413,7 +449,17 @@ def discover(tree: Path) -> Library:
             lib.notes.append(Note(rel, "", "", [], str(exc)[:200]))
             lib.errors.append(f"{rel}: {exc}"[:300])
             continue
-        lib.notes.append(Note(rel, meta.title, meta.description, meta.uses))
+        lib.notes.append(
+            Note(
+                rel,
+                meta.title,
+                meta.description,
+                meta.uses,
+                stated_by=meta.stated_by,
+                applies_to=meta.applies_to,
+                kind=meta.kind,
+            )
+        )
     lib.packages = dict(sorted(lib.packages.items()))
     return lib
 

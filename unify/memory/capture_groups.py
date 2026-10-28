@@ -4,7 +4,10 @@ A writer pass reads related captures together with the library items they touch,
 from them. A pass is handed a new capture together with its **history**: earlier captures related to it. A capture with no
 related capture is written up once its own request has ended (:data:`ENDED`), with whatever outcome the world
 recorded for it: all such captures at one moment go to one pass, or along with a pass that runs then anyway. An entry
-whose episode left no capture is closed by the harness (:data:`NO_CAPTURE`) and never runs a pass.
+whose episode left no capture but left lessons or note candidates (the fork's ``notes.md`` and ``notes/<name>.md``:
+the entry's ``refs.notes``) is a member with the same standing: it joins a group by the relations below that its
+records have (``items``, ``judged``), or is due on its own once its request has ended. An entry whose episode left
+neither is closed by the harness (:data:`NO_CAPTURE`) and never runs a pass.
 
 **Membership** comes from the harness's records, never from an id, a word, a request's text or a stream position, and
 nothing is run. Two captures are related when their records show at least one of:
@@ -64,7 +67,7 @@ from typing import Any, Callable, Iterable, Mapping
 HISTORY_MAX = 8
 #: The fewest tool calls an ordered call sequence (or a shared run of calls) must hold to relate two captures.
 SEQUENCE_MIN = 2
-#: The reason the harness closes an entry whose episode left no capture: nothing to write up, no pass.
+#: The reason the harness closes an entry whose episode left no capture and no lesson: nothing to write up, no pass.
 NO_CAPTURE = "no_capture"
 #: Why a capture with no related capture is due: its own request has ended.
 ENDED = "ended"
@@ -93,6 +96,12 @@ HISTORY_TEXT = (
     "related captures closed earlier (each decided by a pass, or closed by the harness when no pass finished its "
     "group)"
 )
+
+
+def _has_material(e: Any) -> bool:
+    """Whether a grouped entry has something to write up: a capture, or lessons and note candidates."""
+    refs = e.refs
+    return bool(refs.captures or getattr(refs, "notes", ()))
 
 
 def relations_text() -> str:
@@ -207,11 +216,11 @@ def groups(
     *,
     now: dt.datetime | None = None,
 ) -> list[Group]:
-    """The groups of the ledger's grouped entries that have a capture (*entries*: the fold, by id), each with whether
-    and why it is due (module docstring). An entry with no capture is in no group: the ledger closes it
+    """The groups of the ledger's grouped entries that have a capture or lessons (*entries*: the fold, by id), each
+    with whether and why it is due (module docstring). An entry with neither is in no group: the ledger closes it
     (:data:`NO_CAPTURE`). *now* is accepted for the callers' clock and not read: no time makes a group due."""
     live = ("open", "handed", "read", "closed")
-    grouped = [e for e in entries.values() if e.kind in GROUPED_KINDS and e.state in live and e.refs.captures]
+    grouped = [e for e in entries.values() if e.kind in GROUPED_KINDS and e.state in live and _has_material(e)]
     if not any(e.state == "open" for e in grouped):
         return []
     profiles = {e.entry: profile_of(e) for e in grouped}
@@ -410,6 +419,8 @@ def group_doc(group: Group, profile_of: Callable[[Any], Profile], *, landed: Map
             "effects": sorted(p.effects),
             "sequence": list(p.sequence),
             "used_items": sorted(p.items),
+            # the fork's lessons and note candidates under /inputs/staging/ (an entry with no capture comes for them)
+            "notes": [f"/inputs/staging/{n}" for n in getattr(e.refs, "notes", ()) or ()],
         }
         if e.state == "closed":
             row.update(decision=e.decision, decided_items=list(e.decided_items))

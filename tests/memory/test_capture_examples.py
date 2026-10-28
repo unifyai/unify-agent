@@ -1,9 +1,9 @@
 """A captured procedure whose code looks like a stored answer (its ``run`` never reads its input, or returns only
-literals) is served exactly as every other captured procedure: nothing judges whether code gives a fixed answer,
-reads its input or acts, since none of that can be told reliably. Its record carries no mark, the dispatch file no
-``constant`` or ``reads_input`` field, the catalogue and the search index name it a recorded procedure, and the
-package calls it like any other. The package tests run the generated package in a fresh isolated interpreter, as a
-cell imports it. No model is called.
+literals) is not routed as a worked example: the dispatch file has no ``constant`` or ``reads_input`` field, the
+search rows' kind is the same for every capture, and the package calls it like any other. It is labelled a
+record (``capture_shape.record_kind``, from its syntax alone): its card and catalogue row say it is what was done last
+time (tests/memory/test_rev24_records.py); every other capture is still named a recorded procedure. The package tests
+run the generated package in a fresh isolated interpreter, as a cell imports it. No model is called.
 """
 
 from __future__ import annotations
@@ -156,7 +156,7 @@ def _snapshot(tmp_path, **export):
     return _tree(tmp_path / "lib"), captures.export_files(store, **export), ids
 
 
-def test_the_catalogue_and_the_search_index_name_every_capture_a_recorded_procedure(tmp_path):
+def test_the_catalogue_and_the_search_index_name_every_capture_a_recorded_procedure_but_a_record(tmp_path):
     tree, snap, ids = _snapshot(tmp_path)
     rows = {r["id"]: r for r in lx.dispatch_data(discover(tree), captures=snap)["procedures"]}
     for key in ("table", "grid", "fixed", "retired"):
@@ -164,8 +164,11 @@ def test_the_catalogue_and_the_search_index_name_every_capture_a_recorded_proced
         assert "constant" not in row and "reads_input" not in row and "effects" not in row and "calls" in row
     text = lx.catalogue_text(tree, captures=snap)
     assert "worked example" not in text and "fixed answer" not in text
-    card = text.split(f"### capture:{ids['fixed']}\n", 1)[1].split("###", 1)[0]
-    assert "Evidence: recorded procedure" in card
+    # a capture that never reads its input, or returns only literals, is labelled a record
+    for key, kind in (("table", "recorded procedure"), ("grid", "recorded procedure"), ("fixed", "record"),
+                      ("retired", "record")):  # fmt: skip
+        card = text.split(f"### capture:{ids[key]}\n", 1)[1].split("###", 1)[0]
+        assert f"Evidence: {kind} from 1 episode" in card, (key, card)
     rows = {r["id"]: r for r in library_search.rows(tree, captures=snap)}
     assert {rows[f"capture:{ids[k]}"]["kind"] for k in ids} == {"captured procedure"}
 

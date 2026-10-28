@@ -13,7 +13,7 @@ reader of staged replies applies the same rules, and the offline replay imports 
   :data:`TOOL_REPLY` and the conversation continues. The fork ends at the first reply without tool calls.
 * **Output:** the files the reply's blocks name (:func:`parse_reply`), from the reply text and from every tool
   call's arguments. Only ``summary.md``, ``candidates/<name>.py``, ``cases/<name>.json``, ``notes.md``,
-  ``procedure.py`` and ``broke.md`` are written; every block found is recorded as parsed, refused or dropped
+  ``notes/<name>.md`` (a note candidate), ``procedure.py`` and ``broke.md`` are written; every block found is recorded as parsed, refused or dropped
   with a reason. Written in this order: the staged files, the raw reply (``fork-reply.json``), the block ledger
   (``fork-blocks.json``, with the raw reply's sha256), then ``fork.json``. ``fork.json`` is written last, and
   its existence means the fork has settled.
@@ -64,6 +64,8 @@ ALLOWED = (
     re.compile(r"candidates/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.py"),
     re.compile(r"cases/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.json"),
     re.compile(r"notes\.md"),
+    # a note candidate; ``summary`` stays the episode's own summary's name, never a note's
+    re.compile(r"notes/(?!summary\.md\Z)[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.md"),
     re.compile(r"procedure\.py"),
     re.compile(r"broke\.md"),
 )
@@ -104,6 +106,7 @@ _KINDS = (
     (re.compile(r"candidates/[^/]+\.py"), "candidate"),
     (re.compile(r"cases/[^/]+\.json"), "case"),
     (re.compile(r"notes\.md"), "notes"),
+    (re.compile(r"notes/[^/]+\.md"), "note"),
     (re.compile(r"procedure\.py"), "procedure"),
     (re.compile(r"broke\.md"), "broke"),
 )
@@ -114,7 +117,7 @@ def _sha(text: str) -> str:
 
 
 def kind(rel: str | None) -> str:
-    """summary, candidate, case, notes or other, by the path's shape."""
+    """summary, candidate, case, notes, note, procedure, broke or other, by the path's shape."""
     for rx, name in _KINDS:
         if rel is not None and rx.fullmatch(rel):
             return name
@@ -192,7 +195,7 @@ def allowed(rel: str) -> str | None:
     if not _plain(rel):
         return "not a plain relative path"
     if not any(rx.fullmatch(rel) for rx in ALLOWED):
-        return "outside summary.md, candidates/*.py, cases/*.json, notes.md, procedure.py and broke.md"
+        return "outside summary.md, candidates/*.py, cases/*.json, notes.md, notes/*.md, procedure.py and broke.md"
     return None
 
 

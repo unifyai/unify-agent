@@ -693,8 +693,9 @@ def test_a_landing_the_gate_keeps_refusing_ends_unreadable_after_three_passes(tm
 
 def test_a_message_the_writer_was_already_delivered_is_read_in_that_pass(tmp_path):
     led = _ledger(tmp_path)
+    # a fork's post that names an item (a correction): it carries something of its own, so it is handed at once
     post = {"seq": 7, "author": "fork-3f9a", "role": "fork", "kind": "post", "mentions": ["writer"], "episode": "e1",
-            "refs": [], "ts": "2026-10-20T00:00:01.000Z"}  # fmt: skip
+            "refs": ["item:memory.text.words:upper"], "ts": "2026-10-20T00:00:01.000Z"}  # fmt: skip
     later = {**post, "seq": 9}
     [first, second] = sorted(led.sync(Fake(record=[post, later], deliveries={7: "p0"})), key=lambda e: e.refs.record_seq)
     assert first.state == "closed" and first.reason_ref == "record:delivered#7" and first.pass_id == "p0"

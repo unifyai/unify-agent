@@ -84,6 +84,9 @@ class ItemUse:
     end_outcome: str | None = None
     conditions: str | None = None
     corrected: bool = False
+    # every contrary signal of its episode was scoped to other items (a session of several requests: each verdict bears
+    # on the request it followed, :meth:`.evidence.EvidenceStore.signal_items`), so none counts against this one
+    spared: bool = False
 
 
 def returned(called: int, refused: int, errored: int) -> bool:
@@ -224,11 +227,12 @@ def facts_from_evidence(
     ):
         if want is not None and eid not in want:
             continue
-        positive, negative = counted_signals(
-            ev.signals_for(eid),
-            regime or "",
-        )
+        signals = ev.signals_for(eid)
+        positive, negative = counted_signals(signals, regime or "")
         items = by_episode.get(eid, {})
+        if negative:
+            scoped = ev.signal_items(eid) if hasattr(ev, "signal_items") else {}
+            items = _spare_unscoped(items, signals, regime or "", scoped)
         out.append(
             EpisodeUse(
                 eid,
@@ -240,6 +244,16 @@ def facts_from_evidence(
             ),
         )
     return out
+
+
+def _spare_unscoped(items: dict, signals: list, regime: str, scoped: Mapping[str, frozenset]) -> dict:
+    """*items* with ``spared`` set on each item no counted contrary signal bears on, when every such signal is scoped
+    (*scoped*: signal id -> the items it bears on); unchanged when any counted contrary signal is not."""
+    contrary = [s for s in signals if counted_signals([s], regime)[1]]
+    if not contrary or any(s.signal_id not in scoped for s in contrary):
+        return items
+    hit = frozenset().union(*(scoped[s.signal_id] for s in contrary))
+    return {i: (u if i in hit else replace(u, spared=True)) for i, u in items.items()}
 
 
 def aggregate_use(facts: Iterable[EpisodeUse]) -> dict[str, dict[str, dict]]:
@@ -264,8 +278,8 @@ def aggregate_use(facts: Iterable[EpisodeUse]) -> dict[str, dict[str, dict]]:
             row["errors"] += int(u.errored)
             row["refused"] += int(u.refused)
             row["unknown"] += int(u.unknown)
-            row["negative_signals"] += int(u.used and f.negative)
-            row["positive_signals"] += int(u.used and f.positive and not f.negative)
+            row["negative_signals"] += int(u.used and f.negative and not u.spared)
+            row["positive_signals"] += int(u.used and f.positive and not (f.negative and not u.spared))
             if u.basis == RUNTIME:
                 row["runtime_basis"] = row.get("runtime_basis", 0) + 1
     return {i: dict(sorted(c.items())) for i, c in sorted(out.items())}
@@ -306,7 +320,7 @@ def trust_uses(f: EpisodeUse, u: ItemUse) -> list:
                 regime,
                 "returned",
                 answered=None,
-                episode_negative=_negative(f),
+                episode_negative=_negative(f) and not u.spared,
                 unknown=u.unknown,
             ),
         )

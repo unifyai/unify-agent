@@ -45,6 +45,8 @@ EVIDENCE_LABEL = "evidence"
 #: The keys of one dispatch row (J(b).3) and where the rows sit in the file (a list, or a list under this key).
 #: Rev 2: the structural catalogue's row (``library_export.dispatch_data``).
 DISPATCH_KEYS = {"id", "kind", "form", "signature", "applies_text", "calls", "occurrences", "outcomes", "provenance"}
+#: A capture's row also says whether it is a record (why it is, else None): what was done last time.
+CAPTURE_DISPATCH_KEYS = DISPATCH_KEYS | {"record"}
 DISPATCH_ROWS_KEY = "procedures"
 
 
@@ -254,7 +256,7 @@ def test_the_dispatch_file_is_one_structural_row_per_listed_procedure(tmp_path):
     _, files, caps = _world(tmp_path)
     rows = dispatch_rows(json.loads(files[DISPATCH]))
     for row in rows:
-        assert set(row) == DISPATCH_KEYS, row
+        assert set(row) == (CAPTURE_DISPATCH_KEYS if row["kind"] == "capture-shape" else DISPATCH_KEYS), row
         assert row["kind"] in ("function", "capture-shape") and isinstance(row["applies_text"], str)
         assert isinstance(row["calls"], list)
     by_id = {r["id"]: r for r in rows}

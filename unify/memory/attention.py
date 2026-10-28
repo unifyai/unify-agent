@@ -11,7 +11,8 @@ and from nothing else: no world name, label, id of a request, stream position or
 =====================  ==================================================================================================
 kind                   created when
 =====================  ==================================================================================================
-``new_experience``     an episode's fork settled with any output: the summary, plus the procedure
+``new_experience``     an episode's fork settled with any output: the summary, plus the procedure, or its lessons
+                       (``notes.md``) and note candidates (``notes/<name>.md``): :attr:`Refs.notes`
 ``own_check_failed``   never made (no capture is run to classify it); kept so an older ledger still folds
 ``use_went_badly``     a use of an item was failed (an error, ``holds`` false, a contrary signal after it) or refused (the
                        item refused the call, ``MemoryInputError``), or an actor wrote to the writer about it on the run
@@ -22,6 +23,10 @@ kind                   created when
 ``deferred``           the writer deferred an entry, or the gate refused a draft
 ``message``            a run-record entry mentions the writer, or replies to a writer entry
 =====================  ==================================================================================================
+
+A ``message`` entry that carries nothing of its own (:func:`carries_content`: no typed item, capture or entry ref, no
+answer to the writer, and posted by a fork or the harness, whose findings reach the writer as their episode's own
+entry) never makes a pass: it is handed along with the next pass that runs for other entries (``by: with_pass``).
 
 An episode whose capture is the same capture as an entry's (the same id: byte-identical, or folded into it by its
 shape address, :mod:`.capture_shape`) is never made a new entry. Onto an active entry it is appended (``append_ref``);
@@ -57,8 +62,10 @@ entry with a capture waits until its group is due: a related capture exists (ano
 related ones), and a pass is then handed that group's new members with a ``group`` row naming its history. A capture
 with no related capture is due once its request has ended (:data:`.capture_groups.ENDED`): it is handed with the pass
 that runs then, or, when none runs, in one pass with every other such capture, under a ``group`` row that names no
-group. An entry whose episode left no capture is closed by the harness and runs no pass. A judge's ``kin`` rows
-(:meth:`Ledger.record_kin`) are one of the relations. Every other kind is handed at once.
+group. An entry whose episode left no capture but left lessons or note candidates (:attr:`Refs.notes`) waits for its
+group the same way, with the same standing: its lessons are note candidates for the writer. An entry whose episode
+left neither is closed by the harness and runs no pass. A judge's ``kin`` rows (:meth:`Ledger.record_kin`) are one of
+the relations. Every other kind is handed at once.
 
 **Reopening.** A ``late_evidence`` entry reopens every closed entry that names one of the items its episode used or
 produced, when the signal is newer than that entry's last close; each reopen names its cause.
@@ -200,6 +207,9 @@ class Refs:
     signals: tuple[str, ...] = ()
     record_seq: int | None = None
     passes: tuple[str, ...] = ()
+    #: the lessons and note candidates a fork staged (``<staging dir>/notes.md``, ``<staging dir>/notes/<name>.md``,
+    #: each with text): what a capture-less episode hands the writer (:func:`lesson_files`)
+    notes: tuple[str, ...] = ()
 
     def row(self) -> dict:
         return {
@@ -209,6 +219,7 @@ class Refs:
             "signals": list(self.signals),
             "record_seq": self.record_seq,
             "passes": list(self.passes),
+            "notes": list(self.notes),
         }
 
     @classmethod
@@ -227,6 +238,7 @@ class Refs:
             ids("signals"),
             seq if isinstance(seq, int) and not isinstance(seq, bool) else None,
             ids("passes"),
+            ids("notes"),
         )
 
     def merged(self, more: "Refs") -> "Refs":
@@ -242,6 +254,7 @@ class Refs:
             join(self.signals, more.signals),
             self.record_seq if self.record_seq is not None else more.record_seq,
             join(self.passes, more.passes),
+            join(self.notes, more.notes),
         )
 
 
@@ -282,6 +295,9 @@ class AttentionEntry:
     kin: tuple[str, ...] = ()
     #: whether a judge was asked about it (a ``kin`` row, with or without kin): it is asked once
     kin_judged: bool = False
+    #: a ``message``: whether it carries something of its own for a pass (:func:`carries_content`); one that does not
+    #: is handed only along with a pass that runs for other entries
+    carries: bool = True
 
     @property
     def active(self) -> bool:
@@ -345,7 +361,9 @@ def fold(rows: Iterable[Mapping[str, Any]]) -> dict[str, AttentionEntry]:
         if op == "create":
             if not is_entry_id(eid) or eid in out or row.get("kind") not in KINDS or at is None:
                 continue
-            out[eid] = AttentionEntry(eid, row["kind"], "open", at, Refs.from_row(row.get("refs")))
+            # only a message's row says whether it carries something of its own (an older row: it does)
+            carries = row.get("carries") is not False if row["kind"] == "message" else True
+            out[eid] = AttentionEntry(eid, row["kind"], "open", at, Refs.from_row(row.get("refs")), carries=carries)
             continue
         e = out.get(eid) if isinstance(eid, str) else None
         if e is None:
@@ -506,6 +524,9 @@ def material(
         parts = [summary]
         if r.captures:
             parts.append(Part("procedure.py", proc_paths))
+        if r.notes:
+            # an episode with no capture comes for its lessons and note candidates: they are its material
+            parts.append(Part("notes", tuple(f"{STAGING_INPUTS}/{n}" for n in r.notes), required=not r.captures))
         parts.append(Part("episode", (), tuple(names) + tuple(r.episodes), required=False))
         return parts
     if kind == "own_check_failed":
@@ -738,6 +759,8 @@ class SettledFork:
     output: bool
     procedure: bool
     settled_at: str | None
+    #: its lessons and note candidates with text, as ``<name>/<file>`` (:func:`lesson_files`)
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -962,6 +985,7 @@ class Ledger:
                 refs = Refs(
                     episodes=(f.episode,),
                     captures=(cid,) if isinstance(cid, str) and cid else (),
+                    notes=tuple(getattr(f, "notes", ()) or ()),
                 )
                 contrary = isinstance(cap, Mapping) and cap.get("outcome") in ("contrary", "failed")
                 out += self._create_rows(state, "new_experience", refs, (f.name,), dup_capture=True, contrary=contrary)
@@ -979,7 +1003,10 @@ class Ledger:
                 out += self._create_rows(state, "use_went_badly", refs, (u.episode, u.item))
             # late evidence, which reopens the closed entries naming what its episode used or produced
             for s in sources.late_signals():
-                items = sources.episode_items(s.episode)
+                # a verdict scoped to one request of a session bears on that request's items only
+                scope = getattr(sources, "signal_scope", None)
+                scoped = scope(s.episode, s.signal_id) if callable(scope) else None
+                items = tuple(sorted(scoped)) if scoped is not None else sources.episode_items(s.episode)
                 refs = Refs(episodes=(s.episode,), signals=(s.signal_id,), items=tuple(items))
                 made = self._create_rows(state, "late_evidence", refs, (s.signal_id,), at=None)
                 out += made
@@ -1055,6 +1082,12 @@ class Ledger:
                 record_seq=seq,
             )
             made = self._create_rows(state, "message", refs, (seq,), at=r.get("ts") if isinstance(r.get("ts"), str) else None)
+            if made and made[0]["op"] == "create":
+                # whether it carries something of its own; with nothing, it goes along with the next pass that runs
+                # for other entries
+                carries = carries_content(r, writer_seqs)
+                made[0]["carries"] = carries
+                state[made[0]["entry"]] = replace(state[made[0]["entry"]], carries=carries)
             out += made
             pid = delivered.get(seq)
             if made and made[0]["op"] == "create" and isinstance(pid, str) and pid:
@@ -1207,6 +1240,9 @@ class Ledger:
                                   "episodes": list(e.refs.episodes), "at": at}
                                  for e in waiting if e.entry not in noted])  # fmt: skip
                     pending = [e for e in pending if e not in waiting]
+            # a message with nothing of its own never makes a pass: it goes along with one that runs for other entries
+            quiet = [e for e in pending if not wants_pass(e)]
+            pending = [e for e in pending if e not in quiet]
             if not pending:
                 return []
             group_row: dict | None = None
@@ -1214,9 +1250,10 @@ class Ledger:
             if grouping is not None:
                 from .capture_groups import ENDED, GROUPED_KINDS, NO_CAPTURE
 
-                # an episode that left no capture has nothing to write up with others: the harness closes its entry,
-                # and no pass runs on it
-                bare = [e for e in pending if e.kind in GROUPED_KINDS and not e.refs.captures]
+                # an episode that left no capture and no lesson or note candidate has nothing to write up with others:
+                # the harness closes its entry, and no pass runs on it; one with lessons waits for its group as a
+                # capture does
+                bare = [e for e in pending if e.kind in GROUPED_KINDS and not e.refs.captures and not e.refs.notes]
                 if bare:
                     at = self.now()
                     self._write([{"op": "close", "entry": e.entry, "pass_id": None, "decision": "nothing_to_keep",
@@ -1291,6 +1328,13 @@ class Ledger:
                 for e in ended if e not in chosen
             ]
             chosen = chosen + [e for e in ended if e not in chosen]
+            # the messages with nothing of their own, handed with this pass (its first message lists them)
+            handed += [
+                {"op": "hand", "entry": e.entry, "pass_id": pass_id, "at": at, "hand_count": e.hand_count + 1,
+                 "by": "with_pass"}
+                for e in quiet if e not in chosen
+            ]  # fmt: skip
+            chosen = chosen + [e for e in quiet if e not in chosen]
             self._write(handed + ([group_row] if group_row is not None else []))
             got = fold([*rows, *handed])
         return [got[e.entry] for e in chosen]
@@ -1535,7 +1579,7 @@ class Ledger:
                 bound = (e.undecided if e.state == "read" else e.misses) + 1 >= UNREADABLE_AFTER_MISSES
                 if stopped:
                     rows.append({"op": "return", "entry": e.entry, "pass_id": pass_id, "why": "suspend", "at": at})
-                elif grouped and bound and e.refs.captures:
+                elif grouped and bound and (e.refs.captures or e.refs.notes):
                     # the writer could not finish this group: the harness closes the entry so it holds no queue up; its
                     # capture stays served as it was, and it is the history of any related capture that comes later
                     how = "read and not decided" if e.state == "read" else "handed and not read"
@@ -1743,7 +1787,8 @@ def export_material(
     entries: id, kind, refs, and each part of the material that must be read, as box paths) and, per entry,
     ``<id>/entry.json`` beside the material the harness holds for it outside the episode records: ``use.json`` (the
     failed use), ``signal.json`` (the late signal) and ``note.json`` (a deferral's note or the gate's refusal). Ids and
-    harness facts only, apart from a deferral's own reason text. Returns the index document."""
+    harness facts only, apart from a deferral's own reason text and a signal's verdict text as the environment showed
+    it to the actor (when its checker line carried one). Returns the index document."""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -2003,6 +2048,7 @@ class HomeSources:
                     bool(view.finished and view.files),
                     "procedure.py" in (view.files or {}),
                     None,
+                    tuple(f"{name}/{rel}" for rel in lesson_files(view.files or {})),
                 ),
             )
         return out
@@ -2110,9 +2156,21 @@ class HomeSources:
                     out.append(LateSignal(s.signal_id, eid, arrived, getattr(s, "about", None)))
         return out
 
+    def signal_scope(self, episode: str, signal_id: str) -> frozenset | None:
+        """The items a scoped signal bears on (``EvidenceStore.signal_items``), or None when it bears on its episode."""
+        try:
+            return self.stores().evidence.signal_items(episode).get(signal_id)
+        except Exception:  # noqa: BLE001 - unreadable: the episode's items
+            return None
+
     def signal_rows(self, ids: Iterable[str]) -> list[dict]:
+        from .integration.outcomes import signal_texts
+
         want = set(ids)
         ev = self.stores().evidence
+        # the verdict's own text, when its checker line carried it: what the later outcome said (never read for a
+        # verdict; the label is the verdict)
+        texts = signal_texts(self.state_dir, want)
         out = []
         for (eid,) in ev.db.execute("SELECT DISTINCT episode_id FROM signals"):
             for s in ev.signals_for(eid):
@@ -2122,6 +2180,7 @@ class HomeSources:
                         "ts": s.ts, "refers_to": s.refers_to,
                         "arrived_at": getattr(s, "arrived_at", None), "timing": getattr(s, "timing", None),
                         "about": getattr(s, "about", None),
+                        **({"text": texts[s.signal_id]} if s.signal_id in texts else {}),
                     })  # fmt: skip
         return out
 
@@ -2183,6 +2242,47 @@ class HomeSources:
             return [r for r in run_record.read_entries(self.paths.home) if isinstance(r, dict)]
         except Exception:  # noqa: BLE001 - not built, or unreadable: the rows directly
             return _read_rows(self.state_dir / "agents" / "run-record.jsonl")
+
+
+def lesson_files(files: Mapping[str, Any]) -> tuple[str, ...]:
+    """The lessons (``notes.md``) and note candidates (``notes/<name>.md``) among a staging dir's *files* (relative
+    path -> bytes) that hold any text, sorted: by the path's shape (:func:`.integration.fork_worker.kind`) and
+    whether it is blank, never by a word of it."""
+    from .integration.fork_worker import kind
+
+    out = []
+    for rel, data in files.items():
+        if kind(rel) not in ("notes", "note"):
+            continue
+        text = data.decode("utf-8", "replace") if isinstance(data, (bytes, bytearray)) else str(data or "")
+        if text.strip():
+            out.append(rel)
+    return tuple(sorted(out))
+
+
+#: The authors whose posts to the writer carry nothing a pass needs beyond their own typed refs: a fork (its staged
+#: files are its episode's own entry) and the harness (its notices).
+NO_CONTENT_ROLES = frozenset({"fork", "harness"})
+
+
+def carries_content(r: Mapping[str, Any], writer_seqs: Iterable[Any] = ()) -> bool:
+    """Whether a run-record entry addressed to the writer carries something of its own for a pass, from its record
+    fields only (never a word of its text): an item, capture or entry it names by a typed ref (an item reference, or a
+    correction of one); an answer to one of the writer's own entries; or a report by an agent at work, which its role
+    sends only with a correction, a preference or an outcome (an actor or a helper, the librarian, the user). A fork's
+    or the harness's post with none of these carries nothing its episode's own entry does not."""
+    refs = [x for x in r.get("refs") or [] if isinstance(x, str)]
+    if any(x.startswith(("item:", "capture:", "entry:")) for x in refs):
+        return True
+    if r.get("reply_to") is not None and r.get("reply_to") in set(writer_seqs):
+        return True
+    return r.get("role") not in NO_CONTENT_ROLES
+
+
+def wants_pass(e: AttentionEntry) -> bool:
+    """Whether open entry *e* may make a pass of its own: every entry but a ``message`` that carries nothing of its own
+    (:attr:`AttentionEntry.carries`), which goes along with a pass that runs for other entries."""
+    return e.state == "open" and (e.kind != "message" or e.carries)
 
 
 def _actor_to_writer(r: Mapping[str, Any]) -> bool:
