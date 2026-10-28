@@ -64,3 +64,11 @@ runs before it, and no change touched the adapter. The test measures wall-clock 
 
 Direction: open. Do not raise the timeout to make it pass. Run it alone to tell a load failure from a real slowdown.
 
+## Session transcripts are redacted by known value only
+
+`unify/transcripts.scrub` replaces every credential the process knows by value before a session line is written:
+environment variables with a credential-like name, the model client's loaded keys and registered secrets. Unlike
+`unify/memory/redact`, it has no key-shape pass, so a credential that reaches a session only as message or tool text,
+and was never in the environment, is kept in that session's transcript file.
+
+Direction: add the key-shape pass that `unify/memory/redact` already uses (`KEY_SHAPED`).

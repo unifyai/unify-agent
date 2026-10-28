@@ -7,7 +7,9 @@ Memory lets later requests use what earlier ones learned. One setting controls i
 
 1. **An episode is recorded.** Each request is an episode, committed to `<UNIFY_HOME>/episodes.git`: the request, the
    cells the actor ran with their outputs, its tool calls and its reply, plus any signal that arrives about it later,
-   such as a verdict on the result. A SQLite evidence store, `<UNIFY_HOME>/memory-evidence.sqlite`, indexes the
+   such as a verdict on the result. A verdict line may carry the verdict's text exactly as the world showed it; the
+   text passes the run's redactor and is kept beside its signal for the writer, and the label alone is the verdict. A
+   SQLite evidence store, `<UNIFY_HOME>/memory-evidence.sqlite`, indexes the
    episodes and every use of a library item.
 2. **A fork writes down what it did.** When the episode ends, the actor's own conversation is continued once, on the
    fork lane, with a fixed instruction. The fork writes a summary (`summary.md`) and, where the episode computed
@@ -72,14 +74,21 @@ Memory lets later requests use what earlier ones learned. One setting controls i
    and runs itself (`tools.test`). Every item shows what it rests on: its kind (a curated item or a recorded
    procedure), how many episodes it comes from and how many uses confirmed it. An item's status
    follows its uses: it starts `on-trial`, becomes `adopted` after clean uses in at least three episodes with no
-   failed use, and is `retired` after failed uses in at least two episodes, or by the writer's decision.
+   failed use, and is `retired` after failed uses in at least two episodes, or by the writer's decision. The writer's
+   brief tells it that an item is stale when a later outcome contradicts it (a verdict after an episode that used it,
+   with the verdict's text when the world gave one, or a failed use after it was served), and that it then changes the
+   item to what the outcome shows or retires it.
 5. **The next episode is served from the library.** An episode starts with a read-only copy of the library as it is
    then, bound as the Python package `memory` in its cells, and with the captures served beside it. Before the actor's
    first turn, the librarian is asked once what in the library fits the request; its answer is part of the actor's first
    message. In its cells the actor calls `memory.ask(...)` to ask again, `memory.items()` to list the library and
    `memory.get(id)` to read an item or call a function; `help(memory)` documents them. The librarian checks every
    call it suggests against the item's real interface, and never suggests an item whose call failed earlier in the
-   same request.
+   same request, or one the request had used before a `fail` verdict the actor was shown (a
+   `{"checker": {"label": "fail"}}` line; the items are the ones its cells called and the ids they passed to
+   `memory.get`, read from the cells' code, never from text). When a driver marks each new request of a persistent
+   session (`{"message": ..., "request": "new"}`), such a verdict bears only on the items of the request it followed,
+   and its exclusion holds for that request and the next; without the marker it holds for the whole episode.
 
    The librarian judges the fit of functions and procedures only. **Standing notes** are shown with no fit judgement:
    the actor's first message also carries a digest of the notes whose front matter's `kind` is `preference`, `rule`
