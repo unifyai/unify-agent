@@ -579,8 +579,9 @@ This pattern **complements** running actual tests—it doesn't replace them. The
 
 ## Stubbed Models, Never Real Providers
 
-Tests always use stubbed models and never reach a real provider: no test needs a real provider key, and every model
-call in a test is a stubbed one. `tests/conftest.py` enforces it in every test, with or without a key loaded:
+Tests always use stubbed models and never reach a real provider: "we do not add tests that need a real provider key
+and always mock those tests with stubbed LLM calls" (the lead, 13 Oct 2026). `tests/conftest.py` enforces it in every
+test, with or without a key loaded:
 
 - unillm's provider calls (`acompletion`, `completion`, `aembedding`, `embedding`) raise;
 - a socket may connect only to this machine;
@@ -623,8 +624,8 @@ that is not installed).
 
 These are not loaded by default. Read the file when the work matches its description.
 
-- [`.agents/global-rules/rules/shared-agent-context.md`](.agents/global-rules/rules/shared-agent-context.md) — Questions about what the team did or decided in earlier agent sessions (did we set up X, who changed Y, why Z) - every Cursor, Claude Code and Codex transcript is in ~/shared_context
-- [`.agents/global-rules/rules/rented-compute.md`](.agents/global-rules/rules/rented-compute.md) — Renting, extending or ending any cloud machine, GPU, volume, disk, IP or database (Vast, RunPod, Nebius, Hetzner, GCP, Lambda, Prime) - every machine has a lease that ends, and you end what your work leaves behind
+- `~/global-agent-rules/rules/shared-agent-context.md` — Questions about what the team did or decided in earlier agent sessions (did we set up X, who changed Y, why Z) - every Cursor, Claude Code and Codex transcript is in ~/shared_context
+- `~/global-agent-rules/rules/rented-compute.md` — Renting, extending or ending any cloud machine, GPU, volume, disk, IP or database (Vast, RunPod, Nebius, Hetzner, GCP, Lambda, Prime, Modal) - every machine has a lease with an end and a detailed reason, and you end what your work leaves behind
 
 ---
 
@@ -673,6 +674,12 @@ All fixes must be fully general and **much** broader than the specific failing t
   per session before changing files, so you never work on a stale tree.
   After a rejected push and a rebase, re-read any file you are about to edit:
   the rebase changed it on disk.
+- **Never `--autostash` or `git stash` in a checkout other agents share.**
+  It takes their uncommitted edits along with yours, and when they do not
+  reapply cleanly it leaves their files conflicted and staged, which blocks
+  every commit there. If the tree holds work that is not yours, pull in a
+  worktree of your own (`git worktree add`), or commit your own files and
+  leave the pull.
 - **Commit explicit paths:** `git commit <files> -m "…"`, never a bare
   `git commit`. Agents working in parallel share one index, so a bare commit
   takes in whatever another agent staged. A new file needs `git add <file>`
@@ -693,6 +700,20 @@ A worktree is isolation enough: agents in separate worktrees are
 collaborators on `main`. Commit on the branch the worktree has and push it
 to `main` (see Git Safety). Never create a feature branch or a pull request,
 or suggest one, unless the user asks for it.
+
+Make each worktree under your home folder at a path nobody else uses, such
+as one from `mkdir -p ~/worktrees && mktemp -d ~/worktrees/wt.XXXXXX`, never
+under `/tmp` or the system's temporary folder, which a restart empties: on 26
+October 2026 a Mac restarted overnight and its start-up clean of
+`/private/tmp` took six Continual Office worktrees, with run records, a
+harness fix and twelve rewritten workflow types nobody had committed.
+Remove only a worktree your own command made. Sessions' worktrees sit
+side by side, and `git worktree remove` takes another session's worktree once
+its tracked files are clean, its ignored files with it: on 18 October 2026 a
+session's `git worktree add ~/brain-video` failed because the explainer
+video's worktree had that path, its cleanup removed that worktree, and the
+video's renders and installed packages went with it. A `&&` chain under
+`set -e` carries on past a failed step, so check the path is free first.
 
 # Python Formatting & Pre-commit
 
@@ -876,13 +897,70 @@ while the agent waits.
 - **Lead with the answer or the decision.** Background comes after it, or
   goes in a file the reply points to.
 - **When someone has to do something, give exact numbered steps:** one action
-  per step, with the literal button, menu path or text to paste. When they are
-  carrying the steps out as they read, give one step and wait for them.
+  per step, with the literal button, menu path or text to paste, and what
+  they should see when it worked. Give them all in one message they can
+  follow from start to finish while they work in another window (Dan, 18
+  October 2026: "I just want all the instructions here"), and stop early only
+  where the next step depends on what they report back.
+- **Steps, and any answer the reader needs, are the last thing in the turn,
+  never above the app's question box.** In the Claude desktop app, a turn that
+  ends with the next-step box's question (`mcp__ccd_turn__wrap_up` with an
+  `ask`) shows the box and hides the message above it, so steps written there
+  went unseen again and again (Dan, 18 October 2026), and so did answers: a
+  reader who saw only the box's recap asked again what was going on (19
+  October 2026). When a reply holds steps or an answer, call the wrap-up with
+  a recap and no question, then write them as the closing message, any
+  question last in its prose. A question that needs any context to answer
+  goes the same way, with its context written out in plain words above it:
+  what the thing is, where it came from and what each answer does, with no
+  internal label left unexplained (Dan, 20 October 2026, after a day of
+  questions whose explanations the box had hidden: "You need to give me the
+  full context every time I ask a question ... I just see one sentence and a
+  question"). Delete
+  this point once the app shows the message above its box: to check, end one
+  turn with a short line above a question and ask whether it showed.
+- **Times in the reader's own time zone, never UTC.** Quote every time in the
+  time zone the person reading is in, the machine's own clock's (`date`), and
+  name it ("about 20:30 PDT"): they should not have to convert to know what
+  you mean (Dan, 19 October 2026: "always quote time in the time zone that I
+  am in"). UTC stays in logs and in records written for everyone.
 - **Only the caveat that changes what they do next.** No stream of
   consciousness, no narration of tools or process, and no alternatives nobody
   asked for; they will ask if they want more.
 
-# OpenAI is reached only through OpenRouter
+# Calling LLMs
+
+## Prompt caching on every call, as far as it goes
+
+Every call that sends a model the same opening as calls before it reads
+that opening from the provider's prompt cache, at the longest-lived
+setting the provider offers (Dan, 1 November 2026, after support-bench's
+Opus 5.5 graders ran $230 to $450 an hour with no cache reads at all: "We
+need to make sure prompt caching is, of course, always turned on and maxed
+out to the absolute extreme"). A cache read costs a tenth of fresh input
+on Anthropic's models, so an uncached call that repeats a long prefix pays
+up to ten times what it should.
+
+- **Order each request from most to least shared:** tools and system
+  instructions, then the documents or records that a task's calls all
+  read, then what changes from call to call, last. Nothing that varies
+  between calls, such as a timestamp, a run id or a shuffled order, goes
+  before shared content.
+- **Anthropic's models cache only where a request says so,** through
+  OpenRouter as well: a `cache_control` breakpoint (`{"type": "ephemeral"}`)
+  after each shared block, up to the four a request allows, with the
+  one-hour TTL (`"ttl": "1h"`) on any prefix reused for longer than five
+  minutes. OpenAI's, DeepSeek's and Gemini's models cache a long repeated
+  prefix on their own, so there the ordering above is what earns it.
+- **Warm before fanning out:** send the first call of each prefix alone and
+  start its siblings once its reply has begun; calls sent at the same
+  moment each write the prefix again and read none of it.
+- **Prove it on the first run:** read each response's cached-token count
+  (Anthropic's `cache_read_input_tokens`, OpenRouter's `cached_tokens`)
+  and the provider's usage report. A call path that repeats a prefix and
+  shows no cache reads is a bug, fixed before the next run.
+
+## OpenAI only through OpenRouter
 
 Every OpenAI LLM call in every repo routes through **OpenRouter**, using
 `OPENROUTER_API_KEY`. UniLLM does not expose a native OpenAI chat provider, and
@@ -890,7 +968,7 @@ the company's own direct OpenAI account is inactive — it answers
 `429 billing_not_active` — so a native route is dead in practice as well as
 unregistered.
 
-## Canonical endpoint form
+### Canonical endpoint form
 
 ```
 openai/<model-id>@openrouter      # openai/gpt-5.6-terra@openrouter
@@ -902,7 +980,7 @@ OpenRouter catalog; `@openai` is not registered and fails endpoint resolution.
 Source, defaults, examples, and tests use the canonical OpenRouter form
 directly.
 
-## Hard rules
+### Hard rules
 
 - New LLM call sites use `openai/<id>@openrouter`. Non-OpenAI providers
   (Anthropic, Google, …) are unaffected by this rule and keep their own routing.
@@ -915,7 +993,7 @@ directly.
   fresh checkout cannot inherit a dead route.
 - Treat any surviving `@openai` model string as a bug; UniLLM rejects it.
 
-## The one legitimate direct-OpenAI path
+### The one legitimate direct-OpenAI path
 
 Masked image edits (`images.edit` with `gpt-image-2`) have no OpenRouter
 equivalent — OpenRouter's unified Image API does not expose the mask parameter.
