@@ -953,13 +953,23 @@ up to ten times what it should.
   minutes. unillm adds these by default, and `unillm.place_cache_breakpoints`
   adds them to a body posted without its client. No other provider's
   models can be counted on to cache a shared prefix by themselves: measured
-  through OpenRouter on 1 November 2026, OpenAI's GPT-6 Sol and Google's
-  Gemini 4 Argon read the cache only when a whole prompt repeated exactly,
-  and Gemini cached nothing under the one-hour TTL, so the first run's
-  cache reads, below, show what each model really saves.
+  through OpenRouter on 1 November 2026, OpenAI's GPT-6 Sol read the cache
+  only as far as an earlier request's whole prompt ran, so two calls that
+  share an opening and end differently read nothing of each other's, and
+  Google's Gemini 4 Argon read it erratically and cached nothing under the
+  one-hour TTL, so the first run's cache reads, below, show what each model
+  really saves.
 - **Warm before fanning out:** send the first call of each prefix alone and
   start its siblings once its reply has begun; calls sent at the same
-  moment each write the prefix again and read none of it.
+  moment each write the prefix again and read none of it. Where a model
+  reads only as far as an earlier request's whole prompt ran, as GPT-6 Sol
+  does through OpenRouter, the warm call is the shared opening alone, with
+  nothing after it, so that every call starting with exactly those
+  messages reads them: with a 16k-token opening, a later call read 16,122
+  of its 16,152 tokens, at $0.0033 per call against $0.0404 unread. A
+  conversation that grows turn by turn needs no such call, since each
+  request extends the last. Gemini 4 Argon can't be counted on even then:
+  it read 90% once and nothing the next time.
 - **Prove it on the first run:** read each response's cached-token count
   (Anthropic's `cache_read_input_tokens`, OpenRouter's `cached_tokens`)
   and the provider's usage report. A call path that repeats a prefix and
