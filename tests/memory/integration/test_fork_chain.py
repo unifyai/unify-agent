@@ -561,7 +561,13 @@ def test_a_claude_fork_carries_the_actors_cache_breakpoints():
     claude = body("anthropic/claude-opus-5.5@openrouter")
     assert claude["tools"][-1]["cache_control"] == one_hour
     assert claude["messages"][0]["content"][-1]["cache_control"] == one_hour
-    assert claude["messages"][-1]["cache_control"] == one_hour
+    assert claude["messages"][-1]["content"] == [
+        {
+            "type": "text",
+            "text": fork_mod.fork_instruction(),
+            "cache_control": one_hour,
+        },
+    ]
     assert "cache_control" not in json.dumps(sent + tools)
     assert "cache_control" not in json.dumps(body("openai/gpt-5.6-sol@openrouter"))
 
