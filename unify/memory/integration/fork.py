@@ -147,8 +147,8 @@ CAPTURE_BULLETS = (
     "the request's text); one of the `run(state, env)` form is not run that way. If the work has conditions on its input or its result, "
     "write them as `applies(x)` and `holds(x, result)`, where `x` is what `run` takes first, each returning True or "
     "False. Its "
-    "docstring says whether the record shows the work accepted, quoting the line that shows it, or says \"not "
-    "shown\". When no code that ran here did the work (it was all in the conversation, or edits made directly), write no "
+    'docstring says whether the record shows the work accepted, quoting the line that shows it, or says "not '
+    'shown". When no code that ran here did the work (it was all in the conversation, or edits made directly), write no '
     "`procedure.py`: `summary.md` and `broke.md` say what happened.\n"
     "- `broke.md`: each thing that broke in this attempt and why, one line each, with the part name and a short quote "
     'from the record. Write "none" if nothing broke.\n'
@@ -213,6 +213,8 @@ STAGING_IN_BOX = "/staging"
 #: Operational guard on the CLI's wait for the fork (run safety, reported; not a design limit).
 WAIT_GUARD_S = 1800.0
 WRITE_GUARD_S = 120.0
+
+
 def fork_instruction() -> str:
     """The fixed instruction appended to the actor's conversation for the fork (:data:`INSTRUCTION`)."""
     return INSTRUCTION
@@ -280,6 +282,10 @@ def _settings() -> Any:
     return SETTINGS
 
 
+#: How OpenRouter, the lanes' only upstream, names a Claude model.
+_CLAUDE_ON_OPENROUTER = "anthropic/"
+
+
 def _model(client: Any) -> str | None:
     endpoint = str(
         getattr(client, "endpoint", "") or getattr(client, "model", "") or "",
@@ -320,13 +326,23 @@ def as_sent(message: Any) -> Any:
     the actor's, byte for byte, rather than the history as the harness holds it."""
     if not isinstance(message, dict):
         return message
-    out = {k: v for k, v in message.items() if not (isinstance(k, str) and k.startswith("_")) and v is not None}
+    out = {
+        k: v
+        for k, v in message.items()
+        if not (isinstance(k, str) and k.startswith("_")) and v is not None
+    }
     content = out.get("content")
     if isinstance(content, list):
         out["content"] = [
-            {k: v for k, v in block.items() if not (isinstance(k, str) and k.startswith("_"))}
-            if isinstance(block, dict)
-            else block
+            (
+                {
+                    k: v
+                    for k, v in block.items()
+                    if not (isinstance(k, str) and k.startswith("_"))
+                }
+                if isinstance(block, dict)
+                else block
+            )
             for block in content
         ]
     return out
@@ -368,6 +384,11 @@ def request_from_source(
     choice = fork_tool_choice(source.get("tool_choice"))
     if choice is not None:
         body["tool_choice"] = choice
+    if model.startswith(_CLAUDE_ON_OPENROUTER):
+        # Claude reads its cache only up to a breakpoint, and the actor's own requests carried unillm's
+        import unillm
+
+        unillm.place_cache_breakpoints(body)
     effort = getattr(client, "reasoning_effort", None)
     if isinstance(effort, str) and effort:
         # as the actor's own transport sends it: LiteLLM's OpenRouter route passes reasoning_effort at the top level
@@ -685,7 +706,9 @@ def _leave(on_record: tuple[Any, str] | None) -> None:
     if on_record is not None:
         try:
             on_record[0].leave(on_record[1])
-        except Exception:  # noqa: BLE001 - leaving never changes how the episode settles
+        except (
+            Exception
+        ):  # noqa: BLE001 - leaving never changes how the episode settles
             pass
 
 

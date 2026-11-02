@@ -11,7 +11,7 @@ which must be at that commit:
 ```bash
 git clone https://github.com/unifyai/unify-agent.git
 git clone https://github.com/unifyai/unillm.git
-git -C unillm checkout 9d8542206047d8131cf23f5511f4d6afcc81fc75
+git -C unillm checkout e9ebc52332c16637de7578602c4d2ea3856ee860
 
 cd unify-agent
 uv sync --group dev

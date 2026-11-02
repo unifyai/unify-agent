@@ -24,12 +24,12 @@ concurrency:
 env:
   # The unillm commit pyproject.toml pins; uv installs it from the checkout
   # beside unify-agent ([tool.uv.sources]).
-  UNILLM_SHA: 9d8542206047d8131cf23f5511f4d6afcc81fc75
+  UNILLM_SHA: e9ebc52332c16637de7578602c4d2ea3856ee860  # pragma: allowlist secret (a commit hash)
   # The in-process embedder's weights, at the revision
   # unify/common/embeddings.py pins. The test sandbox shares
   # /tmp/unity_test_home with every pytest process, so they are kept there.
   EMBED_MODEL: BAAI/bge-small-en-v1.5
-  EMBED_REVISION: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  EMBED_REVISION: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a  # pragma: allowlist secret (a revision hash)
   HF_HOME: /tmp/unity_test_home/huggingface
 
 jobs:
@@ -129,7 +129,7 @@ jobs:
         UNIFY_TEST_SANDBOX: required
         # Not a key: start-up needs one set, and nothing can authenticate with
         # this (the root conftest.py sets the same placeholder).
-        OPENROUTER_API_KEY: ci-placeholder-not-a-key
+        OPENROUTER_API_KEY: ci-placeholder-not-a-key  # pragma: allowlist secret
         # The weights are on disk; nothing should ask the Hub.
         HF_HUB_OFFLINE: "1"
       run: uv run --no-sync pytest -n auto ${{ matrix.shard.paths }}

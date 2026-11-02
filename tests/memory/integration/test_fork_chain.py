@@ -533,6 +533,39 @@ def test_request_from_source_builds_the_fork_request_directly():
     )
 
 
+def test_a_claude_fork_carries_the_actors_cache_breakpoints():
+    """Claude reads its cache only up to a breakpoint; other models cache a repeated prefix on their own."""
+    one_hour = {"type": "ephemeral", "ttl": "1h"}
+    sent = [
+        {"role": "system", "content": [{"type": "text", "text": "You are the actor."}]},
+        {"role": "user", "content": [{"type": "text", "text": "double 21"}]},
+    ]
+    tools = [
+        {"type": "function", "function": {"name": "execute_code", "parameters": {}}},
+    ]
+
+    def body(endpoint: str) -> dict:
+        source = {
+            "client": SimpleNamespace(endpoint=endpoint),
+            "sent_messages": sent,
+            "tools": tools,
+        }
+        doc, _ = fork_mod.request_from_source(
+            "e1",
+            source,
+            "http://127.0.0.1:9/fork/v1",
+            "tok",
+        )
+        return doc["body"]
+
+    claude = body("anthropic/claude-opus-5.5@openrouter")
+    assert claude["tools"][-1]["cache_control"] == one_hour
+    assert claude["messages"][0]["content"][-1]["cache_control"] == one_hour
+    assert claude["messages"][-1]["cache_control"] == one_hour
+    assert "cache_control" not in json.dumps(sent + tools)
+    assert "cache_control" not in json.dumps(body("openai/gpt-5.6-sol@openrouter"))
+
+
 def test_the_reply_text_joins_every_turn_and_tool_call_blocks_are_kept(tmp_path):
     turns = [
         {
@@ -602,7 +635,12 @@ def test_the_fork_sends_the_messages_as_the_actor_sent_them():
         "tools": [],
     }
 
-    doc, why = fork_mod.request_from_source("e1", source, "http://127.0.0.1:9/fork/v1", "tok")
+    doc, why = fork_mod.request_from_source(
+        "e1",
+        source,
+        "http://127.0.0.1:9/fork/v1",
+        "tok",
+    )
 
     assert why is None
     assert doc["body"]["messages"][:-1] == [

@@ -22,7 +22,7 @@ dependencies = [
     # project, so it is never named without this URL. The commit is not on
     # GitHub yet: until it is, uv takes unillm from a sibling checkout of that
     # commit ([tool.uv.sources] below), and a pip install fails at this line.
-    "unillm @ git+https://github.com/unifyai/unillm@9d8542206047d8131cf23f5511f4d6afcc81fc75",
+    "unillm @ git+https://github.com/unifyai/unillm@e9ebc52332c16637de7578602c4d2ea3856ee860",
     "numpy>=2.3.4",
     "tiktoken>=0.11.0",
     "openpyxl>=3.1.5",
