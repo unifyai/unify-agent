@@ -950,8 +950,13 @@ up to ten times what it should.
   OpenRouter as well: a `cache_control` breakpoint (`{"type": "ephemeral"}`)
   after each shared block, up to the four a request allows, with the
   one-hour TTL (`"ttl": "1h"`) on any prefix reused for longer than five
-  minutes. OpenAI's, DeepSeek's and Gemini's models cache a long repeated
-  prefix on their own, so there the ordering above is what earns it.
+  minutes. unillm adds these by default, and `unillm.place_cache_breakpoints`
+  adds them to a body posted without its client. No other provider's
+  models can be counted on to cache a shared prefix by themselves: measured
+  through OpenRouter on 1 November 2026, OpenAI's GPT-6 Sol and Google's
+  Gemini 4 Argon read the cache only when a whole prompt repeated exactly,
+  and Gemini cached nothing under the one-hour TTL, so the first run's
+  cache reads, below, show what each model really saves.
 - **Warm before fanning out:** send the first call of each prefix alone and
   start its siblings once its reply has begun; calls sent at the same
   moment each write the prefix again and read none of it.
