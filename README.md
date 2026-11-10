@@ -315,9 +315,8 @@ embedder also need its weights in the Hugging Face cache.
 
 ## Project status
 
-This is research code, published as it is.
-TODO(lead): maintenance status after the wind-down (who reviews pull requests,
-whether issues are answered).
+unify-agent is research code from unify's ongoing work on agents that learn
+from experience.
 
 Please report security issues privately, not in a public issue; see
 [`SECURITY.md`](SECURITY.md). Contributions: [`CONTRIBUTING.md`](CONTRIBUTING.md).

@@ -90,9 +90,8 @@ fit together, and [`docs/memory.md`](docs/memory.md) the memory.
 
 ## Maintainers
 
-TODO(lead): who maintains and reviews after the wind-down.
-`.github/CODEOWNERS` still names the former team and paths that no longer
-exist.
+unify maintains unify-agent as part of its research, and
+[`.github/CODEOWNERS`](.github/CODEOWNERS) names who reviews pull requests.
 
 ## Questions
 

@@ -1,21 +1,2 @@
-# CODEOWNERS for unifyai/unify
-#
-# GitHub uses LAST-MATCH-WINS semantics. The per-path overrides below
-# flag security-sensitive paths in PR descriptions; the reviewer set
-# remains the default pair (the two founding engineers).
-#
-# Either approval satisfies branch protection. GitHub auto-excludes
-# the PR author from the request list, so when one of them opens a
-# PR the other becomes the implicit required reviewer.
-
-# Default reviewers — the two founding engineers.
-*                                  @YushaArif99 @hmahmood24
-
-# Security-sensitive config — flagged so it shows up in PR descriptions.
-/.github/CODEOWNERS                @YushaArif99 @hmahmood24
-/SECURITY.md                       @YushaArif99 @hmahmood24
-/AGENTS.md                         @YushaArif99 @hmahmood24
-/ARCHITECTURE.md                   @YushaArif99 @hmahmood24
-
-# Secret manager is the highest-blast-radius surface in the codebase.
-/unify/secret_manager/             @YushaArif99 @hmahmood24
+# Every pull request is reviewed by unify.
+*  @djl11

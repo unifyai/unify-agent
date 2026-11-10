@@ -10,11 +10,9 @@ reports.
 
 **Do not open public issues for security vulnerabilities.**
 
-> TODO(lead): security contact and response policy after the wind-down.
-> Name the private channel (for example GitHub private vulnerability
-> reporting on this repository, once it is enabled) and what response, if
-> any, a reporter can expect. Until this is filled in, no response time is
-> promised.
+Report one privately through this repository's Security tab ("Report a
+vulnerability"), which opens an advisory only unify can read. No response
+time is promised.
 
 unify-agent does not operate a bug bounty program.
 
@@ -200,5 +198,6 @@ surfaces:
 
 ## 5. Disclosure
 
-> TODO(lead): disclosure and fix policy after the wind-down (whether fixes
-> will be made, where they land, how reporters are credited).
+Fixes for confirmed vulnerabilities land on `main`, and the advisory is
+published with the fix, crediting the reporter unless they ask not to be
+named.
