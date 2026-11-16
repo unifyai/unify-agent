@@ -625,7 +625,7 @@ that is not installed).
 These are not loaded by default. Read the file when the work matches its description.
 
 - [`.agents/global-rules/rules/shared-agent-context.md`](.agents/global-rules/rules/shared-agent-context.md) — Questions about what the team did or decided in earlier agent sessions (did we set up X, who changed Y, why Z) - every Cursor, Claude Code and Codex transcript is in ~/shared_context
-- [`.agents/global-rules/rules/rented-compute.md`](.agents/global-rules/rules/rented-compute.md) — Renting, extending or ending any cloud machine, GPU, volume, disk, IP or database (Vast, RunPod, Nebius, Hetzner, GCP, Lambda, Prime, Modal) - every machine has a lease with an end and a detailed reason, and you end what your work leaves behind
+- [`.agents/global-rules/rules/rented-compute.md`](.agents/global-rules/rules/rented-compute.md) — Renting, extending or ending any cloud machine, GPU, volume, disk, IP or database (Vast, RunPod, Nebius, Hetzner, GCP, Lambda, Prime, Modal, Azure), choosing where a run goes or which GPU it takes, or quoting what compute costs - a run goes on the cheapest capacity that does the job (Azure's credits once live, else preemptible or spot, on demand only near a deadline or for the run a decision waits on, always on the smallest GPU that does not slow it), every machine has a lease with an end and a detailed reason, you end what your work leaves behind, and a quote says what your work has spent so far and bills per hour now
 
 ---
 
@@ -668,18 +668,60 @@ If a test is failing, we should **never** add test-specific information or short
 
 All fixes must be fully general and **much** broader than the specific failing test. We do **not** want to overfit production code to a specific set of tests.
 
+# Your Knowledge Is Months Old
+
+A model knows the world as it stood when its training data ended, and it
+works months later. A model whose knowledge ends in June 2026 and drafts
+in November knows nothing of the five months between, and nothing in what
+it knows shows it the gap. It fills the gap with what it knew then, as
+confidently as it says anything else. A smarter model makes the same
+mistake. Only looking it up prevents it.
+
+- **Look up, on the day, whatever changes within months.** That covers the
+  newest or best models, tools, versions and methods; a field's state of
+  the art and the baselines it is measured against; prices; who holds which
+  job; what a company offers; and which rules are in force. Find each one
+  that day, with a search or in the repo, and use memory only to decide
+  what to search for. When the work presents a choice as current, such as
+  the models a paper will use or the baselines it compares with, make the
+  choice only after searching for anything newer or better.
+- **Re-check what is carried over.** A fact or a choice taken from another
+  draft, page or session is checked again on the day against its primary
+  source, never inherited. Another draft is not a source.
+- **A check asks two questions of every claim:** is it true, and is it
+  still the right thing to say today? A claim fails if it is true but
+  something newer has overtaken it, such as a model that exists but is no
+  longer the one to name.
+
+Why: on 16 November 2026, an NRL white paper put to Dan for sign-off named
+OLMo 3 (November 2025) and gpt-oss (August 2025) as the US open models its
+work would use. Thinking Machines' Inkling, Meta's Muse Glimmer and
+NVIDIA's Nemotron 3.5 had all come out months before. The drafting agent
+named the models from memory. Its check confirmed only that each was a
+real US open model. Later drafts copied the list and cited the first draft
+as their source. The session that showed the paper to Dan, whose own
+knowledge ended in June 2026, saw nothing wrong (Dan: "Naming really old
+models makes it clear that either AI has written it and it's using its own
+stupid training data, pre-training data, or that we have no idea about the
+field").
+
 # Git Safety
 
 - **Pull before editing.** Run `git pull --rebase origin main` once per repo
-  per session before changing files, so you never work on a stale tree.
-  After a rejected push and a rebase, re-read any file you are about to edit:
-  the rebase changed it on disk.
+  per session before changing files, so you never work on a stale tree. A
+  rebase refuses while anyone's change sits uncommitted in the tree; then
+  `git pull --no-rebase --ff-only origin main` moves the clone on past it,
+  refusing only if the new commits change the same file (`--no-rebase` keeps
+  it a fast-forward where git is set to rebase). If both refuse, say so and
+  why, even when you carry on in a worktree of your own: whatever reads the
+  clone in place reads it stale until it moves on. After a rejected push and
+  a rebase, re-read any file you are about to edit: the rebase changed it on
+  disk.
 - **Never `--autostash` or `git stash` in a checkout other agents share.**
   It takes their uncommitted edits along with yours, and when they do not
   reapply cleanly it leaves their files conflicted and staged, which blocks
-  every commit there. If the tree holds work that is not yours, pull in a
-  worktree of your own (`git worktree add`), or commit your own files and
-  leave the pull.
+  every commit there. If a rebase is refused over work that is not yours,
+  rebase in a worktree of your own (`git worktree add`).
 - **Commit explicit paths:** `git commit <files> -m "…"`, never a bare
   `git commit`. Agents working in parallel share one index, so a bare commit
   takes in whatever another agent staged. A new file needs `git add <file>`
@@ -870,6 +912,21 @@ it is written, and it drifts from the truth because nobody can correct it.
   `.agents/rules/`, or a comment beside the code it explains. Company-wide
   facts (people, accounts, legal state, decisions, how a job is run) go in
   `brain`'s wiki.
+- **A fix to how something is set up is code, not prose.** A machine built
+  by a script, a disk cloned from another, a fresh install or a venv copied
+  for a run never reads a runbook, so a fix made by hand and written down
+  only in a doc reaches nothing set up after it. Make the fix where its
+  cause is, in the code that every setup path runs, and add a check that
+  fails loudly where the thing is used, so whatever missed the fix stops at
+  its first run instead of producing results; the doc then says why. On 22
+  September 2026 a session installed prime-agent's Python skills by hand on
+  five runners and wrote it into a runbook as the fault of a hand-built
+  venv, while the cause, the baselines adapter's `PRIME_AGENT_KERNEL_PYTHON`,
+  stayed in the code; every machine set up after it, by a fresh install or
+  as a clone, played six weeks of the paper's harness rows without the
+  skills, and a later consolidation cut the runbook's passage (Dan, 3
+  November 2026: "something we understood as being problematic recurred.
+  Despite us knowing the problem and fixing it").
 - **Corrections that teach something count.** When someone tells you what
   the next agent could not work out for itself (how they like a thing done,
   a fact, a limit to respect, a gotcha nobody would guess), write it down
@@ -924,6 +981,24 @@ while the agent waits.
   name it ("about 20:30 PDT"): they should not have to convert to know what
   you mean (Dan, 19 October 2026: "always quote time in the time zone that I
   am in"). UTC stays in logs and in records written for everyone.
+- **One exact word for each thing, and the same one throughout.** Name a
+  thing by the term its code, its paper or its field uses, say what it means
+  the first time, and keep that name: a synonym swapped in for variety reads
+  as a second thing, and a loose everyday word says something untrue, as
+  "every step trains at least one fact" did of a stream that only shows its
+  facts, the training being the method's (Dan, 3 November 2026: "for a model
+  that's as smart as this, it should be able to use the most accurate word,
+  and it often just chooses a really bad word").
+- **Keep the subject in the reader's hands.** Repeat the noun rather than
+  point back at it with "it", "they", "this" or "those" whenever the noun is
+  not in the same short sentence or the one just before, or two nouns could
+  fit: "the cars were quite nice", never "they were quite nice" five
+  sentences on. "This" and "that" carry their noun, and a clause long enough
+  that the reader must hold the subject across it is split, the subject
+  named again. Repeating a word costs nothing; a reader who loses the
+  subject is lost (Dan, 16 November 2026: "maybe just reintroducing the
+  subject of the sentence, and just even if it's duplicating it ... it's so
+  often unclear what the subject of what you're talking about is").
 - **Only the caveat that changes what they do next.** No stream of
   consciousness, no narration of tools or process, and no alternatives nobody
   asked for; they will ask if they want more.

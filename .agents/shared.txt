@@ -11,6 +11,7 @@ no-test-info-in-production-code.md
 git-commit-safety.md
 worktree-direct-commits.md
 knowledge-lives-in-the-repo.md
+knowledge-is-months-old.md
 shared-agent-context.md
 replying-to-the-team.md
 
