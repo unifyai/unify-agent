@@ -1,6 +1,7 @@
 # Shared rules this repo includes, from the global-agent-rules submodule.
 # One filename per line; blank lines and #-comments ignored.
 # Order is set by the submodule's manifest.txt, not by this file.
+# This repository is public, so only the rules marked `public: true` reach AGENTS.md.
 #
 # Local agent runtime: SQLite store, in-process managers, CURSOR_DEBUG_LOG.
 

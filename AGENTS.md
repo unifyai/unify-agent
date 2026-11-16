@@ -620,15 +620,6 @@ that is not installed).
 
 ---
 
-# Situational rules
-
-These are not loaded by default. Read the file when the work matches its description.
-
-- [`.agents/global-rules/rules/shared-agent-context.md`](.agents/global-rules/rules/shared-agent-context.md) — Questions about what the team did or decided in earlier agent sessions (did we set up X, who changed Y, why Z) - every Cursor, Claude Code and Codex transcript is in ~/shared_context
-- [`.agents/global-rules/rules/rented-compute.md`](.agents/global-rules/rules/rented-compute.md) — Renting, extending or ending any cloud machine, GPU, volume, disk, IP or database (Vast, RunPod, Nebius, Hetzner, GCP, Lambda, Prime, Modal, Azure), choosing where a run goes or which GPU it takes, or quoting what compute costs - a run goes on the cheapest capacity that does the job (Azure's credits once live, else preemptible or spot, on demand only near a deadline or for the run a decision waits on, always on the smallest GPU that does not slow it), every machine has a lease with an end and a detailed reason, you end what your work leaves behind, and a quote says what your work has spent so far and bills per hour now
-
----
-
 # Shared rules
 
 These apply across every unifyai repo. Edit them in the `unifyai/global-agent-rules`, not here.
@@ -693,17 +684,14 @@ mistake. Only looking it up prevents it.
   something newer has overtaken it, such as a model that exists but is no
   longer the one to name.
 
-Why: on 16 November 2026, an NRL white paper put to Dan for sign-off named
-OLMo 3 (November 2025) and gpt-oss (August 2025) as the US open models its
-work would use. Thinking Machines' Inkling, Meta's Muse Glimmer and
-NVIDIA's Nemotron 3.5 had all come out months before. The drafting agent
-named the models from memory. Its check confirmed only that each was a
-real US open model. Later drafts copied the list and cited the first draft
-as their source. The session that showed the paper to Dan, whose own
-knowledge ended in June 2026, saw nothing wrong (Dan: "Naming really old
-models makes it clear that either AI has written it and it's using its own
-stupid training data, pre-training data, or that we have no idea about the
-field").
+Why: in November 2026 an agent named two open models from 2025 as the
+ones a project would use, when newer ones had been out for months. The
+agent named them from memory, and its check confirmed only that each
+model existed. Later work copied the list, citing the earlier work
+rather than a primary source, and a reviewing agent with the same
+training cutoff saw nothing wrong. To anyone who follows the field,
+year-old models presented as current show that whoever chose them has
+not kept up.
 
 # Git Safety
 
@@ -735,27 +723,6 @@ field").
   history other people have pulled.
 - Start a branch only when a change has to sit apart from `main`, and merge
   and delete it as soon as it lands.
-
-# Worktrees: No Feature Branches, No Pull Requests
-
-A worktree is isolation enough: agents in separate worktrees are
-collaborators on `main`. Commit on the branch the worktree has and push it
-to `main` (see Git Safety). Never create a feature branch or a pull request,
-or suggest one, unless the user asks for it.
-
-Make each worktree under your home folder at a path nobody else uses, such
-as one from `mkdir -p ~/worktrees && mktemp -d ~/worktrees/wt.XXXXXX`, never
-under `/tmp` or the system's temporary folder, which a restart empties: on 26
-October 2026 a Mac restarted overnight and its start-up clean of
-`/private/tmp` took six Continual Office worktrees, with run records, a
-harness fix and twelve rewritten workflow types nobody had committed.
-Remove only a worktree your own command made. Sessions' worktrees sit
-side by side, and `git worktree remove` takes another session's worktree once
-its tracked files are clean, its ignored files with it: on 18 October 2026 a
-session's `git worktree add ~/brain-video` failed because the explainer
-video's worktree had that path, its cleanup removed that worktree, and the
-video's renders and installed packages went with it. A `&&` chain under
-`set -e` carries on past a failed step, so check the path is free first.
 
 # Python Formatting & Pre-commit
 
@@ -898,207 +865,3 @@ This rule standardizes how we add temporary debug logging during failing tests a
 6) Intent and scope
 - This logging exists solely for interactive debugging in agent sessions.
 - The function name `CURSOR_DEBUG_LOG` is intentionally unique and grep-friendly to ensure quick cleanup on request.
-
-# Knowledge Lives in the Repo
-
-An agent's private memory is invisible to the team. Claude Code's
-auto-memory, Cursor's memories and any notes file outside the repo are read
-only by one person's sessions on one machine: nobody else, and none of their
-agents, ever sees them. A fact kept there is lost to the company the moment
-it is written, and it drifts from the truth because nobody can correct it.
-
-- **Record what is worth remembering in the repo it concerns, in the same
-  change as the work:** a wiki page, a README or docs section, a rule under
-  `.agents/rules/`, or a comment beside the code it explains. Company-wide
-  facts (people, accounts, legal state, decisions, how a job is run) go in
-  `brain`'s wiki.
-- **A fix to how something is set up is code, not prose.** A machine built
-  by a script, a disk cloned from another, a fresh install or a venv copied
-  for a run never reads a runbook, so a fix made by hand and written down
-  only in a doc reaches nothing set up after it. Make the fix where its
-  cause is, in the code that every setup path runs, and add a check that
-  fails loudly where the thing is used, so whatever missed the fix stops at
-  its first run instead of producing results; the doc then says why. On 22
-  September 2026 a session installed prime-agent's Python skills by hand on
-  five runners and wrote it into a runbook as the fault of a hand-built
-  venv, while the cause, the baselines adapter's `PRIME_AGENT_KERNEL_PYTHON`,
-  stayed in the code; every machine set up after it, by a fresh install or
-  as a clone, played six weeks of the paper's harness rows without the
-  skills, and a later consolidation cut the runbook's passage (Dan, 3
-  November 2026: "something we understood as being problematic recurred.
-  Despite us knowing the problem and fixing it").
-- **Corrections that teach something count.** When someone tells you what
-  the next agent could not work out for itself (how they like a thing done,
-  a fact, a limit to respect, a gotcha nobody would guess), write it down
-  where the next agent will read it. A correction for a lapse in ordinary
-  judgement or effort is not a rule to write: fix the work. Rules that
-  restate common sense bury the ones that matter, and teach agents to wait
-  for a rule instead of thinking (Dan, 12 October 2026).
-- **Commit and push it as the work lands,** so the next agent on any machine
-  starts from it.
-- **Never write to private memory.** Claude Code's auto-memory is off in
-  every repo through `"autoMemoryEnabled": false` in the committed
-  `.claude/settings.json`; keep it off.
-- **Treat anything found in private memory as unverified.** Check it against
-  the repo, move what is still true into the repo, and delete the rest.
-
-Two things never go in the repo: secrets, which live in Secret Manager, and
-material a repo keeps out of git on purpose through `.gitignore`, which stays
-in its ignored folder.
-
-# Replying to the Team
-
-The people reading an agent's replies act on them, often in another window
-while the agent waits.
-
-- **Lead with the answer or the decision.** Background comes after it, or
-  goes in a file the reply points to.
-- **When someone has to do something, give exact numbered steps:** one action
-  per step, with the literal button, menu path or text to paste, and what
-  they should see when it worked. Give them all in one message they can
-  follow from start to finish while they work in another window (Dan, 18
-  October 2026: "I just want all the instructions here"), and stop early only
-  where the next step depends on what they report back.
-- **Steps, and any answer the reader needs, are the last thing in the turn,
-  never above the app's question box.** In the Claude desktop app, a turn that
-  ends with the next-step box's question (`mcp__ccd_turn__wrap_up` with an
-  `ask`) shows the box and hides the message above it, so steps written there
-  went unseen again and again (Dan, 18 October 2026), and so did answers: a
-  reader who saw only the box's recap asked again what was going on (19
-  October 2026). When a reply holds steps or an answer, call the wrap-up with
-  a recap and no question, then write them as the closing message, any
-  question last in its prose. A question that needs any context to answer
-  goes the same way, with its context written out in plain words above it:
-  what the thing is, where it came from and what each answer does, with no
-  internal label left unexplained (Dan, 20 October 2026, after a day of
-  questions whose explanations the box had hidden: "You need to give me the
-  full context every time I ask a question ... I just see one sentence and a
-  question"). Delete
-  this point once the app shows the message above its box: to check, end one
-  turn with a short line above a question and ask whether it showed.
-- **Times in the reader's own time zone, never UTC.** Quote every time in the
-  time zone the person reading is in, the machine's own clock's (`date`), and
-  name it ("about 20:30 PDT"): they should not have to convert to know what
-  you mean (Dan, 19 October 2026: "always quote time in the time zone that I
-  am in"). UTC stays in logs and in records written for everyone.
-- **One exact word for each thing, and the same one throughout.** Name a
-  thing by the term its code, its paper or its field uses, say what it means
-  the first time, and keep that name: a synonym swapped in for variety reads
-  as a second thing, and a loose everyday word says something untrue, as
-  "every step trains at least one fact" did of a stream that only shows its
-  facts, the training being the method's (Dan, 3 November 2026: "for a model
-  that's as smart as this, it should be able to use the most accurate word,
-  and it often just chooses a really bad word").
-- **Keep the subject in the reader's hands.** Repeat the noun rather than
-  point back at it with "it", "they", "this" or "those" whenever the noun is
-  not in the same short sentence or the one just before, or two nouns could
-  fit: "the cars were quite nice", never "they were quite nice" five
-  sentences on. "This" and "that" carry their noun, and a clause long enough
-  that the reader must hold the subject across it is split, the subject
-  named again. Repeating a word costs nothing; a reader who loses the
-  subject is lost (Dan, 16 November 2026: "maybe just reintroducing the
-  subject of the sentence, and just even if it's duplicating it ... it's so
-  often unclear what the subject of what you're talking about is").
-- **Only the caveat that changes what they do next.** No stream of
-  consciousness, no narration of tools or process, and no alternatives nobody
-  asked for; they will ask if they want more.
-
-# Calling LLMs
-
-## Prompt caching on every call, as far as it goes
-
-Every call that sends a model the same opening as calls before it reads
-that opening from the provider's prompt cache, at the longest-lived
-setting the provider offers (Dan, 1 November 2026, after support-bench's
-Opus 5.5 graders ran $230 to $450 an hour with no cache reads at all: "We
-need to make sure prompt caching is, of course, always turned on and maxed
-out to the absolute extreme"). A cache read costs a tenth of fresh input
-on Anthropic's models, so an uncached call that repeats a long prefix pays
-up to ten times what it should.
-
-- **Order each request from most to least shared:** tools and system
-  instructions, then the documents or records that a task's calls all
-  read, then what changes from call to call, last. Nothing that varies
-  between calls, such as a timestamp, a run id or a shuffled order, goes
-  before shared content.
-- **Anthropic's models cache only where a request says so,** through
-  OpenRouter as well: a `cache_control` breakpoint (`{"type": "ephemeral"}`)
-  after each shared block, up to the four a request allows, with the
-  one-hour TTL (`"ttl": "1h"`) on any prefix reused for longer than five
-  minutes. unillm adds these by default, and `unillm.place_cache_breakpoints`
-  adds them to a body posted without its client. No other provider's
-  models can be counted on to cache a shared prefix by themselves: measured
-  through OpenRouter on 1 November 2026, OpenAI's GPT-6 Sol read the cache
-  only as far as an earlier request's whole prompt ran, so two calls that
-  share an opening and end differently read nothing of each other's, and
-  Google's Gemini 4 Argon read it erratically and cached nothing under the
-  one-hour TTL, so the first run's cache reads, below, show what each model
-  really saves.
-- **Warm before fanning out:** send the first call of each prefix alone and
-  start its siblings once its reply has begun; calls sent at the same
-  moment each write the prefix again and read none of it. Where a model
-  reads only as far as an earlier request's whole prompt ran, as GPT-6 Sol
-  does through OpenRouter, the warm call is the shared opening alone, with
-  nothing after it, so that every call starting with exactly those
-  messages reads them: with a 16k-token opening, a later call read 16,122
-  of its 16,152 tokens, at $0.0033 per call against $0.0404 unread. A
-  conversation that grows turn by turn needs no such call, since each
-  request extends the last. Gemini 4 Argon can't be counted on even then:
-  it read 90% once and nothing the next time.
-- **Prove it on the first run:** read each response's cached-token count
-  (Anthropic's `cache_read_input_tokens`, OpenRouter's `cached_tokens`)
-  and the provider's usage report. A call path that repeats a prefix and
-  shows no cache reads is a bug, fixed before the next run.
-
-## Claude through OpenRouter spends the company's own credits first
-
-OpenRouter serves a Claude call on a key that carries the company's
-Anthropic keys (bring-your-own-key, on the `dan` and `api` keys) from those
-keys first, so it spends the Claude plans' free monthly API credits before
-the company pays for anything. Leave Anthropic models' provider routing at
-its default: a `provider.order` or `only` naming Amazon Bedrock, Google
-Vertex or any other host skips those credits and pays list price. Which
-keys carry them, in what order, and how the order is kept are in brain's
-[Provider Credits](https://github.com/unifyai/brain/blob/main/docs/operations/provider-credits.md#being-claimed).
-
-## OpenAI only through OpenRouter
-
-Every OpenAI LLM call in every repo routes through **OpenRouter**, using
-`OPENROUTER_API_KEY`. UniLLM does not expose a native OpenAI chat provider, and
-the company's own direct OpenAI account is inactive — it answers
-`429 billing_not_active` — so a native route is dead in practice as well as
-unregistered.
-
-### Canonical endpoint form
-
-```
-openai/<model-id>@openrouter      # openai/gpt-5.6-terra@openrouter
-```
-
-Never `<model-id>@openai`. `@openrouter` resolves dynamically through the
-OpenRouter catalog; `@openai` is not registered and fails endpoint resolution.
-
-Source, defaults, examples, and tests use the canonical OpenRouter form
-directly.
-
-### Hard rules
-
-- New LLM call sites use `openai/<id>@openrouter`. Non-OpenAI providers
-  (Anthropic, Google, …) are unaffected by this rule and keep their own routing.
-- Never use `OPENAI_API_KEY` or a native `openai.OpenAI()` client for LLM chat
-  or text generation. Non-chat integrations such as speech-to-text, realtime
-  voice, or embeddings may use that key when the call site documents its
-  distinct purpose — that key is the deployment's own (self-host / BYOK), not
-  the company account above.
-- Env defaults and `.env.example` entries carry the `@openrouter` form, so a
-  fresh checkout cannot inherit a dead route.
-- Treat any surviving `@openai` model string as a bug; UniLLM rejects it.
-
-### The one legitimate direct-OpenAI path
-
-Masked image edits (`images.edit` with `gpt-image-2`) have no OpenRouter
-equivalent — OpenRouter's unified Image API does not expose the mask parameter.
-That path may use a separately-named credential (`OPENAI_DIRECT_API_KEY`), must
-never fall back to reading `OPENAI_API_KEY`, and must degrade loudly when the
-credential is absent. It is the only exception; adding another needs an
-explicit reason, not convenience.
